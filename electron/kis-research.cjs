@@ -1,4 +1,4 @@
-// Korean company research from KIS: analyst opinions, consensus estimates and annual financial ratios, condensed for the AI.
+// Normalizers for KIS analyst opinions, consensus estimates and annual financial ratios (used by kis-insights.cjs).
 const num=value=>{if(value===null||value===undefined||String(value).trim()==='')return null;const n=Number(value);return Number.isFinite(n)?n:null;};
 const median=values=>{if(!values.length)return null;const s=[...values].sort((a,b)=>a-b);const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;};
 const round=(value,digits=1)=>value==null?null:Math.round(value*10**digits)/10**digits;
@@ -34,19 +34,4 @@ function estimates(body){
 function ratios(rows){
   return (Array.isArray(rows)?rows:[]).slice(0,4).map(r=>({period:/^\d{6}$/.test(r.stac_yymm)?`${r.stac_yymm.slice(0,4)}-${r.stac_yymm.slice(4)}`:null,revenueGrowthPct:round(num(r.grs),1),operatingProfitGrowthPct:round(num(r.bsop_prfi_inrt),1),roePct:round(num(r.roe_val),1),eps:num(r.eps),bps:num(r.bps),debtRatioPct:round(num(r.lblt_rate),1)})).filter(r=>r.period);
 }
-// Runs the four read-only quotation calls for one symbol. Failures of one source leave that part null.
-async function companyResearch(client,symbol,today){
-  if(!/^\d{6}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');
-  const day=offset=>new Date(Date.parse(today+'T00:00:00Z')-offset*86400000).toISOString().slice(0,10).replaceAll('-','');
-  const attempt=async task=>{try{return await task();}catch{return null;}};
-  const quote=await attempt(()=>client.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol}));
-  const opinions=await attempt(()=>client.quotation('invest-opinion','FHKST663300C0',{FID_COND_MRKT_DIV_CODE:'J',FID_COND_SCR_DIV_CODE:'16633',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:day(180),FID_INPUT_DATE_2:day(0)}));
-  const estimate=await attempt(()=>client.quotation('estimate-perform','HHKST668300C0',{SHT_CD:symbol}));
-  const ratio=await attempt(()=>client.quotation('/uapi/domestic-stock/v1/finance/financial-ratio','FHKST66430300',{FID_DIV_CLS_CODE:'0',fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol}));
-  const q=quote?.output??{};const price=num(q.stck_prpr);
-  if(!quote&&!opinions&&!estimate&&!ratio)throw new Error('DATA_SOURCE_UNAVAILABLE');
-  return {symbol,asOf:today,price,valuation:{per:num(q.per),pbr:num(q.pbr),eps:num(q.eps),bps:num(q.bps),high52Week:num(q.w52_hgpr),low52Week:num(q.w52_lwpr)},
-    analysts:opinions?analystSummary(opinions.output,price,today):null,estimates:estimate?estimates(estimate):null,annualRatios:ratio?ratios(ratio.output):null,
-    note:'Broker consensus and estimates are third-party opinions, not facts. Check dates; estimates change.'};
-}
-module.exports={normalizeOpinion,analystSummary,estimates,ratios,companyResearch};
+module.exports={normalizeOpinion,analystSummary,estimates,ratios};

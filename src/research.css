@@ -1,0 +1,18 @@
+/* Company research: tabs over compact tables; text stays in ink colors, tags carry the kind */
+.research-tabs{flex-wrap:wrap;width:max-content;max-width:100%;margin:6px 0 14px}
+.research-body{min-height:120px}
+.research-line{font-size:13px;margin:4px 0 12px}
+.research-note{font-size:11px;margin-top:10px}
+.research-table{margin-top:12px}
+.research-table td,.research-table th{text-align:right}
+.research-table td:first-child,.research-table th:first-child{text-align:left;white-space:nowrap}
+.research-filings td{text-align:left;vertical-align:top}
+.research-filings td:first-child{width:96px;color:var(--muted)}
+.research-filings td:nth-child(2){width:96px}
+.research-filings .link-button{text-align:left;white-space:normal}
+.research-sub{font-size:12px;font-weight:600;margin:16px 0 6px;color:var(--muted)}
+.research-sub-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.research-events{list-style:none;padding:0;margin:0;display:grid;gap:6px;font-size:13px}
+.research-events li{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.research-date{color:var(--muted);font-size:12px;min-width:86px}
+.research-panel .company-stats{margin-top:4px}

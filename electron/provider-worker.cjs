@@ -1,4 +1,4 @@
-const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;
+const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};
 process.parentPort.on('message',async({data})=>{
   try {
     let result;
@@ -23,6 +23,8 @@ process.parentPort.on('message',async({data})=>{
       result=await require('./macro.cjs').fetchMacro(fetch,{ecosKey,fredKey});
     } else if(data.operation==='fx-rates') {
       if(!Array.isArray(data.days))throw 0;result=await require('./macro.cjs').fetchUsdKrw(fetch,ecosKey,data.days.filter(day=>typeof day==='string'));
+    } else if(data.operation==='dart-company') {
+      if(!dartKey)throw 0;result=await require('./dart.cjs').companyFilings(fetch,dartKey,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),dartState);
     } else if(data.operation==='disclosures') {
       if(!dartKey)throw 0;
       const date=new Date(Date.now()+9*3600000).toISOString().slice(0,10).replaceAll('-','');
