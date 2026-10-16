@@ -219,6 +219,16 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await click('Check broker costs');await until('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="Check broker costs"&&!b.disabled)','Broker cost check did not finish');
       await run('document.querySelector(`[aria-label="Overseas capital gains"]`).scrollIntoView({block:"start"})');await wait(200);await capture('fees-taxes-ledger');
     });
+    await check('Short & leverage allows leveraged ETFs per market with approval and records product overrides',async()=>{
+      await navigate('Short & leverage');await until('Boolean(document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`))','Korea leverage settings missing');
+      assert.equal(await run('document.querySelector(`[aria-label="Korea automatic leveraged orders"]`).disabled'),true,'automatic mode needs the switch first');
+      await run('document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`).click()');await wait(100);await click('Save Korea settings');
+      await until('document.querySelector(`[aria-label="Korea short and leverage"] .badge`)?.textContent==="PROPOSE ONLY"','Policy not saved');
+      await run('(()=>{const set=(label,value)=>{const el=document.querySelector(`[aria-label="${label}"]`);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,value);el.dispatchEvent(new Event("input",{bubbles:true}));};set("Override symbol","NASD:TEST");set("Override multiple","-2");})()');
+      await click('Set multiple');await until('document.querySelector(`[aria-label="Product overrides"]`)?.textContent.includes("2x inverse")','Override not shown');
+      await run('document.querySelector("main").scrollTo?.(0,0)');await wait(150);await capture('short-leverage-settings');
+      await run('document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`).click()');await wait(100);await click('Save Korea settings');await until('document.querySelector(`[aria-label="Korea short and leverage"] .badge`)?.textContent==="OFF"','Policy not reset');
+    });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
 });});require('../electron/main.cjs');

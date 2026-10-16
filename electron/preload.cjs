@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   exportJournal: () => ipcRenderer.invoke('events:export'),
   getPortfolio:()=>ipcRenderer.invoke('portfolio:get'),refreshPortfolio:()=>ipcRenderer.invoke('portfolio:refresh'),setInstrumentMetadata:(symbol,value)=>ipcRenderer.invoke('portfolio:metadata',symbol,value),
   getCosts:()=>ipcRenderer.invoke('costs:get'),saveCosts:value=>ipcRenderer.invoke('costs:save',value),
+  getExposure:()=>ipcRenderer.invoke('exposure:get'),saveExposurePolicy:(market,value)=>ipcRenderer.invoke('exposure:save-policy',market,value),setProductOverride:(symbol,factor)=>ipcRenderer.invoke('exposure:set-override',symbol,factor),
   getTaxSummary:()=>ipcRenderer.invoke('costs:tax-summary'),refreshCharges:()=>ipcRenderer.invoke('costs:refresh-charges'),
   usAction:(name,...args)=>['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'].includes(name)?ipcRenderer.invoke('us:'+name,...args):Promise.reject(new Error('INVALID_REQUEST')),
   liveAction: (name,...args) => ['get','configure','stop','auto','auto-off','propose','submit','reconcile','link'].includes(name)?ipcRenderer.invoke('live:'+name,...args):Promise.reject(new Error('INVALID_REQUEST')),

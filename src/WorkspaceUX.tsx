@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
-export const workspaceGroups=[{label:'Portfolio',tabs:['Overview','Holdings','Charts','Performance']},{label:'Trading',tabs:['Paper trading','KIS trading','U.S. stocks','Activity']},{label:'Research',tabs:['Discover','Journal','AI console','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes']}];
+export const workspaceGroups=[{label:'Portfolio',tabs:['Overview','Holdings','Charts','Performance']},{label:'Trading',tabs:['Paper trading','KIS trading','U.S. stocks','Activity']},{label:'Research',tabs:['Discover','Journal','AI console','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
 export const tabGuides:Record<string,{description:string;next:string;target:string}>={
   Overview:{description:'See where your money is invested, how positions are performing, and whether the engine is ready.',next:'Connect your account',target:'Connections'},
   Holdings:{description:'Inspect each company, position size, latest price and unrealized gain or loss.',next:'Explore price history',target:'Charts'},
@@ -11,6 +11,7 @@ export const tabGuides:Record<string,{description:string;next:string;target:stri
   'KIS trading':{description:'Activate a broker session with your own limits, review a cash limit order and explicitly approve it. Accepted broker orders remain active after stopping.',next:'Connect or check your account',target:'Connections'},
   'U.S. stocks':{description:'View USD holdings and approve NASDAQ, NYSE and AMEX cash limit orders.',next:'Configure fees and tax estimates',target:'Fees & taxes'},
   'Fees & taxes':{description:'Set your commission plan, sale fees and South Korean annual capital-gains estimate inputs.',next:'Review U.S. stocks',target:'U.S. stocks'},
+  'Short & leverage':{description:'Allow leveraged and inverse ETFs, set caps and approval, and correct product classification. Margin and short selling are added here when supported.',next:'Review fees and taxes',target:'Fees & taxes'},
   Discover:{description:'Search Korean and U.S. listings, screen KIS rankings, and keep a watchlist. Watchlist symbols are quoted and included in AI reviews; the agent can add its own candidates with reasons.',next:'Set trading limits',target:'KIS trading'},
   Journal:{description:'Read actual portfolio decisions and approve useful lessons for future reviews. Hold is a valid completed decision.',next:'Inspect the program–agent exchange',target:'AI console'},
   'AI console':{description:'Inspect supplied context, decisions, risk checks and tool results.',next:'Run a portfolio review',target:'Engine settings'},
