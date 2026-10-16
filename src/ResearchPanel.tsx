@@ -3,8 +3,8 @@ import './research.css';
 export type ResearchSection={status:'ok'|'unavailable';retrievedAt?:number;data?:any;reason?:string;stale?:boolean};
 export type ResearchProfile={symbol:string;name:string|null;market?:string;sector?:string|null;sectorName?:string|null;asOf:string;sections:Record<string,ResearchSection>};
 // The same research the agents read, one tab per section; each tab loads when first opened.
-const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events']];
-const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.'};
+const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk']];
+const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.'};
 const reason=(code?:string)=>REASONS[code??'']??'Not available right now.';
 const n=(v:unknown,digits=0)=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
 const pct=(v:unknown,digits=1,sign=false)=>typeof v==='number'&&Number.isFinite(v)?`${sign&&v>0?'+':''}${v.toFixed(digits)}%`:'—';
@@ -55,7 +55,33 @@ function Events({d}:{d:any}){
     {d.filingsUnavailable?<p className="muted">{reason(d.filingsUnavailable)}</p>:filings.length?<table className="compact-table research-table research-filings" aria-label="Filings"><tbody>{filings.map((f:any)=><tr key={f.url}><td>{f.date}</td><td><span className={`role-tag kind-${f.kind}`}>{KIND[f.kind]??f.kind}</span></td><td><button className="link-button" onClick={()=>void window.portfolio?.openFiling(f.url)}>{f.title}</button></td></tr>)}</tbody></table>:<p className="muted">No material filings in the last 12 months.</p>}
   </>;
 }
-const VIEWS:Record<string,(p:{d:any})=>ReactNode>={overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events};
+const flow=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?<span className={v<0?'negative':v>0?'positive':''}>{v>0?'+':v<0?'−':''}{krw(Math.abs(v))}</span>:'—';
+const streak=(v:unknown)=>typeof v==='number'&&v!==0?`${Math.abs(v)} day${Math.abs(v)===1?'':'s'} of net ${v>0?'buying':'selling'}`:'—';
+function Flows({d}:{d:any}){
+  const i=d.investors,s=d.shortSelling,m=d.margin,p=d.program;
+  return <>
+    {i&&<><table className="compact-table research-table" aria-label="Investor net buying"><thead><tr><th>Net buying</th><th>5 days</th><th>20 days</th><th>Streak</th></tr></thead><tbody>
+      <tr><td>Foreigners</td><td>{flow(i.net5d?.foreignKRW)}</td><td>{flow(i.net20d?.foreignKRW)}</td><td>{streak(i.foreignStreakDays)}</td></tr>
+      <tr><td>Institutions</td><td>{flow(i.net5d?.institutionKRW)}</td><td>{flow(i.net20d?.institutionKRW)}</td><td>{streak(i.institutionStreakDays)}</td></tr>
+      <tr><td>Individuals</td><td>{flow(i.net5d?.individualKRW)}</td><td>{flow(i.net20d?.individualKRW)}</td><td>—</td></tr></tbody></table>
+      <p className="muted research-note">Through {i.asOf}.</p></>}
+    <Stats items={[['Short selling (latest)',pct(s?.latestSharePct,2)],['Short selling (20-day avg)',pct(s?.avg20dSharePct,2)],['Margin loans / shares',pct(m?.balanceRatePct,2)],['Margin change',m?.changeSharesPct!=null?`${pct(m.changeSharesPct,1,true)} since ${m.changeSince}`:'—'],['Program trading (5 days)',flow(p?.net5dKRW)],['Program trading (20 days)',flow(p?.net20dKRW)]]}/>
+    <p className="muted research-note">Short selling is the share of daily volume sold short. Margin is loans outstanding as a share of listed shares.</p>
+  </>;
+}
+function Spark({closes}:{closes:{date:string;close:number}[]}){
+  if(!closes?.length)return null;const min=Math.min(...closes.map(c=>c.close)),max=Math.max(...closes.map(c=>c.close)),w=600,h=80;
+  const pts=closes.map((c,i)=>`${(i/(closes.length-1)*w).toFixed(1)},${(h-(max===min?h/2:(c.close-min)/(max-min)*h)).toFixed(1)}`).join(' ');
+  return <svg className="research-spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={`Closing prices ${closes[0].date} to ${closes.at(-1)!.date}`}><polyline points={pts} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke"/></svg>;
+}
+function Risk({d}:{d:any}){
+  return <>
+    <Spark closes={d.closes}/>
+    <Stats items={[['Volatility (annualized)',pct(d.annualizedVolatilityPct)],[`Beta to ${d.marketIndex}`,n(d.market?.beta,2)],['Correlation',n(d.market?.correlation,2)],['1-month return',pct(d.return1mPct,1,true)],['3-month return',pct(d.return3mPct,1,true)],[`1 month vs ${d.marketIndex}`,pct(d.vsMarket1mPct,1,true)],['1 month vs sector',pct(d.vsSector1mPct,1,true)],['Max drawdown',pct(d.maxDrawdownPct)],['From high',pct(d.fromHighPct)],['vs 20-day average',pct(d.priceVsSma20Pct,1,true)],['vs 60-day average',pct(d.priceVsSma60Pct,1,true)],['Avg daily value (20 days)',krw(d.avgDailyValue20dKRW)]]}/>
+    <p className="muted research-note">From {d.days} daily closes through {d.asOf}; drawdown and high cover that window.</p>
+  </>;
+}
+const VIEWS:Record<string,(p:{d:any})=>ReactNode>={overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk};
 export function ResearchPanel({symbol}:{symbol:string}){
   const [tab,setTab]=useState('overview');const [data,setData]=useState<Record<string,ResearchSection>>({});const [loading,setLoading]=useState('');const current=useRef(symbol);
   const load=async(section:string,refresh=false)=>{setLoading(section);try{const p=await window.portfolio!.getResearch(symbol,[section],refresh);if(current.current===symbol)setData(d=>({...d,[section]:p.sections[section]??{status:'unavailable',reason:'UNKNOWN_SECTION'}}));}catch{if(current.current===symbol)setData(d=>({...d,[section]:{status:'unavailable'}}));}finally{if(current.current===symbol)setLoading('');}};

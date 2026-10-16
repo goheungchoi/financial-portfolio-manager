@@ -16,3 +16,5 @@
 .research-events li{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .research-date{color:var(--muted);font-size:12px;min-width:86px}
 .research-panel .company-stats{margin-top:4px}
+.research-spark{width:100%;height:80px;color:var(--accent);margin:4px 0 8px;display:block}
+.research-panel .positive{color:var(--accent)}

@@ -7,7 +7,7 @@ async function loadedMaster(db=new DatabaseSync(':memory:'),options){const maste
 test('security master parses KIS fixed-width and tab-separated files with type mapping',async()=>{
   const master=await loadedMaster();const status=master.status();
   assert.equal(status.markets.length,5);assert.equal(status.error,null);
-  assert.deepEqual(master.get('005930'),{symbol:'005930',name:'삼성전자',englishName:'',market:'KOSPI',type:'stock',isin:'KR7005930000',industry:'0027'});
+  assert.deepEqual(master.get('005930'),{symbol:'005930',name:'삼성전자',englishName:'',market:'KOSPI',type:'stock',isin:'KR7005930000',industry:'0027',sector:'0027',marketCap:null},'the broad class stands in for a missing mid sector; a blank market cap stays unknown');
   assert.equal(master.get('069500').type,'etf');assert.equal(master.get('F70100'),null,'non-numeric domestic codes are skipped');
   assert.equal(master.get('247540').market,'KOSDAQ');
   assert.equal(master.get('NASD:AAPL').englishName,'APPLE INC');assert.equal(master.get('NASD:QQQ').type,'etf');assert.equal(master.get('NASD:SEATW').type,'warrant');assert.equal(master.get('NYSE:KO').name,'Coca-Cola');
