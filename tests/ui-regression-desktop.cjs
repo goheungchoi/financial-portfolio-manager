@@ -236,6 +236,11 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await navigate('AI console');await until('Array.from(document.querySelectorAll(".run-item")).some(b=>b.textContent.includes("Plan"))','Scout run missing from console');
       await navigate('Engine settings');await run('document.querySelector(`[aria-label="Scheduled scout runs"]`).click()');await until('Boolean(document.querySelector(`[aria-label="Scout schedule"]`))','Schedule select missing');
       await click('Save changes');await until('(async()=>(await window.portfolio.getRuntime()).config.scoutEnabled===true)()','Scout schedule not saved');
+      await navigate('Engine settings');assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="Largest conditional order"]`))')),'guardrail rows stay hidden while off');
+      await run('document.querySelector(`[aria-label="Let the AI set conditional orders"]`).click()');await until('Boolean(document.querySelector(`[aria-label="Largest conditional order"]`))','Conditional order guardrails missing');
+      await click('Save changes');await until('(async()=>(await window.portfolio.getRuntime()).config.conditionalOrders===true)()','Conditional orders not saved');await run('document.querySelector(`[aria-label="Conditional order settings"]`).scrollIntoView({block:"start"})');await wait(150);await capture('conditional-order-settings');
+      await navigate('Journal');await until('document.querySelector(`[aria-label="Agent desk"]`)?.textContent.includes("conditional orders")','Agent desk missing');
+      await run("window.portfolio.configureRuntime({conditionalOrders:false})");
       await run("window.portfolio.configureRuntime({scoutEnabled:false,scope:'paper',provider:'local'})");
     });
     await check('News matches disclosures to watchlist symbols and filters to portfolio-relevant items',async()=>{
