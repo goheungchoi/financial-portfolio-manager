@@ -66,10 +66,10 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await run("(async()=>window.portfolio.saveCosts({...await window.portfolio.getCosts(),usdKRW:1000}))()");await run('window.portfolio.refreshPortfolio()');await navigate('Home');
       for(const theme of ['dark','light']){
         if(await run('document.documentElement.dataset.theme')!==theme)await run('document.querySelector(`[aria-label="Dark mode"]`).click()');
-        await until('document.querySelector(`[aria-label="Combined equity"] .portfolio-profit`)?.dataset.amount==="-20000"','Combined P/L missing');
-        assert.equal(await run('document.querySelector(`[aria-label="U.S. equity"] .portfolio-profit`).dataset.amount'),'-20');
-        const geometry=await run('(()=>{const card=document.querySelector(`[aria-label="Combined equity"]`);return {value:card.querySelector(".equity-headline").getBoundingClientRect().bottom,profit:card.querySelector(".portfolio-profit").getBoundingClientRect().top};})()');assert.ok(geometry.profit>=geometry.value,'P/L overlaps equity');
-        await run('document.querySelector(".portfolio-metrics").scrollIntoView({block:"center"})');await capture('overview-pnl-'+theme);
+        await until('document.querySelector(`[aria-label="Unrealized"] .portfolio-profit`)?.dataset.amount==="-20000"','Combined P/L missing');
+        assert.equal(await run('document.querySelector(`[aria-label="U.S. unrealized"] .portfolio-profit`).dataset.amount'),'-20');
+        assert.equal(await run('document.querySelectorAll(".home-metrics .metric-card").length'),3,'three key numbers');assert.ok((await run('document.querySelector(`[aria-label="Combined equity"] strong`).textContent')).includes('₩'),'total equity shown');
+        await run('document.querySelector(".home-metrics").scrollIntoView({block:"center"})');await capture('overview-pnl-'+theme);
       }
       overseas.holdings=[];overseas.cash=0;overseas.reportedTotal=0;await run('window.portfolio.refreshPortfolio()');await navigate('U.S. stocks');
     });

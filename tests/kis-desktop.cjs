@@ -29,15 +29,14 @@ app.once('browser-window-created',(_event,win)=>{
       await win.webContents.executeJavaScript('window.portfolio.importKis()');
       await new Promise(resolve=>setTimeout(resolve,300));
       assert.equal(await win.webContents.executeJavaScript('window.portfolio.getMarket().then(state=>state.source)'),'kis');
-      await win.webContents.executeJavaScript("(()=>{const select=document.querySelector('[aria-label=\"Portfolio market filter\"]');select.value='KR';select.dispatchEvent(new Event('change',{bubbles:true}));})()");await new Promise(resolve=>setTimeout(resolve,150));
-      assert.equal(await win.webContents.executeJavaScript('document.querySelector(".metrics strong").textContent'),'₩900');
-      assert.equal(await win.webContents.executeJavaScript('document.querySelector("tbody td .company-link").textContent'),'Fixture company');
+      for(let i=0;i<40&&await win.webContents.executeJavaScript('document.querySelector(`[aria-label="Combined equity"] strong`)?.textContent')!=='₩900';i++)await new Promise(resolve=>setTimeout(resolve,100));assert.equal(await win.webContents.executeJavaScript('document.querySelector(`[aria-label="Combined equity"] strong`).textContent'),'₩900');
+      assert.equal(await win.webContents.executeJavaScript('document.querySelector(".home-holdings .company-link").textContent'),'Fixture company');
       fixtureService.onStatus({status:'streaming',subscribed:1});
       fixtureService.onQuote({symbol:'005380',price:220,timestamp:Date.now(),receivedAt:Date.now(),cumulativeVolume:100});
       assert.equal(await win.webContents.executeJavaScript('window.portfolio.getMarket().then(state=>state.snapshot.holdings[0].price)'),220);
       assert.equal(await win.webContents.executeJavaScript('window.portfolio.getMarket().then(state=>state.quotes[0].timeBasis)'),'exchange');
       await new Promise(resolve=>setTimeout(resolve,1100));
-      assert.equal(await win.webContents.executeJavaScript('document.querySelector(".metrics strong").textContent'),'₩940');
+      assert.equal(await win.webContents.executeJavaScript('document.querySelector(`[aria-label="Combined equity"] strong`).textContent'),'₩940');
       await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".top-chip")).find(b=>b.title==="Market feed").click()');await new Promise(resolve=>setTimeout(resolve,100));assert.ok((await win.webContents.executeJavaScript('document.querySelector(".chip-panel").textContent')).includes('Last trade'));await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".top-chip")).find(b=>b.title==="Market feed").click()');
       const waitDelta=async expected=>{for(let attempt=0;attempt<45;attempt++){const delta=await win.webContents.executeJavaScript('document.querySelector(".tick-delta").dataset.delta');if(delta===String(expected))return;await new Promise(resolve=>setTimeout(resolve,50));}assert.fail('Expected tick equity change '+expected);};
       fixtureService.onQuote({symbol:'005380',price:225,timestamp:Date.now(),receivedAt:Date.now(),cumulativeVolume:101});await waitDelta(10);
