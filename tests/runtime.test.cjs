@@ -46,3 +46,13 @@ test('over-long AI explanations are cut at a sentence instead of failing the dec
   const unbroken='x'.repeat(4000);const cut=trimExplanation(unbroken);assert.equal(cut.length,1500);assert.ok(cut.endsWith('…'));
   assert.throws(()=>validateDecision({action:'Buy',symbol:'000660',quantity:2,explanation:long},['005930']),/INVALID_AI_RESPONSE/,'other checks still apply');
 });
+
+test('the console copy of a large AI context fits the event log and keeps the essentials',()=>{
+  const {loggableContext}=require('../electron/automation.cjs');const {PortfolioStore}=require('../electron/storage.cjs');
+  const universe=Array.from({length:11},(_,i)=>({symbol:String(5930+i).padStart(6,'0'),name:'Company '+i,price:70000}));
+  const context={environment:'kis-combined',universe,positions:{},markets:[{market:'KR',tradingCosts:{rows:'y'.repeat(30000)}}],tradingCosts:{rows:'z'.repeat(20000)},news:[{title:'short'}]};
+  const text=loggableContext(context);assert.ok(text.length<=30000);const copy=JSON.parse(text);
+  assert.deepEqual(copy.universe,universe);assert.equal(copy.environment,'kis-combined');assert.deepEqual(copy.news,[{title:'short'}],'small sections are kept');
+  assert.match(copy.markets,/not kept in the log/);assert.equal(loggableContext({environment:'x',news:[]}),JSON.stringify({environment:'x',news:[]}),'small contexts are unchanged');
+  const store=new PortfolioStore(':memory:');store.appendEvent({id:'a',runId:'r',timestamp:'t',kind:'Context',title:'Supplied context',body:text});assert.equal(store.getEvents().length,1);
+});
