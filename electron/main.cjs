@@ -61,7 +61,7 @@ async function refreshNews() {
   try {
     const requests=[];
     if(automation.config.newsURL)requests.push(require('./news.cjs').fetchFeed(automation.config.newsURL));
-    if(automation.providerStatus.dartConnected)requests.push(providerService.request('disclosures',{stopAt:automation.newsEvents.latestReceipt()}));
+    if(automation.providerStatus.dartConnected)requests.push(providerService.request('disclosures',{seen:automation.newsEvents.receipts()}));
     const results=await Promise.allSettled(requests);const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
     const failed=results.some(r=>r.status==='rejected');
     if(!failed||items.length){automation.news=[...new Map(items.map(item=>[item.url,item])).values()].sort((a,b)=>(Date.parse(b.published)||0)-(Date.parse(a.published)||0)).slice(0,100);automation.newsUpdatedAt=Date.now();automation.newsEvents.ingest(items,automation.relevantSecurities());}
