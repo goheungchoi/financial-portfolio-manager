@@ -69,8 +69,8 @@ class SecurityMaster {
     try{this.db.prepare('DELETE FROM securities WHERE market=?').run(market);for(const r of rows)insert.run(r.symbol,r.name,r.englishName,r.market,r.type,r.isin,r.industry,r.sector??null,r.marketCap??null);this.db.prepare('INSERT INTO security_master_meta VALUES(?,?,?) ON CONFLICT(market) DO UPDATE SET count=excluded.count,updatedAt=excluded.updatedAt').run(market,rows.length,this.clock());this.db.exec('COMMIT');}
     catch(error){this.db.exec('ROLLBACK');throw error;}
   }
-  // Largest listed stocks in the same index sector, for peer comparison.
-  peers(symbol,limit=5){const row=this.get(symbol);if(!row?.sector)return [];return this.db.prepare("SELECT symbol,name,marketCap FROM securities WHERE sector=? AND market=? AND type='stock' AND symbol<>? AND marketCap IS NOT NULL ORDER BY marketCap DESC LIMIT ?").all(row.sector,row.market,symbol,limit).map(r=>({...r}));}
+  // Largest listed stocks in the same index sector, for peer comparison; the company's own preferred shares share its first five digits.
+  peers(symbol,limit=5){const row=this.get(symbol);if(!row?.sector)return [];return this.db.prepare("SELECT symbol,name,marketCap FROM securities WHERE sector=? AND market=? AND type='stock' AND substr(symbol,1,5)<>? AND marketCap IS NOT NULL ORDER BY marketCap DESC LIMIT ?").all(row.sector,row.market,symbol.slice(0,5),limit).map(r=>({...r}));}
   get(symbol){const row=this.db.prepare('SELECT * FROM securities WHERE symbol=?').get(symbol);return row?{...row}:null;}
   // Exact code/ticker first, then name prefix, then name substring.
   search(query,{market=null,type=null,limit=20}={}){
