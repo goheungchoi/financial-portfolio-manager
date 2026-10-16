@@ -80,7 +80,7 @@ test('the scout request offers research and discovery tools, asks for a plan and
     return reply([{type:'message',content:[{type:'output_text',text:JSON.stringify({summary:'s',cashTargetPct:10,focus:'f',targets:[]})}]}]);});
   const first=await client.scout({today:'2026-10-16'},{openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   assert.equal(first.toolCalls[0].name,'get_company_research');
-  assert.deepEqual(bodies[0].tools.map(t=>t.name).sort(),['get_company_research','screen_market','search_securities','update_watchlist']);assert.equal(bodies[0].text.format.name,'portfolio_plan');assert.equal(bodies[0].tool_choice,'auto');
+  assert.deepEqual(bodies[0].tools.map(t=>t.name).sort(),['get_company_research','get_market_overview','screen_market','search_securities','update_watchlist']);assert.equal(bodies[0].text.format.name,'portfolio_plan');assert.equal(bodies[0].tool_choice,'auto');
   const second=await client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low',final:true,continuation:first.continuation});
   assert.equal(bodies[1].tool_choice,'none');assert.equal(second.plan.cashTargetPct,10);
 });

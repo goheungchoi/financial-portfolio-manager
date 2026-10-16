@@ -1,12 +1,15 @@
 // Company research shared by the agents and the Company page: sections fetched on demand, cached in SQLite,
-// composed from KIS (quotes, analysts, estimates, ratios, KSD dividends and meetings) and OpenDART (filings, annual dividend table).
+// composed from KIS (quotes, analysts, estimates, ratios, KSD dividends and meetings), OpenDART (filings, annual dividend table)
+// and, for U.S. stocks, SEC EDGAR (annual financials, dividends, filings).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
 const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
+const US_SECTIONS=['overview','risk','financials','dividends','events'],US_DEFAULT=['overview','financials','risk'];
+const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},market:{ttl:10*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
 const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview']};
 const FAILURE_TTL=10*60000;
@@ -18,8 +21,8 @@ function prune(value){
   return value===null||value===''?undefined:value;
 }
 class ResearchService {
-  constructor({db,master,kis,provider,kisReady=()=>true,dartReady=()=>false,clock=Date.now}){
-    this.db=db;this.master=master;this.kis=kis;this.provider=provider;this.kisReady=kisReady;this.dartReady=dartReady;this.clock=clock;this.inflight=new Map();this.failures=new Map();
+  constructor({db,master,kis,provider,kisReady=()=>true,dartReady=()=>false,secReady=()=>false,clock=Date.now}){
+    this.db=db;this.master=master;this.kis=kis;this.provider=provider;this.kisReady=kisReady;this.dartReady=dartReady;this.secReady=secReady;this.clock=clock;this.inflight=new Map();this.failures=new Map();
     db.exec('CREATE TABLE IF NOT EXISTS research_cache(symbol TEXT NOT NULL,source TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,source));CREATE TABLE IF NOT EXISTS research_snapshots(symbol TEXT NOT NULL,day TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,day))');
   }
   cached(symbol,source){const row=this.db.prepare('SELECT at,payload FROM research_cache WHERE symbol=? AND source=?').get(symbol,source);return row?{at:row.at,value:JSON.parse(row.payload)}:null;}
@@ -33,17 +36,19 @@ class ResearchService {
       try{
         let value;
         if(spec.from==='dart'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider('dart-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
+        else if(spec.from==='sec'){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider('sec-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
         else{if(!this.kisReady())throw new Error('KIS_NOT_CONNECTED');value=await this.kis('research-section',{symbol,section:source});}
         const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);this.snapshot(symbol,source,value);
         return {status:'ok',retrievedAt:at,data:value};
       }catch(error){const reason=code(error);this.failures.set(symbol+source,{at:this.clock(),reason});return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason};}
-      finally{this.inflight.delete(key);}
     })();
-    this.inflight.set(key,task);return task;
+    // Registered before it settles and removed after, even when the task finished without waiting.
+    this.inflight.set(key,task);void task.finally(()=>{if(this.inflight.get(key)===task)this.inflight.delete(key);});return task;
   }
   // A public section built from its sources; sources are fetched one after another (KIS calls are paced anyway).
   async section(symbol,name,refresh=false){
     if(!SECTIONS.includes(name))return {status:'unavailable',reason:'UNKNOWN_SECTION'};
+    if(US.test(symbol))return this.usSection(symbol,name,refresh);
     if(!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};
     const parts={};for(const source of NEEDS[name])parts[source]=await this.source(symbol,source,refresh);
     const ok=s=>parts[s]?.status==='ok'?parts[s].data:null;const at=Math.min(...Object.values(parts).filter(p=>p.status==='ok').map(p=>p.retrievedAt));
@@ -80,6 +85,26 @@ class ResearchService {
     if((name==='analysts'||name==='estimates')&&main.status==='ok'){const trend=this.consensusTrend(symbol);return {status:'ok',retrievedAt:main.retrievedAt,data:{...main.data,...(trend?{consensusTrend:trend}:{})},...(main.stale?{stale:true}:{})};}
     return main.status==='ok'?{status:'ok',retrievedAt:main.retrievedAt,data:main.data,...(main.stale?{stale:true}:{})}:main;
   }
+  // U.S. stocks: KIS quote and price history, SEC annual facts and filings.
+  async usSection(symbol,name,refresh){
+    if(!US_SECTIONS.includes(name))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};
+    if(name==='overview')return this.source(symbol,'overview',refresh);
+    if(name==='risk'){
+      const daily=await this.source(symbol,'daily',refresh);if(daily.status!=='ok')return daily;const market=await this.source('SPX','index-daily',refresh);
+      const metrics=require('./kis-insights.cjs').riskMetrics(daily.data.closes,market.status==='ok'?market.data.closes:[],[]);if(!metrics)return {status:'unavailable',reason:'INSUFFICIENT_HISTORY'};
+      return {status:'ok',retrievedAt:daily.retrievedAt,data:{...metrics,marketIndex:'S&P 500',sectorIndex:null,currency:'USD',closes:daily.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
+    }
+    const sec=await this.source(symbol,'sec',refresh);if(sec.status!=='ok')return sec;const d=sec.data;
+    if(name==='financials')return {status:'ok',retrievedAt:sec.retrievedAt,data:{currency:'USD',source:'SEC 10-K filings',periods:d.annual.map(r=>({...r,period:'FY'+r.fiscalYearEnd.slice(0,4)+(r.fiscalYearEnd.slice(5,7)!=='12'?` (to ${r.fiscalYearEnd.slice(0,7)})`:'')}))}};
+    if(name==='dividends'){
+      const overview=await this.source(symbol,'overview');const price=overview.status==='ok'?overview.data.price:null;const latest=d.dividends.years[0];
+      return {status:'ok',retrievedAt:sec.retrievedAt,data:{currency:'USD',payments:[],frequency:d.dividends.years.length?'reported':'none',trailing12mPerShare:null,trailingYieldPct:latest&&price?Math.round(latest.perShare/price*10000)/100:null,yieldBasis:latest?'Last fiscal year dividends per share over the current price':null,annualReport:{source:'SEC 10-K',years:d.dividends.years}}};
+    }
+    const today=seoulDate(this.clock());
+    return {status:'ok',retrievedAt:sec.retrievedAt,data:{upcoming:d.earnings?.nextExpected&&d.earnings.nextExpected>=today?[{date:d.earnings.nextExpected,kind:'earnings',title:'Quarterly earnings (estimated date)',estimated:true}]:[],earnings:d.earnings,filings:d.filings,meetings:[]}};
+  }
+  // Korean market overview: breadth, sector moves and the day's largest foreign and institutional buying.
+  async market(refresh=false){return this.source('MARKET','market',refresh);}
   // Daily consensus snapshots, so target and estimate revisions can be measured over weeks.
   snapshot(symbol,source,value){
     let fields=null;
@@ -104,9 +129,9 @@ class ResearchService {
   // Compact research for the agents: requested sections only, nulls removed, long lists shortened.
   async agent(args){
     const symbol=String(args?.symbol??'').trim().toUpperCase();
-    if(!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};
+    const us=US.test(symbol);if(!us&&!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'INVALID_SYMBOL'};
     if(this.master?.status?.().total&&!this.master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};
-    const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:AGENT_DEFAULT;
+    const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:us?US_DEFAULT:AGENT_DEFAULT;
     const profile=await this.profile(symbol,{sections});const out={symbol,name:profile.name,market:profile.market,asOf:profile.asOf};
     for(const [name,section] of Object.entries(profile.sections))out[name]=section.status==='ok'?digest(name,section.data):{unavailable:section.reason};
     out.note='Third-party and broker data; check dates. Analyst targets and estimates are opinions. Null fields were left out.';
@@ -118,6 +143,7 @@ function digest(name,d){
   if(name==='analysts')return {...d,latest:d.latest?.slice(0,4),targetRevisions:d.targetRevisions?{...d.targetRevisions,recent:d.targetRevisions.recent.slice(0,3)}:undefined};
   if(name==='dividends')return {trailing12mPerShare:d.trailing12mPerShare,trailingYieldPct:d.trailingYieldPct,frequency:d.frequency,annualTotals:d.annualTotals?.slice(0,4),upcoming:d.upcoming,annualReport:d.annualReport?.years,annualReportUnavailable:d.annualReportUnavailable};
   if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
+  if(name==='financials'&&d.currency==='USD')return {periods:(d.periods??[]).slice(0,4).map(({filed,...r})=>r),source:d.source};
   if(name==='financials')return {periods:(d.periods??[]).slice(0,4).map(({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})=>({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})),annualRatios:d.periods?.length?undefined:d.annualRatios,note:'Periods not ending in December are year to date.'};
   if(name==='valuation')return {...d,monthly:undefined};
   if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};
@@ -125,4 +151,4 @@ function digest(name,d){
   if(name==='risk')return {...d,closes:undefined};
   return d;
 }
-module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,prune,digest};
+module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,prune,digest};

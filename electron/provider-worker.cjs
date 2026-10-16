@@ -1,16 +1,18 @@
-const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};
+const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};let secContact=null;const secState={};
 process.parentPort.on('message',async({data})=>{
   try {
     let result;
     if(data.operation==='import') {
       const handle=await fs.open(data.path,'r');let text;
       try{if((await handle.stat()).size>65536)throw 0;text=await handle.readFile('utf8');}finally{await handle.close();}
-      const value=JSON.parse(text);if(!value || Object.keys(value).some(key=>!['openaiApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey'].includes(key)))throw 0;
+      const value=JSON.parse(text);if(!value || Object.keys(value).some(key=>!['openaiApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey','secContactEmail'].includes(key)))throw 0;
       if(value.ecosApiKey&&!/^[A-Za-z0-9]{10,100}$/.test(value.ecosApiKey))throw 0;if(value.fredApiKey&&!/^[a-z0-9]{32}$/.test(value.fredApiKey))throw 0;ecosKey=value.ecosApiKey??null;fredKey=value.fredApiKey??null;
+      // SEC EDGAR asks every client to identify itself with a contact email; it is sent only to sec.gov.
+      if(value.secContactEmail&&!/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/.test(value.secContactEmail))throw 0;secContact=value.secContactEmail??null;
       ai=value.openaiApiKey?new AiClient(value.openaiApiKey):null;
       if(value.dartApiKey && !/^[A-Za-z0-9]{20,100}$/.test(value.dartApiKey))throw 0;dartKey=value.dartApiKey??null;
       if(value.pushWebhookURL){const url=new URL(value.pushWebhookURL);if(url.protocol!=='https:'||url.username||url.password)throw 0;pushURL=url.href;}else pushURL=null;
-      result={aiConnected:Boolean(ai),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey)};
+      result={aiConnected:Boolean(ai),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey),secConnected:Boolean(secContact)};
     } else if(data.operation==='decision') {if(!ai)throw 0;result=await ai.decide(data.context,data.options);}
     else if(data.operation==='reflection') {if(!ai)throw 0;result=await ai.reflect(data.context,data.options);}
     else if(data.operation==='scout') {if(!ai)throw 0;result=await ai.scout(data.context,data.options);}
@@ -23,6 +25,8 @@ process.parentPort.on('message',async({data})=>{
       result=await require('./macro.cjs').fetchMacro(fetch,{ecosKey,fredKey});
     } else if(data.operation==='fx-rates') {
       if(!Array.isArray(data.days))throw 0;result=await require('./macro.cjs').fetchUsdKrw(fetch,ecosKey,data.days.filter(day=>typeof day==='string'));
+    } else if(data.operation==='sec-company') {
+      if(!secContact)throw 0;result=await require('./sec.cjs').secCompany(fetch,secContact,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),secState);
     } else if(data.operation==='dart-company') {
       if(!dartKey)throw 0;result=await require('./dart.cjs').companyFilings(fetch,dartKey,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),dartState);
     } else if(data.operation==='disclosures') {
@@ -35,5 +39,5 @@ process.parentPort.on('message',async({data})=>{
       result=rows.slice(0,500).filter(row=>/^\d{14}$/.test(row.rcept_no)).map(row=>({title:(String(row.corp_name??'').trim()+' · '+String(row.report_nm??'').trim()).slice(0,500),symbol:row.stock_code??'',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row.rcept_no,published:row.rcept_dt,source:'DART'}));
     } else throw 0;
     process.parentPort.postMessage({id:data.id,ok:true,snapshot:result});
-  }catch(error){process.parentPort.postMessage({id:data.id,ok:false,usage:['decision','reflection','scout'].includes(data.operation)?error.usage??null:null,model:['decision','reflection','scout'].includes(data.operation)?error.model??null:null,detail:data.operation==='scout'&&typeof error.detail==='string'?error.detail.slice(0,200):null,code:['decision','scout'].includes(data.operation)?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):'PROVIDER_REQUEST_FAILED'});}
+  }catch(error){process.parentPort.postMessage({id:data.id,ok:false,usage:['decision','reflection','scout'].includes(data.operation)?error.usage??null:null,model:['decision','reflection','scout'].includes(data.operation)?error.model??null:null,detail:data.operation==='scout'&&typeof error.detail==='string'?error.detail.slice(0,200):null,code:['decision','scout'].includes(data.operation)?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):['dart-company','sec-company'].includes(data.operation)&&/^(DART|SEC)_[A-Z_]{3,30}$/.test(error?.message??'')?error.message:'PROVIDER_REQUEST_FAILED'});}
 });

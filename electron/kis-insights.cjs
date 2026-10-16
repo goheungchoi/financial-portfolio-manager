@@ -118,9 +118,40 @@ function valuationHistory(monthly,ratioRows){
   const series=[...closes.entries()].sort((a,b)=>a[0].localeCompare(b[0]));const ret=months=>series.length>months?round((series.at(-1)[1]/series.at(-1-months)[1]-1)*100):null;
   return {years,perRange:range('per'),pbrRange:range('pbr'),return1yPct:ret(12),return3yPct:ret(36),return5yPct:ret(60),monthly:series.slice(-60).map(([m,close])=>({month:`${m.slice(0,4)}-${m.slice(4)}`,close}))};
 }
+// U.S. overview from the KIS overseas price detail (USD).
+function usOverview(o={}){
+  const last=positive(o.last),base=positive(o.base);
+  return {currency:'USD',price:last,changePct:last&&base?round((last/base-1)*100,2):null,per:positive(o.perx),pbr:positive(o.pbrx),eps:num(o.epsx),bps:num(o.bpsx),marketCapUSD:positive(o.tomv),listedShares:positive(o.shar),
+    high52Week:positive(o.h52p),low52Week:positive(o.l52p),volume:num(o.tvol),sectorName:String(o.e_icod??'').trim()||null};
+}
+// Market overview: KOSPI breadth and sector moves, KOSDAQ breadth, and the stocks foreigners and institutions buy most today.
+function breadth(o={},label){const up=num(o.ascn_issu_cnt),down=num(o.down_issu_cnt),flat=num(o.stnr_issu_cnt);return {index:label,level:positive(o.bstp_nmix_prpr),changePct:num(o.bstp_nmix_prdy_ctrt),advancers:up,decliners:down,unchanged:flat,limitUp:num(o.uplm_issu_cnt),limitDown:num(o.lslm_issu_cnt),advanceRatioPct:up!=null&&down!=null&&up+down>0?round(up/(up+down)*100):null,tradedValueKRW:num(o.acml_tr_pbmn)!=null?num(o.acml_tr_pbmn)*1e6:null,yearHigh:positive(o.dryy_bstp_nmix_hgpr),yearLow:positive(o.dryy_bstp_nmix_lwpr)};}
+const SIZE_INDICES=new Set(['0001','0002','0003','0004']);
+function sectors(rows){return (Array.isArray(rows)?rows:[]).filter(r=>/^\d{4}$/.test(String(r.bstp_cls_code))&&!SIZE_INDICES.has(String(r.bstp_cls_code))).map(r=>({code:String(r.bstp_cls_code),name:String(r.hts_kor_isnm??'').trim(),changePct:num(r.bstp_nmix_prdy_ctrt),valueSharePct:num(r.acml_vol_rlim)})).filter(r=>r.name&&r.changePct!=null).sort((a,b)=>b.changePct-a.changePct);}
+function topBuyers(rows,key){return (Array.isArray(rows)?rows:[]).map(r=>({symbol:String(r.mksc_shrn_iscd??''),name:String(r.hts_kor_isnm??'').trim(),netBuyKRW:num(r[key])!=null?num(r[key])*1e6:null,changePct:num(r.prdy_ctrt)})).filter(r=>/^\d{6}$/.test(r.symbol)&&r.netBuyKRW!=null).slice(0,10);}
+async function marketOverview(client){
+  const q=(endpoint,tr,params)=>client.quotation(endpoint,tr,params);const attempt=async task=>{try{return await task();}catch{return null;}};
+  const kospi=await attempt(()=>q('inquire-index-category-price','FHPUP02140000',{FID_COND_MRKT_DIV_CODE:'U',FID_INPUT_ISCD:'0001',FID_COND_SCR_DIV_CODE:'20214',FID_MRKT_CLS_CODE:'K',FID_BLNG_CLS_CODE:'0'}));
+  const kosdaq=await attempt(()=>q('inquire-index-price','FHPUP02100000',{FID_COND_MRKT_DIV_CODE:'U',FID_INPUT_ISCD:'1001'}));
+  const flows=etc=>attempt(()=>q('foreign-institution-total','FHPTJ04400000',{FID_COND_MRKT_DIV_CODE:'V',FID_COND_SCR_DIV_CODE:'16449',FID_INPUT_ISCD:'0000',FID_DIV_CLS_CODE:'1',FID_RANK_SORT_CLS_CODE:'0',FID_ETC_CLS_CODE:etc}));
+  const foreign=await flows('1'),institution=await flows('2');
+  if(!kospi&&!kosdaq)throw new Error('DATA_SOURCE_UNAVAILABLE');
+  return {breadth:[...(kospi?[breadth(kospi.output1,'KOSPI')]:[]),...(kosdaq?[breadth(kosdaq.output,'KOSDAQ')]:[])],kospiSectors:sectors(kospi?.output2),
+    foreignTopBuys:topBuyers(foreign?.output,'frgn_ntby_tr_pbmn'),institutionTopBuys:topBuyers(institution?.output,'orgn_ntby_tr_pbmn'),
+    note:'Sector moves are today versus the previous close. Foreign and institutional buying are preliminary intraday tallies by value.'};
+}
+const US=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/;
 // One section of research for one Korean listing. `client` is the read-only KIS client.
 async function fetchSection(client,symbol,section,today){
   const q=(endpoint,tr,params)=>client.quotation(endpoint,tr,params);
+  if(section==='market')return marketOverview(client);
+  const us=US.exec(symbol);
+  if(us){
+    if(section==='overview'){const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/price-detail','HHDFS76200200',{AUTH:'',EXCD:{NASD:'NAS',NYSE:'NYS',AMEX:'AMS'}[us[1]],SYMB:us[2]});return usOverview(body.output);}
+    if(section==='daily'){const e=await require('./kis-evidence.cjs').fetchEvidence(client,{symbol,dataset:'daily_technicals'},true);return {closes:(e.candles??[]).map(c=>({date:c.date??new Date(c.timestamp).toISOString().slice(0,10),close:c.close,value:Number.isFinite(c.volume)?c.close*c.volume:null})).filter(c=>c.close>0)};}
+    throw new Error('KOREAN_LISTINGS_ONLY');
+  }
+  if(section==='index-daily'&&symbol==='SPX')return {closes:(await require('./kis-index.cjs').indexHistory(client,{index:'SPX',start:shift(today,160),end:today})).map(r=>({date:r.day,close:r.close})).filter(r=>r.close>0)};
   // Index history in two windows (KIS returns at most 50 days per call), keyed by a 4-digit index code.
   if(section==='index-daily'){if(!/^\d{4}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');const rows=[];
     for(const [from,to] of [[150,72],[72,0]]){const body=await q('inquire-daily-indexchartprice','FHKUP03500100',{FID_COND_MRKT_DIV_CODE:'U',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,from)),FID_INPUT_DATE_2:compact(shift(today,to)),FID_PERIOD_DIV_CODE:'D'});rows.push(...(body.output2??[]));}
@@ -174,4 +205,4 @@ async function financials(client,symbol){
   if(Object.values(parts).every(v=>!v))throw new Error('DATA_SOURCE_UNAVAILABLE');
   return {periods:statements(parts),annualRatios:ratios(parts.ratio),units:'KRW amounts; ratios in %. Periods not ending in December are year to date.'};
 }
-module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,fetchSection,num,round,isoDay,shift};
+module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
