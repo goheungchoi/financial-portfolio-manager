@@ -64,7 +64,7 @@ class KisReadOnlyClient {
   }
   async quotation(endpoint,trId,params) {
     await this.authenticate();await this.wait(550);
-    const {body}=await this.request('/uapi/domestic-stock/v1/quotations/'+endpoint+'?'+new URLSearchParams(params),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
+    const {body}=await this.request((endpoint.startsWith('/uapi/domestic-stock/v1/')?endpoint:'/uapi/domestic-stock/v1/quotations/'+endpoint)+'?'+new URLSearchParams(params),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
     if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
     return body;
   }
@@ -172,9 +172,9 @@ class KisReadOnlyClient {
     const {body}=await this.request('/uapi/domestic-stock/v1/trading/'+endpoint+'?'+new URLSearchParams({CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,...params}),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
     if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');return body;
   }
-  async overseasRequest(endpoint,trId,params,{post=false,continuation=''}={}) {
+  async overseasRequest(endpoint,trId,params,{post=false,continuation='',includeAccount=true}={}) {
     await this.authenticate();await this.wait(550);
-    const account=endpoint.startsWith('/uapi/overseas-stock/')?{CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode}:{};
+    const account=includeAccount&&endpoint.startsWith('/uapi/overseas-stock/')?{CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode}:{};
     const payload={...account,...params};
     const result=await this.request(endpoint+(post?'':'?'+new URLSearchParams(payload)),{method:post?'POST':'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P',tr_cont:continuation},...(post?{body:JSON.stringify(payload)}:{})});
     if(result.body.rt_cd!=='0'){const error=new KisError('BROKER_REJECTED');if(/^[A-Z0-9_-]{1,24}$/.test(result.body.msg_cd??''))error.brokerCode=result.body.msg_cd;throw error;}return result;

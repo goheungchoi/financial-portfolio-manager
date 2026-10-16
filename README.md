@@ -47,6 +47,8 @@ Daily turnover, per-order and company-allocation caps are **optional and off by 
 
 **Engine settings → Autopilot guardrails** sets hard limits for unattended trading: what happens when a market's daily loss limit is reached (emergency reviews only, block new AI buys, or stop auto trading for the day), a daily cap on automatic orders, and a stop after consecutive failed reviews. Each trip is logged in AI console and sent through the alerts you enabled. An optional daily digest summarizes equity change, reviews, orders, AI cost and guardrail events once a day at a chosen KST hour. Guardrails do not block orders you approve manually and do not cancel accepted broker orders.
 
+**Discover** (Research) searches a daily-downloaded symbol list of KOSPI, KOSDAQ, NASDAQ, NYSE and AMEX listings, screens KIS rankings (volume, gainers, losers, market value) and keeps a per-account watchlist. Watchlist symbols are quoted with holdings (up to 20 quotes per market) and included in AI reviews. During reviews the agent can use `screen_market`, `search_securities` and `update_watchlist` (up to 3 symbols per call, at most 10 AI entries, never removing your entries). Discovery never places orders; the KIS trading allowlist and caps still apply.
+
 Providers:
 
 - **OpenAI API:** GPT-6 Luna, bounded structured output, no file/shell/trading tools, `store:false`, maximum 600 output tokens. API billing is separate from ChatGPT Plus. Daily request and local budget caps reserve USD 0.01/request, including failed or uncertain requests; this estimate is not the provider invoice or billing cap.

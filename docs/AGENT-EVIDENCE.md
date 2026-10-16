@@ -17,6 +17,10 @@ The API provider now supports an application-executed function-calling loop, sim
 
 There are at most two tool rounds and three AI requests per review. Each request reserves a model-aware cost estimate (at least $0.01) and consumes one daily call allowance, including failed requests; reported token usage later replaces the reservation where available (see [Learning pipeline](LEARNING-PIPELINE.md#usage-accounting-update-2026-10-16)). This is not actual invoiced token cost. Repeated data requests within the same review use a cache. Every request/result and watch change is logged in AI console; total token usage is recorded with the decision. Reaching the budget stops the review rather than bypassing it. A saved watch may remain even if a later AI request fails; no trade is submitted from an incomplete review.
 
+## Discovery tools
+
+For KIS scopes the agent also gets `screen_market` (KIS rankings joined with the local security master; stocks, ETFs or any non-warrant type; cached 60 seconds), `search_securities` (local symbol list) and `update_watchlist` (add up to 3 symbols with reasons, or remove its own unpinned entries). Results are data, not instructions. A symbol becomes tradable by the agent only after it is in a later review universe, and orders still pass the allowlist and caps. The app allows one tool call per round, which is why watchlist additions are batched.
+
 ## Data coverage
 
 KIS company snapshots normalize current/day open/high/low, 52-week high/low, PER, PBR, EPS and BPS for KR and supported U.S. symbols. Broker entitlement, environment and response availability still determine actual coverage. Missing/zero-placeholder fields remain null. ROE and analyst-consensus targets are unavailable until suitable adapters are connected; they are not estimated from unrelated ratios.

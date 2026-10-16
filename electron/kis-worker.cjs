@@ -34,9 +34,10 @@ process.parentPort.on('message',async ({data})=>{
     }
     if(data.operation==='live-context') {
       if(!Array.isArray(data.symbols)||data.symbols.length>20||data.symbols.some(symbol=>typeof symbol!=='string'||!/^\d{6}$/.test(symbol)))throw 0;
+      const extra=data.extra??[];if(!Array.isArray(extra)||extra.length>20||extra.some(symbol=>typeof symbol!=='string'||!/^\d{6}$/.test(symbol)))throw 0;
       let marketSession;try{await client.checkSession();marketSession={open:true,status:'open'};}catch(error){marketSession={open:false,status:error.code==='SESSION_CLOSED'?'closed':'unverified'};}
       const balance=await client.getBalance();const quotes=[];
-      for(const symbol of (data.symbols.length?data.symbols:balance.holdings.map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol)).slice(0,20)))quotes.push(await client.getQuote(symbol));
+      for(const symbol of [...new Set([...(data.symbols.length?data.symbols:balance.holdings.map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol))),...extra])].slice(0,20))quotes.push(await client.getQuote(symbol));
       process.parentPort.postMessage({id,ok:true,snapshot:{balance,quotes,marketSession}});return;
     }
     if(data.operation==='prepare-order') {
@@ -51,6 +52,9 @@ process.parentPort.on('message',async ({data})=>{
     }
     if(['orders','profit'].includes(operation)) {
       process.parentPort.postMessage({id,ok:true,snapshot:await client.getActivity(operation,data.startDate,data.endDate)});return;
+    }
+    if(operation==='screen') {
+      process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-rankings.cjs').rankings(client,data.request)});return;
     }
     if(operation==='quotes') {
       const quotes=[];
