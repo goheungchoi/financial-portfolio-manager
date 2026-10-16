@@ -87,3 +87,6 @@ aside > * { flex-shrink:0; }
 .connection-card .kis-actions{gap:10px;margin-bottom:6px}.connection-card .kis-actions button{font-size:12px}.action-spacer{flex:1}.danger{color:#d96c6c}.danger:not(:disabled):hover{border-color:#d96c6c}
 .connection-metrics{margin:22px 0 4px;padding-top:20px;border-top:1px solid var(--border)}.connection-metrics>div{display:flex;flex-direction:column}.connection-metrics strong{font-size:24px;margin:10px 0 6px;font-variant-numeric:tabular-nums}.link-button{align-self:flex-start;border:0;background:transparent;padding:0;color:var(--accent);font-size:12px}.link-button:hover{background:transparent;text-decoration:underline}
 .reconciliation table{max-width:560px;margin-top:12px}.reconciliation td,.reconciliation th{padding:9px 0;font-size:12px}.reconciliation th{color:var(--text);font-weight:600;border-top:1px solid var(--border)}.reconciliation p{max-width:680px}.warning-text{color:#d8a550}.small-print{font-size:11px;margin:14px 0 0}
+
+.digest-preview{white-space:pre-wrap;word-break:break-word}
+.saved-summary+.actions{margin-top:12px}

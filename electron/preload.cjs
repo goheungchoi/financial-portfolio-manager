@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   importProviders: () => ipcRenderer.invoke('runtime:providers'),
   refreshNews: () => ipcRenderer.invoke('runtime:news'),
   resetReviewWatches: () => ipcRenderer.invoke('runtime:reset-watches'),
+  previewDigest: () => ipcRenderer.invoke('runtime:digest-preview'),
   getOutcomeHistory:id=>ipcRenderer.invoke('runtime:outcome-history',id),
   lessonTrial:(action,id,value)=>ipcRenderer.invoke('runtime:lesson-trial',action,id,value),
   reviewLesson:(id,value)=>ipcRenderer.invoke('runtime:review-lesson',id,value),

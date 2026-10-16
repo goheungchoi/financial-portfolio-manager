@@ -133,6 +133,15 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     await check('Unlimited budgets save independently and calculated usage replaces reservation labels',async()=>{
       await navigate('Engine settings');await wait(2200);for(const label of ['API calls per day','Daily local API budget (USD)','Reflection calls per day','Daily reflection budget (USD)'])await run(`document.querySelector('[aria-label="Unlimited ${label}"]').click()`);await click('Save engine settings');await until('(async()=>{const c=(await window.portfolio.getRuntime()).config;return c.unlimitedCalls&&c.unlimitedBudget&&c.reflectionUnlimitedCalls&&c.reflectionUnlimitedBudget;})()','Unlimited settings not saved');await navigate('Overview');await navigate('Engine settings');assert.equal(await run('document.querySelector(`[aria-label="Unlimited API calls per day"]`).checked'),true);await capture('unlimited-api-settings');
     });
+    await check('Autopilot guardrails save, survive navigation and preview the daily digest',async()=>{
+      await navigate('Engine settings');await wait(2200);await until('Boolean(document.querySelector(`[aria-label="Autopilot guardrails"]`))','Guardrails section missing');
+      await run('(()=>{const set=(label,proto,value,type)=>{const el=document.querySelector(`[aria-label="${label}"]`);Object.getOwnPropertyDescriptor(proto.prototype,"value").set.call(el,value);el.dispatchEvent(new Event(type,{bubbles:true}));};set("Loss-limit response",HTMLSelectElement,"block-buys","change");set("Automatic orders per day",HTMLInputElement,"3","input");})()');
+      await click('Save engine settings');await until('(async()=>{const c=(await window.portfolio.getRuntime()).config;return c.lossAction==="block-buys"&&c.maxAutoOrdersPerDay===3;})()','Guardrails not saved');
+      await navigate('Overview');await navigate('Engine settings');assert.equal(await run('document.querySelector(`[aria-label="Loss-limit response"]`).value'),'block-buys');
+      await click("Preview today's digest");await until('document.querySelector(`[aria-label="Digest preview"]`)?.textContent.includes("Daily digest")','Digest preview missing');
+      await run('document.querySelector(`[aria-label="Autopilot guardrails"]`).scrollIntoView({block:"start"})');await wait(200);await capture('autopilot-guardrails');
+      await run("window.portfolio.configureRuntime({lossAction:'review',maxAutoOrdersPerDay:0})");
+    });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
 });});require('../electron/main.cjs');
