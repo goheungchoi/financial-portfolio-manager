@@ -18,7 +18,7 @@ class Automation {
     this.outcomes=new (require('./outcome-ledger.cjs').OutcomeLedger)(db);this.memory=new (require('./learning-memory.cjs').LearningMemory)(db);
     this.trials=new (require('./lesson-trials.cjs').LessonTrials)(db,this.memory);
     this.reflections=new (require('./reflection.cjs').ReflectionQueue)(db,this.memory);
-    this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db);this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);
+    this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db);this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);
     const row=db.prepare('SELECT payload FROM automation_settings WHERE id=1').get();this.config={...DEFAULTS,...(row?JSON.parse(row.payload):{})};this.sessionArmed=false;this.lastError=null;this.lastSuccess=0;this.savedAt=null;if(!row)this.saveConfig();
   }
   watchScope(){if(this.config.scope==='paper')return 'paper';try{return this.config.scope+':'+(this.live??this.usLive).identity();}catch{return this.config.scope+':disconnected';}}
@@ -117,7 +117,7 @@ class Automation {
       if(context.environment==='kis'){const policy=context.risk;const {lossStatus}=require('./loss-policy.cjs');emergency.loss=lossStatus(policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW},policy.baseline,context.equity);emergency.active=emergency.loss.breached;}
       context.tradingCosts=context.environment==='kis-combined'?{markets:context.markets.map(row=>({market:row.market,...row.tradingCosts}))}:context.environment==='local-paper'?{basis:'simulation',currency:'KRW',commissionPct:.1,slippagePct:.1,saleTaxPct:0,capitalGainsTax:'Not modeled in the local paper simulator. Live trading uses your fee and tax settings.'}:this.costs?.context(context.market??'KR',context.universe,context.positions);context.emergency=emergency;context.userGuidelines=this.config.guidelines;const peak=context.environment==='local-paper'?(this.paper.account().dayPeakEquity??this.paper.account().dayBaseline):(context.environment==='kis-combined'?null:context.risk.dayPeakEquity??context.risk.baseline);context.performance={dailyBaseline:emergency.loss?.baseline??null,observedDailyPeak:peak,currentEquity:context.equity,drawdownFromObservedPeakPct:peak>0?Math.max(0,(peak-context.equity)/peak*100):null};
       context.reviewInterval=this.reviewInterval.get(watchScope,this.config);if(context.environment==='kis'||context.environment==='kis-combined'){const history=context.environment==='kis-combined'?{KR:this.performanceSummary?.('KR')??null,US:this.performanceSummary?.('US')??null}:this.performanceSummary?.(context.market)??null;if(history)context.performance.history=history;}
-      context.reviewWatches=this.watches.list(watchScope).map(({baseline,...watch})=>watch);if(context.environment!=='local-paper'){const plan=require('./scout.cjs').reviewContext(this.scoutStore.latest(watchScope));if(plan)context.scoutPlan=plan;const requests=this.scoutRequestState(watchScope);if(requests)context.scoutRequests=requests;}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starters.length?{starterCandidates:{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}}:{})};}if(['Price movement trigger','News event trigger'].includes(trigger))context.triggerEvidence=this.triggerEvidence;
+      context.reviewWatches=this.watches.list(watchScope).map(({baseline,...watch})=>watch);if(context.environment!=='local-paper'){const plan=require('./scout.cjs').reviewContext(this.scoutStore.latest(watchScope));if(plan)context.scoutPlan=plan;const brief=this.scoutBriefState(watchScope);if(brief)context.scoutBrief=brief;}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starters.length?{starterCandidates:{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}}:{})};}if(['Price movement trigger','News event trigger'].includes(trigger))context.triggerEvidence=this.triggerEvidence;
       this.observeEmergency(emergency);if(emergency.active)this.lastEmergencyAttempt=Date.now();
       // Token saving: an unchanged scheduled review is skipped before any provider call.
       const saver=require('./token-saver.cjs');const hash=saver.fingerprint(context);
@@ -135,7 +135,7 @@ class Automation {
         let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today)});
         let providerContext=saver.compact(context);
         if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`);
-        const research=()=>require('./research-review.cjs').researchReview({context,evidence:this.evidence,discovery:context.discovery?.enabled?{screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config);},requestScout:args=>this.requestScout(watchScope,args),setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},log:(kind,title,body)=>this.log(id,kind,title,body),request:async options=>{
+        const research=()=>require('./research-review.cjs').researchReview({context,evidence:this.evidence,discovery:context.discovery?.enabled?{screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config);},briefScout:args=>this.briefScout(watchScope,args,id),setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},log:(kind,title,body)=>this.log(id,kind,title,body),request:async options=>{
           if(this.disposed||watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
           const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};options={...options,...modelConfig};
           const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,options);
@@ -201,22 +201,32 @@ class Automation {
     try{(this.config.scope==='us'?this.usLive:this.live)?.identity();}catch{return 'Connect your KIS account';}
     return null;
   }
-  // What a trading review may know about asking for a scout run; null when the feature is off or the scout cannot run.
-  scoutRequestState(scope){
-    if(!this.config.scoutAiRequests||this.scoutAvailable())return null;const status=this.scoutStore.requests(scope,seoulDate());
-    return {allowed:!this.scouting&&!this.pendingScout&&status.remainingToday>0&&!status.nextAllowedAt,remainingToday:status.remainingToday,...(status.nextAllowedAt?{nextAllowedAt:new Date(status.nextAllowedAt).toISOString()}:{}),...(this.scouting?{running:true}:{})};
+  // What a trading review may know about briefing the scout; null when the scout cannot run or is not in use.
+  scoutBriefState(scope){
+    if(this.scoutAvailable())return null;const plan=this.scoutStore.latest(scope);
+    if(!this.config.scoutEnabled&&!this.config.scoutAiRequests&&!(plan&&Date.now()-plan.timestamp<=36*3600000))return null;
+    const status=this.scoutStore.requests(scope,seoulDate());const open=this.briefs.open(scope);
+    return {runAllowed:Boolean(this.config.scoutAiRequests)&&!this.scouting&&!this.pendingScout&&status.remainingToday>0&&!status.nextAllowedAt,...(this.config.scoutAiRequests?{remainingRunsToday:status.remainingToday}:{runRequests:'turned off'}),...(status.nextAllowedAt&&this.config.scoutAiRequests?{nextRunAllowedAt:new Date(status.nextAllowedAt).toISOString()}:{}),...(this.scouting?{running:true}:{}),
+      ...(this.config.scoutEnabled?{scheduledRuns:require('./scout.cjs').SCHEDULES[this.config.scoutSchedule].map(([h,m])=>String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+' KST weekdays')}:{}),openBriefs:open.map(b=>({id:b.id,asOf:new Date(b.timestamp).toISOString(),asked:b.asked.slice(0,200)}))};
   }
-  requestScout(scope,args){
-    const reason=typeof args?.reason==='string'?args.reason.trim().slice(0,300):'';
-    if(!reason)return {status:'rejected',reason:'A short reason is required.'};
+  // A brief from a trading review: saved for the next scout run, and optionally a request to run after this review.
+  briefScout(scope,args,reviewId){
     if(scope!==this.watchScope())return {status:'rejected',reason:'The account changed.'};
-    const state=this.scoutRequestState(scope);
-    if(!state?.allowed)return {status:'rejected',reason:!state?'Scout requests are turned off or the scout cannot run.':this.scouting||state.running?'A scout run is already in progress.':this.pendingScout?'A scout run is already requested.':state.remainingToday===0?'The daily limit of AI-requested scout runs is reached.':'Too soon after the last requested run.'};
-    this.scoutStore.noteRequest(scope,seoulDate());this.pendingScout={scope,reason};
-    return {status:'scheduled',note:'A scout run starts after this review ends.'};
+    const state=this.scoutBriefState(scope);if(!state)return {status:'rejected',reason:'The scout is not available.'};
+    const brief=require('./scout-feedback.cjs').normalizeBrief(args);
+    if(!brief)return {status:'rejected',reason:args?.request==='run'?'A short reason is required.':'The brief is empty.'};
+    let run='not requested';
+    if(brief.request==='run'){
+      const status=this.scoutStore.requests(scope,seoulDate());
+      run=!this.config.scoutAiRequests?'not started: run requests are turned off':this.scouting||state.running?'not started: a scout run is already in progress':this.pendingScout?'not started: a scout run is already requested':status.remainingToday===0?'not started: the daily limit of requested runs is reached':status.nextAllowedAt?'not started: too soon after the last requested run':!brief.reason?'not started: a reason is required':'scheduled';
+    }
+    const record=this.briefs.add(scope,brief,{reviewId:reviewId??null});
+    if(run==='scheduled'){this.scoutStore.noteRequest(scope,seoulDate());this.pendingScout={scope,reason:brief.reason};}
+    return {status:'saved',briefId:record.id,run,note:run==='scheduled'?'A scout run starts after this review ends and will answer this brief.':'The next scout run will answer this brief.'};
   }
   startRequestedScout(){const pending=this.pendingScout;this.pendingScout=null;if(!pending||this.disposed||pending.scope!==this.watchScope()||this.scouting)return;void this.scout('Requested by review · '+pending.reason.slice(0,80)).catch(()=>{});}
-  scoutState(){const scope=this.watchScope();const {SCHEDULES,dueSlot}=require('./scout.cjs');return {enabled:this.config.scoutEnabled,schedule:this.config.scoutSchedule,times:(SCHEDULES[this.config.scoutSchedule]??[]).map(([h,m])=>String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')),busy:Boolean(this.scouting),blocked:this.scoutAvailable(),lastError:this.scoutError??null,lastErrorDetail:this.scoutErrorDetail??null,lastSlot:this.scoutStore.lastSlot(scope),dueSlot:dueSlot(this.config.scoutSchedule),latest:this.scoutStore.latest(scope)};}
+  scoutState(){const scope=this.watchScope();const {SCHEDULES,dueSlot}=require('./scout.cjs');return {enabled:this.config.scoutEnabled,schedule:this.config.scoutSchedule,times:(SCHEDULES[this.config.scoutSchedule]??[]).map(([h,m])=>String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')),busy:Boolean(this.scouting),blocked:this.scoutAvailable(),lastError:this.scoutError??null,lastErrorDetail:this.scoutErrorDetail??null,lastSlot:this.scoutStore.lastSlot(scope),dueSlot:dueSlot(this.config.scoutSchedule),latest:this.scoutStore.latest(scope),briefs:this.briefs.open(scope).map(({id,timestamp,request,asked})=>({id,timestamp,request,asked})),scorecard:this.scoutScorecardState(scope)};}
+  scoutScorecardState(scope){try{const board=this.scoutScorecard.build(scope,this.briefs.feedback(scope,0));return {summary:board.summary,minSample:board.minSample,picks:board.picks.slice(0,20).map(({symbol,name,role,pickedAt,endedAt,benchmark,horizons,acted,feedback})=>({symbol,name,role,pickedAt,endedAt,benchmark,horizons,acted,feedback}))};}catch{return null;}}
   async scoutAccount(){
     const pick=c=>({market:c.market??'KR',currency:c.currency,equity:c.equity,cash:c.cash,positions:Object.entries(c.positions??{}).map(([symbol,p])=>{const q=c.quotes?.find(x=>x.symbol===symbol);const value=q?q.price*p.quantity:null;return {symbol,name:c.universe?.find(u=>u.symbol===symbol)?.name??symbol,quantity:p.quantity,value,weightPct:value&&c.equity?Math.round(value/c.equity*1000)/10:null};})});
     if(this.config.scope==='kis')return [pick(await this.live.context())];
@@ -230,6 +240,9 @@ class Automation {
     try{
       const previous=this.scoutStore.latest(scope);
       const context={today:seoulDate(),userGuidelines:this.config.guidelines||null,accounts:await this.scoutAccount(),watchlist:this.discovery.list().map(({symbol,name,source,reason,pinned})=>({symbol,name,source,reason,pinned})),previousPlan:previous?{asOf:new Date(previous.timestamp).toISOString(),...previous.plan}:null,macro:this.macro?.context()??null,news:this.newsContext()};
+      // Feedback loop: open briefs from trading reviews, how earlier picks did, and the scout's own notes.
+      const briefs=this.briefs.open(scope);if(briefs.length)context.briefs=briefs.map(b=>({id:b.id,asOf:new Date(b.timestamp).toISOString(),...(b.reason?{reason:b.reason}:{}),...(b.lookingFor?{lookingFor:b.lookingFor}:{}),...(b.avoid?{avoid:b.avoid}:{}),...(b.questions?{questions:b.questions}:{}),...(b.feedback?.length?{feedback:b.feedback}:{})}));
+      const scorecard=this.scoutScorecard.context(scope,this.briefs.feedback(scope,0));if(scorecard)context.scorecard=scorecard;const notes=this.scoutStore.retrospectives(scope);if(notes.length)context.retrospectives=notes;
       this.log(id,'Program',trigger==='User request'?'Scout run':'Scout run · '+trigger,'Researching the market to update the shortlist and the portfolio plan. The scout does not trade.');
       this.log(id,'Context','Supplied context',loggableContext(context));
       const modelConfig={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort==='none'?'low':this.config.reasoningEffort};
@@ -247,7 +260,8 @@ class Automation {
         update_watchlist:args=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}};
       const result=await require('./scout.cjs').runScout({request,tools,log:(kind,title,body)=>this.log(id,kind,title,body)});
       if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');
-      const saved=this.scoutStore.save(scope,result.plan,{runId:id,trigger,model:result.model??modelConfig.openaiModel,usage:result.usage,rounds:result.rounds});
+      const answered=this.briefs.answer(scope,result.plan.briefAnswers);
+      const saved=this.scoutStore.save(scope,result.plan,{runId:id,trigger,model:result.model??modelConfig.openaiModel,usage:result.usage,rounds:result.rounds,answered});this.scoutScorecard.record(scope,result.plan,saved.timestamp);
       this.log(id,'Agent','Scout plan',JSON.stringify(result.plan,null,2));this.log(id,'System','Review completed',JSON.stringify(result.usage));
       this.scoutError=null;return saved;
     }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));throw error;}

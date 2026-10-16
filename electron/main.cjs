@@ -291,10 +291,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('costs:refresh-charges',async event=>{authorize(event);chargesError=null;await refreshCharges();return {...costs.taxSummary(),refreshedAt:chargesAt||null,error:chargesError,refreshing:false,environment:kisState.snapshot?.environment??null};});
   ipcMain.handle('macro:get',event=>{authorize(event);return macroState();});
   ipcMain.handle('macro:refresh',async event=>{authorize(event);await refreshMacro();return macroState();});
-  // Learning scoreboard: daily closes for symbols with recent Buy/Sell decisions, at most ten symbols per pass.
+  // Learning scoreboard: daily closes for symbols with recent Buy/Sell decisions and scout picks, a few symbols per pass.
   const {closesFromCandles}=require('./scoreboard.cjs');let closesTask=null,closesAt=0,closesError=null;
   const refreshDecisionCloses=()=>{if(closesTask||!kisState.snapshot)return closesTask;const generation=kisGeneration;closesTask=(async()=>{
-      for(const symbol of automation.scoreboard.pendingSymbols(10)){const snapshot=await kisService.request('company-chart',{request:{symbol,dataset:'daily_technicals'}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');automation.scoreboard.saveCloses(symbol,closesFromCandles(symbol,snapshot.candles));}
+      // Scout picks share the price table, so their 5- and 20-day results fill in with the same fetches.
+      for(const symbol of [...new Set([...automation.scoreboard.pendingSymbols(10),...automation.scoutScorecard.pendingSymbols(10)])].slice(0,14)){const snapshot=await kisService.request('company-chart',{request:{symbol,dataset:'daily_technicals'}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');automation.scoreboard.saveCloses(symbol,closesFromCandles(symbol,snapshot.candles));}
       closesAt=Date.now();closesError=null;})().catch(error=>{closesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'PRICE_HISTORY_FAILED';}).finally(()=>{closesTask=null;});return closesTask;};
   setInterval(()=>{if(Date.now()-closesAt>6*3600000)void refreshDecisionCloses();},600000).unref();
   const scoreboardState=()=>({...automation.scoreboard.build(),pricesUpdatedAt:closesAt||null,pricesError:closesError,refreshing:Boolean(closesTask),benchmarkUpdatedAt:benchmarkAt||null});
