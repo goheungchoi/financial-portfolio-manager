@@ -2,12 +2,13 @@
 // composed from KIS (quotes, analysts, estimates, ratios, KSD dividends and meetings) and OpenDART (filings, annual dividend table).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
-const SECTIONS=['overview','analysts','estimates','financials','dividends','events'];
+const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'}};
-const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends']};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'}};
+const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily']};
 const FAILURE_TTL=10*60000;
 const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
 // Null, empty and "not applicable" values are dropped so the agents only read what exists.
@@ -56,9 +57,16 @@ class ResearchService {
         ...(dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
       return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
     }
+    if(name==='risk'){
+      if(main.status!=='ok')return main;const id=this.identity(symbol);const [code,label]=MARKET_INDEX[id.market]??MARKET_INDEX.KOSPI;
+      const market=await this.source(code,'index-daily',refresh);const sector=id.sector&&id.sector!==code?await this.source(id.sector,'index-daily',refresh):null;
+      const metrics=require('./kis-insights.cjs').riskMetrics(main.data.closes,market.status==='ok'?market.data.closes:[],sector?.status==='ok'?sector.data.closes:[]);
+      if(!metrics)return {status:'unavailable',reason:'INSUFFICIENT_HISTORY'};
+      return {status:'ok',retrievedAt:main.retrievedAt,data:{...metrics,marketIndex:label,sectorIndex:sector?.status==='ok'?id.sector:null,closes:main.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
+    }
     return main.status==='ok'?{status:'ok',retrievedAt:main.retrievedAt,data:main.data,...(main.stale?{stale:true}:{})}:main;
   }
-  identity(symbol){const row=this.master?.get?.(symbol);return row?{name:row.name,market:row.market,type:row.type,sector:row.sector??null,sectorName:row.sectorName??null}:{name:null};}
+  identity(symbol){const row=this.master?.get?.(symbol);return row?{name:row.name,market:row.market,type:row.type,sector:row.sector??null,marketCapKRW:row.marketCap??null}:{name:null};}
   async profile(symbol,{sections=SECTIONS,refresh=false}={}){
     const out={symbol,...this.identity(symbol),asOf:seoulDate(this.clock()),sections:{}};
     for(const name of sections.filter(s=>SECTIONS.includes(s)))out.sections[name]=await this.section(symbol,name,refresh);
@@ -82,6 +90,8 @@ function digest(name,d){
   if(name==='dividends')return {trailing12mPerShare:d.trailing12mPerShare,trailingYieldPct:d.trailingYieldPct,frequency:d.frequency,annualTotals:d.annualTotals?.slice(0,4),upcoming:d.upcoming,annualReport:d.annualReport?.years,annualReportUnavailable:d.annualReportUnavailable};
   if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
   if(name==='financials')return {annualRatios:d.annualRatios};
+  if(name==='flows')return {...d,investors:d.investors?{...d.investors,daily:undefined}:undefined,note:'Net buying in KRW; positive streak days mean consecutive net buying, negative mean selling. Short share is the percent of daily volume sold short; margin rate is loans outstanding as a percent of listed shares.'};
+  if(name==='risk')return {...d,closes:undefined};
   return d;
 }
 module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,prune,digest};

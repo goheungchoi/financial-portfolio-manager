@@ -42,10 +42,74 @@ function meetings(rows){
   return [...groups.values()].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,4);
 }
 
+// Investor flows: net buying by foreigners, institutions and individuals (amounts reported in million KRW).
+const sum=(rows,key,n,scale=1)=>{const part=rows.slice(0,n).map(r=>num(r[key])).filter(v=>v!=null);return part.length?part.reduce((a,b)=>a+b,0)*scale:null;};
+function investorFlows(rows){
+  const days=(Array.isArray(rows)?rows:[]).filter(r=>isoDay(r.stck_bsop_date)&&num(r.frgn_ntby_tr_pbmn)!=null).sort((a,b)=>String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));
+  if(!days.length)return null;
+  const streak=key=>{const sign=Math.sign(num(days[0][key])??0);if(!sign)return 0;let n=0;for(const r of days){if(Math.sign(num(r[key])??0)!==sign)break;n++;}return sign*n;};
+  const net=n=>({foreignKRW:sum(days,'frgn_ntby_tr_pbmn',n,1e6),institutionKRW:sum(days,'orgn_ntby_tr_pbmn',n,1e6),individualKRW:sum(days,'prsn_ntby_tr_pbmn',n,1e6)});
+  return {asOf:isoDay(days[0].stck_bsop_date),net5d:net(5),net20d:net(20),foreignStreakDays:streak('frgn_ntby_tr_pbmn'),institutionStreakDays:streak('orgn_ntby_tr_pbmn'),
+    daily:days.slice(0,10).map(r=>({date:isoDay(r.stck_bsop_date),close:num(r.stck_clpr),foreignKRW:num(r.frgn_ntby_tr_pbmn)*1e6,institutionKRW:num(r.orgn_ntby_tr_pbmn)*1e6,individualKRW:num(r.prsn_ntby_tr_pbmn)*1e6}))};
+}
+// Short selling: share of daily volume sold short.
+function shortSelling(rows){
+  const days=(Array.isArray(rows)?rows:[]).filter(r=>isoDay(r.stck_bsop_date)&&num(r.ssts_vol_rlim)!=null).sort((a,b)=>String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));if(!days.length)return null;
+  const avg=n=>{const v=days.slice(0,n).map(r=>num(r.ssts_vol_rlim));return round(v.reduce((a,b)=>a+b,0)/v.length,2);};
+  return {asOf:isoDay(days[0].stck_bsop_date),latestSharePct:num(days[0].ssts_vol_rlim),avg5dSharePct:avg(5),avg20dSharePct:avg(20),latestValueKRW:num(days[0].ssts_tr_pbmn)};
+}
+// Margin (credit) loans outstanding as a share of listed shares.
+function creditBalance(rows){
+  const days=(Array.isArray(rows)?rows:[]).filter(r=>isoDay(r.deal_date)&&num(r.whol_loan_rmnd_rate)!=null).sort((a,b)=>String(b.deal_date).localeCompare(String(a.deal_date)));if(!days.length)return null;
+  const then=days[Math.min(days.length-1,19)];const now=num(days[0].whol_loan_rmnd_stcn),before=num(then.whol_loan_rmnd_stcn);
+  return {asOf:isoDay(days[0].deal_date),balanceRatePct:num(days[0].whol_loan_rmnd_rate),balanceShares:now,changeSharesPct:now!=null&&before?round((now/before-1)*100):null,changeSince:isoDay(then.deal_date)};
+}
+// Program trading (index arbitrage and baskets): net buying in KRW.
+function programTrading(rows){
+  const days=(Array.isArray(rows)?rows:[]).filter(r=>isoDay(r.stck_bsop_date)&&num(r.whol_smtn_ntby_tr_pbmn)!=null).sort((a,b)=>String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)));if(!days.length)return null;
+  return {asOf:isoDay(days[0].stck_bsop_date),net1dKRW:num(days[0].whol_smtn_ntby_tr_pbmn),net5dKRW:sum(days,'whol_smtn_ntby_tr_pbmn',5),net20dKRW:sum(days,'whol_smtn_ntby_tr_pbmn',20)};
+}
+// Daily closes, oldest first.
+function closes(rows,key='stck_clpr',value='acml_tr_pbmn'){
+  const seen=new Set();return (Array.isArray(rows)?rows:[]).map(r=>({date:isoDay(r.stck_bsop_date),close:positive(r[key]),value:num(r[value])})).filter(r=>r.date&&r.close&&!seen.has(r.date)&&seen.add(r.date)).sort((a,b)=>a.date.localeCompare(b.date));
+}
+const logReturns=series=>series.slice(1).map((r,i)=>({date:r.date,ret:Math.log(r.close/series[i].close)}));
+const stdev=v=>{if(v.length<2)return null;const m=v.reduce((a,b)=>a+b,0)/v.length;return Math.sqrt(v.reduce((a,b)=>a+(b-m)**2,0)/(v.length-1));};
+const change=(series,days)=>series.length>days?round((series.at(-1).close/series.at(-1-days).close-1)*100):null;
+// Risk and relative strength from daily closes against the market and sector indices.
+function riskMetrics(stock,market=[],sector=[]){
+  if(stock.length<21)return null;const r=logReturns(stock);const vol=stdev(r.map(x=>x.ret));
+  const beta=index=>{const map=new Map(logReturns(index).map(x=>[x.date,x.ret]));const pairs=r.filter(x=>map.has(x.date)).map(x=>[x.ret,map.get(x.date)]);if(pairs.length<20)return null;
+    const ma=pairs.reduce((a,p)=>a+p[1],0)/pairs.length,ms=pairs.reduce((a,p)=>a+p[0],0)/pairs.length;let cov=0,varM=0,varS=0;for(const [s,m] of pairs){cov+=(s-ms)*(m-ma);varM+=(m-ma)**2;varS+=(s-ms)**2;}
+    return {beta:round(cov/varM,2),correlation:round(cov/Math.sqrt(varM*varS),2),days:pairs.length};};
+  let peak=0,maxDd=0;for(const p of stock){peak=Math.max(peak,p.close);maxDd=Math.min(maxDd,p.close/peak-1);}
+  const high=Math.max(...stock.map(p=>p.close)),last=stock.at(-1);const sma=n=>stock.length>=n?stock.slice(-n).reduce((a,p)=>a+p.close,0)/n:null;
+  const rel=(index,days)=>{const a=change(stock,days),b=change(index,days);return a!=null&&b!=null?round(a-b):null;};
+  const traded=stock.slice(-20).map(p=>p.value).filter(v=>v!=null);
+  return {asOf:last.date,days:stock.length,annualizedVolatilityPct:vol!=null?round(vol*Math.sqrt(252)*100):null,market:beta(market),
+    return1mPct:change(stock,21),return3mPct:change(stock,63),vsMarket1mPct:rel(market,21),vsMarket3mPct:market.length>63?rel(market,63):null,vsSector1mPct:rel(sector,21),
+    maxDrawdownPct:round(maxDd*100),fromHighPct:round((last.close/high-1)*100),priceVsSma20Pct:sma(20)?round((last.close/sma(20)-1)*100):null,priceVsSma60Pct:sma(60)?round((last.close/sma(60)-1)*100):null,
+    avgDailyValue20dKRW:traded.length?Math.round(traded.reduce((a,b)=>a+b,0)/traded.length):null,
+    note:`Computed from ${stock.length} daily closes; drawdown and high cover that window only. Beta and correlation use overlapping days with the market index.`};
+}
 // One section of research for one Korean listing. `client` is the read-only KIS client.
 async function fetchSection(client,symbol,section,today){
-  if(!/^\d{6}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');
   const q=(endpoint,tr,params)=>client.quotation(endpoint,tr,params);
+  // Index history in two windows (KIS returns at most 50 days per call), keyed by a 4-digit index code.
+  if(section==='index-daily'){if(!/^\d{4}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');const rows=[];
+    for(const [from,to] of [[150,72],[72,0]]){const body=await q('inquire-daily-indexchartprice','FHKUP03500100',{FID_COND_MRKT_DIV_CODE:'U',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,from)),FID_INPUT_DATE_2:compact(shift(today,to)),FID_PERIOD_DIV_CODE:'D'});rows.push(...(body.output2??[]));}
+    return {closes:closes(rows,'bstp_nmix_prpr').map(({date,close})=>({date,close}))};}
+  if(!/^\d{6}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');
+  if(section==='daily'){const body=await q('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,160)),FID_INPUT_DATE_2:compact(today),FID_PERIOD_DIV_CODE:'D',FID_ORG_ADJ_PRC:'0'});return {closes:closes(body.output2)};}
+  if(section==='flows'){
+    const attempt=async task=>{try{return await task();}catch{return null;}};
+    const investor=await attempt(async()=>investorFlows((await q('inquire-investor','FHKST01010900',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol})).output));
+    const short=await attempt(async()=>shortSelling((await q('daily-short-sale','FHPST04830000',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,45)),FID_INPUT_DATE_2:compact(today)})).output2));
+    const credit=await attempt(async()=>creditBalance((await q('daily-credit-balance','FHPST04760000',{fid_cond_mrkt_div_code:'J',fid_cond_scr_div_code:'20476',fid_input_iscd:symbol,fid_input_date_1:compact(today)})).output));
+    const program=await attempt(async()=>programTrading((await q('program-trade-by-stock-daily','FHPPG04650201',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(today)})).output));
+    if(!investor&&!short&&!credit&&!program)throw new Error('DATA_SOURCE_UNAVAILABLE');
+    return {investors:investor,shortSelling:short,margin:credit,program};
+  }
   const quote=async()=>(await q('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol})).output;
   if(section==='overview')return overview(await quote());
   if(section==='analysts'){
@@ -77,4 +141,4 @@ async function financials(client,symbol){
   const body=await client.quotation(D+'finance/financial-ratio','FHKST66430300',{FID_DIV_CLS_CODE:'0',fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol});
   return {annualRatios:ratios(body.output)};
 }
-module.exports={overview,dividends,meetings,revisions,fetchSection,num,round,isoDay,shift};
+module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,fetchSection,num,round,isoDay,shift};
