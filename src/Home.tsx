@@ -5,6 +5,7 @@ import {PortfolioProfit} from './PortfolioProfit';
 import {AllocationChart} from './AllocationChart';
 import {TickDelta,LiveValue} from './LiveValue';
 import {useDraftState} from './useDraftState';
+import {Spark} from './ResearchPanel';
 const krw=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const native=(n:number,currency:string)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 const compact=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',notation:'compact',maximumFractionDigits:1}).format(n);
@@ -30,6 +31,17 @@ export function HomeMetrics({state}:{state:PortfolioState}){
     <section className="metric-card" aria-label="Unrealized"><small>Unrealized</small><PortfolioProfit rows={state.rows} loaded={equity!=null}/>
       {us.length>0&&<div className="metric-foot" aria-label="U.S. unrealized"><span>U.S.</span><PortfolioProfit rows={us} currency="USD" loaded={state.totals.USD!=null}/></div>}</section>
   </div>;
+}
+// Account trend from the daily history: the last month of values, today's P/L and how far below the peak the account is.
+export function HomeTrend({onOpen}:{onOpen():void}){
+  const [summary,setSummary]=useState<any>(null);
+  useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();const s=reply?.state?.summaries;if(alive&&s)setSummary(s.COMBINED?.points?.length?s.COMBINED:s.KRW);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
+  const points=(summary?.points??[]) as {day:string;value:number;pnl?:number|null;dailyReturn:number|null}[];if(points.length<2)return null;
+  const m=summary.analytics?.['1M']??summary.analytics?.All;const last=points.at(-1)!;const recent=points.slice(-31);
+  return <section className="metric-card home-trend" aria-label="Account trend"><div className="home-trend-head"><small>Account value · last {recent.length} recorded days</small><button className="link-button" onClick={onOpen}>Performance →</button></div>
+    <Spark closes={recent.map(p=>({date:p.day,close:p.value}))}/>
+    <div className="metric-foot"><span>Latest day {last.pnl==null?'—':`${last.pnl>=0?'+':''}${krw(last.pnl)}`}{last.dailyReturn!=null?` (${pct(last.dailyReturn*100)})`:''}</span>{m&&<span>1 month {m.twrPct==null?'—':pct(m.twrPct)} · {m.currentDrawdownPct?`${m.currentDrawdownPct.toFixed(1)}% below peak`:'at its peak'}</span>}</div>
+  </section>;
 }
 // Largest positions first, one line each; the full table lives on Holdings.
 export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:PortfolioState;onCompany(symbol:string):void;onAll():void;onRefresh():void;busy:boolean}){

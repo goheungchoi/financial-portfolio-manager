@@ -1,5 +1,6 @@
 import {Note} from './Note';
 import {useEffect,useState} from 'react';
+import {SymbolField,OrderQuote} from './SymbolField';
 import {usErrorMessage} from './usErrors';
 import {TickDelta} from './LiveValue';
 import {SaleCosts,type CostEstimate} from './TradingCosts';
@@ -51,7 +52,7 @@ export function LiveTrading({draftKey='kis',market='KR'}:{draftKey?:string;marke
     </section>
     <section className="trade-card" aria-label="New order"><h2>New order</h2>
       <div className="order-form">
-        <label>Stock code<input aria-label="KIS order symbol" placeholder={us?'NASD:AAPL':'005930'} value={command.symbol} onChange={e=>setCommand({...command,symbol:e.target.value})}/></label>
+        <label>Stock<SymbolField label="KIS order symbol" market={us?'US':'KR'} value={command.symbol} onChange={symbol=>setCommand({...command,symbol})}/></label>
         {!us&&<label>Order type<select aria-label="KIS order type" value={credit.kind} onChange={e=>{const kind=e.target.value;setCredit({...credit,kind});if(kind!=='cash')setCommand({...command,side:['margin-buy','cover'].includes(kind)?'Buy':'Sell'});}}><option value="cash">Cash</option><option value="margin-buy">Margin buy (신용매수)</option><option value="margin-sell">Sell margin shares (신용상환)</option><option value="short">Short sell (대주매도)</option><option value="cover">Cover short (대주상환)</option></select></label>}
         <label>Side<select value={command.side} disabled={!us&&credit.kind!=='cash'} onChange={e=>setCommand({...command,side:e.target.value})}><option>Buy</option><option>Sell</option></select></label>
         {!us&&['margin-sell','cover'].includes(credit.kind)&&<label>Loan date<input aria-label="KIS loan date" type="date" value={credit.loanDate} onChange={e=>setCredit({...credit,loanDate:e.target.value})}/></label>}
@@ -59,6 +60,7 @@ export function LiveTrading({draftKey='kis',market='KR'}:{draftKey?:string;marke
         <label>Limit price ({currency})<input step={us?'0.01':'1'} type="number" min="1" value={command.limitPrice||''} onChange={e=>setCommand({...command,limitPrice:Number(e.target.value)})}/></label>
         <button className="primary" disabled={busy||!state.enabled||(!us&&['margin-sell','cover'].includes(credit.kind)&&!credit.loanDate)} title={state.enabled?undefined:'Activate the session first'} onClick={()=>void action('propose',!us&&credit.kind!=='cash'?{...command,credit:{kind:credit.kind,...(['margin-sell','cover'].includes(credit.kind)?{loanDate:credit.loanDate}:{})}}:command)}>Create proposal</button>
       </div>
+      <OrderQuote symbol={command.symbol} quantity={command.quantity} currency={currency} onUsePrice={price=>setCommand({...command,limitPrice:price})}/>
       {!state.enabled&&<small className="muted">Activate the session to create orders.</small>}
       {!us&&credit.kind!=='cash'&&<Note summary="Needs a live account with a KIS credit agreement.">Credit orders need a live account with a KIS credit agreement and must be allowed under Settings → Short & leverage. Repayment orders use the loan date shown in your balance.</Note>}
     </section>
