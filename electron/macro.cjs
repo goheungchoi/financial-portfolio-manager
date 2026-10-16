@@ -84,6 +84,12 @@ async function fetchMacro(fetch,{ecosKey=null,fredKey=null,now=Date.now()}={}){
   let calendar=null;if(fredKey){try{calendar=await fetchCalendar(fetch,fredKey,now);}catch(error){errors.push({id:'CALENDAR',source:'FRED',code:/^[A-Z0-9_-]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'});}}
   return {fetchedAt:now,ecosAccess:ecosKey?'key':'sample',calendarAccess:fredKey?'key':'none',series,calendar,errors};
 }
+// USD/KRW reference rates (ECOS 매매기준율) for the week up to each requested day, for settlement-date tax conversion.
+async function fetchUsdKrw(fetch,key,days){
+  const spec=SERIES.find(s=>s.id==='KR_USDKRW'),rows=[];
+  for(const day of days.slice(0,20)){if(!isDay(day))continue;const end=new Date(day+'T00:00:00Z');rows.push(...await ecosWindow(fetch,key||ECOS_SAMPLE,spec,shiftDays(end,-7),end));}
+  return [...new Map(rows.map(r=>[r.date,r])).values()];
+}
 class MacroStore {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS macro_snapshot(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)');}
   // Keeps the last good value of a series when a later refresh fails for it.
@@ -100,4 +106,4 @@ class MacroStore {
     return {asOf:iso(new Date(snap.fetchedAt)),indicators:snap.series.map(s=>({name:s.name,market:s.market,value:s.value,unit:s.unit,date:s.date,change:s.change,...(s.stale?{stale:true}:{})})),upcoming:(snap.calendar??[]).filter(e=>e.date>=today&&e.date<=until).map(({date,event})=>({date,event})),note:snap.calendar?'Change is versus the previous observation. Release dates come from the FRED calendar.':'Change is versus the previous observation. No release calendar is connected.'};
   }
 }
-module.exports={SERIES,RELEASES,parseFredCsv,parseEcos,summarize,fetchMacro,calendarRows,MacroStore};
+module.exports={SERIES,RELEASES,parseFredCsv,parseEcos,summarize,fetchMacro,fetchUsdKrw,calendarRows,MacroStore};

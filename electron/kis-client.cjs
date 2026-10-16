@@ -182,6 +182,16 @@ class KisReadOnlyClient {
     const {body}=await this.request('/uapi/domestic-stock/v1/trading/'+endpoint+'?'+new URLSearchParams({CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,...params}),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
     if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');return body;
   }
+  // One domestic order's executions and the broker's fee-plus-tax figure (prsm_tlex_smtl), via the daily order inquiry.
+  async getOrderCharges(day,orderId) {
+    if(typeof day!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(day)||typeof orderId!=='string'||!/^\d{1,20}$/.test(orderId))throw new KisError('INVALID_REQUEST');
+    const date=day.replaceAll('-','');
+    const body=await this.tradingQuery('inquire-daily-ccld',this.#credentials.environment==='live'?'TTTC0081R':'VTTC0081R',{INQR_STRT_DT:date,INQR_END_DT:date,SLL_BUY_DVSN_CD:'00',PDNO:'',CCLD_DVSN:'00',INQR_DVSN:'00',INQR_DVSN_3:'00',ORD_GNO_BRNO:'',ODNO:orderId,INQR_DVSN_1:'',EXCG_ID_DVSN_CD:'ALL',CTX_AREA_FK100:'',CTX_AREA_NK100:''});
+    const rows=(Array.isArray(body.output1)?body.output1:[]).filter(row=>String(row.odno)===orderId);const summary=Array.isArray(body.output2)?body.output2[0]:body.output2;
+    const value=v=>v==null||String(v).trim()===''?null:Number(v);const charges=value(summary?.prsm_tlex_smtl);
+    if(!rows.length||!summary||!Number.isFinite(charges)||charges<0)throw new KisError('INVALID_RESPONSE');
+    return {orderId,filled:rows.reduce((n,row)=>n+Number(row.tot_ccld_qty||0),0),amount:rows.reduce((n,row)=>n+Number(row.tot_ccld_amt||0),0),charges,retrievedAt:Date.now()};
+  }
   async overseasRequest(endpoint,trId,params,{post=false,continuation='',includeAccount=true}={}) {
     await this.authenticate();await this.wait(550);
     const account=includeAccount&&endpoint.startsWith('/uapi/overseas-stock/')?{CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode}:{};

@@ -37,7 +37,7 @@ class LiveEngine {
     if(!command || Object.keys(command).sort().join(',')!=='limitPrice,quantity,side,symbol' || !['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!this.validPrice(command.limitPrice)||!this.validSymbol(command.symbol))throw new Error('INVALID_ORDER');
     if(!this.enabled)throw new Error('KIS_TRADING_DISABLED');const policy=this.policy();if(!policy?.anyStock&&!policy?.symbols.includes(command.symbol))throw new Error('INSTRUMENT_NOT_ALLOWED');
     const notional=command.quantity*command.limitPrice;if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)throw new Error('ORDER_SIZE_LIMIT');
-    const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings}):null;
+    const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,exempt:this.costs.exempt?.(command.symbol)??false}):null;
     const intent={market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
   async submit(id,confirmation) {
@@ -59,7 +59,7 @@ class LiveEngine {
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
       if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/prepared.balance.reportedTotal*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
       if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
-      if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings})};}
+      if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,exempt:this.costs.exempt?.(order.symbol)??false})};}
       if(order.side==='Buy'&&order.costEstimate&&-order.costEstimate.netCash>Math.min(prepared.balance.cash,Number.isFinite(prepared.balance.settledCash)?prepared.balance.settledCash:prepared.balance.cash))throw new Error('INSUFFICIENT_CAPACITY');
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
@@ -75,11 +75,41 @@ class LiveEngine {
         const report=await this.broker.request('orders',{startDate:day,endDate:day});
         for(const order of open.filter(row=>row.day===day)) {
           const found=order.brokerOrderId?report.orders.find(row=>row.orderId===order.brokerOrderId):null;
-          if(found){const resultCosts=found.filled>0&&found.fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:found.filled,price:found.fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings}):null;this.save({...order,resultCosts,fillPrice:found.fillPrice??null,reconciledAt:Date.now(),filled:found.filled,status:found.status==='Filled'?'Filled':found.status==='Rejected'?'Rejected':/cancel/i.test(found.status)?'Canceled':found.filled>0?'Partially filled':'Accepted',reason:null});}
+          if(found){const resultCosts=found.filled>0&&found.fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:found.filled,price:found.fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,exempt:this.costs?.exempt?.(order.symbol)??false}):null;this.save({...order,resultCosts,fillPrice:found.fillPrice??null,reconciledAt:Date.now(),filled:found.filled,status:found.status==='Filled'?'Filled':found.status==='Rejected'?'Rejected':/cancel/i.test(found.status)?'Canceled':found.filled>0?'Partially filled':'Accepted',reason:null});}
         }
       }
       return this.getState();
     }finally{this.busy=false;}
+  }
+  // Replaces estimated costs of executed orders with broker-reported figures once available, at most every 15 minutes per order.
+  // KR: the order inquiry's fee-and-tax amount (live and mock). U.S.: settled trade history (live accounts only), matched by
+  // ticker, side and trade date; when other trades of the same kind make the match ambiguous the estimate is kept.
+  async refreshCharges(now=Date.now()){
+    const {brokerCosts}=require('./trading-costs.cjs');const attempt=(o,status,code=null)=>this.save({...o,reportedCosts:{status,code,attempts:(o.reportedCosts?.attempts??0)+1,lastAttempt:now}});
+    const due=this.orders().filter(o=>o.filled>0&&o.fillPrice>0&&o.brokerOrderId&&o.costSettings&&['Filled','Canceled','Rejected'].includes(o.status)&&!['reported','unavailable','ambiguous'].includes(o.reportedCosts?.status)&&(o.reportedCosts?.attempts??0)<12&&now-(o.reportedCosts?.lastAttempt??0)>=15*60000&&now-(o.createdAt??now)<10*86400000);
+    if(!due.length)return 0;let updated=0;
+    if(this.market==='US'){
+      const start=due.map(o=>o.day).sort()[0];let trades;
+      try{trades=await this.broker.request('charges',{start,end:this.day(now)});}catch(error){for(const o of due)attempt(o,error.message==='FEATURE_UNAVAILABLE'?'unavailable':'pending',error.message);return 0;}
+      const near=(a,b)=>Math.abs(Date.parse(a)-Date.parse(b))<=86400000;
+      for(const o of due){
+        const rows=trades.filter(t=>t.ticker===o.symbol.split(':')[1]&&t.side===o.side&&near(t.tradeDate,o.day));if(!rows.length){attempt(o,'pending','NOT_SETTLED');continue;}
+        const peers=this.orders().filter(p=>p.symbol===o.symbol&&p.side===o.side&&near(p.day,o.day)&&p.filled>0),rowQty=rows.reduce((n,r)=>n+r.quantity,0),appQty=peers.reduce((n,p)=>n+p.filled,0);
+        if(rowQty!==appQty){attempt(o,'ambiguous','QUANTITY_MISMATCH');continue;}
+        const share=o.filled/appQty,sum=key=>rows.every(r=>r[key]!=null)?rows.reduce((n,r)=>n+r[key],0)*share:null;
+        const reported={status:'reported',source:'KIS settled trade history',feesUSD:Math.round(sum('feesUSD')*100)/100,settlementUSD:sum('settlementUSD')==null?null:Math.round(sum('settlementUSD')*100)/100,settlementKRW:sum('settlementKRW')==null?null:Math.round(sum('settlementKRW')),exchangeRate:rows[0].exchangeRate,settlementDate:rows[0].settlementDate,retrievedAt:now};
+        this.save({...o,reportedCosts:reported,resultCosts:brokerCosts({market:'US',side:o.side,quantity:o.filled,price:o.fillPrice,costPerShare:o.costPerShare,symbol:o.symbol,settings:o.costSettings,reported})});updated++;
+      }
+      return updated;
+    }
+    for(const o of due){
+      try{
+        const r=await this.broker.request('charges',{day:o.day,orderId:o.brokerOrderId});if(r.filled!==o.filled){attempt(o,'pending','FILL_MISMATCH');continue;}
+        const reported={status:'reported',source:'KIS order inquiry',charges:r.charges,retrievedAt:now};
+        this.save({...o,reportedCosts:reported,resultCosts:brokerCosts({market:'KR',side:o.side,quantity:o.filled,price:o.fillPrice,costPerShare:o.costPerShare,symbol:o.symbol,settings:o.costSettings,reported,exempt:this.costs?.exempt?.(o.symbol)??false})});updated++;
+      }catch(error){attempt(o,error.message==='FEATURE_UNAVAILABLE'?'unavailable':'pending',error.message);}
+    }
+    return updated;
   }
   async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');return this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}
   async linkUncertain(id,brokerOrderId,confirmation) {

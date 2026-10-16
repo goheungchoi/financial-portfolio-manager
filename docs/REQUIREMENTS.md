@@ -37,7 +37,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 18. **Done** — Automated unit and Electron UI tests with fixtures; no real orders or paid calls in tests.
 19. **Planned** — Signed installer and auto-update.
 20. **Planned, *new*** — **Token saving:** skip AI calls when nothing relevant changed since the last review; route routine reviews to a cheaper model and escalate to a stronger one for emergencies, important disclosures and any trade (the stronger model confirms trades); order context so stable parts are cached; send compact, delta-style context; prefetch commonly requested evidence to avoid tool round trips; run reflections at a discounted batch tier where available; degrade (cheaper model, longer interval) near the daily budget instead of stopping. Measure cost per review before and after.
-21. **Planned, *new*** — **Accurate fees and taxes:** replace estimates with broker-reported figures per execution (KIS order/fill inquiries report commission and tax for domestic and overseas trades), and model South Korean taxes on overseas stocks precisely (annual capital-gains tax on net foreign gains above the basic deduction, using KRW amounts at settlement-date exchange rates across all brokers). Keep estimates only where the broker has not reported yet, and label them.
+21. **Done, *new*** — **Accurate fees and taxes:** executed orders use broker-reported figures when KIS provides them (Korea: the order inquiry's fee-and-tax total, live and mock; U.S.: settled trade history with fees, settlement amount and exchange rate, live accounts only), checked every 15 minutes, with estimates kept and labeled otherwise. Domestic ETFs/ETNs pay no sale tax. A KRW ledger computes Korean capital-gains tax on overseas shares (moving average as KIS uses, or FIFO; settlement-date rates from KIS or the Bank of Korea reference rate; realized by settlement date) and estimates the year's 22% tax above ₩2,500,000 together with gains entered for other brokers. Follow-ups: dividends and FX gains, corporate actions, U.S. exchange holidays in estimated settlement dates.
 
 ## Roadmap
 
@@ -52,7 +52,7 @@ Each step is planned, implemented, tested and committed on its own before the ne
 | 5 | ~~Learning scoreboard (item 15)~~ Done | Decisions and lessons are now scored against the benchmark. |
 | 6 | ~~Charts: U.S. candles and pop-out window (item 6)~~ Done | U.S. candles in New York time and a pop-out chart window. |
 | 7 | ~~Macro inputs (item 14)~~ Done | Official rates, inflation, FX and volatility now reach the AI. |
-| 7b | Accurate fees and taxes (item 21) | Requested as a side item; uses broker-reported fees and taxes per execution. |
+| 7b | ~~Accurate fees and taxes (item 21)~~ Done | Broker-reported order costs and a KRW tax ledger for overseas gains. |
 | 8 | Token saving (item 20) | Best done once the context and tools are stable, so savings are measured against the final workload. |
 | 9 | Installer and auto-update (item 19) | Release hardening. |
 

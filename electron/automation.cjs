@@ -77,8 +77,9 @@ class Automation {
     return {environment:'local-paper',paperVersion:state.account.version,equity:state.account.equity,cash:state.account.availableCash,positions:state.account.positions,universe:state.universe,quotes:state.quotes,orders:state.orders.filter(order=>['Pending','Partially filled'].includes(order.status)).map(({symbol,side,quantity,filled,status})=>({symbol,side,quantity,filled,status})),risk:state.policy,news:this.newsContext(),reviewedLessons:this.db.prepare('SELECT text FROM lessons WHERE approved=1 ORDER BY rowid DESC LIMIT 5').all().map(row=>row.text)};
   }
   async review(trigger='User request',externalDecision) {
-    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;const id=randomUUID();let context;let stage='Account data';const revision=this.revision;const watchScope=this.watchScope();const costRevision=JSON.stringify(this.costs?.get());
+    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;const id=randomUUID();let context;let stage='Account data';const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
+      costRevision=JSON.stringify(this.costs?.get());
       let usValue;let execution=this.config.scope==='us'?this.usLive:this.live;
       if(this.config.scope!=='paper') {
         if(this.config.scope==='us'||this.config.scope==='both')usValue=await this.refreshUS();

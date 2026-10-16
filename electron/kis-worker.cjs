@@ -27,6 +27,7 @@ process.parentPort.on('message',async ({data})=>{
       const us=new (require('./kis-overseas.cjs').OverseasClient)(client);let snapshot;
       if(operation==='us-context')snapshot=await us.context(data.symbols??[]);
       else if(operation==='us-orders')snapshot=await us.orders(data.startDate);
+      else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end);
       else if(operation==='us-prepare-order'){const check=await us.prepare(data.command);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',expiresAt:Date.now()+15000});snapshot={...check,ticket};}
       else if(operation==='us-place-order'){const entry=prepared.get(data.ticket);prepared.delete(data.ticket);if(!entry||entry.market!=='US'||entry.expiresAt<Date.now())throw new Error();snapshot=await us.place(entry.command);}
       else throw new Error();
@@ -49,6 +50,9 @@ process.parentPort.on('message',async ({data})=>{
       const entry=prepared.get(data.ticket);prepared.delete(data.ticket);
       if(!entry||entry.market||Date.now()>entry.expiresAt)throw new Error();
       process.parentPort.postMessage({id,ok:true,snapshot:await client.placeOrder(entry.command)});return;
+    }
+    if(operation==='charges') {
+      process.parentPort.postMessage({id,ok:true,snapshot:await client.getOrderCharges(data.day,data.orderId)});return;
     }
     if(['orders','profit'].includes(operation)) {
       process.parentPort.postMessage({id,ok:true,snapshot:await client.getActivity(operation,data.startDate,data.endDate)});return;
