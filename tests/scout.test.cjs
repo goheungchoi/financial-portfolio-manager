@@ -106,7 +106,7 @@ test('a trading review can brief the scout and ask for a run, which starts after
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
   const supplied=[];let reviewRound=0;let scoutStarted;const scoutDone=new Promise(resolve=>{scoutStarted=resolve;});
   const provider={request:async(operation,payload)=>{supplied.push([operation,payload]);
-    if(operation==='decision'){reviewRound++;if(reviewRound===1)return {toolCalls:[{name:'brief_scout',callId:'q1',args:{request:'run',reason:'No plan yet and the market moved 3%.',lookingFor:'Dividend payers below book value',avoid:'',questions:'',feedback:[]}}],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}};return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for the scout.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}
+    if(operation==='decision'){reviewRound++;if(reviewRound===1)return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'No plan yet.',credit:'none',loanDate:'',scoutBrief:{request:'run',reason:'No plan yet and the market moved 3%.',lookingFor:'Dividend payers below book value',avoid:'',questions:'',feedback:[]}},usage:{inputTokens:1,outputTokens:1},provider:'openai'};return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for the scout.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}
     if(operation==='scout'){scoutStarted();const id=payload.context.briefs[0].id;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[{briefId:id,answer:'Found two banks below book.'},{briefId:'B-nope',answer:'x'}],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
   automation.discovery={list:()=>[],symbols:()=>[],screen_market:async()=>({}),search_securities:async()=>({}),research:async()=>({}),update_watchlist:async()=>({})};
@@ -123,11 +123,17 @@ test('a trading review can brief the scout and ask for a run, which starts after
   await automation.review();const second=supplied.filter(([op])=>op==='decision').at(-1)[1].context;assert.equal(second.scoutPlan.briefAnswers[0].answer,'Found two banks below book.','the review sees the answer');assert.equal(second.scoutBrief.openBriefs.length,1);
   automation.configure({scoutAiRequests:false});const off=automation.scoutBriefState(scope);assert.equal(off.runAllowed,false);assert.equal(off.runRequests,'turned off','notes stay available while run requests are off');
 });
-test('reviews are offered brief_scout only when the scout is in use',async()=>{
+test('decisions carry a scout brief only when the scout is in use; a bad brief never invalidates the decision',async()=>{
   const {AiClient}=require('../electron/ai-client.cjs');const bodies=[];
-  const client=new AiClient('sk-fixture-key-123',async(url,options)=>{bodies.push(JSON.parse(options.body));return new Response(JSON.stringify({status:'completed',usage:{input_tokens:1,output_tokens:1},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'ok'})}]}]}));});
-  await client.decide({universe:[],scoutBrief:{runAllowed:false,openBriefs:[]}},{research:true});await client.decide({universe:[]},{research:true});
-  assert.ok(bodies[0].tools.some(t=>t.name==='brief_scout'));assert.ok(!bodies[1].tools.some(t=>t.name==='brief_scout'));
+  const client=new AiClient('sk-fixture-key-123',async(url,options)=>{bodies.push(JSON.parse(options.body));return new Response(JSON.stringify({status:'completed',usage:{input_tokens:1,output_tokens:1},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'ok',scoutBrief:{request:'note',reason:'',lookingFor:'',avoid:'',questions:'Kia dividend policy?',feedback:[]}})}]}]}));});
+  const withBrief=await client.decide({universe:[],scoutBrief:{runAllowed:false,openBriefs:[]}},{research:true});await client.decide({universe:[]},{research:true});
+  assert.ok(bodies[0].text.format.schema.required.includes('scoutBrief'));assert.ok(!bodies[1].text.format.schema.required.includes('scoutBrief'));
+  assert.ok(!bodies[0].tools.some(t=>t.name==='brief_scout'),'no separate tool or round');assert.equal(withBrief.decision.scoutBrief.questions,'Kia dividend policy?');
+  const {validateDecision}=require('../electron/ai-client.cjs');const base={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'x'};
+  assert.deepEqual(validateDecision({...base,scoutBrief:{request:'none',reason:'',lookingFor:'',avoid:'',questions:'',feedback:[]}},[]),base,'none leaves no brief');
+  assert.deepEqual(validateDecision({...base,scoutBrief:{request:'note',reason:'',lookingFor:'',avoid:'',questions:'',feedback:[]}},[]),base,'an empty brief is dropped');
+  assert.deepEqual(validateDecision({...base,scoutBrief:'garbage'},[]),base,'a malformed brief is dropped');
+  assert.throws(()=>validateDecision({...base,quantity:3,scoutBrief:{request:'note',questions:'q'}},[]),/INVALID_AI_RESPONSE/,'decision checks still apply');
 });
 test('the scout reports a disconnected KIS account instead of starting',()=>{
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
