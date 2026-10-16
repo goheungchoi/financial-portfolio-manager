@@ -212,7 +212,11 @@ app.whenReady().then(async () => {
     search_securities:async args=>({status:master.status().total?'ok':'unavailable',rows:master.search(args.query,{market:args.market,limit:10}).map(securityRow)}),
     update_watchlist:async args=>{const scope=watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');return require('./discovery.cjs').applyAiUpdate(watchlist,scope,args);}
   };
-  live.extraSymbols=()=>automation.discovery.symbols('KR');
+  // Starter Korean candidates: with no allowlist, watchlist or Korean holdings, the largest listed companies give the AI something to review.
+  const starters=new (require('./discovery.cjs').StarterCandidates)(screener);
+  automation.discovery.starters=()=>starters.current(watchScope());
+  live.nameOf=symbol=>master.get(symbol)?.name||null;
+  live.extraSymbols=async()=>{let allowed=[];try{allowed=live.policy()?.symbols??[];}catch{}return starters.symbols({scope:watchScope(),watched:automation.discovery.symbols('KR'),allowed,holdings:(kisState.snapshot?.holdings??[]).map(row=>row.symbol)});};
   // News matters for holdings, watchlist, allowlists and AI-watched symbols.
   automation.relevantSecurities=()=>{const symbols=new Set([...(kisState.snapshot?.holdings??[]).map(row=>row.symbol),...(usSnapshot?.holdings??[]).map(row=>row.symbol),...automation.discovery.list().map(row=>row.symbol),...(live.getState().policy?.symbols??[]),...(usLive.getState().policy?.symbols??[]),...automation.watches.list(automation.watchScope()).map(row=>row.symbol),...(automation.config.scope==='paper'?paper.getState().universe.map(row=>row.symbol):[])]);
     return [...symbols].map(symbol=>{const known=master.get(symbol);const held=[...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].find(row=>row.symbol===symbol);return {symbol,name:known?.name??held?.name??'',englishName:known?.englishName??''};});};

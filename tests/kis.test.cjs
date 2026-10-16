@@ -107,3 +107,16 @@ test('repeated KIS throttles increase cooldown without retrying orders or sendin
   await assert.rejects(client.request('/fixture',{method:'GET'}),/RATE_LIMITED/);assert.equal(calls,1);
   client.rateLimitedUntil=0;await assert.rejects(client.request('/fixture',{method:'GET'}),e=>e.retryAt>Date.now()+119000);assert.equal(calls,2);
 });
+
+test('mock accounts check Korean hours and weekdays without the unsupported holiday API; live accounts use it',async()=>{
+  const realNow=Date.now;const at=iso=>{Date.now=()=>Date.parse(iso);};
+  try{
+    const calls=[];const mock=new KisReadOnlyClient(credentials,async url=>{calls.push(url);return reply({access_token:'fixture-token',expires_in:3600});},async()=>{});
+    at('2026-10-16T05:00:00Z');assert.equal((await mock.checkSession()).open,true,'Friday 14:00 KST is open');assert.equal(calls.length,0,'no holiday request on mock');
+    at('2026-10-16T06:30:00Z');await assert.rejects(mock.checkSession(),/SESSION_CLOSED/,'15:30 KST is closed');
+    at('2026-10-17T02:00:00Z');await assert.rejects(mock.checkSession(),/SESSION_CLOSED/,'Saturday is closed');
+    at('2026-10-15T23:30:00Z');await assert.rejects(mock.checkSession(),/SESSION_CLOSED/,'08:30 KST is closed');
+    const liveCalls=[];const live=new KisReadOnlyClient({...credentials,environment:'live'},async url=>{liveCalls.push(url);if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'fixture-token',expires_in:3600});return reply({rt_cd:'0',output:[{bass_dt:'20261016',opnd_yn:'N'}]});},async()=>{});
+    at('2026-10-16T05:00:00Z');await assert.rejects(live.checkSession(),/SESSION_CLOSED/,'live honours the holiday calendar');assert.ok(liveCalls.some(url=>url.includes('chk-holiday')));
+  }finally{Date.now=realNow;}
+});
