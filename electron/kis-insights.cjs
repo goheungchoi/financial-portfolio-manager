@@ -92,6 +92,32 @@ function riskMetrics(stock,market=[],sector=[]){
     avgDailyValue20dKRW:traded.length?Math.round(traded.reduce((a,b)=>a+b,0)/traded.length):null,
     note:`Computed from ${stock.length} daily closes; drawdown and high cover that window only. Beta and correlation use overlapping days with the market index.`};
 }
+// Financial statements: KIS reports amounts in 100 million KRW and uses 99.99 for "not available".
+const stmt=value=>{const n=num(value);return n==null||n===99.99?null:n;};
+const periodLabel=yymm=>/^\d{6}$/.test(yymm)?(yymm.endsWith('12')?`FY${yymm.slice(0,4)}`:`${yymm.slice(0,4)} to ${['Mar','Jun','Sep'][Number(yymm.slice(4))/3-1]??yymm.slice(4)}`):null;
+function statements(parts){
+  const periods=new Map();const put=(rows,map)=>{for(const r of (Array.isArray(rows)?rows:[]).slice(0,6)){const key=String(r.stac_yymm??'');if(!periodLabel(key))continue;const row=periods.get(key)??{period:periodLabel(key),yearEnd:key.endsWith('12')};for(const [field,[name,scale]] of Object.entries(map)){const v=stmt(r[field]);if(v!=null)row[name]=round(v*scale,scale===1?2:0);}periods.set(key,row);}};
+  put(parts.income,{sale_account:['revenueKRW',1e8],sale_totl_prfi:['grossProfitKRW',1e8],bsop_prti:['operatingProfitKRW',1e8],thtr_ntin:['netIncomeKRW',1e8]});
+  put(parts.balance,{total_aset:['totalAssetsKRW',1e8],total_lblt:['totalLiabilitiesKRW',1e8],total_cptl:['equityKRW',1e8],cras:['currentAssetsKRW',1e8],flow_lblt:['currentLiabilitiesKRW',1e8]});
+  put(parts.ratio,{grs:['revenueGrowthPct',1],bsop_prfi_inrt:['operatingProfitGrowthPct',1],ntin_inrt:['netIncomeGrowthPct',1],roe_val:['roePct',1],eps:['eps',1],sps:['sps',1],bps:['bps',1],lblt_rate:['debtRatioPct',1]});
+  put(parts.profit,{cptl_ntin_rate:['roaPct',1],sale_ntin_rate:['netMarginPct',1],sale_totl_rate:['grossMarginPct',1]});
+  put(parts.stability,{crnt_rate:['currentRatioPct',1],quck_rate:['quickRatioPct',1]});
+  put(parts.growth,{equt_inrt:['equityGrowthPct',1],totl_aset_inrt:['assetGrowthPct',1]});
+  put(parts.other,{ebitda:['ebitdaKRW',1e8],ev_ebitda:['evToEbitda',1],payout_rate:['payoutRatioPct',1]});
+  const rows=[...periods.entries()].sort((a,b)=>b[0].localeCompare(a[0])).map(([,v])=>v);
+  // Operating margin is derived; a zero payout ratio is KIS's placeholder when DART says otherwise, so it is left out at zero.
+  for(const r of rows){if(r.revenueKRW&&r.operatingProfitKRW!=null)r.operatingMarginPct=round(r.operatingProfitKRW/r.revenueKRW*100);if(r.payoutRatioPct===0)delete r.payoutRatioPct;if(r.quickRatioPct===0)delete r.quickRatioPct;}
+  return rows;
+}
+// Valuation history: year-end PER and PBR from December monthly closes and that year's EPS and BPS.
+function valuationHistory(monthly,ratioRows){
+  const closes=new Map((Array.isArray(monthly)?monthly:[]).map(r=>[String(r.stck_bsop_date??'').slice(0,6),positive(r.stck_clpr)]).filter(([k,v])=>/^\d{6}$/.test(k)&&v));
+  const years=(Array.isArray(ratioRows)?ratioRows:[]).filter(r=>/^\d{4}12$/.test(String(r.stac_yymm))).slice(0,6).map(r=>{const y=String(r.stac_yymm).slice(0,4);const close=closes.get(y+'12');const eps=num(r.eps),bps=num(r.bps);
+    return {year:y,close:close??null,eps,bps,per:close&&eps>0?round(close/eps,1):null,pbr:close&&bps>0?round(close/bps,2):null};}).filter(y=>y.close);
+  const range=key=>{const v=years.map(y=>y[key]).filter(x=>x!=null).sort((a,b)=>a-b);return v.length?{min:v[0],median:v[Math.floor((v.length-1)/2)],max:v.at(-1),years:v.length}:null;};
+  const series=[...closes.entries()].sort((a,b)=>a[0].localeCompare(b[0]));const ret=months=>series.length>months?round((series.at(-1)[1]/series.at(-1-months)[1]-1)*100):null;
+  return {years,perRange:range('per'),pbrRange:range('pbr'),return1yPct:ret(12),return3yPct:ret(36),return5yPct:ret(60),monthly:series.slice(-60).map(([m,close])=>({month:`${m.slice(0,4)}-${m.slice(4)}`,close}))};
+}
 // One section of research for one Korean listing. `client` is the read-only KIS client.
 async function fetchSection(client,symbol,section,today){
   const q=(endpoint,tr,params)=>client.quotation(endpoint,tr,params);
@@ -119,6 +145,11 @@ async function fetchSection(client,symbol,section,today){
   }
   if(section==='estimates')return estimates(await q('estimate-perform','HHKST668300C0',{SHT_CD:symbol}));
   if(section==='financials')return financials(client,symbol);
+  if(section==='valuation'){
+    const monthly=await q('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,2200)),FID_INPUT_DATE_2:compact(today),FID_PERIOD_DIV_CODE:'M',FID_ORG_ADJ_PRC:'0'});
+    const ratio=await q(D+'finance/financial-ratio','FHKST66430300',{FID_DIV_CLS_CODE:'0',fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol});
+    return valuationHistory(monthly.output2,ratio.output);
+  }
   if(section==='dividends'){
     const price=positive((await quote())?.stck_prpr);
     const body=await q(D+'ksdinfo/dividend','HHKDB669102C0',{CTS:'',GB1:'0',F_DT:compact(shift(today,1500)),T_DT:compact(shift(today,-180)),SHT_CD:symbol,HIGH_GB:''});
@@ -138,7 +169,9 @@ function revisions(rows,today,days=90){
   return {targetRevisions:{windowDays:days,raised,cut,unchanged,recent:changes.sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6)}};
 }
 async function financials(client,symbol){
-  const body=await client.quotation(D+'finance/financial-ratio','FHKST66430300',{FID_DIV_CLS_CODE:'0',fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol});
-  return {annualRatios:ratios(body.output)};
+  const read=async(path,tr)=>{try{return (await client.quotation(D+'finance/'+path,tr,{FID_DIV_CLS_CODE:'0',fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol})).output;}catch{return null;}};
+  const parts={ratio:await read('financial-ratio','FHKST66430300'),income:await read('income-statement','FHKST66430200'),balance:await read('balance-sheet','FHKST66430100'),profit:await read('profit-ratio','FHKST66430400'),stability:await read('stability-ratio','FHKST66430600'),growth:await read('growth-ratio','FHKST66430800'),other:await read('other-major-ratios','FHKST66430500')};
+  if(Object.values(parts).every(v=>!v))throw new Error('DATA_SOURCE_UNAVAILABLE');
+  return {periods:statements(parts),annualRatios:ratios(parts.ratio),units:'KRW amounts; ratios in %. Periods not ending in December are year to date.'};
 }
-module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,fetchSection,num,round,isoDay,shift};
+module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,fetchSection,num,round,isoDay,shift};

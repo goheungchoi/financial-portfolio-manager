@@ -3,8 +3,8 @@ import './research.css';
 export type ResearchSection={status:'ok'|'unavailable';retrievedAt?:number;data?:any;reason?:string;stale?:boolean};
 export type ResearchProfile={symbol:string;name:string|null;market?:string;sector?:string|null;sectorName?:string|null;asOf:string;sections:Record<string,ResearchSection>};
 // The same research the agents read, one tab per section; each tab loads when first opened.
-const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk']];
-const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.'};
+const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk'],['valuation','Valuation'],['peers','Peers']];
+const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',NO_PEERS:'No sector peers for this listing.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.'};
 const reason=(code?:string)=>REASONS[code??'']??'Not available right now.';
 const n=(v:unknown,digits=0)=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
 const pct=(v:unknown,digits=1,sign=false)=>typeof v==='number'&&Number.isFinite(v)?`${sign&&v>0?'+':''}${v.toFixed(digits)}%`:'—';
@@ -23,6 +23,7 @@ function Analysts({d}:{d:any}){
     <p className="research-line"><b>{d.brokerages}</b> brokerages in 180 days · {d.buy} Buy · {d.hold} Hold · {d.sell} Sell</p>
     <Stats items={[['Median target',n(d.medianTarget)],['Upside to median',pct(d.upsideToMedianPct,1,true)],['High target',n(d.highTarget)],['Low target',n(d.lowTarget)]]}/>
     {r&&<p className="research-line">Last {r.windowDays} days: <b>{r.raised}</b> raised, <b>{r.cut}</b> cut, {r.unchanged} kept their target</p>}
+    <Trend t={d.consensusTrend} keys={[['medianTargetChangePct','Median target']]}/>
     {d.latest?.length>0&&<table className="compact-table research-table" aria-label="Latest analyst notes"><thead><tr><th>Date</th><th>Brokerage</th><th>Rating</th><th>Target</th></tr></thead><tbody>{d.latest.map((r:any)=><tr key={r.firm+r.date}><td>{r.date}</td><td>{r.firm}</td><td>{r.opinion}</td><td>{n(r.target)}</td></tr>)}</tbody></table>}
   </>;
 }
@@ -30,11 +31,35 @@ const EST:[string,string,(v:number)=>string][]=[['revenue','Revenue',v=>krw(v*1e
 function Estimates({d}:{d:any}){
   if(!d?.years?.length)return <p className="muted">No consensus estimates for this stock.</p>;
   return <><table className="compact-table research-table" aria-label="Consensus estimates"><thead><tr><th>Metric</th>{d.years.map((y:string)=><th key={y}>{y}</th>)}</tr></thead><tbody>{EST.filter(([k])=>Array.isArray(d[k])).map(([k,label,f])=><tr key={k}><td>{label}</td>{d[k].map((v:number|null,i:number)=><td key={i}>{v==null?'—':f(v)}</td>)}</tr>)}</tbody></table>
+    <Trend t={d.consensusTrend} keys={[['epsChangePct','EPS estimate'],['operatingProfitChangePct','Operating profit estimate']]}/>
     <p className="muted research-note">Years ending in E are forecasts.{d.reportOpinion?` Latest report: ${d.reportOpinion}${d.reportDate?` (${d.reportDate})`:''}.`:''}</p></>;
 }
+const LINES:[string,string,(v:number)=>string][]=[['revenueKRW','Revenue',krw],['operatingProfitKRW','Operating profit',krw],['netIncomeKRW','Net income',krw],['operatingMarginPct','Operating margin',v=>pct(v)],['netMarginPct','Net margin',v=>pct(v)],['roePct','ROE',v=>pct(v)],['roaPct','ROA',v=>pct(v)],['revenueGrowthPct','Revenue growth',v=>pct(v,1,true)],['operatingProfitGrowthPct','Op. profit growth',v=>pct(v,1,true)],['eps','EPS',v=>n(v)],['bps','BPS',v=>n(v)],['totalAssetsKRW','Total assets',krw],['equityKRW','Equity',krw],['debtRatioPct','Debt ratio',v=>pct(v)],['currentRatioPct','Current ratio',v=>pct(v)],['ebitdaKRW','EBITDA',krw],['evToEbitda','EV/EBITDA',v=>n(v,1)]];
 function Financials({d}:{d:any}){
-  const rows=d.annualRatios??[];if(!rows.length)return <p className="muted">No financial ratios available.</p>;
-  return <table className="compact-table research-table" aria-label="Annual ratios"><thead><tr><th>Period</th><th>Revenue growth</th><th>Op. profit growth</th><th>ROE</th><th>EPS</th><th>BPS</th><th>Debt ratio</th></tr></thead><tbody>{rows.map((r:any)=><tr key={r.period}><td>{r.period}</td><td>{pct(r.revenueGrowthPct,1,true)}</td><td>{pct(r.operatingProfitGrowthPct,1,true)}</td><td>{pct(r.roePct)}</td><td>{n(r.eps)}</td><td>{n(r.bps)}</td><td>{pct(r.debtRatioPct)}</td></tr>)}</tbody></table>;
+  const rows=(d.periods??[]).slice(0,5);
+  if(!rows.length){const r=d.annualRatios??[];if(!r.length)return <p className="muted">No financial data available.</p>;return <table className="compact-table research-table" aria-label="Annual ratios"><thead><tr><th>Period</th><th>Revenue growth</th><th>ROE</th><th>EPS</th><th>Debt ratio</th></tr></thead><tbody>{r.map((x:any)=><tr key={x.period}><td>{x.period}</td><td>{pct(x.revenueGrowthPct,1,true)}</td><td>{pct(x.roePct)}</td><td>{n(x.eps)}</td><td>{pct(x.debtRatioPct)}</td></tr>)}</tbody></table>;}
+  return <><div className="research-scroll"><table className="compact-table research-table" aria-label="Financial statements"><thead><tr><th>Item</th>{rows.map((r:any)=><th key={r.period}>{r.period}</th>)}</tr></thead><tbody>{LINES.filter(([k])=>rows.some((r:any)=>r[k]!=null)).map(([k,label,f])=><tr key={k}><td>{label}</td>{rows.map((r:any)=><td key={r.period}>{r[k]==null?'—':f(r[k])}</td>)}</tr>)}</tbody></table></div>
+    <p className="muted research-note">Periods not ending in December are year to date.</p></>;
+}
+function Trend({t,keys}:{t:any;keys:[string,string][]}){
+  if(!t)return null;if(t.buildingSince)return <p className="muted research-note">Revision tracking started {t.buildingSince}; changes show after a month.</p>;
+  const parts=(['1m','3m'] as const).filter(k=>t[k]).flatMap(k=>keys.filter(([key])=>t[k][key]!=null).map(([key,label])=>`${label} ${pct(t[k][key],1,true)} since ${t[k].since}`));
+  return parts.length?<p className="research-line">{parts.join(' · ')}</p>:null;
+}
+function Valuation({d}:{d:any}){
+  const c=d.current??{};
+  return <>
+    <Stats items={[['PER now',n(c.per,1)],['PER range',d.perRange?`${d.perRange.min}–${d.perRange.max}`:'—'],['vs median PER',pct(d.perVsMedianPct,1,true)],['PBR now',n(c.pbr,2)],['PBR range',d.pbrRange?`${d.pbrRange.min}–${d.pbrRange.max}`:'—'],['vs median PBR',pct(d.pbrVsMedianPct,1,true)],['1-year return',pct(d.return1yPct,1,true)],['3-year return',pct(d.return3yPct,1,true)],['5-year return',pct(d.return5yPct,1,true)]]}/>
+    {d.years?.length>0&&<table className="compact-table research-table" aria-label="Valuation history"><thead><tr><th>Year</th><th>Year-end close</th><th>EPS</th><th>PER</th><th>BPS</th><th>PBR</th></tr></thead><tbody>{d.years.map((y:any)=><tr key={y.year}><td>{y.year}</td><td>{n(y.close)}</td><td>{n(y.eps)}</td><td>{n(y.per,1)}</td><td>{n(y.bps)}</td><td>{n(y.pbr,2)}</td></tr>)}</tbody></table>}
+    <p className="muted research-note">Year-end multiples use the December close with EPS and BPS for the same year.</p>
+  </>;
+}
+function Peers({d}:{d:any}){
+  return <>
+    <p className="research-line">{d.sectorName??'Same sector'} · PER {pct(d.perVsPeersPct,1,true)} and PBR {pct(d.pbrVsPeersPct,1,true)} versus the peer median</p>
+    <table className="compact-table research-table" aria-label="Peers"><thead><tr><th>Company</th><th>Market cap</th><th>PER</th><th>PBR</th><th>Day</th></tr></thead><tbody>{d.rows.map((r:any)=><tr key={r.symbol} className={r.self?'research-self':''}><td>{r.name??r.symbol}<small> {r.symbol}</small></td><td>{krw(r.marketCapKRW)}</td><td>{n(r.per,1)}</td><td>{n(r.pbr,2)}</td><td>{pct(r.changePct,2,true)}</td></tr>)}<tr className="research-median"><td>Peer median</td><td></td><td>{n(d.peerMedianPer,1)}</td><td>{n(d.peerMedianPbr,2)}</td><td></td></tr></tbody></table>
+    <p className="muted research-note">The largest listed stocks in the same KRX index sector.</p>
+  </>;
 }
 function Dividends({d}:{d:any}){
   const report=d.annualReport?.years??[];
@@ -81,7 +106,7 @@ function Risk({d}:{d:any}){
     <p className="muted research-note">From {d.days} daily closes through {d.asOf}; drawdown and high cover that window.</p>
   </>;
 }
-const VIEWS:Record<string,(p:{d:any})=>ReactNode>={overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk};
+const VIEWS:Record<string,(p:{d:any})=>ReactNode>={overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk,valuation:Valuation,peers:Peers};
 export function ResearchPanel({symbol}:{symbol:string}){
   const [tab,setTab]=useState('overview');const [data,setData]=useState<Record<string,ResearchSection>>({});const [loading,setLoading]=useState('');const current=useRef(symbol);
   const load=async(section:string,refresh=false)=>{setLoading(section);try{const p=await window.portfolio!.getResearch(symbol,[section],refresh);if(current.current===symbol)setData(d=>({...d,[section]:p.sections[section]??{status:'unavailable',reason:'UNKNOWN_SECTION'}}));}catch{if(current.current===symbol)setData(d=>({...d,[section]:{status:'unavailable'}}));}finally{if(current.current===symbol)setLoading('');}};

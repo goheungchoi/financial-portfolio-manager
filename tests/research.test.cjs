@@ -137,3 +137,38 @@ test('the symbol master keeps each Korean stock sector and market cap and finds 
   const master=new SecurityMaster(db,async()=>({ok:false}));assert.equal(master.status().markets.length,0,'an older list is refreshed to fill the new columns');
   master.replace('KOSPI',rows.map(r=>({...r,type:r.symbol==='069500'?'etf':'stock'})));assert.deepEqual(master.peers('005930').map(p=>p.symbol),['000660','066570']);assert.deepEqual(master.peers('069500'),[]);
 });
+test('financial statements merge by period, scale amounts to KRW and treat 99.99 as missing',()=>{
+  const rows=insights.statements({income:[{stac_yymm:'202606',sale_account:'3053729.00',sale_totl_prfi:'2012139',bsop_prti:'1467252.00',thtr_ntin:'1188497.00',depr_cost:'99.99'},{stac_yymm:'202512',sale_account:'3336059.00',bsop_prti:'436011.00',thtr_ntin:'452068.00'}],
+    balance:[{stac_yymm:'202512',total_aset:'5669421.00',total_lblt:'1306218.00',total_cptl:'4363203.00',cfp_surp:'99.99'}],ratio:[{stac_yymm:'202512',grs:'10.88',roe_val:'10.85',eps:'6564.00',bps:'63997.00',lblt_rate:'29.94'}],
+    other:[{stac_yymm:'202512',payout_rate:'0.00',ebitda:'905276.00',ev_ebitda:'7.67'}],stability:[{stac_yymm:'202512',crnt_rate:'232.76',quck_rate:'0.00'}]});
+  assert.deepEqual(rows.map(r=>r.period),['2026 to Jun','FY2025']);assert.equal(rows[1].revenueKRW,3336059e8);assert.equal(rows[1].operatingMarginPct,13.1);
+  assert.equal(rows[1].payoutRatioPct,undefined,'a zero payout is a placeholder');assert.equal(rows[1].quickRatioPct,undefined);assert.equal(rows[1].evToEbitda,7.67);assert.equal(rows[0].yearEnd,false);assert.ok(!('cfp' in rows[1]));
+});
+test('valuation history pairs December closes with that year EPS and BPS',()=>{
+  const v=insights.valuationHistory([{stck_bsop_date:'20261016',stck_clpr:'217000'},{stck_bsop_date:'20251230',stck_clpr:'120000'},{stck_bsop_date:'20241230',stck_clpr:'53000'},{stck_bsop_date:'20231228',stck_clpr:'78500'},...Array.from({length:30},(_,i)=>({stck_bsop_date:`2022${String(1+(i%12)).padStart(2,'0')}28`,stck_clpr:'60000'}))],
+    [{stac_yymm:'202606',eps:'17687',bps:'86052'},{stac_yymm:'202512',eps:'6564',bps:'63997'},{stac_yymm:'202412',eps:'4950',bps:'57951'},{stac_yymm:'202312',eps:'2131',bps:'52002'},{stac_yymm:'202112',eps:'5777',bps:'43611'}]);
+  assert.deepEqual(v.years.map(y=>[y.year,y.per]),[['2025',18.3],['2024',10.7],['2023',36.8]],'years without a December close are skipped');
+  assert.deepEqual(v.perRange,{min:10.7,median:18.3,max:36.8,years:3});assert.equal(v.years[0].pbr,1.88);
+});
+test('valuation compares current multiples with history; peers compare with the largest same-sector stocks',async()=>{
+  const db=new DatabaseSync(':memory:');const overview={'005930':{price:217000,per:33,pbr:3.4,marketCapKRW:1268e12,sectorName:'전기·전자'},'000660':{per:20,pbr:5,marketCapKRW:900e12},'066570':{per:10,pbr:1,marketCapKRW:15e12},'009150':{per:null,pbr:2}};
+  const s=new ResearchService({db,master:{get:symbol=>({name:symbol,market:'KOSPI',type:'stock',sector:'0013',marketCap:1}),status:()=>({total:1}),peers:()=>[{symbol:'000660',name:'SK하이닉스',marketCap:9e14},{symbol:'066570',name:'LG전자',marketCap:1e13},{symbol:'009150',name:'삼성전기',marketCap:1e13}]},
+    kis:async(op,{symbol,section})=>section==='overview'?overview[symbol]:section==='valuation'?{years:[],perRange:{min:10,median:20,max:40},pbrRange:{min:1,median:2,max:4}}:null,provider:async()=>null});
+  const v=await s.section('005930','valuation');assert.equal(v.data.perVsMedianPct,65);assert.equal(v.data.pbrVsMedianPct,70);assert.equal(v.data.current.price,217000);
+  const p=await s.section('005930','peers');assert.equal(p.data.rows.length,4);assert.equal(p.data.rows[0].self,true);assert.equal(p.data.peerMedianPer,10,'median of peers with a PER');assert.equal(p.data.peerMedianPbr,2);assert.equal(p.data.perVsPeersPct,230);assert.equal(p.data.sectorName,'전기·전자');
+  const agent=await s.agent({symbol:'005930',sections:['peers','valuation']});assert.equal(agent.peers.rows[1].changePct,undefined);assert.equal(agent.valuation.monthly,undefined);
+  const lonely=new ResearchService({db:new DatabaseSync(':memory:'),master:{get:()=>({name:'x'}),status:()=>({total:1}),peers:()=>[]},kis:async()=>({}),provider:async()=>null});assert.equal((await lonely.section('005930','peers')).reason,'NO_PEERS');
+});
+test('daily consensus snapshots turn into one- and three-month revision trends',async()=>{
+  let now=Date.parse('2026-06-01T01:00:00Z');let target=100000,eps=5000;const db=new DatabaseSync(':memory:');
+  const s=new ResearchService({db,master:{get:()=>({name:'x'}),status:()=>({total:1})},kis:async(op,{section})=>section==='analysts'?{medianTarget:target,brokerages:10}:{years:['2025','2026E'],forecastYears:['2026E'],eps:[4000,eps],operatingProfit:[1,2]},provider:async()=>null,clock:()=>now});
+  await s.section('005930','analysts',true);assert.equal((await s.section('005930','estimates',true)).data.consensusTrend,undefined,'one day is no trend');
+  now+=86400000;await s.section('005930','analysts',true);assert.equal((await s.section('005930','analysts')).data.consensusTrend.buildingSince,'2026-06-01');
+  for(let day=0;day<95;day++){now+=86400000;target+=500;eps+=10;await s.section('005930','analysts',true);await s.section('005930','estimates',true);}
+  const t=(await s.section('005930','analysts')).data.consensusTrend;assert.ok(t['1m'].medianTargetChangePct>0);assert.ok(t['3m'].medianTargetChangePct>t['1m'].medianTargetChangePct);assert.ok(t['1m'].epsChangePct>0);assert.equal(t['1m'].estimateYear,'2026E');
+});
+test('the financials section reads all statements and still answers when some fail',async()=>{
+  const asked=[];const client={quotation:async(endpoint,tr)=>{asked.push(tr);if(tr==='FHKST66430100')throw new Error('BROKER_REJECTED');if(tr==='FHKST66430300')return {output:[{stac_yymm:'202512',roe_val:'10',eps:'1'}]};return {output:[]};}};
+  const f=await insights.fetchSection(client,'005930','financials','2026-10-17');assert.equal(asked.length,7);assert.equal(f.periods[0].period,'FY2025');assert.equal(f.annualRatios[0].roePct,10);
+  await assert.rejects(insights.fetchSection({quotation:async()=>{throw new Error('x');}},'005930','financials','2026-10-17'),/DATA_SOURCE_UNAVAILABLE/);
+});
