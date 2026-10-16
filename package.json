@@ -15,7 +15,7 @@
     "test:ui": "npm run build && node tests/run-desktop.cjs",
     "validate": "node scripts/validate.cjs",
     "dist": "npm run build && electron-builder --win --publish never",
-    "release": "npm run build && electron-builder --win --publish always"
+    "release": "npm run build && node scripts/release.cjs"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -85,7 +85,7 @@
         "provider": "github",
         "owner": "goheungchoi",
         "repo": "financial-portfolio-manager",
-        "releaseType": "release"
+        "releaseType": "draft"
       }
     ]
   }
