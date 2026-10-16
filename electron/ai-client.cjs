@@ -44,12 +44,18 @@ class AiClient {
       if((body.output??[]).some(i=>(i.content??[]).some(c=>c.type==='refusal')))throw new Error('AI_REFUSED');
       const calls=(body.output??[]).filter(item=>item.type==='function_call');
       if(calls.length){
-        if(options.final||calls.length>3||calls.some(call=>!names.includes(call.name)||typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>2000))throw new Error('INVALID_AI_RESPONSE');
-        return {toolCalls:calls.map(call=>({name:call.name,callId:call.call_id,args:JSON.parse(call.arguments)})),continuation:[...input,...body.output],usage:reportedUsage,provider:'openai',model:returnedModel};
+        // Extra or unknown calls are answered by the research loop; only malformed calls end the run. Each failure says why.
+        const invalid=detail=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail});
+        if(options.final)throw invalid('the model asked for a tool on the final round');
+        if(calls.length>12)throw invalid(`the model asked for ${calls.length} tools at once`);
+        if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>2000))throw invalid('a tool request was malformed');
+        let toolCalls;try{toolCalls=calls.map(call=>({name:names.includes(call.name)?call.name:'unknown:'+String(call.name).slice(0,40),callId:call.call_id,args:JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments were not valid JSON');}
+        return {toolCalls,continuation:[...input,...body.output],usage:reportedUsage,provider:'openai',model:returnedModel};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
-      return {plan:scout.validatePlan(JSON.parse(output)),usage:reportedUsage,provider:'openai',model:returnedModel};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;throw safe;}
+      let parsed;try{parsed=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:output.trim()?'the plan was not valid JSON':'the model returned no plan and no tool request'});}
+      try{return {plan:scout.validatePlan(parsed),usage:reportedUsage,provider:'openai',model:returnedModel};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error.detail)safe.detail=error.detail;throw safe;}
   }
   async decide(context,options={}) {
     const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;
