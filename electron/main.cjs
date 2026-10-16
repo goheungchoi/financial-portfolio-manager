@@ -224,6 +224,12 @@ app.whenReady().then(async () => {
   automation.discovery.marketOverview=async()=>{const m=await research.market();if(m.status!=='ok')return {status:'unavailable',reason:m.reason};const sectors=m.data.kospiSectors??[];return {asOf:new Date(m.retrievedAt).toISOString(),...m.data,kospiSectors:undefined,strongestSectors:sectors.slice(0,8),weakestSectors:sectors.length>8?sectors.slice(-6).reverse():[],foreignTopBuys:m.data.foreignTopBuys?.slice(0,6),institutionTopBuys:m.data.institutionTopBuys?.slice(0,6)};};
   ipcMain.handle('research:market',async(event,refresh)=>{authorize(event);return research.market(refresh===true);});
   automation.discovery.research=args=>research.agent(args);
+  // Daily closes for the agents' formulas, triggers and conditional orders, from the research cache.
+  automation.series={closes:symbol=>research.cached(symbol,'daily')?.value?.closes??null,ensure:symbol=>research.source(symbol,'daily')};
+  const deskAction=action=>(event,...args)=>{authorize(event);const scope=automation.watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');action(scope,...args);return automation.deskState();};
+  ipcMain.handle('desk:cancel-trigger',deskAction((scope,id)=>automation.desk.cancelTrigger(scope,String(id))));
+  ipcMain.handle('desk:delete-note',deskAction((scope,symbol)=>automation.desk.deleteNote(scope,String(symbol??''))));
+  ipcMain.handle('desk:cancel-order',deskAction((scope,id)=>automation.desk.cancelOrder(scope,String(id))));
   ipcMain.handle('research:open-filing',(event,url)=>{authorize(event);if(typeof url==='string'&&(/^https:\/\/dart\.fss\.or\.kr\/dsaf001\/main\.do\?rcpNo=\d{14}$/.test(url)||/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/\d{1,10}\/\d{18}\/[A-Za-z0-9._-]{1,120}$/.test(url)))void shell.openExternal(url);});
   ipcMain.handle('research:company',async(event,symbol,sections,refresh)=>{authorize(event);if(typeof symbol!=='string'||!/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol))throw new Error('INVALID_REQUEST');return research.profile(symbol,{sections:Array.isArray(sections)?sections.filter(s=>typeof s==='string').slice(0,12):undefined,refresh:refresh===true});});
   live.extraSymbols=async()=>{let allowed=[];try{allowed=live.policy()?.symbols??[];}catch{}return starters.symbols({scope:watchScope(),watched:automation.discovery.symbols('KR'),allowed,holdings:(kisState.snapshot?.holdings??[]).map(row=>row.symbol)});};

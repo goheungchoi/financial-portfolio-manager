@@ -5,7 +5,7 @@ import {Guardrails} from './Guardrails';
 import {TokenSaving} from './TokenSaving';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
-const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-alerts','Alerts']];
+const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-conditional','Conditional orders'],['eng-alerts','Alerts']];
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
 export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,onState}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void}){
   const [preview,setPreview]=useState<string|null>(null);
@@ -55,6 +55,17 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       <Row title="Scheduled scout runs" hint="Weekdays, Seoul time. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
       <Row title="Reviews can ask for a scout run" hint="When the plan looks stale. Up to 3 a day, at least 2 hours apart."><Switch label="Reviews can request a scout run" disabled={busy} checked={config.scoutAiRequests} onChange={v=>edit('scoutAiRequests',v)}/></Row>
       {config.scoutEnabled&&<Row title="When"><select aria-label="Scout schedule" disabled={busy} value={config.scoutSchedule} onChange={e=>edit('scoutSchedule',e.target.value)}><option value="daily">09:10</option><option value="twice">09:10 and 13:00</option><option value="kr-us">09:10 and 22:40 (U.S. open)</option><option value="three">09:10, 13:00 and 22:40</option></select></Row>}
+    </Card>
+
+    <Card id="eng-conditional" title="Conditional orders" label="Conditional order settings" hint="Stop-loss, take-profit and entry orders the AI arms with conditions. They fire only while auto trading is on and the market is open, and still pass every risk check.">
+      <Row title="Let the AI set conditional orders" hint="Off by default."><Switch label="Let the AI set conditional orders" disabled={busy} checked={config.conditionalOrders} onChange={v=>edit('conditionalOrders',v)}/></Row>
+      {config.conditionalOrders&&<>
+        <Row title="Submit them automatically" hint={config.autoSubmit?'Otherwise each one waits for your approval.':'Needs automatic submission in Trading. Until then each one waits for approval.'}><Switch label="Submit conditional orders automatically" disabled={busy} checked={config.conditionalAutoSubmit} onChange={v=>edit('conditionalAutoSubmit',v)}/></Row>
+        <Row title="Armed at once" hint="Most orders waiting at one time."><NumberField label="Most armed conditional orders" min={1} max={10} value={config.conditionalMaxActive} disabled={busy} onChange={v=>edit('conditionalMaxActive',v)}/></Row>
+        <Row title="Largest order" hint="Share of account equity for one buy."><NumberField label="Largest conditional order" min={1} max={50} step={1} unit="%" value={config.conditionalMaxOrderPct} disabled={busy} onChange={v=>edit('conditionalMaxOrderPct',v)}/></Row>
+        <Row title="Price drift allowed" hint="How far the limit may sit from the price when it fires."><NumberField label="Conditional order price drift" min={0.1} max={10} step={0.1} unit="%" value={config.conditionalMaxSlippagePct} disabled={busy} onChange={v=>edit('conditionalMaxSlippagePct',v)}/></Row>
+        <Row title="Longest life" hint="Orders expire after this many hours."><NumberField label="Conditional order lifetime" min={1} max={336} unit="h" value={config.conditionalMaxHours} disabled={busy} onChange={v=>edit('conditionalMaxHours',v)}/></Row>
+      </>}
     </Card>
 
     <Card id="eng-alerts" title="Alerts">
