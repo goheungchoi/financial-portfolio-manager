@@ -6,7 +6,7 @@ export const tabGuides:Record<string,{description:string;next:string;target:stri
   Holdings:{description:'Inspect each company, position size, latest price and unrealized gain or loss.',next:'Explore price history',target:'Charts'},
   Charts:{description:'Compare price movements with candles, a line view, volume and a moving average. Choose an instrument and visible range.',next:'Review portfolio weights',target:'Overview'},
   Activity:{description:'Load broker order history and filter executions, partial fills, cancellations and rejections.',next:'Check realized results',target:'Performance'},
-  Performance:{description:'Query realized trading results for a selected period. This differs from your current unrealized portfolio gain.',next:'Inspect the underlying orders',target:'Activity'},
+  Performance:{description:'Track account value, time-weighted returns against KOSPI and the S&P 500, and recorded deposits and withdrawals. Below, query realized trading results for a selected period.',next:'Inspect the underlying orders',target:'Activity'},
   'Paper trading':{description:'Practice with a separate simulated account. Enable paper execution, review a proposal, then submit it to see simulated fills.',next:'Choose a decision provider',target:'Engine settings'},
   'KIS trading':{description:'Activate a broker session with your own limits, review a cash limit order and explicitly approve it. Accepted broker orders remain active after stopping.',next:'Connect or check your account',target:'Connections'},
   'U.S. stocks':{description:'View USD holdings and approve NASDAQ, NYSE and AMEX cash limit orders.',next:'Configure fees and tax estimates',target:'Fees & taxes'},

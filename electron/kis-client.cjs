@@ -29,7 +29,8 @@ function normalizeBalance(rows,summary,environment) {
     if(holding.cost<0 || holding.price<0 || holding.marketValue<0) throw new KisError('INVALID_RESPONSE');
     holdings.push(holding);
   }
-  return {source:'kis',environment,timestamp:new Date().toISOString(),cash:amount(summary.dnca_tot_amt),reportedTotal:amount(summary.tot_evlu_amt),holdings};
+  const settled=summary.prvs_rcdl_excc_amt;
+  return {source:'kis',environment,timestamp:new Date().toISOString(),cash:amount(summary.dnca_tot_amt),settledCash:settled==null||String(settled).trim()===''?null:amount(settled),reportedTotal:amount(summary.tot_evlu_amt),holdings};
 }
 class KisReadOnlyClient {
   #credentials; #token; #expires=0; #streamConfig; #streamConfigUntil=0;

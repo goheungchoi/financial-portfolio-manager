@@ -3,6 +3,8 @@ if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('Isolated UI data directory
 app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
 // Offline symbol-list fixtures served to the app instead of KIS's download server.
 const masterDir=path.join(process.env.PORTFOLIO_SMOKE_DATA,'master-fixtures');fs.mkdirSync(masterDir,{recursive:true});for(const [name,data] of Object.entries(require('./discovery-fixtures.cjs').masterFiles()))fs.writeFileSync(path.join(masterDir,name),data);process.env.PORTFOLIO_MASTER_DIR=masterDir;
+const seedDay=offset=>new Date(Date.now()+9*3600000-offset*86400000).toISOString().slice(0,10);
+process.env.PORTFOLIO_PERFORMANCE_SEED=JSON.stringify({account:'ui-regression-fixture',history:[[5,9700000],[4,9800000],[3,9750000],[2,9900000],[1,9950000]].map(([offset,value])=>({day:seedDay(offset),at:0,KRW:{equity:value,cash:value},USD:null,fx:null,equityKRW:value}))});
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/ui-regression');fs.mkdirSync(output,{recursive:true});
 const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;let dartFixture=false;
 const domestic={accountKey:'ui-regression-fixture',environment:'mock',source:'kis',cash:10000000,reportedTotal:10000000,holdings:[]};
@@ -15,6 +17,7 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
   if(operation==='us-context'){if(failUS)throw Object.assign(new Error('US_CASH_SERVER_ERROR'),{httpStatus:503,brokerCode:'FIXTURE503'});return {balance:{...overseas,timestamp:new Date().toISOString()},quotes:[],warnings:[],marketSession:{open:true,status:'open'}};}
   if(operation==='live-context')return {balance:{...domestic,timestamp:new Date().toISOString()},quotes:[],marketSession:{open:false,status:'closed'}};
   if(operation==='disclosures')return [{title:'삼성전자 · 주요사항보고서(자기주식취득결정)',symbol:'005930',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261016000001',published:'20261016',source:'DART'},{title:'Unrelated Co · 기타공시',symbol:'000001',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261016000002',published:'20261016',source:'DART'}];
+  if(operation==='index-history')return Array.from({length:8},(_,i)=>({day:seedDay(7-i),close:5000+i*20}));
   if(operation==='screen')return payload.request.market==='KR'?[{symbol:'005930',name:'raw',price:213500,changePct:1.67,volume:7179383,marketCap:1264e12,per:null,currency:'KRW'},{symbol:'069500',name:'etf',price:40000,changePct:-0.5,volume:100,marketCap:null,per:null,currency:'KRW'},{symbol:'45226K',name:'pref',price:5200,changePct:30,volume:1,marketCap:null,per:null,currency:'KRW'}]:[];
   if(operation==='orders'||operation==='us-orders')return {orders:[]};if(operation==='quotes')return [];
   if(operation==='decision'&&decisionFailure)throw new Error('AI_MODEL_UNAVAILABLE');
@@ -164,6 +167,15 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const titles=await run('Array.from(document.querySelectorAll(".news-entry h3")).map(e=>e.textContent)');assert.equal(titles.length,1);assert.match(titles[0],/주요사항보고서/);
       assert.equal(await run('document.querySelector(`[aria-label="News-triggered reviews"]`).value'),'disclosures');await capture('news-matched-disclosure');
       await run("window.portfolio.updateWatchlist('remove','005930')");
+    });
+    await check('Performance charts time-weighted returns against KOSPI and records deposits',async()=>{
+      await navigate('Performance');await until('Boolean(document.querySelector(`[aria-label="Period returns"]`))','Period returns missing');
+      await until('Boolean(document.querySelector(".perf-line.portfolio"))&&Boolean(document.querySelector(".perf-line.benchmark"))','Return chart missing');
+      const allRow=await run('Array.from(document.querySelectorAll(`[aria-label="Period returns"] tbody tr`)).find(r=>r.cells[0].textContent.startsWith("All")).textContent');assert.ok(allRow.includes('+'),'seeded history should show a positive return');
+      await run('(()=>{const set=(label,value)=>{const el=document.querySelector(`[aria-label="${label}"]`);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,value);el.dispatchEvent(new Event("input",{bubbles:true}));};document.querySelector(`[aria-label="Account performance"] details`).open=true;set("Flow amount","500000");set("Flow note","Monthly saving");})()');
+      await click('Record deposit');await until('document.querySelector(`[aria-label="Recorded flows"]`)?.textContent.includes("Monthly saving")','Deposit not recorded');
+      await run('document.querySelector(`[aria-label="Account performance"]`).scrollIntoView({block:"start"})');await wait(200);await capture('performance-returns');
+      await run('document.querySelector(`[aria-label^="Remove flow"]`).click()');await until('!document.querySelector(`[aria-label="Recorded flows"]`)','Flow not removed');
     });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
