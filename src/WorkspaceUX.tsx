@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
-export const workspaceGroups=[{label:'Portfolio',tabs:['Overview','Holdings','Charts','Performance']},{label:'Trading',tabs:['Paper trading','KIS trading','U.S. stocks','Activity']},{label:'Research',tabs:['Discover','Journal','AI console','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
+export const workspaceGroups=[{label:'',tabs:['Overview']},{label:'Portfolio',tabs:['Holdings','Charts','Performance','Activity']},{label:'Trade',tabs:['KIS trading','U.S. stocks','Paper trading']},{label:'AI',tabs:['Journal','AI console']},{label:'Research',tabs:['Discover','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
 export const tabGuides:Record<string,{description:string;next:string;target:string}>={
   Overview:{description:'See where your money is invested, how positions are performing, and whether the engine is ready.',next:'Connect your account',target:'Connections'},
   Holdings:{description:'Inspect each company, position size, latest price and unrealized gain or loss.',next:'Explore price history',target:'Charts'},
@@ -24,6 +24,8 @@ const stamp=(value:number|null)=>value?new Date(value).toLocaleTimeString('en-GB
 export function RuntimePulse({onNavigate,expanded=false}:{onNavigate(tab:string):void;expanded?:boolean}){
   const [reviewing,setReviewing]=useState(false);const [reviewMessage,setReviewMessage]=useState('');const [state,setState]=useState<RuntimeState|null>(null);const [received,setReceived]=useState(0);const [now,setNow]=useState(Date.now());const [failed,setFailed]=useState(false);
   useEffect(()=>{let alive=true;let pending=false;const load=async()=>{if(pending)return;pending=true;try{const next=await window.portfolio?.getRuntime();if(alive&&next){setState(next);setReceived(Date.now());setFailed(false);}}catch{if(alive)setFailed(true);}finally{pending=false;}};void load();const timer=setInterval(()=>{setNow(Date.now());void load();},2000);return()=>{alive=false;clearInterval(timer);};},[]);
+  // Action results are transient; clear them so a stale message does not stay on every page.
+  useEffect(()=>{if(!reviewMessage)return;const timer=setTimeout(()=>setReviewMessage(''),8000);return()=>clearTimeout(timer);},[reviewMessage]);
   if(!window.portfolio)return <div className="runtime-strip">Browser preview · Runtime services require the desktop application.</div>;
   const stale=failed||received>0&&now-received>6000;
   const label=stale?'Runtime connection interrupted':state?.lastError&&!state.busy?'Review needs attention':state?.scheduler.label??'Checking engine…';
