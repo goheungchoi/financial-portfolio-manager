@@ -6,7 +6,11 @@ See the [requirements and missing-feature audit](docs/FEATURE-AUDIT.md), [automa
 
 ## Run
 
-Open **Financial Portfolio Manager.exe** in the latest `release/Financial-Portfolio-Manager-*` folder. Keep its surrounding files together; `release/latest.json` identifies the current build. It is an unsigned portable Windows app with no installer or updater.
+Install with `release/installer/Financial-Portfolio-Manager-Setup-<version>.exe` (built by `npm run dist`). It installs for the current user without administrator rights and keeps your data (in `%APPDATA%/Financial Portfolio Manager`) when uninstalled or updated. The installer is not code-signed yet, so Windows SmartScreen may ask you to confirm (More info → Run anyway). The portable folder build from `npm run package` still works.
+
+**Updates:** Connections → App updates checks this app's GitHub Releases (automatically every 6 hours unless turned off). You start the download, which is verified against the published SHA-512 checksum, and choose when to restart and install; installing is blocked while auto trading is armed, a broker order is open or a review is running.
+
+**Publishing a release:** sign in with `gh auth login` (or set `GH_TOKEN` to a token with `repo` scope), make sure the GitHub repository in `package.json` → `build.publish` exists, raise `version` in `package.json`, then run `npm run release`. electron-builder uploads the installer, its blockmap and `latest.yml` to a release for that version.
 
 Development requires Node.js 22.13+:
 
@@ -19,6 +23,7 @@ npm run validate
 npm start
 npm run package
 npm run test:package
+npm run dist
 ```
 
 ## Connect

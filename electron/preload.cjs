@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('portfolio', {
   getCompany:symbol=>ipcRenderer.invoke('company:get',symbol),
   openChartWindow:symbol=>ipcRenderer.invoke('chart:pop-out',symbol),
   getMacro:()=>ipcRenderer.invoke('macro:get'),
+  getUpdates:()=>ipcRenderer.invoke('update:get'),checkForUpdates:()=>ipcRenderer.invoke('update:check'),downloadUpdate:()=>ipcRenderer.invoke('update:download'),installUpdate:()=>ipcRenderer.invoke('update:install'),saveUpdateSettings:value=>ipcRenderer.invoke('update:settings',value),
+  onUpdates:callback=>{const listener=(_event,state)=>callback(state);ipcRenderer.on('update:changed',listener);return ()=>ipcRenderer.removeListener('update:changed',listener);},
   refreshMacro:()=>ipcRenderer.invoke('macro:refresh'),
   startAutoTrading:token=>ipcRenderer.invoke('runtime:start',token),
   stopAutoTrading:()=>ipcRenderer.invoke('runtime:stop'),

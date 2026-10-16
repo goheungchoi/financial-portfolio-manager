@@ -1,32 +1,92 @@
 {
   "name": "financial-portfolio-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "start": "npm run build && electron .",
-    "test": "node --test tests/lesson-trials.test.cjs tests/ai-accounting.test.cjs tests/review-interval.test.cjs tests/paper-replay.test.mjs tests/ai-errors.test.cjs tests/reflection.test.cjs tests/ai-models.test.cjs tests/learning-pipeline.test.cjs tests/auto-launch.test.cjs tests/domain.test.mjs tests/storage.test.cjs tests/market.test.mjs tests/kis.test.cjs tests/kis-stream.test.cjs tests/activity.test.mjs tests/paper.test.cjs tests/runtime.test.cjs tests/overseas.test.cjs tests/outcomes.test.cjs tests/evidence.test.cjs tests/portfolio-profit.test.mjs tests/guardrails.test.cjs tests/discovery.test.cjs tests/news-events.test.cjs tests/performance.test.cjs tests/scoreboard.test.cjs tests/charts.test.cjs tests/macro.test.cjs tests/fees-taxes.test.cjs tests/token-saver.test.cjs tests/exposure.test.cjs tests/credit.test.cjs",
+    "test": "node --test tests/lesson-trials.test.cjs tests/ai-accounting.test.cjs tests/review-interval.test.cjs tests/paper-replay.test.mjs tests/ai-errors.test.cjs tests/reflection.test.cjs tests/ai-models.test.cjs tests/learning-pipeline.test.cjs tests/auto-launch.test.cjs tests/domain.test.mjs tests/storage.test.cjs tests/market.test.mjs tests/kis.test.cjs tests/kis-stream.test.cjs tests/activity.test.mjs tests/paper.test.cjs tests/runtime.test.cjs tests/overseas.test.cjs tests/outcomes.test.cjs tests/evidence.test.cjs tests/portfolio-profit.test.mjs tests/guardrails.test.cjs tests/discovery.test.cjs tests/news-events.test.cjs tests/performance.test.cjs tests/scoreboard.test.cjs tests/charts.test.cjs tests/macro.test.cjs tests/fees-taxes.test.cjs tests/token-saver.test.cjs tests/exposure.test.cjs tests/credit.test.cjs tests/app-updates.test.cjs",
     "package": "npm run build && node scripts/package.cjs",
     "test:package": "node scripts/verify-package.cjs",
     "test:desktop": "npm run build && node tests/run-desktop.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "test:ui": "npm run build && node tests/run-desktop.cjs",
-    "validate": "node scripts/validate.cjs"
+    "validate": "node scripts/validate.cjs",
+    "dist": "npm run build && electron-builder --win --publish never",
+    "release": "npm run build && electron-builder --win --publish always"
   },
   "engines": {
     "node": ">=22.13.0"
   },
   "dependencies": {
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "electron": "^44.0.0",
+    "electron-builder": "26.15.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.1"
+  },
+  "productName": "Financial Portfolio Manager",
+  "description": "Desktop portfolio manager with KIS broker access and supervised AI trading.",
+  "author": "goheungchoi",
+  "build": {
+    "appId": "com.goheungchoi.financial-portfolio-manager",
+    "productName": "Financial Portfolio Manager",
+    "directories": {
+      "output": "release/installer"
+    },
+    "files": [
+      "electron/**",
+      "dist/**",
+      "src/domain.mjs",
+      "src/market.mjs",
+      "scripts/agent-bridge.cjs",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "README.md",
+        "to": "README.md"
+      },
+      {
+        "from": "docs",
+        "to": "docs"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Financial-Portfolio-Manager-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "Financial Portfolio Manager"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "goheungchoi",
+        "repo": "financial-portfolio-manager",
+        "releaseType": "release"
+      }
+    ]
   }
 }
