@@ -3,15 +3,16 @@
 // and, for U.S. stocks, SEC EDGAR (annual financials, dividends, filings).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
-const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers'];
+const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers','fund','holdings'];
+const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['analysts','estimates','financials','events','valuation','peers']),FUND_DEFAULT=['overview','fund','holdings','risk'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
 const US_SECTIONS=['overview','risk','financials','dividends','events'],US_DEFAULT=['overview','financials','risk'];
 const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},market:{ttl:10*60000,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},market:{ttl:10*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
-const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview']};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings']};
 const FAILURE_TTL=10*60000;
 const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
 // Null, empty and "not applicable" values are dropped so the agents only read what exists.
@@ -50,6 +51,8 @@ class ResearchService {
     if(!SECTIONS.includes(name))return {status:'unavailable',reason:'UNKNOWN_SECTION'};
     if(US.test(symbol))return this.usSection(symbol,name,refresh);
     if(!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};
+    // Funds have no analysts, statements or filings of their own; fund facts and holdings exist only for ETFs and ETNs.
+    const fund=FUND_TYPES.has(this.identity(symbol).type);if(fund&&STOCK_ONLY.has(name))return {status:'unavailable',reason:'NOT_FOR_FUNDS'};if(!fund&&['fund','holdings'].includes(name))return {status:'unavailable',reason:'FUNDS_ONLY'};
     const parts={};for(const source of NEEDS[name])parts[source]=await this.source(symbol,source,refresh);
     const ok=s=>parts[s]?.status==='ok'?parts[s].data:null;const at=Math.min(...Object.values(parts).filter(p=>p.status==='ok').map(p=>p.retrievedAt));
     const main=parts[NEEDS[name][0]];
@@ -61,6 +64,19 @@ class ResearchService {
         ...(dividends?.upcoming??[]).filter(p=>p.recordDate>=today).map(p=>({date:p.recordDate,kind:'dividend',title:`Dividend record date (${({'결산':'year-end','분기':'quarterly','중간':'interim'})[p.kind]??p.kind??'cash'})${p.perShare?` · ${p.perShare.toLocaleString()} KRW`:' · amount not set'}`})),
         ...(dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
       return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
+    }
+    if(name==='fund'){
+      if(main.status!=='ok')return main;const d=main.data;const closes=ok('daily')?.closes??[];let leverage=null;
+      // Daily-reset products lose value in choppy markets: annual drag ≈ (L²−L)/2 × σ² of the underlying, with σ estimated from the fund's own volatility.
+      if(d.leverageFactor!=null&&d.leverageFactor!==1&&closes.length>=21){const r=closes.slice(1).map((c,i)=>Math.log(c.close/closes[i].close));const m=r.reduce((a,b)=>a+b,0)/r.length;const sd=Math.sqrt(r.reduce((a,b)=>a+(b-m)**2,0)/(r.length-1))*Math.sqrt(252);const L=d.leverageFactor,under=sd/Math.abs(L);
+        leverage={factor:L,dailyReset:true,fundVolatilityPct:Math.round(sd*1000)/10,underlyingVolatilityPct:Math.round(under*1000)/10,estimatedAnnualDragPct:Math.round((L*L-L)/2*under*under*1000)/10,note:'Returns compound daily, so over weeks they drift from the multiple of the index; the drag grows with volatility. Suited to short holding periods.'};}
+      return {status:'ok',retrievedAt:main.retrievedAt,data:{...d,...(leverage?{leverage}:{})}};
+    }
+    if(name==='holdings'&&main.status==='ok'){
+      const names=new Map((this.cached('MARKET','market')?.value?.kospiSectors??[]).map(r=>[r.code,r.name]));const mix=new Map();
+      for(const h of main.data.holdings??[]){const sector=this.master?.get?.(h.symbol)?.sector??null;const key=sector??'other';mix.set(key,(mix.get(key)??0)+h.weightPct);}
+      const sectors=[...mix.entries()].map(([code,weightPct])=>({code:code==='other'?null:code,name:code==='other'?'Other or unlisted':names.get(code)??`Sector ${code}`,weightPct:Math.round(weightPct*10)/10})).sort((a,b)=>b.weightPct-a.weightPct);
+      return {status:'ok',retrievedAt:main.retrievedAt,data:{...main.data,sectors:main.data.holdings?.length?sectors:[]}};
     }
     if(name==='risk'){
       if(main.status!=='ok')return main;const id=this.identity(symbol);const [code,label]=MARKET_INDEX[id.market]??MARKET_INDEX.KOSPI;
@@ -131,7 +147,7 @@ class ResearchService {
     const symbol=String(args?.symbol??'').trim().toUpperCase();
     const us=US.test(symbol);if(!us&&!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'INVALID_SYMBOL'};
     if(this.master?.status?.().total&&!this.master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};
-    const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:us?US_DEFAULT:AGENT_DEFAULT;
+    const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:us?US_DEFAULT:FUND_TYPES.has(this.identity(symbol).type)?FUND_DEFAULT:AGENT_DEFAULT;
     const profile=await this.profile(symbol,{sections});const out={symbol,name:profile.name,market:profile.market,asOf:profile.asOf};
     for(const [name,section] of Object.entries(profile.sections))out[name]=section.status==='ok'?digest(name,section.data):{unavailable:section.reason};
     out.note='Third-party and broker data; check dates. Analyst targets and estimates are opinions. Null fields were left out.';
@@ -149,6 +165,8 @@ function digest(name,d){
   if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};
   if(name==='flows')return {...d,investors:d.investors?{...d.investors,daily:undefined}:undefined,note:'Net buying in KRW; positive streak days mean consecutive net buying, negative mean selling. Short share is the percent of daily volume sold short; margin rate is loans outstanding as a percent of listed shares.'};
   if(name==='risk')return {...d,closes:undefined};
+  if(name==='fund')return {...d,premiumHistory:undefined};
+  if(name==='holdings')return {...d,holdings:d.holdings?.slice(0,15).map(({symbol,name,weightPct})=>({symbol,name,weightPct}))};
   return d;
 }
 module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,prune,digest};

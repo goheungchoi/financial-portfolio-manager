@@ -37,3 +37,9 @@
 .pulse-buyers li{display:list-item}
 .pulse-buyers li .link-button{margin-right:8px}
 .market-pulse .note{margin-top:12px}
+.research-warn{padding:8px 12px;border-left:3px solid #efb76b;background:rgba(239,183,107,.1);border-radius:4px}
+.research-weights{display:grid;gap:5px;font-size:12px}
+.research-weights>div{display:grid;grid-template-columns:minmax(110px,180px) 1fr 56px;align-items:center;gap:10px}
+.research-weights span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.research-weights i{display:block;height:8px;border-radius:0 4px 4px 0;background:var(--accent)}
+.research-weights b{text-align:right;font-weight:500}

@@ -1,11 +1,12 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import './research.css';
 export type ResearchSection={status:'ok'|'unavailable';retrievedAt?:number;data?:any;reason?:string;stale?:boolean};
-export type ResearchProfile={symbol:string;name:string|null;market?:string;sector?:string|null;sectorName?:string|null;asOf:string;sections:Record<string,ResearchSection>};
+export type ResearchProfile={symbol:string;name:string|null;market?:string;type?:string;sector?:string|null;sectorName?:string|null;asOf:string;sections:Record<string,ResearchSection>};
 // The same research the agents read, one tab per section; each tab loads when first opened.
 const US_TABS=new Set(['overview','financials','dividends','events','risk']);
-const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk'],['valuation','Valuation'],['peers','Peers']];
-const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',NO_PEERS:'No sector peers for this listing.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.',SEC_CONTACT_MISSING:'Add secContactEmail to your providers file to load SEC data. SEC asks every app for a contact email.',NOT_IN_SEC:'SEC has no filings for this ticker.',SEC_RATE_LIMITED:'SEC refused the request. Try again later.'};
+const FUND_TABS=new Set(['overview','fund','holdings','dividends','flows','risk']);
+const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk'],['valuation','Valuation'],['peers','Peers'],['fund','Fund'],['holdings','Holdings']];
+const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',NO_PEERS:'No sector peers for this listing.',NOT_FOR_FUNDS:'Not available for ETFs and ETNs.',FUNDS_ONLY:'Only for ETFs and ETNs.',NOT_AN_ETF:'Only for ETFs and ETNs.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.',SEC_CONTACT_MISSING:'Add secContactEmail to your providers file to load SEC data. SEC asks every app for a contact email.',NOT_IN_SEC:'SEC has no filings for this ticker.',SEC_RATE_LIMITED:'SEC refused the request. Try again later.'};
 const reason=(code?:string)=>REASONS[code??'']??'Not available right now.';
 const n=(v:unknown,digits=0)=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
 const pct=(v:unknown,digits=1,sign=false)=>typeof v==='number'&&Number.isFinite(v)?`${sign&&v>0?'+':''}${v.toFixed(digits)}%`:'—';
@@ -112,14 +113,35 @@ function Risk({d,us}:{d:any;us:boolean}){
     <p className="muted research-note">From {d.days} daily closes through {d.asOf}; drawdown and high cover that window.</p>
   </>;
 }
-const VIEWS:Record<string,(p:{d:any;us:boolean})=>ReactNode>={overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk,valuation:Valuation,peers:Peers};
+const KIND_LABEL:Record<string,string>={standard:'Tracks its index 1:1',leveraged:'Leveraged',inverse:'Inverse'};
+function Fund({d}:{d:any}){
+  const l=d.leverage;
+  return <>
+    {d.kind&&d.kind!=='standard'&&<p className="research-line research-warn"><b>{KIND_LABEL[d.kind]} {d.leverageFactor>0?'':'−'}{Math.abs(d.leverageFactor)}× daily</b> · resets every day, so returns over weeks drift from the multiple{l?`; estimated drag about ${l.estimatedAnnualDragPct}% a year at current volatility`:''}.</p>}
+    <Stats items={[['Underlying',d.underlyingIndex??'—'],['Issuer',d.issuer??'—'],['Type',d.kind?KIND_LABEL[d.kind]+(d.kind==='standard'?'':` ${d.leverageFactor}×`):'—'],['Net assets',krw(d.netAssetsKRW)],['NAV',n(d.nav,2)],['Premium / discount',pct(d.premiumPct,2,true)],['Avg |premium| (20 days)',pct(d.avgAbsPremium20dPct,2)],['Tracking error',pct(d.trackingErrorPct,2)],['Holdings',n(d.constituents)],['Distributions',d.distributionCycleMonths?`every ${d.distributionCycleMonths} months`:'—'],['Listed',d.listedOn??'—'],...(d.maturity?[['Maturity',d.maturity]] as [string,string][]:[])]}/>
+    {d.premiumHistory?.length>0&&<details className="inline-help"><summary>Price vs NAV, last {d.premiumHistory.length} days</summary><table className="compact-table research-table" aria-label="Premium history"><thead><tr><th>Date</th><th>Close</th><th>NAV</th><th>Premium</th></tr></thead><tbody>{d.premiumHistory.map((r:any)=><tr key={r.date}><td>{r.date}</td><td>{n(r.close)}</td><td>{n(r.nav,2)}</td><td>{pct(r.premiumPct,2,true)}</td></tr>)}</tbody></table></details>}
+    <p className="muted research-note">A premium means the price is above the value of the holdings. Tracking error is how far returns stray from the index.</p>
+  </>;
+}
+function Holdings({d}:{d:any}){
+  if(!d.holdings?.length)return <p className="muted">{d.note}{d.constituents?` The fund reports ${d.constituents} holdings.`:''}</p>;
+  const max=Math.max(...d.holdings.map((h:any)=>h.weightPct));
+  return <>
+    <Stats items={[['Holdings',n(d.constituents)],['Top 5',pct(d.top5WeightPct)],['Top 10',pct(d.top10WeightPct)]]}/>
+    {d.sectors?.length>0&&<><h3 className="research-sub">By sector</h3><div className="research-weights" aria-label="Sector weights">{d.sectors.slice(0,8).map((s:any)=><div key={s.name}><span>{s.name}</span><i style={{width:`${Math.max(2,s.weightPct)}%`}}/><b>{pct(s.weightPct)}</b></div>)}</div></>}
+    <h3 className="research-sub">Largest holdings</h3>
+    <div className="research-weights" aria-label="Holding weights">{d.holdings.slice(0,15).map((h:any)=><div key={h.symbol||h.name}><span>{h.name}</span><i style={{width:`${Math.max(2,h.weightPct/max*100)}%`}}/><b>{pct(h.weightPct)}</b></div>)}</div>
+    <p className="muted research-note">{d.note}</p>
+  </>;
+}
+const VIEWS:Record<string,(p:{d:any;us:boolean})=>ReactNode>={fund:Fund,holdings:Holdings,overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk,valuation:Valuation,peers:Peers};
 export function ResearchPanel({symbol}:{symbol:string}){
-  const [tab,setTab]=useState('overview');const [data,setData]=useState<Record<string,ResearchSection>>({});const [loading,setLoading]=useState('');const current=useRef(symbol);
-  const load=async(section:string,refresh=false)=>{setLoading(section);try{const p=await window.portfolio!.getResearch(symbol,[section],refresh);if(current.current===symbol)setData(d=>({...d,[section]:p.sections[section]??{status:'unavailable',reason:'UNKNOWN_SECTION'}}));}catch{if(current.current===symbol)setData(d=>({...d,[section]:{status:'unavailable'}}));}finally{if(current.current===symbol)setLoading('');}};
-  useEffect(()=>{current.current=symbol;setData({});},[symbol]);
+  const [tab,setTab]=useState('overview');const [data,setData]=useState<Record<string,ResearchSection>>({});const [loading,setLoading]=useState('');const [isFund,setIsFund]=useState(false);const current=useRef(symbol);
+  const load=async(section:string,refresh=false)=>{setLoading(section);try{const p=await window.portfolio!.getResearch(symbol,[section],refresh);if(current.current===symbol){setIsFund(p.type==='etf'||p.type==='etn');setData(d=>({...d,[section]:p.sections[section]??{status:'unavailable',reason:'UNKNOWN_SECTION'}}));}}catch{if(current.current===symbol)setData(d=>({...d,[section]:{status:'unavailable'}}));}finally{if(current.current===symbol)setLoading('');}};
+  useEffect(()=>{current.current=symbol;setData({});setIsFund(false);},[symbol]);
   useEffect(()=>{if(window.portfolio&&!data[tab])void load(tab);},[tab,symbol,data[tab]]);
-  const us=symbol.includes(':');const tabs=TABS.filter(([key])=>!us||US_TABS.has(key));
-  useEffect(()=>{if(us&&!US_TABS.has(tab))setTab('overview');},[us,tab]);
+  const us=symbol.includes(':');const allowed=us?US_TABS:isFund?FUND_TABS:null;const tabs=TABS.filter(([key])=>allowed?allowed.has(key):!['fund','holdings'].includes(key));
+  useEffect(()=>{if(allowed&&!allowed.has(tab))setTab('overview');},[us,isFund,tab]);
   if(!window.portfolio)return null;
   const section=data[tab];const View=VIEWS[tab];const busy=loading===tab;
   return <section className="research-panel" aria-label="Company research" aria-busy={busy}>
