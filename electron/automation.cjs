@@ -221,7 +221,8 @@ class Automation {
     const pick=c=>({market:c.market??'KR',currency:c.currency,equity:c.equity,cash:c.cash,positions:Object.entries(c.positions??{}).map(([symbol,p])=>{const q=c.quotes?.find(x=>x.symbol===symbol);const value=q?q.price*p.quantity:null;return {symbol,name:c.universe?.find(u=>u.symbol===symbol)?.name??symbol,quantity:p.quantity,value,weightPct:value&&c.equity?Math.round(value/c.equity*1000)/10:null};})});
     if(this.config.scope==='kis')return [pick(await this.live.context())];
     if(this.config.scope==='us')return [pick(await this.usLive.context(await this.refreshUS()))];
-    const us=await this.refreshUS();return [pick(await this.live.context()),pick(await this.usLive.context(us))];
+    // With both markets, a failed U.S. account check leaves the scout researching Korea instead of stopping it.
+    const kr=pick(await this.live.context());let us;try{us=pick(await this.usLive.context(await this.refreshUS()));}catch(error){us={market:'US',currency:'USD',status:'unavailable',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'};}return [kr,us];
   }
   async scout(trigger='User request'){
     if(this.scouting)throw new Error('SCOUT_BUSY');const blocked=this.scoutAvailable();if(blocked){this.scoutError=blocked;throw new Error('SCOUT_UNAVAILABLE');}
