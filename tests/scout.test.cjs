@@ -132,3 +132,14 @@ test('the scout reports a disconnected KIS account instead of starting',()=>{
   automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   assert.equal(automation.getState().scout.blocked,'Connect your KIS account');assert.rejects(automation.scout(),/SCOUT_UNAVAILABLE/);
 });
+test('with both markets, a failed U.S. account check does not stop the scout',async()=>{
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
+  const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
+  const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot}));
+  let context;const provider={request:async(operation,payload)=>{context=payload.context;return {plan:{summary:'Korea only today.',cashTargetPct:null,focus:'',targets:[]},usage:{inputTokens:1,outputTokens:1}};}};
+  const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.usLive={identity:()=>'acct:US',context:async()=>({}),getState:()=>({})};automation.refreshUS=async()=>{throw new Error('US_CASH_BROKER_REJECTED');};automation.providerStatus.aiConnected=true;
+  automation.discovery={list:()=>[],symbols:()=>[]};
+  automation.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  const saved=await automation.scout();assert.equal(saved.plan.summary,'Korea only today.');
+  assert.deepEqual(context.accounts.map(a=>a.market),['KR','US']);assert.equal(context.accounts[1].status,'unavailable');assert.equal(context.accounts[1].reason,'US_CASH_BROKER_REJECTED');
+});
