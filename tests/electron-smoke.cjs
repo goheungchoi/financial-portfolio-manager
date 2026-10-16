@@ -17,7 +17,7 @@ app.on('browser-window-created', (_event, win) => {
       assert.equal(await win.webContents.executeJavaScript('typeof window.require'), 'undefined');
       assert.equal(await win.webContents.executeJavaScript('document.querySelector("main").innerText.includes("vs previous tick")'),false);
       assert.equal(await win.webContents.executeJavaScript('document.querySelector("main").innerText.includes("Holdings + cash")'),false);
-      assert.equal(await win.webContents.executeJavaScript('document.querySelector("header").textContent.includes("Open AI window")'), false);
+      assert.equal(await win.webContents.executeJavaScript('document.querySelector(".topbar").textContent.includes("Open AI window")'), false);
       if (process.argv.includes('--restore')) {
         assert.equal(await win.webContents.executeJavaScript('window.portfolio.getTheme()'), 'light');
         assert.equal(await win.webContents.executeJavaScript('window.portfolio.getEvents().then(events => events.length)'), 6);
@@ -41,7 +41,7 @@ app.on('browser-window-created', (_event, win) => {
       fs.mkdirSync(path.join(__dirname, '../artifacts'), { recursive: true });
       fs.writeFileSync(path.join(__dirname, '../artifacts/candles.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       await win.webContents.executeJavaScript("document.querySelector('.brand').click()");
-      await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='AI console').click()");
+      await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.dataset.tab==='AI console').click()");
       await new Promise(resolve=>setTimeout(resolve,100));
       assert.equal(BrowserWindow.getAllWindows().length,1);
       assert.equal(await win.webContents.executeJavaScript('document.querySelector("h1").textContent'),'AI console');

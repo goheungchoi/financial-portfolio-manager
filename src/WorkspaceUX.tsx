@@ -2,6 +2,8 @@ import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
 export const workspaceGroups=[{label:'Portfolio',tabs:['Holdings','Charts','Performance','Activity']},{label:'Trade',tabs:['KIS trading','U.S. stocks','Paper trading']},{label:'AI',tabs:['Journal','AI console']},{label:'Research',tabs:['Discover','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
 export const HOME='Home';
+// Short sidebar names; the full page name shows in the breadcrumb.
+export const navLabels:Record<string,string>={'KIS trading':'Korea','U.S. stocks':'U.S.','Paper trading':'Paper','AI console':'Console','Engine settings':'Engine'};
 // One short sentence per page; the details live next to the controls they explain.
 export const tabGuides:Record<string,{description:string;next:string;target:string}>={
   Home:{description:'What needs you, what the AI did, and where your money is.',next:'Connections',target:'Connections'},

@@ -17,7 +17,7 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
 const timer=setTimeout(()=>{console.error('U.S. desktop timed out');app.exit(1);},30000);
 app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{try{
   const run=code=>win.webContents.executeJavaScript(code),wait=()=>new Promise(resolve=>setTimeout(resolve,180));
-  const navigate=async name=>{await run(`(name=>(name==='Home'?document.querySelector('.brand'):Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent===name)))(${JSON.stringify(name)}).click()`);await wait();};
+  const navigate=async name=>{await run(`(name=>(name==='Home'?document.querySelector('.brand'):Array.from(document.querySelectorAll('.nav')).find(b=>b.dataset.tab===name)))(${JSON.stringify(name)}).click()`);await wait();};
   const input=async(selector,value)=>{await run(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`);await wait();};
   await run('window.portfolio.importKis()');await navigate('U.S. stocks');assert.ok((await run('document.querySelector("main").textContent')).includes('NASDAQ'));
   assert.equal((await run("window.portfolio.usAction('get')")).state.portfolio.reportedTotal,3000);
