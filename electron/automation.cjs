@@ -198,6 +198,7 @@ class Automation {
     if(this.config.scope==='paper')return 'The scout works with KIS accounts';
     if(!this.config.shareKisWithAI)return 'Allow sharing KIS data with OpenAI';
     if(!this.discovery)return 'Connect your KIS account';
+    try{(this.config.scope==='us'?this.usLive:this.live)?.identity();}catch{return 'Connect your KIS account';}
     return null;
   }
   // What a trading review may know about asking for a scout run; null when the feature is off or the scout cannot run.

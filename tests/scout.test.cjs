@@ -125,3 +125,10 @@ test('reviews are offered request_scout only when a request is allowed',async()=
   await client.decide({universe:[],scoutRequests:{allowed:true,remainingToday:3}},{research:true});await client.decide({universe:[],scoutRequests:{allowed:false,remainingToday:0}},{research:true});
   assert.ok(bodies[0].tools.some(t=>t.name==='request_scout'));assert.ok(!bodies[1].tools.some(t=>t.name==='request_scout'));
 });
+test('the scout reports a disconnected KIS account instead of starting',()=>{
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
+  const automation=new Automation(db,paper,{request:async()=>{throw new Error('unexpected');}},()=>{});automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[]};
+  automation.live=new LiveEngine(db,{request:async()=>{throw new Error('unexpected');}},()=>({status:'disconnected',snapshot:null}));
+  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  assert.equal(automation.getState().scout.blocked,'Connect your KIS account');assert.rejects(automation.scout(),/SCOUT_UNAVAILABLE/);
+});
