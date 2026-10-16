@@ -21,3 +21,19 @@
 .research-scroll{overflow-x:auto}
 .research-self td{font-weight:600}
 .research-median td{color:var(--muted);border-top:1px solid var(--border)}
+/* Market pulse on Discover */
+.market-pulse .positive{color:var(--accent)}
+.pulse-breadth{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px 28px;margin:8px 0 6px}
+.pulse-breadth b{display:block;font-size:16px;margin:4px 0 8px}
+.pulse-bar{display:flex;height:8px;border-radius:5px;overflow:hidden;background:var(--border);gap:2px;margin-bottom:6px}
+.pulse-bar .up{background:var(--accent)}.pulse-bar .down{background:#d96c6c}.pulse-bar .flat{background:var(--muted);opacity:.4}
+.pulse-sectors{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px}
+.pulse-sectors>div{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:6px 10px;border:1px solid var(--border);border-radius:7px}
+.pulse-sectors>div span{color:var(--body,inherit)}
+.pulse-sectors>div.positive b{color:var(--accent)}.pulse-sectors>div.negative b{color:#d96c6c}.pulse-sectors>div.positive span,.pulse-sectors>div.negative span{color:inherit}
+.pulse-sectors>div.positive,.pulse-sectors>div.negative{color:var(--body,inherit)}
+.pulse-flows{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px 28px}
+.pulse-buyers{margin:0;padding-left:18px;display:grid;gap:4px;font-size:13px}
+.pulse-buyers li{display:list-item}
+.pulse-buyers li .link-button{margin-right:8px}
+.market-pulse .note{margin-top:12px}

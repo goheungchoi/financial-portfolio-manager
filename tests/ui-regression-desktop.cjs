@@ -32,7 +32,10 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
     meetings:{meetings:[{date:seedDay(-150),type:'정기총회',agenda:['재무제표승인']}]},
     flows:{investors:{asOf:seedDay(1),net5d:{foreignKRW:198944e6,institutionKRW:-313679e6,individualKRW:-12021e6},net20d:{foreignKRW:-1.5e12,institutionKRW:5e11,individualKRW:9.8e11},foreignStreakDays:2,institutionStreakDays:-3},shortSelling:{latestSharePct:4.65,avg20dSharePct:2.1},margin:{balanceRatePct:0.35,changeSharesPct:-4.9,changeSince:seedDay(21)},program:{net5dKRW:2.1e11,net20dKRW:-4e11}},
     daily:{closes:Array.from({length:90},(_,i)=>({date:seedDay(90-i),close:200000+Math.round(Math.sin(i/6)*15000)+i*200,value:4e12}))},
-    'index-daily':{closes:Array.from({length:90},(_,i)=>({date:seedDay(90-i),close:5000+Math.round(Math.sin(i/6)*150)+i*2}))}}[payload.section];
+    'index-daily':{closes:Array.from({length:90},(_,i)=>({date:seedDay(90-i),close:5000+Math.round(Math.sin(i/6)*150)+i*2}))},
+    market:{breadth:[{index:'KOSPI',level:5668.05,changePct:2.05,advancers:759,decliners:135,unchanged:22,limitUp:2,limitDown:0,advanceRatioPct:84.9},{index:'KOSDAQ',level:794.78,changePct:4.46,advancers:1471,decliners:222,unchanged:40,limitUp:7,limitDown:0,advanceRatioPct:86.9}],
+      kospiSectors:[{code:'0021',name:'금융',changePct:3.1,valueSharePct:8},{code:'0013',name:'전기·전자',changePct:1.75,valueSharePct:28},{code:'0005',name:'음식료·담배',changePct:-0.4,valueSharePct:1}],
+      foreignTopBuys:[{symbol:'005930',name:'삼성전자',netBuyKRW:198944e6,changePct:3.3}],institutionTopBuys:[]}}[payload.section];
   if(operation==='dart-company')return {filings:[{date:seedDay(9),kind:'earnings',title:'연결재무제표기준영업(잠정)실적(공정공시)',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261008000001'}],earnings:{lastRelease:seedDay(9),nextExpected:seedDay(-83)},dividends:{years:[{year:'2025',perShare:1668,payoutRatioPct:25.1,yieldPct:1.5}]}};
   if(operation==='scout'){if(!payload.options?.continuation)return {provider:'openai',toolCalls:[{name:'get_company_research',callId:'s1',args:{symbol:'005930'}}],continuation:[{role:'user',content:'fixture'}],usage:{inputTokens:50,outputTokens:5},model:'gpt-6-sol'};
     return {provider:'openai',plan:{summary:'Memory makers lead earnings revisions; build a position on pullbacks and keep cash for volatility.',cashTargetPct:35,focus:'Samsung earnings at the end of October.',targets:[{symbol:'005930',name:'삼성전자',role:'candidate',targetWeightPct:25,thesis:'22 of 22 brokerages rate it Buy; median target well above the price.',risks:'Memory cycle.'}],briefAnswers:[],retrospective:'Too few scored picks to judge; keep weighing valuation with consensus.'},usage:{inputTokens:80,outputTokens:40},model:'gpt-6-sol'};}
@@ -220,6 +223,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     await check('The AI scout runs from Discover, shows its plan and is scheduled from Engine settings',async()=>{
       await run("window.portfolio.configureRuntime({scope:'kis',provider:'openai',shareKisWithAI:true,enabled:false,autoSubmit:false,openaiModel:'gpt-6-sol',reasoningEffort:'low'})");
       await navigate('Discover');await until('Boolean(document.querySelector(`[aria-label="AI scout"]`))','Scout panel missing');
+      await until('document.querySelector(`[aria-label="Korea market today"]`)?.textContent.includes("759 up")','Market pulse missing');assert.ok(await run('document.querySelector(`.pulse-sectors`).textContent.includes("금융")'));await capture('market-pulse');
       await click('Run scout');await until('document.querySelector(`[aria-label="Scout plan"]`)?.textContent.includes("삼성전자")','Scout plan not shown');
       assert.ok(await run('document.querySelector(`[aria-label="AI scout"]`).textContent.includes("Cash target")'));
       assert.ok(await run('document.querySelector(`.scout-retro`)?.textContent.includes("Too few scored picks")'),'Self-review missing');

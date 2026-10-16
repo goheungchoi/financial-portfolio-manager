@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {useDraftState} from './useDraftState';
 import {ScoutPanel} from './ScoutPanel';
+import {MarketPulse} from './MarketPulse';
 export type Security={symbol:string;name:string;englishName:string;market:string;type:string};
 export type WatchEntry={symbol:string;name:string;market:string;type:string;source:'user'|'ai';reason:string;pinned:boolean;addedAt:number};
 export type ScreenRow={symbol:string;name:string;englishName?:string;market:string;type:string;price:number|null;changePct:number|null;volume:number|null;marketCap:number|null;per:number|null;currency:string;orderable?:boolean|null};
@@ -33,6 +34,7 @@ export function Discover({onOpenChart,onNavigate}:{onOpenChart(symbol:string):vo
   const addButton=(symbol:string)=>listed.has(symbol)?<span className="badge">WATCHING</span>:<button disabled={busy||!state?.connected} onClick={()=>void run(()=>window.portfolio!.updateWatchlist('add',symbol,''))}>Add</button>;
   const master=state?.master;
   return <>
+    <MarketPulse onOpenChart={onOpenChart}/>
     <ScoutPanel onOpenChart={onOpenChart} onNavigate={onNavigate}/>
     <section aria-label="Symbol list"><div className="section-head"><h2>Symbol list</h2><button disabled={busy||master?.refreshing} onClick={()=>void run(()=>window.portfolio!.refreshSecurityMaster())}>{master?.refreshing?'Downloading…':'Refresh symbol list'}</button></div>
       <p className="muted" title="KOSPI, KOSDAQ, NASDAQ, NYSE and AMEX, downloaded daily from KIS public master files.">{master?.total?`${master.total.toLocaleString()} listings · updated ${new Date(master.updatedAt!).toLocaleString()}`:'Downloading the symbol list…'}</p>
