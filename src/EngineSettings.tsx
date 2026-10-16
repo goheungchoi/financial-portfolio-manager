@@ -5,7 +5,7 @@ import {Guardrails} from './Guardrails';
 import {TokenSaving} from './TokenSaving';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
-const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-alerts','Alerts']];
+const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-alerts','Alerts']];
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
 export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,onState}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void}){
   const [preview,setPreview]=useState<string|null>(null);
@@ -50,6 +50,11 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
 
     <Guardrails id="eng-guardrails" state={state} config={config} busy={busy} edit={edit}/>
     <TokenSaving id="eng-saving" state={state} config={config} busy={busy} edit={edit}/>
+
+    <Card id="eng-scout" title="AI scout" label="Scout settings" hint={state.scout?.blocked??'Researches the market, keeps a shortlist on your watchlist and writes a plan for the trading reviews. It never trades.'}>
+      <Row title="Scheduled scout runs" hint="Weekdays, Seoul time. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
+      {config.scoutEnabled&&<Row title="When"><select aria-label="Scout schedule" disabled={busy} value={config.scoutSchedule} onChange={e=>edit('scoutSchedule',e.target.value)}><option value="daily">09:10</option><option value="twice">09:10 and 13:00</option><option value="kr-us">09:10 and 22:40 (U.S. open)</option><option value="three">09:10, 13:00 and 22:40</option></select></Row>}
+    </Card>
 
     <Card id="eng-alerts" title="Alerts">
       <Row title="Desktop alerts" hint="When orders fill, cancel or stop"><Switch label="Desktop alerts" disabled={busy} checked={config.desktopAlerts} onChange={v=>edit('desktopAlerts',v)}/></Row>

@@ -1,7 +1,7 @@
 // Standard text-token rates checked against official model pages, 2026-10-16 KST.
 const MODELS={'gpt-6-luna':{input:0.1,output:0.5},'gpt-6-sol':{input:2,output:10},'gpt-6-astra':{input:10,output:50}};
 function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort=config.reasoningEffort??'none';if(!Object.hasOwn(MODELS,model)||!['none','low','medium','high'].includes(effort)||model==='gpt-6-astra'&&effort==='none')throw new Error('INVALID_MODEL_SETTINGS');return {model,effort,maxOutput:effort==='none'?1200:8192};}
-function reservation(config,context={},options={}){const selected=settings(config);const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>70000)throw new Error('CONTEXT_TOO_LARGE');const rate=MODELS[selected.model];return Math.max(10000,Math.ceil(((bytes+20000)*rate.input+selected.maxOutput*rate.output)*1.2));}
+function reservation(config,context={},options={}){const selected=settings(config);const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>(options.maxBytes??70000))throw new Error('CONTEXT_TOO_LARGE');const rate=MODELS[selected.model];return Math.max(10000,Math.ceil(((bytes+20000)*rate.input+selected.maxOutput*rate.output)*1.2));}
 function normalizeUsage(body){
  const u=body?.usage;if(!u)return null;
  const count=n=>Number.isSafeInteger(n)&&n>=0?n:null;

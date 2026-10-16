@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {useDraftState} from './useDraftState';
+import {ScoutPanel} from './ScoutPanel';
 export type Security={symbol:string;name:string;englishName:string;market:string;type:string};
 export type WatchEntry={symbol:string;name:string;market:string;type:string;source:'user'|'ai';reason:string;pinned:boolean;addedAt:number};
 export type ScreenRow={symbol:string;name:string;englishName?:string;market:string;type:string;price:number|null;changePct:number|null;volume:number|null;marketCap:number|null;per:number|null;currency:string;orderable?:boolean|null};
@@ -11,7 +12,7 @@ const message=(reply:DiscoveryReply)=>errors[reply.error??'']??'The request coul
 const compact=(value:number|null,currency:string)=>value==null?'—':new Intl.NumberFormat(currency==='USD'?'en-US':'ko-KR',{style:'currency',currency,notation:'compact',maximumFractionDigits:1}).format(value);
 const price=(value:number|null,currency:string)=>value==null?'—':new Intl.NumberFormat(currency==='USD'?'en-US':'ko-KR',{style:'currency',currency,maximumFractionDigits:currency==='USD'?2:0}).format(value);
 const typeLabel:Record<string,string>={stock:'Stock',etf:'ETF',etn:'ETN',reit:'REIT',fund:'Fund',warrant:'Warrant',other:'Other',unknown:'Unlisted'};
-export function Discover({onOpenChart}:{onOpenChart(symbol:string):void}){
+export function Discover({onOpenChart,onNavigate}:{onOpenChart(symbol:string):void;onNavigate(tab:string):void}){
   const [state,setState]=useState<DiscoveryState|null>(null);const [notice,setNotice]=useState('');const [busy,setBusy]=useState(false);
   const [query,setQuery]=useDraftState('discover:query','');const [queryMarket,setQueryMarket]=useDraftState('discover:query-market','');const [results,setResults]=useState<Security[]|null>(null);
   const [screen,setScreen]=useDraftState('discover:screen',{market:'KR',exchange:'NASD',kind:'volume',type:'stock'});const [screened,setScreened]=useState<ScreenResult|null>(null);const [screening,setScreening]=useState(false);const [screenError,setScreenError]=useState('');const screenSeq=useRef(0);
@@ -32,6 +33,7 @@ export function Discover({onOpenChart}:{onOpenChart(symbol:string):void}){
   const addButton=(symbol:string)=>listed.has(symbol)?<span className="badge">WATCHING</span>:<button disabled={busy||!state?.connected} onClick={()=>void run(()=>window.portfolio!.updateWatchlist('add',symbol,''))}>Add</button>;
   const master=state?.master;
   return <>
+    <ScoutPanel onOpenChart={onOpenChart} onNavigate={onNavigate}/>
     <section aria-label="Symbol list"><div className="section-head"><h2>Symbol list</h2><button disabled={busy||master?.refreshing} onClick={()=>void run(()=>window.portfolio!.refreshSecurityMaster())}>{master?.refreshing?'Downloading…':'Refresh symbol list'}</button></div>
       <p className="muted" title="KOSPI, KOSDAQ, NASDAQ, NYSE and AMEX, downloaded daily from KIS public master files.">{master?.total?`${master.total.toLocaleString()} listings · updated ${new Date(master.updatedAt!).toLocaleString()}`:'Downloading the symbol list…'}</p>
       {master?.error&&<p className="warning-text">Some markets could not be refreshed: {master.error}. Previous listings remain in use.</p>}

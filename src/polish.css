@@ -277,3 +277,16 @@ main{margin-left:var(--side-w)!important;padding-top:calc(var(--topbar-h) + 22px
 .settings-card{scroll-margin-top:calc(var(--topbar-h) + 56px)}
 @media (max-width:1000px){.breadcrumb>span:not(.crumb-sep):first-child,.breadcrumb .crumb-sep{display:none}.top-chip small{display:none}}
 .topbar button.brand.active{background:transparent}.topbar button.brand:hover{background:var(--hover)}
+/* AI scout */
+.scout-panel .section-head small{display:flex;align-items:center;gap:6px;margin-top:4px}
+.scout-summary{margin:4px 0 10px;font-size:14px;line-height:1.6;color:var(--text)}
+.scout-facts{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:var(--muted)}
+.scout-facts span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scout-facts b{color:var(--text);font-weight:600;margin-left:4px}
+.scout-targets td:last-child{color:var(--body);font-size:12px;line-height:1.45}
+.role-tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;background:var(--control);color:var(--muted);text-transform:capitalize}
+.role-tag.role-add,.role-tag.role-candidate{background:var(--active);color:var(--accent)}
+.role-tag.role-trim,.role-tag.role-exit{background:rgba(217,108,108,.14);color:#d96c6c}
+.plan-lines{list-style:none;padding:0;margin:8px 0;display:flex;flex-direction:column;gap:6px}
+.plan-lines li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}
+.run-dot.tone-scout{background:#6aa7e8}.outcome-pill.tone-scout{background:rgba(106,167,232,.16);color:#6aa7e8}
