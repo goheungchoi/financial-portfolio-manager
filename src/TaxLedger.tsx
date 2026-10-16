@@ -1,0 +1,32 @@
+import {useEffect,useState} from 'react';
+type Sale={id:string;symbol:string;tradeDate:string;settlementDate:string;year:number;quantity:number;proceedsKRW:number|null;costKRW:number|null;gainKRW:number|null;basisSource:string;fxSource:string;feesSource:string;settlementEstimated:boolean};
+type Year={year:number;appRealizedKRW:number;outsideKRW:number|null;totalKRW:number;deductionKRW:number;deductionRemainingKRW:number;taxableKRW:number;estimatedTaxKRW:number;rate:number;sales:number;unknownSales:number;complete:boolean};
+type OrderCost={id:string;market:string;symbol:string;side:string;quantity:number;day:string;currency:string;basis:string;commission:number;transactionTax:number;netCash:number;estimate:{commission:number;transactionTax:number}|null;reportStatus:string};
+export type TaxSummary={settings:{taxMethod:string;taxYear:number};year:Year;ledger:{method:string;sales:Sale[];positions:Record<string,{quantity:number;costKRW:number|null;perShareKRW:number|null}>};orders:OrderCost[];refreshedAt:number|null;error:string|null;refreshing:boolean;environment:string|null};
+const krw=(n:number|null)=>n==null?'Unknown':new Intl.NumberFormat('ko-KR',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
+const money=(n:number|null|undefined,currency:string)=>n==null||!Number.isFinite(n)?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:currency==='USD'?'USD':'KRW',maximumFractionDigits:currency==='USD'?2:0}).format(n);
+const STATUS:Record<string,string>={reported:'Broker-reported',pending:'Waiting for broker',unavailable:'Not offered for this account',ambiguous:'Estimate (could not match trades)'};
+export function TaxLedger(){
+  const [state,setState]=useState<TaxSummary|null>(null);const [busy,setBusy]=useState(false);
+  useEffect(()=>{let alive=true;const load=async()=>{try{const value=await window.portfolio?.getTaxSummary();if(alive&&value)setState(value);}catch{}};void load();const timer=setInterval(load,60000);return()=>{alive=false;clearInterval(timer);};},[]);
+  if(!window.portfolio||!state)return null;
+  const refresh=async()=>{setBusy(true);try{setState(await window.portfolio!.refreshCharges());}catch{}finally{setBusy(false);}};
+  const y=state.year;const sales=state.ledger.sales.filter(s=>s.year===y.year).reverse();const positions=Object.entries(state.ledger.positions);
+  return <>
+    <section aria-label="Overseas capital gains"><div className="section-head"><div><h2>Overseas capital gains · {y.year}</h2><small>{state.ledger.method==='fifo'?'First in, first out':'Moving average'} cost · KRW at settlement-date rates · realized by settlement date</small></div></div>
+      <div className="metrics perf-metrics">
+        <div><small>Net gains this year</small><strong>{krw(y.totalKRW)}</strong><span>App {krw(y.appRealizedKRW)} · outside {y.outsideKRW==null?'not entered':krw(y.outsideKRW)}</span></div>
+        <div><small>Basic deduction left</small><strong>{krw(y.deductionRemainingKRW)}</strong><span>of {krw(y.deductionKRW)}</span></div>
+        <div><small>Estimated tax (22%)</small><strong>{krw(y.estimatedTaxKRW)}</strong><span>{y.complete?'Filed and paid in May next year':'Incomplete: '+(y.outsideKRW==null?'outside gains not entered':`${y.unknownSales} sale(s) with unknown basis`)}</span></div>
+      </div>
+      {sales.length?<table aria-label="Overseas sales"><thead><tr><th>Settled</th><th>Stock</th><th>Shares</th><th>Proceeds</th><th>Cost</th><th>Gain</th><th>Source</th></tr></thead><tbody>{sales.map(s=><tr key={s.id}><td>{s.settlementDate}{s.settlementEstimated?' *':''}</td><td>{s.symbol}</td><td>{s.quantity}</td><td>{krw(s.proceedsKRW)}</td><td>{krw(s.costKRW)}</td><td className={s.gainKRW==null?'':s.gainKRW>=0?'positive':'negative'}>{krw(s.gainKRW)}</td><td className="muted small-print">{s.fxSource} · fees {s.feesSource.toLowerCase()} · {s.basisSource.toLowerCase()}</td></tr>)}</tbody></table>:<p className="muted">No U.S. sales by this app settle in {y.year} yet.</p>}
+      {positions.length>0&&<details className="inline-help"><summary>KRW cost of held shares bought by this app · {positions.length}</summary><table aria-label="Overseas cost basis"><thead><tr><th>Stock</th><th>Shares</th><th>KRW cost</th><th>Per share</th></tr></thead><tbody>{positions.map(([symbol,p])=><tr key={symbol}><td>{symbol}</td><td>{p.quantity}</td><td>{krw(p.costKRW)}</td><td>{krw(p.perShareKRW)}</td></tr>)}</tbody></table></details>}
+      <p className="muted small-print">* Settlement date estimated as the next weekday when the broker has not reported it. Exchange rates: KIS settlement amounts or registered rates when reported (live accounts), otherwise the Bank of Korea USD/KRW reference rate on the settlement date. 22% = 20% income tax + 2% local income tax on net gains above ₩2,500,000 across all brokers; this estimate is not tax advice and excludes dividends, currency gains and special cases.</p>
+    </section>
+    <section aria-label="Order costs"><div className="section-head"><div><h2>Executed order costs</h2><small>{state.refreshedAt?`Checked ${new Date(state.refreshedAt).toLocaleString()}`:'Checked every 15 minutes'}{state.environment==='mock'?' · mock account: KIS reports U.S. trade costs only for live accounts':''}</small></div><button disabled={busy||state.refreshing} onClick={()=>void refresh()}>{busy||state.refreshing?'Checking…':'Check broker costs'}</button></div>
+      {state.orders.length?<table aria-label="Executed order costs"><thead><tr><th>Day</th><th>Order</th><th>Commission</th><th>Tax / levy</th><th>Net cash</th><th>Source</th></tr></thead><tbody>{state.orders.map(o=><tr key={o.id}><td>{o.day}</td><td>{o.side} {o.quantity} {o.symbol}</td><td>{money(o.commission,o.currency)}{o.basis==='broker'&&o.estimate?<small className="muted"> · est. {money(o.estimate.commission,o.currency)}</small>:null}</td><td>{money(o.transactionTax,o.currency)}</td><td>{money(o.netCash,o.currency)}</td><td>{o.basis==='broker'?'Broker-reported':STATUS[o.reportStatus]??'Estimate'}</td></tr>)}</tbody></table>:<p className="muted">No executed broker orders yet.</p>}
+      {state.error&&<p className="notice">Last check: {state.error}</p>}
+      <p className="muted small-print">Korean orders use the fee-and-tax total KIS reports for the order; the 0.20% sale tax (none for ETFs and ETNs) is shown separately and the rest as commission. U.S. orders use KIS settled trade history: fees, settlement amount and exchange rate.</p>
+    </section>
+  </>;
+}

@@ -170,7 +170,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('portfolio:get',event=>{authorize(event);return portfolioState();});
   ipcMain.handle('portfolio:metadata',(event,symbol,value)=>{authorize(event);portfolioView.save(symbol,value);return portfolioState();});
   ipcMain.handle('portfolio:refresh',async event=>{authorize(event);await refreshKisBalance();if(kisState.snapshot){try{await automation.refreshUS();}catch(error){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);}}return portfolioState();});
-  ipcMain.handle('costs:get',event=>{authorize(event);return costs.get();});
+  ipcMain.handle('costs:get',event=>{authorize(event);return costs.saved();});
   ipcMain.handle('costs:save',(event,value)=>{authorize(event);return costs.save(value);});
   for(const name of ['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'])ipcMain.handle('us:'+name,async(event,...args)=>{authorize(event);try{let data;if(name==='get')data=null;else if(name==='refresh'){if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');await automation.refreshUS();data=null;}else if(name==='auto-off'){usLive.autoEnabled=false;}else if(name==='auto')data=usLive.enableAuto(...args);else if(name==='link')data=await usLive.linkUncertain(...args);else data=await usLive[name](...args);return {ok:true,data,state:usLive.getState()};}catch(error){if(name==='refresh'){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}const allowed=['NO_FUNDED_BALANCE','KIS_NOT_CONNECTED','ACTIVATION_REQUIRED','INVALID_LIMITS','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','RECONCILIATION_REQUIRED','KIS_TRADING_DISABLED','DISABLED_OR_EXPIRED','BROKER_REJECTED','ORDER_UNCERTAIN','ACCOUNT_CHANGED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:require('./us-errors.cjs').publicUSCode(error.message),state:usLive.getState()};}});
   
@@ -227,9 +227,18 @@ app.whenReady().then(async () => {
   // Macro inputs (ECOS / FRED) through the provider worker, refreshed every 6 hours while the app is open.
   // UI tests seed a snapshot and never reach the network.
   const {MacroStore}=require('./macro.cjs');const macro=new MacroStore(store.db);automation.macro=macro;let macroTask=null,macroAt=0,macroError=null;const macroSeed=process.env.PORTFOLIO_SMOKE_DATA?process.env.PORTFOLIO_MACRO_SEED??null:null;
-  const refreshMacro=()=>{if(macroTask)return macroTask;macroTask=(async()=>{const result=macroSeed?{...JSON.parse(macroSeed),fetchedAt:Date.now()}:process.env.PORTFOLIO_SMOKE_DATA?null:await providerService.request('macro');if(result)macro.save(result);macroAt=Date.now();macroError=null;})().catch(error=>{macroError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'MACRO_FAILED';}).finally(()=>{macroTask=null;});return macroTask;};
+  const refreshMacro=()=>{if(macroTask)return macroTask;macroTask=(async()=>{const result=macroSeed?{...JSON.parse(macroSeed),fetchedAt:Date.now()}:process.env.PORTFOLIO_SMOKE_DATA?null:await providerService.request('macro');if(result){macro.save(result);costs.saveRates(result.series.find(s=>s.id==='KR_USDKRW')?.history,'ECOS USD/KRW reference rate');}macroAt=Date.now();macroError=null;})().catch(error=>{macroError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'MACRO_FAILED';}).finally(()=>{macroTask=null;});return macroTask;};
   setTimeout(()=>{void refreshMacro();},macroSeed?0:30000).unref?.();setInterval(()=>{if(Date.now()-macroAt>6*3600000)void refreshMacro();},600000).unref();
   const macroState=()=>({snapshot:macro.get(),refreshing:Boolean(macroTask),error:macroError,ecosConnected:Boolean(automation.providerStatus.ecosConnected),fredConnected:Boolean(automation.providerStatus.fredConnected)});
+  // Broker-reported fees and taxes for executed orders, and reference exchange rates for the overseas tax ledger, every 15 minutes.
+  let chargesTask=null,chargesAt=0,chargesError=null;
+  const refreshCharges=()=>{if(chargesTask)return chargesTask;chargesTask=(async()=>{
+      if(kisState.snapshot){for(const engine of [live,usLive]){try{await engine.refreshCharges();}catch(error){chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'CHARGES_FAILED';}}}
+      const days=costs.missingRateDays();if(days.length&&!process.env.PORTFOLIO_SMOKE_DATA)costs.saveRates(await providerService.request('fx-rates',{days}),'ECOS USD/KRW reference rate');
+      chargesAt=Date.now();})().catch(error=>{chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'CHARGES_FAILED';}).finally(()=>{chargesTask=null;});return chargesTask;};
+  setInterval(()=>{void refreshCharges();},15*60000).unref();
+  ipcMain.handle('costs:tax-summary',event=>{authorize(event);return {...costs.taxSummary(),refreshedAt:chargesAt||null,error:chargesError,refreshing:Boolean(chargesTask),environment:kisState.snapshot?.environment??null};});
+  ipcMain.handle('costs:refresh-charges',async event=>{authorize(event);chargesError=null;await refreshCharges();return {...costs.taxSummary(),refreshedAt:chargesAt||null,error:chargesError,refreshing:false,environment:kisState.snapshot?.environment??null};});
   ipcMain.handle('macro:get',event=>{authorize(event);return macroState();});
   ipcMain.handle('macro:refresh',async event=>{authorize(event);await refreshMacro();return macroState();});
   // Learning scoreboard: daily closes for symbols with recent Buy/Sell decisions, at most ten symbols per pass.

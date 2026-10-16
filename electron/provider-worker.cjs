@@ -20,6 +20,8 @@ process.parentPort.on('message',async({data})=>{
     } else if(data.operation==='macro') {
       // Works without keys (FRED downloads, ECOS sample access); keys add full ECOS access and the FRED release calendar.
       result=await require('./macro.cjs').fetchMacro(fetch,{ecosKey,fredKey});
+    } else if(data.operation==='fx-rates') {
+      if(!Array.isArray(data.days))throw 0;result=await require('./macro.cjs').fetchUsdKrw(fetch,ecosKey,data.days.filter(day=>typeof day==='string'));
     } else if(data.operation==='disclosures') {
       if(!dartKey)throw 0;
       const date=new Date(Date.now()+9*3600000).toISOString().slice(0,10).replaceAll('-','');

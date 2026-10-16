@@ -39,12 +39,15 @@ test('U.S. calendar uses Eastern DST, holidays, early closes and a ten-minute cl
   assert.equal(usSession(new Date('2026-11-27T17:49:00Z')).open,true);assert.equal(usSession(new Date('2026-11-27T17:50:00Z')).open,false);
   assert.deepEqual(instrument('NYSE:BRK.B'),{exchange:'NYSE',ticker:'BRK.B'});assert.throws(()=>instrument('AAPL'),/INVALID_ORDER/);
 });
-test('annual baseline adds cumulative app fills once and re-saving anchors already-realized gains',()=>{
-  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);const settings={...DEFAULT_COSTS,annualRealizedKRW:2000000};costs.save(settings);
-  const order={id:'sale',market:'US',side:'Sell',day:String(settings.taxYear)+'-10-15',resultCosts:{taxableGainKRW:100000}};
-  const save=()=>db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,'fake',JSON.stringify(order));save();assert.equal(costs.get().annualRealizedKRW,2100000);assert.equal(costs.get().annualRealizedKRW,2100000);
-  order.resultCosts.taxableGainKRW=200000;save();assert.equal(costs.get().annualRealizedKRW,2200000);costs.save(costs.get());assert.equal(costs.get().annualRealizedKRW,2200000);
-  order.resultCosts.taxableGainKRW=250000;save();assert.equal(costs.get().annualRealizedKRW,2250000);db.close();
+test('annual gains are the outside-app baseline plus app sales from the KRW ledger, and saving never double-counts',()=>{
+  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);const year=DEFAULT_COSTS.taxYear;costs.save({...DEFAULT_COSTS,annualRealizedKRW:2000000});
+  const put=order=>db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,'fake',JSON.stringify(order));
+  put({id:'buy',market:'US',side:'Buy',symbol:'NASD:TEST',filled:10,fillPrice:100,day:`${year}-03-02`,createdAt:1,resultCosts:{commission:0,transactionTax:0}});
+  put({id:'sale',market:'US',side:'Sell',symbol:'NASD:TEST',filled:10,fillPrice:110,day:`${year}-10-15`,createdAt:2,resultCosts:{commission:0,transactionTax:0}});
+  costs.saveRates([{date:`${year}-03-03`,value:1300},{date:`${year}-10-16`,value:1400}],'test');
+  assert.equal(costs.get().annualRealizedKRW,2000000+(1540000-1300000),'proceeds 10 x 110 x 1,400 minus cost 10 x 100 x 1,300');
+  costs.save(costs.saved());assert.equal(costs.saved().annualRealizedKRW,2000000,'the saved value stays the outside-app figure');assert.equal(costs.get().annualRealizedKRW,2240000);
+  db.close();
 });
 function fixture(){const calls=[];const raw=new KisReadOnlyClient({environment:'mock',appKey:'fixture-key',appSecret:'fixture-secret',accountNumber:'12345678',accountProductCode:'01'},async(url,options)=>{calls.push({url,options});const params=new URL(url).searchParams;let body={rt_cd:'0'};
   if(url.endsWith('/oauth2/tokenP'))body={access_token:'fixture-token',expires_in:3600};
