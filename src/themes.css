@@ -114,3 +114,4 @@ main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-wi
 .macro-tile{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--border,rgba(127,127,127,.3));border-radius:10px}.macro-tile strong{font-size:1.35rem}.macro-tile strong .muted{font-size:.8rem;font-weight:400}
 .macro-spark{width:100%;height:32px;display:block}.macro-spark path{fill:none;stroke:var(--perf-portfolio);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .macro-up,.macro-down{font-size:.85rem}.macro-today td{font-weight:600}
+.exposure-section{border-top:1px solid var(--border,rgba(127,127,127,.25));padding-top:8px;margin-top:12px}
