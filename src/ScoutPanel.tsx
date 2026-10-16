@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {ScoutState} from './RuntimeSettings';
+import './scout.css';
 const ROLE:Record<string,string>={hold:'Hold',add:'Add',candidate:'Candidate',trim:'Trim',exit:'Exit'};
 const ago=(t:number)=>{const m=Math.round((Date.now()-t)/60000);return m<1?'just now':m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:new Date(t).toLocaleDateString();};
 const ERRORS:Record<string,string>={AI_BUDGET_EXHAUSTED:'Daily AI budget reached',SCOUT_BUSY:'A scout run is already going',RATE_LIMITED:'KIS is rate limiting; try again shortly',AI_TIMEOUT:'OpenAI took too long',STALE_DECISION:'The account changed during the run'};
