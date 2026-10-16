@@ -1,21 +1,25 @@
-const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;
+const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;
 process.parentPort.on('message',async({data})=>{
   try {
     let result;
     if(data.operation==='import') {
       const handle=await fs.open(data.path,'r');let text;
       try{if((await handle.stat()).size>65536)throw 0;text=await handle.readFile('utf8');}finally{await handle.close();}
-      const value=JSON.parse(text);if(!value || Object.keys(value).some(key=>!['openaiApiKey','dartApiKey','pushWebhookURL'].includes(key)))throw 0;
+      const value=JSON.parse(text);if(!value || Object.keys(value).some(key=>!['openaiApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey'].includes(key)))throw 0;
+      if(value.ecosApiKey&&!/^[A-Za-z0-9]{10,100}$/.test(value.ecosApiKey))throw 0;if(value.fredApiKey&&!/^[a-z0-9]{32}$/.test(value.fredApiKey))throw 0;ecosKey=value.ecosApiKey??null;fredKey=value.fredApiKey??null;
       ai=value.openaiApiKey?new AiClient(value.openaiApiKey):null;
       if(value.dartApiKey && !/^[A-Za-z0-9]{20,100}$/.test(value.dartApiKey))throw 0;dartKey=value.dartApiKey??null;
       if(value.pushWebhookURL){const url=new URL(value.pushWebhookURL);if(url.protocol!=='https:'||url.username||url.password)throw 0;pushURL=url.href;}else pushURL=null;
-      result={aiConnected:Boolean(ai),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL)};
+      result={aiConnected:Boolean(ai),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey)};
     } else if(data.operation==='decision') {if(!ai)throw 0;result=await ai.decide(data.context,data.options);}
     else if(data.operation==='reflection') {if(!ai)throw 0;result=await ai.reflect(data.context,data.options);}
     else if(data.operation==='push') {
       if(!pushURL)throw 0;
       const response=await fetch(pushURL,{method:'POST',redirect:'error',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/json'},body:JSON.stringify({content:data.message.slice(0,1500),text:data.message.slice(0,1500)})});
       if(!response.ok)throw 0;result={delivered:true};
+    } else if(data.operation==='macro') {
+      // Works without keys (FRED downloads, ECOS sample access); keys add full ECOS access and the FRED release calendar.
+      result=await require('./macro.cjs').fetchMacro(fetch,{ecosKey,fredKey});
     } else if(data.operation==='disclosures') {
       if(!dartKey)throw 0;
       const date=new Date(Date.now()+9*3600000).toISOString().slice(0,10).replaceAll('-','');

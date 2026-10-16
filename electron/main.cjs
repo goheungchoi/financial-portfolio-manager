@@ -224,6 +224,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('performance:add-flow',performanceAction(value=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');performance.addFlow(kisState.snapshot.accountKey,value);}));
   ipcMain.handle('performance:remove-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.removeFlow(kisState.snapshot.accountKey,id);}));
   ipcMain.handle('performance:refresh-benchmarks',performanceAction(()=>refreshBenchmarks()));
+  // Macro inputs (ECOS / FRED) through the provider worker, refreshed every 6 hours while the app is open.
+  // UI tests seed a snapshot and never reach the network.
+  const {MacroStore}=require('./macro.cjs');const macro=new MacroStore(store.db);automation.macro=macro;let macroTask=null,macroAt=0,macroError=null;const macroSeed=process.env.PORTFOLIO_SMOKE_DATA?process.env.PORTFOLIO_MACRO_SEED??null:null;
+  const refreshMacro=()=>{if(macroTask)return macroTask;macroTask=(async()=>{const result=macroSeed?{...JSON.parse(macroSeed),fetchedAt:Date.now()}:process.env.PORTFOLIO_SMOKE_DATA?null:await providerService.request('macro');if(result)macro.save(result);macroAt=Date.now();macroError=null;})().catch(error=>{macroError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'MACRO_FAILED';}).finally(()=>{macroTask=null;});return macroTask;};
+  setTimeout(()=>{void refreshMacro();},macroSeed?0:30000).unref?.();setInterval(()=>{if(Date.now()-macroAt>6*3600000)void refreshMacro();},600000).unref();
+  const macroState=()=>({snapshot:macro.get(),refreshing:Boolean(macroTask),error:macroError,ecosConnected:Boolean(automation.providerStatus.ecosConnected),fredConnected:Boolean(automation.providerStatus.fredConnected)});
+  ipcMain.handle('macro:get',event=>{authorize(event);return macroState();});
+  ipcMain.handle('macro:refresh',async event=>{authorize(event);await refreshMacro();return macroState();});
   // Learning scoreboard: daily closes for symbols with recent Buy/Sell decisions, at most ten symbols per pass.
   const {closesFromCandles}=require('./scoreboard.cjs');let closesTask=null,closesAt=0,closesError=null;
   const refreshDecisionCloses=()=>{if(closesTask||!kisState.snapshot)return closesTask;const generation=kisGeneration;closesTask=(async()=>{

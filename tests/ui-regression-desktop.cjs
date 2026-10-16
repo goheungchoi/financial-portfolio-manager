@@ -5,6 +5,9 @@ app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
 const masterDir=path.join(process.env.PORTFOLIO_SMOKE_DATA,'master-fixtures');fs.mkdirSync(masterDir,{recursive:true});for(const [name,data] of Object.entries(require('./discovery-fixtures.cjs').masterFiles()))fs.writeFileSync(path.join(masterDir,name),data);process.env.PORTFOLIO_MASTER_DIR=masterDir;
 const seedDay=offset=>new Date(Date.now()+9*3600000-offset*86400000).toISOString().slice(0,10);
 process.env.PORTFOLIO_PERFORMANCE_SEED=JSON.stringify({account:'ui-regression-fixture',history:[[5,9700000],[4,9800000],[3,9750000],[2,9900000],[1,9950000]].map(([offset,value])=>({day:seedDay(offset),at:0,KRW:{equity:value,cash:value},USD:null,fx:null,equityKRW:value})),reviews:[['seed-buy','Buy',7],['seed-sell','Sell',6],['seed-hold','Hold',6]].map(([id,action,offset])=>({id,timestamp:Date.now()-offset*86400000,provider:'openai',model:'gpt-6-luna',decision:{action,symbol:'005930',quantity:1,explanation:'Seeded decision'},contextEvidence:{environment:'kis',quote:{symbol:'005930',price:100},reviewedLessons:[]},orderId:null}))});
+// Macro snapshot fixture; in test mode the app never fetches ECOS/FRED.
+const macroSeries=(id,market,source,name,unit,values)=>({id,market,source,name,unit,frequency:'daily',date:seedDay(1),value:values.at(-1),previous:values.at(-2),change:Math.round((values.at(-1)-values.at(-2))*1000)/1000,history:values.map((value,i)=>({date:seedDay(values.length-i),value}))});
+process.env.PORTFOLIO_MACRO_SEED=JSON.stringify({ecosAccess:'sample',calendarAccess:'key',errors:[],calendar:[{date:seedDay(-3),market:'US',event:'U.S. CPI',source:'FRED release calendar'}],series:[macroSeries('KR_BASE_RATE','KR','ECOS','BoK base rate','%',[3,3]),macroSeries('KR_USDKRW','KR','ECOS','USD/KRW','KRW',[1338.6,1345.2,1348.5]),macroSeries('US_10Y','US','FRED','U.S. 10-year Treasury','%',[5.21,5.19])]});
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/ui-regression');fs.mkdirSync(output,{recursive:true});
 const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;let dartFixture=false;
 const domestic={accountKey:'ui-regression-fixture',environment:'mock',source:'kis',cash:10000000,reportedTotal:10000000,holdings:[]};
@@ -200,6 +203,13 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       // A window that was never shown has no painted surface to capture.
       popup.showInactive();await wait(400);for(let attempt=0;attempt<3;attempt++){try{fs.writeFileSync(path.join(output,'chart-pop-out.png'),(await popup.webContents.capturePage()).toPNG());report.screenshots.push('chart-pop-out.png');break;}catch(error){if(attempt===2)throw error;await wait(300);}}
       popup.close();for(let i=0;i<40&&!popup.isDestroyed();i++)await wait(50);assert.equal(BrowserWindow.getAllWindows().length,1);
+    });
+    await check('Macro shows official indicators by market with the release calendar',async()=>{
+      await navigate('Macro');await until('document.querySelectorAll(".macro-tile").length===3','Macro tiles missing');
+      const fx=await run('document.querySelector(`[aria-label="USD/KRW"]`).textContent');assert.ok(fx.includes('1,348.5')&&fx.includes('+3.3'),'value and change: '+fx);
+      assert.ok(await run('document.querySelector(`[aria-label="Release calendar"]`).textContent.includes("U.S. CPI")'));assert.equal(await run('document.querySelectorAll(".macro-spark").length'),3);
+      await click('Refresh');await until('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="Refresh"&&!b.disabled)','Refresh did not finish');
+      await run('document.querySelector(`[aria-label="Macro inputs"]`).scrollIntoView({block:"start"})');await wait(200);await capture('macro-inputs');
     });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
