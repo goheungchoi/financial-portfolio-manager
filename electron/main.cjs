@@ -196,7 +196,7 @@ app.whenReady().then(async () => {
   // Performance history: daily account values, recorded cash flows and benchmark closes.
   const {PerformanceHistory,benchmarkFor}=require('./performance.cjs');const performance=new PerformanceHistory(store.db);let benchmarkTask=null,benchmarkAt=0,benchmarkError=null;
   // Test-only: UI tests seed earlier daily values because history cannot be backfilled from KIS.
-  if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));}
+  if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
   setInterval(recordValue,60000).unref();
   const refreshBenchmarks=()=>{if(benchmarkTask||!kisState.snapshot)return benchmarkTask;const generation=kisGeneration;benchmarkTask=(async()=>{const today=require('./kis-activity.cjs').seoulDate();const first=performance.history(kisState.snapshot.accountKey)[0]?.day;
@@ -212,6 +212,16 @@ app.whenReady().then(async () => {
   ipcMain.handle('performance:add-flow',performanceAction(value=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');performance.addFlow(kisState.snapshot.accountKey,value);}));
   ipcMain.handle('performance:remove-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.removeFlow(kisState.snapshot.accountKey,id);}));
   ipcMain.handle('performance:refresh-benchmarks',performanceAction(()=>refreshBenchmarks()));
+  // Learning scoreboard: daily closes for symbols with recent Buy/Sell decisions, at most ten symbols per pass.
+  const {closesFromCandles}=require('./scoreboard.cjs');let closesTask=null,closesAt=0,closesError=null;
+  const refreshDecisionCloses=()=>{if(closesTask||!kisState.snapshot)return closesTask;const generation=kisGeneration;closesTask=(async()=>{
+      for(const symbol of automation.scoreboard.pendingSymbols(10)){const snapshot=await kisService.request('company-chart',{request:{symbol,dataset:'daily_technicals'}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');automation.scoreboard.saveCloses(symbol,closesFromCandles(symbol,snapshot.candles));}
+      closesAt=Date.now();closesError=null;})().catch(error=>{closesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'PRICE_HISTORY_FAILED';}).finally(()=>{closesTask=null;});return closesTask;};
+  setInterval(()=>{if(Date.now()-closesAt>6*3600000)void refreshDecisionCloses();},600000).unref();
+  const scoreboardState=()=>({...automation.scoreboard.build(),pricesUpdatedAt:closesAt||null,pricesError:closesError,refreshing:Boolean(closesTask),benchmarkUpdatedAt:benchmarkAt||null});
+  const scoreboardAction=action=>async(event,...args)=>{authorize(event);try{await action(...args);return {ok:true,state:scoreboardState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOREBOARD_FAILED'};}};
+  ipcMain.handle('scoreboard:get',scoreboardAction(()=>{if(Date.now()-closesAt>6*3600000)void refreshDecisionCloses();if(Date.now()-benchmarkAt>6*3600000)void refreshBenchmarks();}));
+  ipcMain.handle('scoreboard:refresh',scoreboardAction(async()=>{await refreshBenchmarks();await refreshDecisionCloses();}));
   const discoveryState=()=>({master:master.status(),watchlist:automation.discovery.list(),connected:Boolean(watchScope())});
   const discoveryAction=action=>async(event,...args)=>{authorize(event);try{const data=await action(...args);return {ok:true,data,state:discoveryState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED',state:discoveryState()};}};
   ipcMain.handle('discovery:get',discoveryAction(()=>null));

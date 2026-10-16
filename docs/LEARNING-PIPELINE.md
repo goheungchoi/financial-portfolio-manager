@@ -24,11 +24,17 @@ Candidates carry source outcome/version, original decision, account/market/symbo
 
 Journal supports editing a reviewed lesson and its applicability, approving/renewing it for 1–365 days (UI presets), retiring it, and reopening it. Evidence-signature checks reject approval of an outdated screen. Economic evidence changes invalidate prior approval. Retired lessons remain retired when evidence changes. Expiry immediately excludes a lesson from model context, even before the next UI refresh. Lifecycle changes are persisted in `lesson_history`.
 
-Retrieval requires the same broker account and symbol (or paper-only provenance); held symbols rank first, then recent approval, with a maximum of five lessons. Legacy unscoped observations remain paper-only. User applicability notes are supplied to the provider but are not machine-executable rules. Contradiction detection between different lessons is not implemented.
+Retrieval requires the same broker account and symbol (or paper-only provenance); held symbols rank first, then recent approval, with a maximum of five lessons. Legacy unscoped observations remain paper-only. User applicability notes are supplied to the provider but are not machine-executable rules. Reviews record the ids of the lessons they were given. Approved lessons for the same symbol and account whose user notes or applicability point in opposite directions (buy vs avoid, sell vs hold; English and Korean keywords) are listed as possible conflicts, and a review that receives both is told so in `lessonConflicts`.
 
 ## Still outstanding
 
-External broker trade imports; complete entry/exit lot matching and corporate actions; forward horizons and benchmarks; held-out validation of arbitrary lessons; aggregate comparison against an unchanged strategy across many cases (the offline replay and forward lesson trials below cover single explicit rules only); automatic lesson promotion. No learned strategy change or profitability improvement is claimed.
+External broker trade imports; complete entry/exit lot matching and corporate actions; significance testing; held-out validation of arbitrary lessons; aggregate comparison against an unchanged strategy across many cases (the offline replay and forward lesson trials below cover single explicit rules only); automatic lesson promotion. No learned strategy change or profitability improvement is claimed.
+
+## Learning scoreboard
+
+Journal → Scoreboard measures recommendations, not just fills. Every broker Buy/Sell decision (paper decisions use synthetic prices and are excluded; Holds are counted but not scored) is scored 1, 5 and 20 trading days later from the decision-day close (Seoul date for Korean stocks, New York date for U.S. stocks) against KOSPI or the S&P 500 over the same days. Excess return is the stock minus the benchmark for a Buy and the reverse for a Sell, whether or not an order was placed. Daily closes come from the KIS daily chart for up to 10 symbols with incomplete horizons every 6 hours (benchmarks reuse the Performance closes); nothing is backfilled beyond what KIS returns.
+
+Summaries show average and median excess and the share that beat the benchmark, by action, by model and with versus without approved lessons. Each approved lesson compares 5-day excess on its symbol for decisions that received it and those that did not (older reviews are matched by lesson text) and reports completed rule trials. Fewer than 5 decisions on either side reads “Too few decisions”; no significance test is applied. Completed broker trades are compared with the benchmark from the latest earlier app buy to the sale (an approximation, not tax-lot matching). Broker reviews receive a compact `decisionScoreboard` summary. Scores are stored outside outcome signatures, so new prices never invalidate lesson approvals.
 
 ## Model configuration and usage
 

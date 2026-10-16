@@ -43,7 +43,7 @@ The application has a working desktop, portfolio, review, execution and supervis
 
 ## What “self-improvement” currently means
 
-Evidence: `electron/outcome-ledger.cjs`, `electron/outcome-evaluation.cjs`, `electron/learning-memory.cjs`, `electron/reflection.cjs`, `electron/lesson-trials.cjs`, `src/paper-replay.mjs`, `src/LearningPanel.tsx`, `src/LessonTrials.tsx`. Details: [Learning pipeline](LEARNING-PIPELINE.md) and [Agent evidence](AGENT-EVIDENCE.md).
+Evidence: `electron/outcome-ledger.cjs`, `electron/outcome-evaluation.cjs`, `electron/learning-memory.cjs`, `electron/reflection.cjs`, `electron/lesson-trials.cjs`, `src/paper-replay.mjs`, `src/LearningPanel.tsx`, `src/LessonTrials.tsx`, `electron/scoreboard.cjs`, `src/Scoreboard.tsx`. Details: [Learning pipeline](LEARNING-PIPELINE.md) and [Agent evidence](AGENT-EVIDENCE.md).
 
 1. **Outcome ledger.** App-originated broker fills and paper fills become one outcome per order, with economic changes stored as durable versions and withdrawn evidence kept as Retracted. Decision and proposal links are saved before automatic submission.
 2. **Evaluation.** A local, no-API pass classifies outcomes (entry, pending, gain, loss, cost drag, missing evidence, retracted) using after-fee results. Native currencies stay separate; it draws no causal, benchmark or holding-period conclusion.
@@ -52,16 +52,17 @@ Evidence: `electron/outcome-ledger.cjs`, `electron/outcome-evaluation.cjs`, `ele
 5. **Offline replay.** Charts compares buy-and-hold with a closing-loss-threshold rule on completed daily bars, in earlier and later halves. It is an illustration of one explicit rule.
 6. **Forward lesson trials.** In Journal → Reviewed lessons, an eligible lesson can be turned into an explicit exit rule (exit below entry, or protect gains from a peak) with commission, sale levy, slippage and a 1–365 day deadline. From the first fresh quote, an unchanged buy-and-hold arm and a candidate arm are tracked from future prices only; exits execute on the next observed quote. Net return, maximum drawdown and costs are shown for both. Trials are isolated by account, stop when the lesson's evidence changes or it is retired, and never change approval or trading rules. Annual capital gains, FX, liquidity and whole-share constraints are excluded; prices are sampled only while the app is open.
 
+7. **Learning scoreboard.** Journal → Scoreboard scores each broker Buy/Sell recommendation 1, 5 and 20 trading days later, close to close from the decision day, against KOSPI (Korean stocks) or the S&P 500 (U.S. stocks). A Buy scores when the stock beats the benchmark, a Sell when it trails. Results are split by action, model and lesson use; each approved lesson shows the 5-day excess return of decisions on its symbol with and without it (at least 5 on each side before a verdict) plus its completed rule trials. Completed trades are compared with the benchmark over their holding period. Approved lessons on the same symbol and account whose notes point opposite ways (buy vs avoid, sell vs hold) are flagged, and the AI is told when it receives both. Reviews now record the ids of the lessons they were given. Daily closes are fetched from KIS for up to 10 decision symbols every 6 hours. A compact score is added to broker review context.
+
 This loop does not change model weights, rewrite risk policy or establish that performance improved.
 
 Still missing from the requested learning loop:
 
 - Import and linkage of externally placed trades; complete entry/exit tax lots and corporate actions.
-- Forward horizons and benchmark comparisons for outcomes.
-- Contradiction handling between lessons.
+- Significance testing of scoreboard differences; scoring of Hold decisions.
 - Held-out validation of arbitrary natural-language lessons, persisted validation verdicts, and comparison against an unchanged strategy across many cases.
 - Automatic lesson-to-policy promotion, kept behind an explicit opt-in boundary if added.
-- A dashboard measuring whether approved changes improved out-of-sample behavior. No performance claim can currently be made.
+- Out-of-sample validation. The scoreboard compares decisions with and without each lesson, but small samples and changing markets mean no performance claim can be made.
 
 ## Recommended implementation order
 
@@ -92,4 +93,5 @@ The suite covers fixture behavior. The user's successful balance refresh and dis
 - **16 Oct — Market discovery:** security master download and search, KIS ranking screener, per-account watchlist joined to review quotes, agent tools screen_market / search_securities / update_watchlist, Discover tab.
 - **16 Oct — Event-driven news:** news event store with symbol matching and DART importance, news-triggered reviews (10-minute batching), paged DART polling, relevant-first review context, News tab badges and filter.
 - **16 Oct — Performance and settled cash:** settled (D+2) Korean cash in valuation, AI context and buy capacity; daily value history, recorded cash flows, time-weighted returns and KOSPI / S&P 500 benchmarks; Performance chart and period table.
+- **16 Oct — Learning scoreboard:** forward 1/5/20-day decision scores against KOSPI / S&P 500, lesson with/without comparison, lesson contradiction checks (UI and AI context), completed trades versus benchmark, and recorded lesson ids per review.
 - **16 Oct — Connections:** KIS account renamed to Connections and made the single place for KIS credentials, provider keys and the agent bridge command; Engine settings now covers engine behaviour only; duplicated holdings table removed.

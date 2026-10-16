@@ -105,3 +105,6 @@ aside > * { flex-shrink:0; }
 .perf-tooltip{position:absolute;top:8px;transform:translateX(-50%);display:flex;flex-direction:column;gap:2px;padding:6px 10px;border:1px solid var(--border,rgba(127,127,127,.3));border-radius:8px;background:var(--panel,#fff);font-size:12px;pointer-events:none;white-space:nowrap}
 .perf-legend{display:flex;gap:16px;font-size:12px;margin-top:4px}.swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}.swatch.portfolio{background:var(--perf-portfolio)}.swatch.benchmark{background:var(--perf-benchmark)}
 .perf-chart+.link-button{margin:4px 0 12px}
+.score-bar{stroke:var(--panel,#fff);stroke-width:1}.score-bar.up{fill:var(--perf-portfolio)}.score-bar.down{fill:var(--perf-benchmark)}.score-bar.active{stroke:var(--text,currentColor);stroke-width:1.5}
+.swatch.score-up{background:var(--perf-portfolio)}.swatch.score-down{background:var(--perf-benchmark)}
+.conflict-list{margin:4px 0 8px;padding-left:18px}.conflict-list li{margin:4px 0}
