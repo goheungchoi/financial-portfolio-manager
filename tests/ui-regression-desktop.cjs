@@ -230,12 +230,14 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     });
     await check('Short & leverage allows leveraged ETFs per market with approval and records product overrides',async()=>{
       await navigate('Short & leverage');await until('Boolean(document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`))','Korea leverage settings missing');
-      assert.equal(await run('document.querySelector(`[aria-label="Korea automatic leveraged orders"]`).disabled'),true,'automatic mode needs the switch first');
+      assert.equal(await run('document.querySelector(`[aria-label="Korea automatic leveraged and inverse ETFs"]`).disabled'),true,'automatic mode needs the switch first');
       await run('document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`).click()');await wait(100);await click('Save Korea settings');
       await until('document.querySelector(`[aria-label="Korea short and leverage"] .badge`)?.textContent==="PROPOSE ONLY"','Policy not saved');
       await run('(()=>{const set=(label,value)=>{const el=document.querySelector(`[aria-label="${label}"]`);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,value);el.dispatchEvent(new Event("input",{bubbles:true}));};set("Override symbol","NASD:TEST");set("Override multiple","-2");})()');
       await click('Set multiple');await until('document.querySelector(`[aria-label="Product overrides"]`)?.textContent.includes("2x inverse")','Override not shown');
-      await run('document.querySelector("main").scrollTo?.(0,0)');await wait(150);await capture('short-leverage-settings');
+      assert.ok(await run('document.querySelector(`[aria-label="Korea Margin buying (신용매수)"]`).textContent.includes("KIS does not offer credit orders on mock accounts")'),'margin section explains the live-account requirement');
+      assert.ok(await run('Boolean(document.querySelector(`[aria-label="Korea Short selling (대주매도)"]`))')&&!(await run('Boolean(document.querySelector(`[aria-label="U.S. Short selling (대주매도)"]`))')),'short selling is offered for Korea only');
+      await run("document.querySelector(`[aria-label=\"Korea short and leverage\"]`).scrollIntoView({block:\"start\"})");await wait(150);await capture("short-leverage-settings");
       await run('document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`).click()');await wait(100);await click('Save Korea settings');await until('document.querySelector(`[aria-label="Korea short and leverage"] .badge`)?.textContent==="OFF"','Policy not reset');
     });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);

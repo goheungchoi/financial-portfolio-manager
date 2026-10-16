@@ -2,7 +2,11 @@
 // Classification uses the security master name and type, a list of common U.S. tickers and user overrides.
 // The factor is the daily multiple of the underlying index: 2 = 2x leveraged, -1 = inverse, -2 = 2x inverse.
 const US_KNOWN={TQQQ:3,SQQQ:-3,QLD:2,QID:-2,PSQ:-1,UPRO:3,SPXU:-3,SPXL:3,SPXS:-3,SSO:2,SDS:-2,SH:-1,SOXL:3,SOXS:-3,TNA:3,TZA:-3,TECL:3,TECS:-3,FAS:3,FAZ:-3,LABU:3,LABD:-3,UDOW:3,SDOW:-3,DDM:2,DXD:-2,DOG:-1,TMF:3,TMV:-3,TBT:-2,UBT:2,NUGT:2,DUST:-2,YINN:3,YANG:-3,FNGU:3,FNGD:-3,NVDL:2,NVDU:2,NVDD:-1,TSLL:2,TSLQ:-1,CONL:2,MSTU:2,BITX:2,UVXY:1.5,SVXY:-0.5};
-const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90}};
+// Margin: loan source self (자기융자) or distribution (유통융자, via KSFC); interestPct is the annual loan rate used for estimates.
+// Short: stock loan source (자기대주 / 유통대주); feePct is the annual borrowing fee used for estimates.
+const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5}};
+const CREDIT_TYPES={'margin-buy':{self:'21',distribution:'23'},'margin-sell':{self:'25',distribution:'27'},short:{self:'24',distribution:'22'},cover:{self:'28',distribution:'26'}};
+const daysBetween=(a,b)=>Math.round((Date.parse(b)-Date.parse(a))/86400000);
 function classifyName(symbol,name='',englishName=''){
   const us=symbol.includes(':');const ticker=us?symbol.split(':')[1]:symbol;
   if(us&&US_KNOWN[ticker]!=null)return US_KNOWN[ticker];
@@ -44,7 +48,7 @@ class Exposure {
     const next=this.policy(account);
     for(const [section,fields] of Object.entries(value)){if(!fields||typeof fields!=='object')throw new Error('INVALID_SETTINGS');for(const [key,v] of Object.entries(fields)){
       if(!Object.hasOwn(DEFAULT_POLICY[section],key))throw new Error('INVALID_SETTINGS');
-      if(['enabled','auto'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
+      if(key==='source'?!['self','distribution'].includes(v):['enabled','auto'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
       next[section][key]=v;}}
     for(const section of Object.keys(next))if(!next[section].enabled)next[section].auto=false;
     this.db.prepare('INSERT INTO exposure_policy VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(next));return next;
@@ -64,6 +68,35 @@ class Exposure {
     if(equity>0&&(current+notional)/equity*100>p.maxPctOfEquity)throw new Error('LEVERAGED_EXPOSURE_LIMIT');
     return {product,requiresApproval:!p.auto};
   }
+  // Credit orders (Korea): new margin loans and short sales need their switch and cap; repayments always reduce risk.
+  // Returns {type, requiresApproval}, with the KIS credit type for the order.
+  checkCredit({account,kind,symbol,notional,equity,balance,loanDate=null}){
+    const policy=this.policy(account);if(!CREDIT_TYPES[kind])throw new Error('INVALID_ORDER');
+    if(kind==='margin-sell'){const loan=balance.holdings?.find(h=>h.symbol===symbol)?.loans?.find(l=>l.loanDate===loanDate);if(!loan)throw new Error('INSUFFICIENT_CAPACITY');return {type:CREDIT_TYPES[kind][loan.source],requiresApproval:false};}
+    if(kind==='cover'){const short=balance.shorts?.find(s=>s.symbol===symbol&&s.loanDate===loanDate);if(!short)throw new Error('INSUFFICIENT_CAPACITY');return {type:CREDIT_TYPES[kind][short.source],requiresApproval:false};}
+    if(kind==='margin-buy'){
+      const p=policy.margin;if(!p.enabled)throw new Error('MARGIN_NOT_ENABLED');
+      if(!(equity>0)||((balance.loanTotal??0)+notional)/equity*100>p.maxLoanPctOfEquity)throw new Error('MARGIN_LIMIT');
+      const leveraged=this.check({account,symbol,side:'Buy',notional,equity,holdings:balance.holdings});
+      return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto||leveraged.requiresApproval};
+    }
+    const p=policy.short;if(!p.enabled)throw new Error('SHORT_NOT_ENABLED');
+    const gross=(balance.shorts??[]).reduce((n,s)=>n+s.quantity*s.price,0);
+    if(!(equity>0)||(gross+notional)/equity*100>p.maxGrossPctOfEquity)throw new Error('SHORT_LIMIT');
+    return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto};
+  }
+  // Margin loans and short positions: estimated interest/fees so far, expiry and collateral warnings, short stop levels.
+  creditRisk(account,balance,today){
+    const policy=this.policy(account),loans=(balance.holdings??[]).flatMap(h=>(h.loans??[]).map(l=>({symbol:h.symbol,name:h.name,...l,value:l.quantity*h.price})));const shorts=balance.shorts??[];
+    if(!loans.length&&!shorts.length)return null;const warnings=[];
+    const loanRows=loans.map(l=>{const days=l.loanDate?daysBetween(l.loanDate,today):null;const toExpiry=l.expiry?daysBetween(today,l.expiry):null;if(toExpiry!=null&&toExpiry<=7)warnings.push(`Margin loan on ${l.symbol} (${l.loanDate}) matures in ${toExpiry} days; repay or extend.`);return {symbol:l.symbol,quantity:l.quantity,loanAmount:l.amount,loanDate:l.loanDate,expiry:l.expiry,daysToExpiry:toExpiry,estimatedInterest:l.amount!=null&&days!=null?Math.round(l.amount*policy.margin.interestPct/100*days/365):null};});
+    const loanTotal=balance.loanTotal??loans.reduce((n,l)=>n+(l.amount??0),0);const collateral=loanTotal>0?Math.round((loans.reduce((n,l)=>n+l.value,0)+(balance.cash??0))/loanTotal*1000)/10:null;
+    if(collateral!=null&&collateral<policy.margin.minCollateralPct)warnings.push(`Estimated collateral ratio ${collateral}% is below your ${policy.margin.minCollateralPct}% floor; the broker may force a sale below its maintenance ratio.`);
+    const shortRows=shorts.map(s=>{const adverse=s.entryPrice?(s.price/s.entryPrice-1)*100:null;const days=s.loanDate?daysBetween(s.loanDate,today):null;const toExpiry=s.expiry?daysBetween(today,s.expiry):days!=null?policy.short.maxDays-days:null;
+      if(adverse!=null&&adverse>=policy.short.stopLossPct)warnings.push(`Short ${s.symbol} is ${adverse.toFixed(1)}% above its sale price, past your ${policy.short.stopLossPct}% stop; consider covering.`);if(toExpiry!=null&&toExpiry<=7)warnings.push(`Short ${s.symbol} (${s.loanDate}) must be repaid within ${toExpiry} days.`);
+      return {symbol:s.symbol,quantity:s.quantity,entryPrice:s.entryPrice,price:s.price,adversePct:adverse==null?null:Math.round(adverse*10)/10,loanDate:s.loanDate,daysToRepay:toExpiry,estimatedFee:s.proceeds!=null&&days!=null?Math.round(s.proceeds*policy.short.feePct/100*days/365):null};});
+    return {margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,loanTotal,estimatedCollateralPct:collateral,loans:loanRows},short:{allowed:policy.short.enabled,automatic:policy.short.auto,stopLossPct:policy.short.stopLossPct,positions:shortRows},warnings};
+  }
   // AI context: product flags for the review universe and held positions, policy switches and holding-period warnings.
   context(account,universe,holdings,equity,firstSeen){
     const policy=this.policy(account),summary=this.summary(holdings,equity,Date.now(),firstSeen);
@@ -72,4 +105,4 @@ class Exposure {
     return {leveragedEtps:{allowed:policy.leveragedEtps.enabled,automatic:policy.leveragedEtps.auto,maxPctOfEquity:policy.leveragedEtps.maxPctOfEquity,maxHoldingDays:policy.leveragedEtps.maxHoldingDays},products,exposure:{leveragedPct:summary.leveragedPct==null?null:Math.round(summary.leveragedPct*10)/10,effectivePct:summary.effectivePct==null?null:Math.round(summary.effectivePct*10)/10},warnings};
   }
 }
-module.exports={Exposure,classifyName,DEFAULT_POLICY,US_KNOWN};
+module.exports={Exposure,classifyName,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};

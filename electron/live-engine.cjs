@@ -37,16 +37,23 @@ class LiveEngine {
   firstBought(symbol){const buys=this.orders().filter(o=>o.symbol===symbol&&o.side==='Buy'&&o.filled>0).map(o=>o.createdAt);return buys.length?Math.min(...buys):null;}
   productRisk(value){
     if(!this.exposure)return {};const risk=this.exposure.context(this.identity(),value.quotes.map(q=>({symbol:q.symbol,name:value.balance.holdings.find(h=>h.symbol===q.symbol)?.name})),value.balance.holdings,value.balance.reportedTotal,symbol=>this.firstBought(symbol));
-    return risk.products.length||risk.warnings.length||risk.leveragedEtps.allowed?{productRisk:risk}:{};
+    if(this.market==='KR'){const policy=this.exposure.policy(this.identity()),held=this.exposure.creditRisk(this.identity(),value.balance,this.day());
+      if(policy.margin.enabled||policy.short.enabled||held){risk.credit={liveAccountOnly:true,environment:value.balance.environment,margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,maxLoanPctOfEquity:policy.margin.maxLoanPctOfEquity,annualInterestPct:policy.margin.interestPct},short:{allowed:policy.short.enabled,automatic:policy.short.auto,maxGrossPctOfEquity:policy.short.maxGrossPctOfEquity,stopLossPct:policy.short.stopLossPct,annualFeePct:policy.short.feePct},...(held?{loans:held.margin.loans,estimatedCollateralPct:held.margin.estimatedCollateralPct,shorts:held.short.positions}:{})};if(held)risk.warnings.push(...held.warnings);}}
+    return risk.products.length||risk.warnings.length||risk.leveragedEtps.allowed||risk.credit?{productRisk:risk}:{};
   }
   propose(command) {
+    // Optional credit: {kind:'margin-buy'|'margin-sell'|'short'|'cover', loanDate} for Korean margin and short orders (live accounts).
+    const credit=command?.credit??null;if(command&&'credit' in command){const {credit:_,...rest}=command;command=rest;}
+    if(credit!=null&&(this.market!=='KR'||typeof credit!=='object'||Object.keys(credit).some(k=>!['kind','loanDate'].includes(k))||!({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]||({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]!==command.side))throw new Error('INVALID_ORDER');
+    if(credit&&this.getConnection().snapshot?.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
     if(!command || Object.keys(command).sort().join(',')!=='limitPrice,quantity,side,symbol' || !['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!this.validPrice(command.limitPrice)||!this.validSymbol(command.symbol))throw new Error('INVALID_ORDER');
     if(!this.enabled)throw new Error('KIS_TRADING_DISABLED');const policy=this.policy();if(!policy?.anyStock&&!policy?.symbols.includes(command.symbol))throw new Error('INSTRUMENT_NOT_ALLOWED');
     const notional=command.quantity*command.limitPrice;if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)throw new Error('ORDER_SIZE_LIMIT');
     const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,exempt:this.costs.exempt?.(command.symbol)??false}):null;
     // Leveraged and inverse products need their own opt-in and cap; without automatic mode they wait for manual approval.
     const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:balance.reportedTotal,holdings:balance.holdings}):null;
-    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
+    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:balance.reportedTotal,balance,loanDate:credit.loanDate??null});}
+    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||Boolean(gate?.requiresApproval)}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
   async submit(id,confirmation) {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;
@@ -60,16 +67,18 @@ class LiveEngine {
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
       const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
-      const prepared=await this.broker.request('prepare-order',{command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice}});
+      const prepared=await this.broker.request('prepare-order',{command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})}});
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
       this.observeBalance(prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
       if(this.exposure)this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:prepared.balance.reportedTotal,holdings:prepared.balance.holdings});
+      if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
       if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/prepared.balance.reportedTotal*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
       if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
       if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,exempt:this.costs.exempt?.(order.symbol)??false})};}
-      if(order.side==='Buy'&&order.costEstimate&&-order.costEstimate.netCash>Math.min(prepared.balance.cash,Number.isFinite(prepared.balance.settledCash)?prepared.balance.settledCash:prepared.balance.cash))throw new Error('INSUFFICIENT_CAPACITY');
+      // A margin buy is funded by the loan; the broker's credit capacity was checked when preparing the order.
+      if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>Math.min(prepared.balance.cash,Number.isFinite(prepared.balance.settledCash)?prepared.balance.settledCash:prepared.balance.cash))throw new Error('INSUFFICIENT_CAPACITY');
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
       catch(error){order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}

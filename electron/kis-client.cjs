@@ -16,21 +16,35 @@ function amount(value) {
   if(!Number.isFinite(number) || Math.abs(number)>Number.MAX_SAFE_INTEGER) throw new KisError('INVALID_RESPONSE');
   return number;
 }
+// KIS credit types (CRDT_TYPE): 21/23 margin loan (self/distribution), 25/27 its repayment by sale;
+// 24/22 short sale by stock loan (self/distribution), 28/26 its repayment by purchase.
+const CREDIT_KINDS={'margin-buy':{side:'Buy',types:['21','23']},'margin-sell':{side:'Sell',types:['25','27'],repay:true},short:{side:'Sell',types:['24','22']},cover:{side:'Buy',types:['28','26'],repay:true}};
 function normalizeBalance(rows,summary,environment) {
   if(!summary || !Array.isArray(rows)) throw new KisError('INVALID_RESPONSE');
-  const seen=new Set();
-  const holdings=[];
+  // Credit accounts report one row per symbol and credit type (cash, 융자 margin loans by loan date, 대주 short sales).
+  // Margin rows merge into the holding with their loans listed; short rows become separate short positions.
+  const bySymbol=new Map(),shorts=[];const day=v=>/^\d{8}$/.test(String(v??''))?`${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}`:null;
   for(const row of rows) {
     const quantity=amount(row.hldg_qty);
     if(quantity===0) continue;
-    if(quantity<0 || !/^[A-Z0-9]{6}$/.test(row.pdno) || typeof row.prdt_name!=='string' || seen.has(row.pdno)) throw new KisError('INVALID_RESPONSE');
-    seen.add(row.pdno);
-    const holding={symbol:row.pdno,name:row.prdt_name.slice(0,120),quantity,cost:amount(row.pchs_avg_pric),price:amount(row.prpr),marketValue:amount(row.evlu_amt),unrealized:amount(row.evlu_pfls_amt),availableQuantity:row.ord_psbl_qty===undefined?null:amount(row.ord_psbl_qty)};
-    if(holding.cost<0 || holding.price<0 || holding.marketValue<0) throw new KisError('INVALID_RESPONSE');
-    holdings.push(holding);
+    if(quantity<0 || !/^[A-Z0-9]{6}$/.test(row.pdno) || typeof row.prdt_name!=='string') throw new KisError('INVALID_RESPONSE');
+    const type=String(row.trad_dvsn_name??'');const credit=type.includes('대주')?'short':type.includes('융자')?'margin':'cash';
+    const line={quantity,cost:amount(row.pchs_avg_pric),price:amount(row.prpr),marketValue:amount(row.evlu_amt),unrealized:amount(row.evlu_pfls_amt),available:row.ord_psbl_qty===undefined?null:amount(row.ord_psbl_qty)};
+    if(line.cost<0 || line.price<0 || line.marketValue<0) throw new KisError('INVALID_RESPONSE');
+    if(credit==='short'){const proceeds=row.stln_slng_chgs==null||String(row.stln_slng_chgs).trim()===''?null:amount(row.stln_slng_chgs);shorts.push({symbol:row.pdno,name:row.prdt_name.slice(0,120),quantity,price:line.price,entryPrice:proceeds!=null&&quantity?Math.round(proceeds/quantity):line.cost||null,proceeds,loanDate:day(row.loan_dt),expiry:day(row.expd_dt),source:type.includes('자기')?'self':'distribution',availableQuantity:line.available});continue;}
+    const existing=bySymbol.get(row.pdno);
+    if(credit==='cash'&&existing?.cashRow)throw new KisError('INVALID_RESPONSE');
+    const holding=existing??{symbol:row.pdno,name:row.prdt_name.slice(0,120),quantity:0,cost:0,price:line.price,marketValue:0,unrealized:0,availableQuantity:null,loans:[],cashRow:false};
+    holding.cost=(holding.cost*holding.quantity+line.cost*quantity)/(holding.quantity+quantity);holding.quantity+=quantity;holding.marketValue+=line.marketValue;holding.unrealized+=line.unrealized;holding.price=line.price;
+    if(line.available!=null)holding.availableQuantity=(holding.availableQuantity??0)+line.available;
+    if(credit==='margin')holding.loans.push({quantity,amount:row.loan_amt==null||String(row.loan_amt).trim()===''?null:amount(row.loan_amt),loanDate:day(row.loan_dt),expiry:day(row.expd_dt),source:type.includes('자기')?'self':'distribution',availableQuantity:line.available});else holding.cashRow=true;
+    bySymbol.set(row.pdno,holding);
   }
-  const settled=summary.prvs_rcdl_excc_amt;
-  return {source:'kis',environment,timestamp:new Date().toISOString(),cash:amount(summary.dnca_tot_amt),settledCash:settled==null||String(settled).trim()===''?null:amount(settled),reportedTotal:amount(summary.tot_evlu_amt),holdings};
+  const holdings=[...bySymbol.values()].map(({loans,cashRow,...h})=>loans.length?{...h,loans}:h);
+  const settled=summary.prvs_rcdl_excc_amt,optional=v=>v==null||String(v).trim()===''?null:amount(v);
+  const loanTotal=optional(summary.tot_loan_amt),shortProceeds=optional(summary.tot_stln_slng_chgs),netAssets=optional(summary.nass_amt),credit=Boolean(loanTotal||shortProceeds||shorts.length);
+  // With loans or shorts outstanding, the account value for risk is net assets (total value minus loans and short obligations).
+  return {source:'kis',environment,timestamp:new Date().toISOString(),cash:amount(summary.dnca_tot_amt),settledCash:settled==null||String(settled).trim()===''?null:amount(settled),reportedTotal:credit&&netAssets!=null?netAssets:amount(summary.tot_evlu_amt),holdings,...(credit?{shorts,loanTotal,shortProceeds,netAssets,grossTotal:amount(summary.tot_evlu_amt)}:{})};
 }
 class KisReadOnlyClient {
   #credentials; #token; #expires=0; #streamConfig; #streamConfigUntil=0;
@@ -180,7 +194,7 @@ class KisReadOnlyClient {
   async tradingQuery(endpoint,trId,params) {
     await this.authenticate();await this.wait(550);
     const {body}=await this.request('/uapi/domestic-stock/v1/trading/'+endpoint+'?'+new URLSearchParams({CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,...params}),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
-    if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');return body;
+    if(body.rt_cd!=='0'){const error=new KisError(body.msg_cd==='APBK1617'?'CREDIT_ACCOUNT_REQUIRED':'BROKER_REJECTED');error.brokerCode=typeof body.msg_cd==='string'?body.msg_cd:null;throw error;}return body;
   }
   // One domestic order's executions and the broker's fee-plus-tax figure (prsm_tlex_smtl), via the daily order inquiry.
   async getOrderCharges(day,orderId) {
@@ -213,13 +227,25 @@ class KisReadOnlyClient {
   }
   async prepareOrder(command) {
     if(!command||!/^\d{6}$/.test(command.symbol)||!['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!Number.isSafeInteger(command.limitPrice)||command.limitPrice<=0)throw new KisError('INVALID_ORDER');
+    if(command.credit!=null){
+      const spec=CREDIT_KINDS[command.credit?.kind];if(!spec||spec.side!==command.side||!spec.types.includes(command.credit.type)||spec.repay&&!/^\d{4}-\d{2}-\d{2}$/.test(command.credit.loanDate??''))throw new KisError('INVALID_ORDER');
+      if(this.#credentials.environment!=='live')throw new KisError('FEATURE_UNAVAILABLE');
+    }
     await this.checkSession();const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
     const quoteBody=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:command.symbol});const output=quoteBody.output;
     const price=amount(output?.stck_prpr),unit=amount(output?.aspr_unit);
     if(price<=0||unit<=0||command.limitPrice%unit!==0||output.temp_stop_yn!=='N')throw new KisError('INVALID_ORDER');
     if(Math.abs(command.limitPrice/price-1)>.02)throw new KisError('PRICE_MOVED');
     const balance=await this.getBalance();let availableQuantity;
-    if(command.side==='Buy') {
+    if(command.credit) {
+      // New margin loans and short sales: the broker's credit capacity. Repayments: the matching loan or short position.
+      const {kind,type,loanDate}=command.credit;
+      // APBK1617: the account has no KIS credit-trading agreement (신용계좌만 신용주문가능금액조회가 가능합니다).
+      if(['margin-buy','short'].includes(kind)){const body=await this.tradingQuery('inquire-credit-psamount','TTTC8909R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'00',CRDT_TYPE:type,CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});availableQuantity=amount(body.output?.max_buy_qty);}
+      else if(kind==='margin-sell'){const loan=balance.holdings.find(row=>row.symbol===command.symbol)?.loans?.find(row=>row.loanDate===loanDate);availableQuantity=loan?loan.availableQuantity??loan.quantity:null;}
+      else {const short=balance.shorts?.find(row=>row.symbol===command.symbol&&row.loanDate===loanDate);availableQuantity=short?short.availableQuantity??short.quantity:null;}
+      if(availableQuantity==null||command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');
+    } else if(command.side==='Buy') {
       const body=await this.tradingQuery('inquire-psbl-order',this.#credentials.environment==='live'?'TTTC8908R':'VTTC8908R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'01',CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});
       const cash=amount(body.output?.nrcvb_buy_amt),quantity=amount(body.output?.nrcvb_buy_qty);
       if(command.quantity>quantity || command.limitPrice*command.quantity*1.02>cash)throw new KisError('INSUFFICIENT_CAPACITY');availableQuantity=quantity;
@@ -228,7 +254,20 @@ class KisReadOnlyClient {
     if(orders.some(order=>order.remaining>0 && ['Pending','Partially filled'].includes(order.status)))throw new KisError('OPEN_BROKER_ORDERS');
     return {balance,price,unit,availableQuantity,checkedAt:Date.now()};
   }
+  // Credit order (order-credit): margin buy/repay and short sale/cover. Live accounts only; KIS does not support it on mock.
+  async placeCreditOrder(command) {
+    await this.authenticate();await this.wait(550);const {seoulDate}=require('./kis-activity.cjs');
+    const loanDate=(['margin-buy','short'].includes(command.credit.kind)?seoulDate():command.credit.loanDate).replaceAll('-','');
+    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:loanDate,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};
+    try {
+      const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-credit',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:command.side==='Buy'?'TTTC0052U':'TTTC0051U',custtype:'P'},body:JSON.stringify(params)});
+      if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+      if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
+      return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
+    }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
+  }
   async placeOrder(command) {
+    if(command.credit)return this.placeCreditOrder(command);
     await this.authenticate();await this.wait(550);
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice),EXCG_ID_DVSN_CD:'KRX',SLL_TYPE:command.side==='Sell'?'01':'',CNDT_PRIC:''};
     try {
@@ -239,4 +278,4 @@ class KisReadOnlyClient {
     }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
   }
 }
-module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance};
+module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS};
