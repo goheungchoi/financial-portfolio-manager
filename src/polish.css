@@ -136,3 +136,104 @@ table.price-board{min-width:0}
 .meta-line b{font-weight:600}.meta-line time{opacity:.7}
 .meta-line.failed{color:var(--danger);padding:8px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px}
 @media (max-width:1000px){.console-layout{grid-template-columns:minmax(0,1fr)}.run-list{position:static;max-height:240px}}
+
+/* Home via the logo */
+button.brand{width:100%;border:0;background:transparent;padding:6px 8px;margin:-6px -8px 0;border-radius:10px;text-align:left;cursor:pointer;font:inherit;font-size:24px;align-items:center}
+button.brand:hover{background:var(--hover)}
+button.brand.active{background:var(--active)}
+button.brand:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Back / forward and page subtitle */
+.title-row{display:flex;align-items:center;gap:14px}
+.history-buttons{display:flex;gap:4px}
+.history-buttons button{width:30px;height:30px;padding:0;border-radius:8px;font-size:18px;line-height:1;display:grid;place-items:center}
+.history-buttons button:disabled{opacity:.35;cursor:default}
+.page-subtitle{margin:4px 0 0;font-size:13px;color:var(--muted)}
+
+/* Loading states */
+.spinner{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--accent);animation:spin .8s linear infinite;vertical-align:-2px}
+.loading-label{display:inline-flex;align-items:center;gap:8px}
+.screen-results{position:relative;margin-top:14px;min-height:60px}
+.screen-results.loading table{opacity:.45;transition:opacity .15s}
+.loading-veil{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none}
+.loading-veil .spinner{width:22px;height:22px;border-width:3px}
+.skeleton-table{display:flex;flex-direction:column;gap:10px}
+.skeleton-row{height:34px;border-radius:6px;background:linear-gradient(90deg,var(--control) 0%,var(--hover) 50%,var(--control) 100%);background-size:200% 100%;animation:shimmer 1.2s ease-in-out infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){.spinner,.skeleton-row{animation:none}}
+
+/* Settings: cards of rows */
+.engine-settings{display:flex;flex-direction:column;gap:16px;max-width:860px}
+.engine-status{display:flex;align-items:center;gap:12px;padding:14px 18px;border:1px solid var(--border);border-radius:12px;background:var(--panel)}
+.engine-status>div{flex:1;min-width:0}
+.engine-status b{display:block;font-size:14px}
+.engine-status small{display:block;margin-top:2px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.settings-jump{position:sticky;top:0;z-index:9;display:flex;gap:6px;flex-wrap:wrap;padding:8px 0;background:var(--background)}
+.settings-jump button{padding:5px 12px;border-radius:999px;font-size:12px;color:var(--muted)}
+.settings-jump button:hover{color:var(--text)}
+.settings-card{padding:0;overflow:hidden;scroll-margin-top:56px;margin:0}
+.settings-card .card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:16px 20px 12px}
+.settings-card .card-head h2{margin:0;font-size:15px}
+.settings-card .card-head small{display:block;margin-top:4px;font-size:12px}
+.setting-rows>*{margin-left:20px;margin-right:20px}
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:12px 0;border-top:1px solid var(--border);cursor:default}
+label.setting-row{cursor:pointer}
+.setting-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.setting-text b{font-size:13px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px}
+.setting-text small{font-size:12px;line-height:1.4}
+.setting-control{flex:none;display:flex;align-items:center;gap:10px}
+.setting-control select{min-width:200px}
+.setting-rows>.inline-help,.setting-rows>.card-actions,.setting-rows>pre,.setting-rows>.notice,.setting-rows>p,.setting-rows>ul{margin-top:12px;margin-bottom:14px}
+.setting-rows>:last-child{margin-bottom:16px}
+.setting-rows>.setting-row:last-child{margin-bottom:4px}
+.settings-card .guidelines-editor{margin:0 0 16px}
+.settings-card .guidelines-editor textarea{width:100%;resize:vertical}
+.info-dot{display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--border);font-size:10px;font-weight:600;color:var(--muted);cursor:help}
+.number-field{display:inline-flex;align-items:center;border:1px solid var(--border);border-radius:8px;background:var(--control);overflow:hidden}
+.number-field input{width:84px;border:0;background:transparent;padding:7px 10px;text-align:right;outline:none}
+.number-field:focus-within{border-color:var(--accent)}
+.number-field .unit{padding:0 10px 0 2px;font-size:12px;color:var(--muted)}
+.number-field:has(input:disabled){opacity:.5}
+.limit-control{display:flex;align-items:center;gap:14px}
+.mini-switch{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);cursor:pointer}
+.control-pair{display:flex;gap:8px}
+.control-pair select{min-width:0}
+.card-actions{display:flex;gap:8px}
+.compact-table th,.compact-table td{padding:6px 8px;font-size:12px}
+.watch-list{list-style:none;padding:0;display:flex;flex-direction:column;gap:10px}
+.watch-list li{display:grid;grid-template-columns:auto 1fr;gap:2px 12px}
+.watch-list small{grid-column:2}
+
+/* Switches (checkboxes with role=switch) */
+input.switch{appearance:none;-webkit-appearance:none;position:relative;width:38px;height:22px;margin:0;border-radius:999px;border:1px solid var(--border);background:var(--control);cursor:pointer;flex:none;transition:background .15s,border-color .15s}
+input.switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+input.switch:checked{background:var(--accent);border-color:var(--accent)}
+input.switch:checked::after{transform:translateX(16px);background:var(--background)}
+input.switch.small{width:30px;height:18px}
+input.switch.small::after{width:12px;height:12px}
+input.switch.small:checked::after{transform:translateX(12px)}
+input.switch:disabled{opacity:.45;cursor:default}
+input.switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:760px){.setting-row{flex-direction:column;align-items:stretch}.setting-control select{min-width:0;width:100%}}
+/* Unsaved-changes bar floats at the bottom, like a save toast, so it never hides the settings */
+.settings-draft-bar{position:fixed;top:auto;bottom:20px;right:28px;left:auto;width:min(520px,calc(100vw - 240px));margin:0;z-index:30;animation:rise-in .18s ease-out}
+/* One-line notes that expand */
+details.note{margin:10px 0;font-size:12px;color:var(--muted)}
+details.note>summary{list-style:none;cursor:pointer;color:var(--muted);display:inline-flex;align-items:baseline;gap:6px}
+details.note>summary::-webkit-details-marker{display:none}
+details.note>summary::after{content:'More';font-size:11px;color:var(--accent)}
+details.note[open]>summary::after{content:'Less'}
+details.note>summary:hover{color:var(--text)}
+details.note .note-body{margin-top:8px;padding:10px 12px;border-left:2px solid var(--border);line-height:1.55;color:var(--body);animation:rise-in .15s ease-out}
+/* Switches and number fields must not inherit the generic input sizing */
+input.switch{width:38px!important;height:22px!important;min-width:0!important;max-width:38px;padding:0!important;flex:none!important;box-sizing:border-box}
+input.switch.small{width:30px!important;height:18px!important;max-width:30px}
+.number-field input{min-width:0!important;width:84px!important;height:auto!important;flex:none!important;border:0!important;background:transparent!important}
+button.brand{display:flex;gap:10px;align-items:center;color:var(--accent)}
+button.brand span{display:flex;flex-direction:column;line-height:1.15;white-space:nowrap;color:var(--text)}
+button.brand span small{margin-top:3px;letter-spacing:1.4px}
+.settings-jump{justify-content:space-between;align-items:center}
+.settings-jump nav{display:flex;gap:6px;flex-wrap:wrap}
+.settings-jump>.primary{padding:7px 14px;font-size:12px;border-radius:8px}
+.settings-card .guidelines-editor{margin:0 20px 16px}

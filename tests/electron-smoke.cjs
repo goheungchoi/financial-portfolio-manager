@@ -13,7 +13,7 @@ app.on('browser-window-created', (_event, win) => {
   first = false;
   win.webContents.once('did-finish-load', async () => {
     try {
-      assert.equal(await win.webContents.executeJavaScript('document.querySelector("h1").textContent'), 'Overview');
+      assert.equal(await win.webContents.executeJavaScript('document.querySelector("h1").textContent'), 'Home');
       assert.equal(await win.webContents.executeJavaScript('typeof window.require'), 'undefined');
       assert.equal(await win.webContents.executeJavaScript('document.querySelector("main").innerText.includes("vs previous tick")'),false);
       assert.equal(await win.webContents.executeJavaScript('document.querySelector("main").innerText.includes("Holdings + cash")'),false);
@@ -40,7 +40,7 @@ app.on('browser-window-created', (_event, win) => {
       assert.ok(await win.webContents.executeJavaScript("document.querySelector('main').textContent.includes('Connect your portfolio')"));
       fs.mkdirSync(path.join(__dirname, '../artifacts'), { recursive: true });
       fs.writeFileSync(path.join(__dirname, '../artifacts/candles.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
-      await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Overview').click()");
+      await win.webContents.executeJavaScript("document.querySelector('.brand').click()");
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='AI console').click()");
       await new Promise(resolve=>setTimeout(resolve,100));
       assert.equal(BrowserWindow.getAllWindows().length,1);
@@ -58,10 +58,10 @@ app.on('browser-window-created', (_event, win) => {
       fs.writeFileSync(invalidFile,JSON.stringify({appSecret:'fixture-secret'}));
       try {await assert.rejects(service.request('import',invalidFile),error=>error.message==='INVALID_CREDENTIAL_FILE');}
       finally {service.disconnect();}
-      await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Overview').click()");
+      await win.webContents.executeJavaScript("document.querySelector('.brand').click()");
       fs.mkdirSync(path.join(__dirname, '../artifacts'), { recursive: true });
       fs.writeFileSync(path.join(__dirname, '../artifacts/dashboard.png'), (await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
-      await win.webContents.executeJavaScript("document.querySelector('button[aria-label]').click()");
+      await win.webContents.executeJavaScript("document.querySelector('.theme-switch').click()");
       await new Promise(resolve => setTimeout(resolve, 150));
       assert.equal(await win.webContents.executeJavaScript('document.documentElement.dataset.theme'), 'light');
       fs.writeFileSync(path.join(__dirname, '../artifacts/dashboard-light.png'), (await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());

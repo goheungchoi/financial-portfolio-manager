@@ -1,24 +1,26 @@
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
-export const workspaceGroups=[{label:'',tabs:['Overview']},{label:'Portfolio',tabs:['Holdings','Charts','Performance','Activity']},{label:'Trade',tabs:['KIS trading','U.S. stocks','Paper trading']},{label:'AI',tabs:['Journal','AI console']},{label:'Research',tabs:['Discover','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
+export const workspaceGroups=[{label:'Portfolio',tabs:['Holdings','Charts','Performance','Activity']},{label:'Trade',tabs:['KIS trading','U.S. stocks','Paper trading']},{label:'AI',tabs:['Journal','AI console']},{label:'Research',tabs:['Discover','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
+export const HOME='Home';
+// One short sentence per page; the details live next to the controls they explain.
 export const tabGuides:Record<string,{description:string;next:string;target:string}>={
-  Overview:{description:'See where your money is invested, how positions are performing, and whether the engine is ready.',next:'Connect your account',target:'Connections'},
-  Holdings:{description:'Inspect each company, position size, latest price and unrealized gain or loss.',next:'Explore price history',target:'Charts'},
-  Charts:{description:'Compare price movements with candles, a line view, volume and a moving average. Choose an instrument and visible range.',next:'Review portfolio weights',target:'Overview'},
-  Activity:{description:'Load broker order history and filter executions, partial fills, cancellations and rejections.',next:'Check realized results',target:'Performance'},
-  Performance:{description:'Track account value, time-weighted returns against KOSPI and the S&P 500, and recorded deposits and withdrawals. Below, query realized trading results for a selected period.',next:'Inspect the underlying orders',target:'Activity'},
-  'Paper trading':{description:'Practice with a separate simulated account. Enable paper execution, review a proposal, then submit it to see simulated fills.',next:'Choose a decision provider',target:'Engine settings'},
-  'KIS trading':{description:'Activate a broker session with your own limits, review a cash limit order and explicitly approve it. Accepted broker orders remain active after stopping.',next:'Connect or check your account',target:'Connections'},
-  'U.S. stocks':{description:'View USD holdings and approve NASDAQ, NYSE and AMEX cash limit orders.',next:'Configure fees and tax estimates',target:'Fees & taxes'},
-  'Fees & taxes':{description:'Set your commission plan, sale fees and South Korean annual capital-gains estimate inputs.',next:'Review U.S. stocks',target:'U.S. stocks'},
-  'Short & leverage':{description:'Allow leveraged and inverse ETFs, set caps and approval, and correct product classification. Margin and short selling are added here when supported.',next:'Review fees and taxes',target:'Fees & taxes'},
-  Discover:{description:'Search Korean and U.S. listings, screen KIS rankings, and keep a watchlist. Watchlist symbols are quoted and included in AI reviews; the agent can add its own candidates with reasons.',next:'Set trading limits',target:'KIS trading'},
-  Journal:{description:'Read actual portfolio decisions and approve useful lessons for future reviews. Hold is a valid completed decision.',next:'Inspect the program–agent exchange',target:'AI console'},
-  'AI console':{description:'Inspect supplied context, decisions, risk checks and tool results.',next:'Run a portfolio review',target:'Engine settings'},
-  News:{description:'Configure a public news feed or DART connection and read available headlines. Coverage is limited to your configured sources.',next:'Add a DART key',target:'Connections'},
-  Macro:{description:'Official interest rates, inflation, exchange rates and volatility for Korea and the U.S., plus upcoming U.S. release dates. The AI uses them as background context.',next:'Add ECOS or FRED keys',target:'Connections'},
-  'Engine settings':{description:'Choose how the engine behaves: decision provider, portfolio, schedule, budget and submission preferences. Keys and accounts are managed in Connections.',next:'Practice the workflow',target:'Paper trading'},
-  Connections:{description:'Connect your KIS brokerage account and optional AI, news and alert keys. Each connection shows its status, the remembered file and reconnect controls. Connecting alone does not enable trading.',next:'Configure the engine',target:'Engine settings'}
+  Home:{description:'What needs you, what the AI did, and where your money is.',next:'Connections',target:'Connections'},
+  Holdings:{description:'Every position with its price, weight and unrealized gain.',next:'Charts',target:'Charts'},
+  Charts:{description:'Price history with candles, volume and a moving average.',next:'Holdings',target:'Holdings'},
+  Activity:{description:'Broker order history: fills, cancellations and rejections.',next:'Performance',target:'Performance'},
+  Performance:{description:'Account value and returns against KOSPI and the S&P 500.',next:'Activity',target:'Activity'},
+  'Paper trading':{description:'A simulated account for practising trades.',next:'Engine settings',target:'Engine settings'},
+  'KIS trading':{description:'Korean orders through your KIS account, within your limits.',next:'Connections',target:'Connections'},
+  'U.S. stocks':{description:'USD holdings and NASDAQ, NYSE and AMEX orders.',next:'Fees & taxes',target:'Fees & taxes'},
+  'Fees & taxes':{description:'Commissions, sale fees and capital-gains tax estimates.',next:'U.S. stocks',target:'U.S. stocks'},
+  'Short & leverage':{description:'Leveraged and inverse ETFs, margin and short selling.',next:'Fees & taxes',target:'Fees & taxes'},
+  Discover:{description:'Find stocks and keep a watchlist the AI reviews.',next:'KIS trading',target:'KIS trading'},
+  Journal:{description:'AI decisions and the lessons you approve for future reviews.',next:'AI console',target:'AI console'},
+  'AI console':{description:'Each review as a conversation between the app and the AI.',next:'Engine settings',target:'Engine settings'},
+  News:{description:'Headlines and DART disclosures for your stocks.',next:'Connections',target:'Connections'},
+  Macro:{description:'Rates, inflation, FX and volatility the AI uses as background.',next:'Connections',target:'Connections'},
+  'Engine settings':{description:'How and when the AI reviews and trades.',next:'Paper trading',target:'Paper trading'},
+  Connections:{description:'Your KIS account and optional AI, news and alert keys.',next:'Engine settings',target:'Engine settings'}
 };
 const stamp=(value:number|null)=>value?new Date(value).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'} )+' KST':'No review yet';
 export function RuntimePulse({onNavigate,expanded=false}:{onNavigate(tab:string):void;expanded?:boolean}){
