@@ -237,3 +237,43 @@ button.brand span small{margin-top:3px;letter-spacing:1.4px}
 .settings-jump nav{display:flex;gap:6px;flex-wrap:wrap}
 .settings-jump>.primary{padding:7px 14px;font-size:12px;border-radius:8px}
 .settings-card .guidelines-editor{margin:0 20px 16px}
+
+/* Stage 1 frame: a fixed top bar spans the window; the sidebar and pages sit below it */
+:root{--topbar-h:52px;--side-w:220px}
+@media (max-width:800px){:root{--side-w:170px}}
+aside{overflow-y:auto}
+.topbar{position:fixed;top:0;left:0;right:0;height:var(--topbar-h);z-index:40;display:flex;align-items:center;gap:10px;padding:0 14px 0 0;background:var(--sidebar);border-bottom:1px solid var(--border)}
+.topbar button.brand{width:var(--side-w);flex:none;margin:0;height:100%;border-radius:0;padding:0 20px;display:flex;align-items:center;gap:10px;font-size:15px;border-right:1px solid var(--border)}
+.topbar .brand-mark{font-size:20px;color:var(--accent)}
+.topbar .brand-name{font-size:15px;font-weight:600;color:var(--text)}
+.topbar .history-buttons{margin-left:4px}
+.topbar .history-buttons button{width:28px;height:28px;font-size:17px;background:transparent;border-color:transparent}
+.topbar .history-buttons button:not(:disabled):hover{background:var(--hover)}
+.breadcrumb{display:flex;align-items:center;gap:8px;min-width:0;flex:1;font-size:13px;color:var(--muted)}
+.breadcrumb .crumb-sep{opacity:.6}
+.breadcrumb h1{margin:0;font-size:15px;font-weight:600;letter-spacing:0;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
+.top-status{display:flex;align-items:center;gap:8px;flex:none}
+.chip-wrap{position:relative}
+.top-chip{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border:1px solid var(--border);border-radius:999px;background:transparent;font-size:12px;color:var(--text);white-space:nowrap;cursor:pointer}
+.top-chip:hover{background:var(--hover)}
+.top-chip small{color:var(--muted);font-size:11px}
+.chip-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+.top-chip.tone-success .chip-dot{background:var(--accent)}
+.top-chip.tone-accent .chip-dot{background:#6aa7e8}
+.top-chip.tone-warning .chip-dot{background:#dcaa62}
+.top-chip.tone-danger{border-color:#d96c6c}
+.top-chip.tone-danger .chip-dot{background:#d96c6c}
+.top-chip.tone-accent:has(+ .chip-panel),.top-chip[aria-expanded=true]{background:var(--hover)}
+.chip-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:50;width:300px;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--panel);box-shadow:0 12px 32px rgba(0,0,0,.28);animation:pop-in .14s ease-out}
+.chip-panel b{display:block;font-size:13px;margin-bottom:6px}
+.chip-panel p{margin:0 0 6px;font-size:12px;line-height:1.5;color:var(--body)}
+.chip-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.chip-actions button{font-size:12px;padding:6px 12px}
+.topbar .theme-switch.icon{width:30px;height:30px;padding:0;border-radius:8px;border:1px solid var(--border);background:transparent;font-size:15px;line-height:1;color:var(--text)}
+.topbar .theme-switch.icon:hover{background:var(--hover)}
+aside{top:var(--topbar-h)!important;width:var(--side-w)!important;padding-top:6px!important}
+main{margin-left:var(--side-w)!important;padding-top:calc(var(--topbar-h) + 22px)!important}
+.settings-jump{top:var(--topbar-h)}
+.settings-card{scroll-margin-top:calc(var(--topbar-h) + 56px)}
+@media (max-width:1000px){.breadcrumb>span:not(.crumb-sep):first-child,.breadcrumb .crumb-sep{display:none}.top-chip small{display:none}}
+.topbar button.brand.active{background:transparent}.topbar button.brand:hover{background:var(--hover)}

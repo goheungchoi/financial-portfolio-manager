@@ -4,9 +4,9 @@ export function TickDelta({value,sample,currency='KRW'}:{value:number;sample:num
   const previous=useRef({value,sample});const [delta,setDelta]=useState<number|null>(null);
   useEffect(()=>{if(previous.current.sample===sample&&previous.current.value===value)return;setDelta(value-previous.current.value);previous.current={value,sample};},[value,sample]);
   const format=(amount:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(amount);
-  // Labeled in place: a bare amount under a total reads like a second balance.
-  const text=delta===null?'Waiting for the next price update':delta===0?'No change since last price update':`${delta>0?'+':'−'}${format(Math.abs(delta))}`;
-  return <span className={`tick-delta ${delta!==null&&delta>0?'increase':delta!==null&&delta<0?'decrease':'unchanged'}`} data-delta={delta??''} title="Change in total value since the previous price update, including any fills, fees or cash changes."><b>{text}</b>{delta!==null&&delta!==0&&<small> since last price update</small>}</span>;
+  // A signed, colored amount; no change shows a quiet dash. The meaning lives in the tooltip.
+  const text=delta===null||delta===0?'—':`${delta>0?'+':'−'}${format(Math.abs(delta))}`;
+  return <span className={`tick-delta ${delta!==null&&delta>0?'increase':delta!==null&&delta<0?'decrease':'unchanged'}`} data-delta={delta??''} title={delta===null?'Waiting for the next price update':'Change since the last price update, including fills, fees and cash changes'}><b>{text}</b></span>;
 }
 export function LiveValue({value,format=formatMoney}:{value:number;format?(value:number):string}){
   const previous=useRef(value);const [change,setChange]=useState({delta:0,sequence:0});

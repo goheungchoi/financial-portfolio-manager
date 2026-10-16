@@ -42,7 +42,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
   const run=code=>win.webContents.executeJavaScript(code),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const until=async(code,message)=>{for(let i=0;i<60;i++){if(await run(code))return;await wait(50);}throw new Error(message);};
   const click=async text=>{await run(`(()=>{const button=Array.from(document.querySelectorAll('button')).find(item=>item.textContent.trim()===${JSON.stringify(text)});if(!button)throw new Error('Missing UI button');button.click();})()`);await wait(80);};
-  const navigate=async tab=>{await run(`(name=>(name==='Home'?document.querySelector('.brand'):Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent===name)))(${JSON.stringify(tab)}).click()`);await until(`document.querySelector('h1').textContent===${JSON.stringify(tab)}`,'Navigation failed');await wait(100);};
+  const navigate=async tab=>{await run(`(name=>(name==='Home'?document.querySelector('.brand'):Array.from(document.querySelectorAll('.nav')).find(b=>b.dataset.tab===name)))(${JSON.stringify(tab)}).click()`);await until(`document.querySelector('h1').textContent===${JSON.stringify(tab)}`,'Navigation failed');await wait(100);};
   const capture=async name=>{for(let attempt=0;attempt<3;attempt++){try{fs.writeFileSync(path.join(output,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());report.screenshots.push(name+'.png');return;}catch(error){if(attempt===2)throw error;await wait(150);}}};
   const check=async(name,fn)=>{await fn();report.checks.push({name,status:'passed'});};
   try{
@@ -50,7 +50,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     await check('All tabs navigate in one window, in dark and light modes, at desktop and compact widths',async()=>{
       for(const [width,height] of [[1280,900],[960,720]]){win.setSize(width,height);for(const theme of ['dark','light']){
         if(await run('document.documentElement.dataset.theme')!==theme){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'Theme switch did not update');}
-        const tabs=await run("Array.from(document.querySelectorAll('.nav')).map(button=>button.textContent)");
+        const tabs=await run("Array.from(document.querySelectorAll('.nav')).map(button=>button.dataset.tab)");
         for(const tab of tabs){await navigate(tab);assert.equal(BrowserWindow.getAllWindows().length,1);assert.equal(await run('typeof window.require'),'undefined');const overflow=await run('document.querySelector("main").scrollWidth-document.querySelector("main").clientWidth');assert.ok(overflow<=2,`${tab} overflows by ${overflow}px at ${width}px (${theme})`);}
         await navigate('U.S. stocks');await until('Boolean(document.querySelector(".us-account-summary"))','U.S. summary missing');await run("window.portfolio.usAction('refresh')");await wait(2100);await click('Refresh U.S. account');await until('document.querySelector(".us-account-value .tick-delta")?.dataset.delta==="0"','Zero-change indicator not updated');
         const geometry=await run(`(()=>{const summary=document.querySelector('.us-account-summary'),value=summary.querySelector('strong').getBoundingClientRect(),delta=summary.querySelector('.tick-delta').getBoundingClientRect(),header=summary.nextElementSibling.querySelector('th').getBoundingClientRect(),box=summary.getBoundingClientRect();return {value:value.toJSON(),delta:delta.toJSON(),header:header.toJSON(),box:box.toJSON()};})()`);
@@ -279,7 +279,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await capture('ai-console-conversation');
     });
     // Optional design review: full-page screenshots of every tab (PORTFOLIO_TOUR=1).
-    if(process.env.PORTFOLIO_TOUR){win.setSize(1280,900);await run("document.documentElement.dataset.theme='dark'");const tabs=await run('Array.from(document.querySelectorAll(".nav")).map(b=>b.textContent)');
+    if(process.env.PORTFOLIO_TOUR){win.setSize(1280,900);await run("document.documentElement.dataset.theme='dark'");const tabs=await run('Array.from(document.querySelectorAll(".nav")).map(b=>b.dataset.tab)');
       win.webContents.on("console-message",(...args)=>{const m=args[0]?.message??args[2];if(/error/i.test(String(m)))console.log("renderer: "+String(m).slice(0,600));});console.log("tour tabs: "+tabs.join(" | "));for(const tab of tabs){try{await navigate(tab);}catch(error){console.log("tour skip "+tab+": "+error.message);continue;}await wait(600);const height=await run('Math.min(6000,document.documentElement.scrollHeight)');win.setSize(1280,height);await wait(300);await capture('tour-'+tab.toLowerCase().replace(/[^a-z]+/g,'-'));win.setSize(1280,900);}}
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}

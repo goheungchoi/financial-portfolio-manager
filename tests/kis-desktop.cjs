@@ -38,7 +38,7 @@ app.once('browser-window-created',(_event,win)=>{
       assert.equal(await win.webContents.executeJavaScript('window.portfolio.getMarket().then(state=>state.quotes[0].timeBasis)'),'exchange');
       await new Promise(resolve=>setTimeout(resolve,1100));
       assert.equal(await win.webContents.executeJavaScript('document.querySelector(".metrics strong").textContent'),'₩940');
-      assert.ok((await win.webContents.executeJavaScript('document.querySelector(".market-bar").textContent')).includes('Last trade'));
+      await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".top-chip")).find(b=>b.title==="Market feed").click()');await new Promise(resolve=>setTimeout(resolve,100));assert.ok((await win.webContents.executeJavaScript('document.querySelector(".chip-panel").textContent')).includes('Last trade'));await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".top-chip")).find(b=>b.title==="Market feed").click()');
       const waitDelta=async expected=>{for(let attempt=0;attempt<45;attempt++){const delta=await win.webContents.executeJavaScript('document.querySelector(".tick-delta").dataset.delta');if(delta===String(expected))return;await new Promise(resolve=>setTimeout(resolve,50));}assert.fail('Expected tick equity change '+expected);};
       fixtureService.onQuote({symbol:'005380',price:225,timestamp:Date.now(),receivedAt:Date.now(),cumulativeVolume:101});await waitDelta(10);
       assert.ok((await win.webContents.executeJavaScript('document.querySelector(".tick-delta").textContent')).includes('+₩10'));
