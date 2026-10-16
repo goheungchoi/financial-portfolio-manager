@@ -43,3 +43,17 @@
 .research-weights span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .research-weights i{display:block;height:8px;border-radius:0 4px 4px 0;background:var(--accent)}
 .research-weights b{text-align:right;font-weight:500}
+/* Discover interactivity */
+.quick-look{position:fixed;right:18px;top:calc(var(--topbar-h,52px) + 14px);width:min(400px,calc(100vw - 36px));max-height:calc(100vh - var(--topbar-h,52px) - 30px);overflow:auto;z-index:30;box-shadow:0 12px 40px rgba(0,0,0,.18)}
+.quick-price{display:flex;align-items:baseline;gap:10px;margin:2px 0 4px}.quick-price b{font-size:22px}
+.quick-look .research-spark{height:70px}
+.screen-filter{max-width:280px;margin:8px 0}
+.sort-head{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer}
+.change-cell{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end}
+.change-bar{position:relative;display:inline-block;width:46px;height:6px;border-radius:3px;background:var(--border)}
+.change-bar>i{position:absolute;top:0;bottom:0;border-radius:3px;background:currentColor;opacity:.75}
+tr.flash-up td{animation:flash-up 1.4s ease-out}tr.flash-down td{animation:flash-down 1.4s ease-out}
+@keyframes flash-up{from{background:rgba(102,217,192,.28)}to{background:transparent}}
+@keyframes flash-down{from{background:rgba(217,108,108,.25)}to{background:transparent}}
+@media (prefers-reduced-motion:reduce){tr.flash-up td,tr.flash-down td{animation:none}}
+.discover-footer h2{font-size:14px}

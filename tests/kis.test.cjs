@@ -67,7 +67,7 @@ test('quotes and daily history normalize only market fields and use read-only en
     return reply({rt_cd:'0',output2:[{stck_bsop_date:'20261014',stck_oprc:'100',stck_hgpr:'160',stck_lwpr:'90',stck_clpr:'150',acml_vol:'25'},{stck_bsop_date:'20261013',stck_oprc:'90',stck_hgpr:'120',stck_lwpr:'80',stck_clpr:'100',acml_vol:'10'}]});
   },async()=>{});
   const quote=await client.getQuote('005930');
-  assert.equal(quote.price,150);assert.deepEqual(Object.keys(quote).sort(),['price','retrievedAt','symbol']);
+  assert.equal(quote.price,150);assert.deepEqual(Object.keys(quote).sort(),['changePct','previousClose','price','retrievedAt','symbol','volume'],'only market fields: price, previous close, day change and volume');
   const candles=await client.getDailyHistory('005930');
   assert.equal(candles.length,2);assert.ok(candles[0].timestamp<candles[1].timestamp);
   assert.equal(candles[1].timestamp,Date.parse('2026-10-14T00:00:00+09:00'));

@@ -112,7 +112,8 @@ class KisReadOnlyClient {
     const body=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol});
     const price=amount(body.output?.stck_prpr);
     if(price<=0)throw new KisError('INVALID_RESPONSE');
-    return {symbol,price,retrievedAt:Date.now()};
+    const o=body.output??{};const n=v=>{const x=Number(v);return v!=null&&String(v).trim()!==''&&Number.isFinite(x)?x:null;};
+    return {symbol,price,retrievedAt:Date.now(),previousClose:n(o.stck_sdpr),changePct:n(o.prdy_ctrt),volume:n(o.acml_vol)};
   }
   // KIS returns at most 100 daily rows per request; extra pages continue before the earliest row.
   async getDailyHistory(symbol,pages=1) {

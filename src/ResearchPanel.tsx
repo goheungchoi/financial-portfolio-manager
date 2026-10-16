@@ -101,7 +101,7 @@ function Flows({d}:{d:any}){
     <p className="muted research-note">Short selling is the share of daily volume sold short. Margin is loans outstanding as a share of listed shares.</p>
   </>;
 }
-function Spark({closes}:{closes:{date:string;close:number}[]}){
+export function Spark({closes}:{closes:{date:string;close:number}[]}){
   if(!closes?.length)return null;const min=Math.min(...closes.map(c=>c.close)),max=Math.max(...closes.map(c=>c.close)),w=600,h=80;
   const pts=closes.map((c,i)=>`${(i/(closes.length-1)*w).toFixed(1)},${(h-(max===min?h/2:(c.close-min)/(max-min)*h)).toFixed(1)}`).join(' ');
   return <svg className="research-spark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={`Closing prices ${closes[0].date} to ${closes.at(-1)!.date}`}><polyline points={pts} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke"/></svg>;
