@@ -381,3 +381,26 @@ main>.emergency-notice button{font-size:12px;padding:6px 12px}
 .detail-block{display:flex;flex-direction:column;gap:6px;margin-top:6px}
 .detail-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
 .detail-actions button{font-size:12px;padding:6px 12px}
+
+/* Stage 3 · settings pages */
+main>.engine-settings~section{max-width:860px}
+.exposure-section{border-top:1px solid var(--border);margin:0 20px;padding:12px 0 4px}
+.exposure-section .setting-row{margin:0}
+.exposure-section>.setting-row:first-of-type{border-top:0}
+.exposure-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:2px}
+.exposure-title b{font-size:14px}
+.exposure-title .muted{font-size:12px}
+.exposure-facts{margin:0 20px 10px}
+.settings-card .card-actions{margin:12px 20px 16px;align-items:center}
+.settings-card .compact-table{margin:4px 20px 14px;width:calc(100% - 40px)}
+.settings-card .control-pair input{width:150px;min-width:0;height:34px}
+.settings-card .control-pair button{white-space:nowrap}
+.connection-card .setting-rows>.notice{margin-top:4px}
+.setting-rows>details.note,.setting-rows>details.inline-help,.setting-rows>p,.setting-rows>small{margin-left:20px;margin-right:20px}
+.number-field input{width:112px!important}
+.setting-control select,.settings-card .control-pair select{font-size:13px;height:36px}
+.setting-control button,.settings-card .control-pair button,.settings-card .card-actions button{font-size:12px;padding:7px 12px}
+.settings-card .control-pair input{font-size:13px}
+.connection-card .control-pair{flex-wrap:wrap;justify-content:flex-end}
+.setting-control select,.settings-card .control-pair select{padding:6px 10px!important;line-height:20px;height:36px!important}
+main>.engine-settings{margin-bottom:18px}
