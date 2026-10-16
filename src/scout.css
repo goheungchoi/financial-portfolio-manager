@@ -1,0 +1,4 @@
+/* AI scout: the reason column reads left to right; the card stays clear of the fixed top bar when scrolled to */
+.scout-targets th:last-child,.scout-targets td:last-child{text-align:left}
+.scout-targets td:first-child{white-space:nowrap}
+.scout-panel{scroll-margin-top:calc(var(--topbar-h,52px) + 12px)}
