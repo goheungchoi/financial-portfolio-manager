@@ -334,3 +334,36 @@ main>.emergency-notice button{font-size:12px;padding:6px 12px}
 .plan-lines li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}
 .run-dot.tone-scout{background:#6aa7e8}.outcome-pill.tone-scout{background:rgba(106,167,232,.16);color:#6aa7e8}
 .metric-card .portfolio-profit{padding:0;gap:0}.metric-foot .portfolio-profit{display:inline-flex}
+
+/* Stage 3 · Korea and U.S. trading */
+.trade-page{display:flex;flex-direction:column;gap:18px;max-width:1000px}
+.trade-card{margin:0}
+.trade-card h2{margin:0 0 4px}
+.trade-card .section-head small{display:block;margin-top:4px;font-size:12px}
+.state-pill{font-size:12px;padding:4px 12px;border-radius:999px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.state-pill.on{border-color:var(--accent);color:var(--accent)}
+.trade-fields{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);gap:14px;margin:14px 0 6px}
+.trade-fields label,.order-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted);min-width:0}
+.trade-fields input,.trade-fields select,.order-form input,.order-form select{width:100%;min-width:0;height:38px;padding:8px 10px;box-sizing:border-box}
+.session-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--border);margin-top:10px}
+.session-bar .activation-consent{display:inline-flex;align-items:center;gap:10px;font-size:13px;color:var(--text);cursor:pointer}
+.session-bar .actions{display:flex;gap:8px;flex-wrap:wrap}
+.session-bar button{font-size:12px;padding:7px 12px}
+.order-form{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:12px}
+.order-form label{flex:1 1 120px}
+.order-form>button{height:38px;padding:0 16px;flex:none}
+.order-list{list-style:none;margin:8px 0 0;padding:0}
+.order-row{padding:12px 0;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
+.order-row:first-child{border-top:0}
+.order-main{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.order-main b{font-size:14px}
+.order-main .num{font-variant-numeric:tabular-nums;font-size:13px;color:var(--body)}
+.order-main .decision-tag{width:46px;text-align:center;font-size:11px}
+.order-status{margin-left:auto;font-size:12px;color:var(--muted)}
+.order-row.tone-action .order-status{color:var(--accent)}
+.order-row.tone-done .order-status{color:var(--text)}
+.order-row.tone-bad .order-status,.order-row.tone-warn .order-status{color:#d96c6c}
+.order-main button{font-size:12px;padding:6px 12px}
+.order-row .inline-help{margin:2px 0}
+@media (max-width:860px){.trade-fields{grid-template-columns:minmax(0,1fr)}}
+.trade-fields select,.order-form select,.trade-fields input,.order-form input{height:38px!important;margin:0!important}

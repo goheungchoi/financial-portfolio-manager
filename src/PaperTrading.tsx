@@ -39,7 +39,7 @@ export function PaperTrading() {
     <section className="paper-hero" aria-label="Practice account">
       <div className="section-head"><div><h2>Practice account</h2><small>Simulated money and prices · never sends orders to KIS</small></div>
         <label className="sim-switch"><input type="checkbox" role="switch" aria-label="Simulation running" checked={!s.account.paused} disabled={busy} onChange={()=>void run(()=>api.pausePaper(!s.account.paused),reply=>setMessage({tone:'ok',text:reply.state?.account.paused?'Simulation paused; unfinished paper orders were canceled.':'Simulation running. Prices move and orders can fill.'}))}/><span className="sim-track" aria-hidden="true"/><b>{s.account.paused?'Simulation paused':'Simulation running'}</b></label></div>
-      {s.account.paused&&<p className="notice">Turn on the simulation to trade. Pausing cancels open practice orders.</p>}
+      {s.account.paused&&<p className="muted small-line" title="Pausing cancels open practice orders.">Paused · turn the simulation on to trade.</p>}
       <div className="paper-stats">
         <div><small>Total value</small><strong><LiveValue value={s.account.equity}/></strong><TickDelta value={s.account.equity} sample={sample}/></div>
         <div><small>Cash available</small><strong><LiveValue value={s.account.availableCash}/></strong>{s.account.reservedCash>0&&<span className="muted">{money(s.account.reservedCash)} held for open orders</span>}</div>
