@@ -14,12 +14,12 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 1. **Done** — Standalone Electron + React desktop app (React chosen; comparison in [UI-ARCHITECTURE.md](UI-ARCHITECTURE.md)).
 2. **Done** — KIS account and KIS Developers API key supplied by the user in a JSON file. Credential and provider files are read only by private workers; the AI never sees them.
 3. **Partial, *changed*** — Market data refreshes the UI at 1 Hz. *30 Hz is dropped:* KIS REST limits and the 20-symbol stream cap make 30 Hz meaningless for decisions taken minutes apart.
-4. **Partial** — Korea and U.S. holdings in one portfolio, valued in KRW and native currency. Combined equity should use settled cash so unsettled purchases are not counted twice.
+4. **Partial** — Korea and U.S. holdings in one portfolio, valued in KRW and native currency. Korean cash now uses settled (D+2) cash, so unsettled purchases are no longer counted twice. U.S. settlement is not yet modelled the same way.
 
 ### Portfolio view
 5. **Partial** — Allocation charts by company, sector, region, market and currency. Planned: automatic sector/region classification from the security master (item 12).
 6. **Partial** — Candle and price-history charts. Planned: U.S. candles, and a Charts window that can be popped out into its own window (original requirement, not yet built).
-7. **Partial** — Current total money and earnings per period. Planned: daily NAV history, deposit/withdrawal adjustment, time-weighted return and a KOSPI / S&P 500 benchmark.
+7. **Done** — Current total money and earnings per period: daily account-value history, recorded deposits/withdrawals, time-weighted returns and KOSPI / S&P 500 benchmarks. Follow-ups: automatic transfer detection, money-weighted return.
 8. **Partial** — Clear trading history. Planned: import of trades placed outside the app so history and learning cover the whole account.
 
 ### AI agent
@@ -37,6 +37,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 18. **Done** — Automated unit and Electron UI tests with fixtures; no real orders or paid calls in tests.
 19. **Planned** — Signed installer and auto-update.
 20. **Planned, *new*** — **Token saving:** skip AI calls when nothing relevant changed since the last review; route routine reviews to a cheaper model and escalate to a stronger one for emergencies, important disclosures and any trade (the stronger model confirms trades); order context so stable parts are cached; send compact, delta-style context; prefetch commonly requested evidence to avoid tool round trips; run reflections at a discounted batch tier where available; degrade (cheaper model, longer interval) near the daily budget instead of stopping. Measure cost per review before and after.
+21. **Planned, *new*** — **Accurate fees and taxes:** replace estimates with broker-reported figures per execution (KIS order/fill inquiries report commission and tax for domestic and overseas trades), and model South Korean taxes on overseas stocks precisely (annual capital-gains tax on net foreign gains above the basic deduction, using KRW amounts at settlement-date exchange rates across all brokers). Keep estimates only where the broker has not reported yet, and label them.
 
 ## Roadmap
 
@@ -47,10 +48,11 @@ Each step is planned, implemented, tested and committed on its own before the ne
 | 1 | ~~Autopilot guardrails (item 11)~~ Done | Unattended auto-trading is the main purpose; it needs a hard stop and a kill switch before the agent gets more reach. |
 | 2 | ~~Market discovery (item 12)~~ Done | The agent can now screen and build a watchlist beyond holdings. |
 | 3 | ~~Event-driven news and disclosures (item 13)~~ Done | Relevant disclosures now start a review within minutes. |
-| 4 | Performance and settled cash (items 4, 7) | Correct cash and a benchmark are needed to judge both the agent and its lessons. |
+| 4 | ~~Performance and settled cash (items 4, 7)~~ Done | Returns are now measured against KOSPI / S&P 500 with deposits excluded. |
 | 5 | Learning scoreboard (item 15) | Builds on the benchmark from step 4. |
 | 6 | Charts: U.S. candles and pop-out window (item 6) | User-facing completeness. |
 | 7 | Macro inputs (item 14) | Useful context once discovery and events work. |
+| 7b | Accurate fees and taxes (item 21) | Requested as a side item; uses broker-reported fees and taxes per execution. |
 | 8 | Token saving (item 20) | Best done once the context and tools are stable, so savings are measured against the final workload. |
 | 9 | Installer and auto-update (item 19) | Release hardening. |
 

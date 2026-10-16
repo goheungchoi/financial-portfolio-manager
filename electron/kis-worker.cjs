@@ -53,6 +53,9 @@ process.parentPort.on('message',async ({data})=>{
     if(['orders','profit'].includes(operation)) {
       process.parentPort.postMessage({id,ok:true,snapshot:await client.getActivity(operation,data.startDate,data.endDate)});return;
     }
+    if(operation==='index-history') {
+      process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-index.cjs').indexHistory(client,data.request)});return;
+    }
     if(operation==='screen') {
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-rankings.cjs').rankings(client,data.request)});return;
     }
