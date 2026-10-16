@@ -17,7 +17,9 @@ class AgentDesk {
   rows(table,scope,status){return this.db.prepare(`SELECT payload FROM ${table} WHERE scope=?${status?' AND status=?':''} ORDER BY rowid DESC`).all(...(status?[scope,status]:[scope])).map(r=>JSON.parse(r.payload));}
   write(table,item){this.db.prepare(`INSERT INTO ${table} VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,payload=excluded.payload`).run(item.id,item.scope,item.status,JSON.stringify(item));return item;}
   // Expired triggers and orders are closed before anything reads them.
-  expire(scope){const now=this.clock();for(const [table,live] of [['agent_triggers','active'],['conditional_orders','armed']])for(const item of this.rows(table,scope,live))if(item.expiresAt<=now)this.write(table,{...item,status:'expired',closedAt:now});
+  expire(scope){const now=this.clock();
+    // An order interrupted while firing (app closed, auto trading switched off) goes back to armed after two minutes.
+    for(const item of this.rows('conditional_orders',scope,'firing'))if(now-(item.firingAt??0)>120000)this.write('conditional_orders',{...item,status:'armed',waiting:'interrupted; checking again'});for(const [table,live] of [['agent_triggers','active'],['conditional_orders','armed']])for(const item of this.rows(table,scope,live))if(item.expiresAt<=now)this.write(table,{...item,status:'expired',closedAt:now});
     this.db.prepare('DELETE FROM agent_notes WHERE scope=? AND json_extract(payload,\'$.expiresAt\')<=?').run(scope,now);}
   // Triggers
   triggers(scope){this.expire(scope);return this.rows('agent_triggers',scope,'active');}

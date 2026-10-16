@@ -224,10 +224,10 @@ class Automation {
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
       const ctx=await engine.context(us?await this.refreshUS():null);
-      if(!ctx.marketSession?.open){this.desk.update(order,{status:'armed',waiting:'market closed'});return;}
-      const quote=ctx.quotes.find(q=>q.symbol===order.symbol);if(!(quote?.price>0)){this.desk.update(order,{status:'armed',waiting:'no fresh quote'});return;}
+      if(!ctx.marketSession?.open){this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});return;}
+      const quote=ctx.quotes.find(q=>q.symbol===order.symbol);if(!(quote?.price>0)){this.desk.update(order,{status:'armed',waiting:'no fresh quote',nextCheckAt:Date.now()+60000});return;}
       const formula=require('./formula.cjs');const base=this.formulaData(ctx.quotes);const check=formula.checkConditions(order.conditions,order.combine,{...base,price:sym=>ctx.quotes.find(q=>q.symbol===sym)?.price??base.price(sym)});
-      if(!check.met){this.desk.update(order,{status:'armed',waiting:null,lastCheck:check.results});return;}
+      if(!check.met){this.desk.update(order,{status:'armed',waiting:null,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
       const market=us?'US':'KR';const {onTick}=require('./agent-desk.cjs');const limit=onTick(order.limitPrice??quote.price,order.side,market);
       const drift=Math.abs(limit/quote.price-1)*100;if(drift>this.config.conditionalMaxSlippagePct)return note('rejected',`Limit ${limit} is ${drift.toFixed(2)}% from the price ${quote.price}, above the ${this.config.conditionalMaxSlippagePct}% limit.`,{results:check.results});
       let quantity=order.quantity;
@@ -344,7 +344,7 @@ class Automation {
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
     if(deskDue&&this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&!this.firing&&this.config.scope!=='paper'){
       const scope=this.watchScope();const data=this.formulaData();const formula=require('./formula.cjs');
-      for(const order of this.desk.orders(scope)){const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}
+      for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}
     }
     if(this.schedulerStatus().label!=='Monitoring')return;
     // Agent triggers: met conditions start a review with the values that met them.
