@@ -4,16 +4,17 @@ app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
 // Offline symbol-list fixtures served to the app instead of KIS's download server.
 const masterDir=path.join(process.env.PORTFOLIO_SMOKE_DATA,'master-fixtures');fs.mkdirSync(masterDir,{recursive:true});for(const [name,data] of Object.entries(require('./discovery-fixtures.cjs').masterFiles()))fs.writeFileSync(path.join(masterDir,name),data);process.env.PORTFOLIO_MASTER_DIR=masterDir;
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/ui-regression');fs.mkdirSync(output,{recursive:true});
-const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;
+const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;let dartFixture=false;
 const domestic={accountKey:'ui-regression-fixture',environment:'mock',source:'kis',cash:10000000,reportedTotal:10000000,holdings:[]};
 const overseas={accountKey:'ui-regression-fixture:US',environment:'mock',source:'kis-us',currency:'USD',cash:0,reportedTotal:0,holdings:[]};
 dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path.join(process.env.PORTFOLIO_SMOKE_DATA,'fake-ui-file-never-read.json')]});
 require('../electron/kis-service.cjs').KisService.prototype.request=async function(operation,payload){
-  if(operation==='import')return this.workerScript==='provider-worker.cjs'?{aiConnected:true,dartConnected:false,pushConnected:false}:{...domestic,timestamp:new Date().toISOString()};
+  if(operation==='import')return this.workerScript==='provider-worker.cjs'?{aiConnected:true,dartConnected:dartFixture,pushConnected:false}:{...domestic,timestamp:new Date().toISOString()};
   if(operation==='company-chart')return {status:'available',retrievedAt:Date.now(),metrics:{price:110,dayHigh:115,dayLow:100,PER:12,PBR:2,high52Week:150,low52Week:70,ROE:null},data:{SMA5:105,SMA10:102,SMA20:98,stochastic:{K:60,D:58},asOf:Date.now()-86400000},candles:Array.from({length:30},(_,i)=>({timestamp:Date.now()-(30-i)*86400000,open:90+i,high:94+i,low:88+i,close:92+i,volume:100+i}))};
   if(operation==='refresh')return {...domestic,timestamp:new Date().toISOString()};
   if(operation==='us-context'){if(failUS)throw Object.assign(new Error('US_CASH_SERVER_ERROR'),{httpStatus:503,brokerCode:'FIXTURE503'});return {balance:{...overseas,timestamp:new Date().toISOString()},quotes:[],warnings:[],marketSession:{open:true,status:'open'}};}
   if(operation==='live-context')return {balance:{...domestic,timestamp:new Date().toISOString()},quotes:[],marketSession:{open:false,status:'closed'}};
+  if(operation==='disclosures')return [{title:'삼성전자 · 주요사항보고서(자기주식취득결정)',symbol:'005930',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261016000001',published:'20261016',source:'DART'},{title:'Unrelated Co · 기타공시',symbol:'000001',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261016000002',published:'20261016',source:'DART'}];
   if(operation==='screen')return payload.request.market==='KR'?[{symbol:'005930',name:'raw',price:213500,changePct:1.67,volume:7179383,marketCap:1264e12,per:null,currency:'KRW'},{symbol:'069500',name:'etf',price:40000,changePct:-0.5,volume:100,marketCap:null,per:null,currency:'KRW'},{symbol:'45226K',name:'pref',price:5200,changePct:30,volume:1,marketCap:null,per:null,currency:'KRW'}]:[];
   if(operation==='orders'||operation==='us-orders')return {orders:[]};if(operation==='quotes')return [];
   if(operation==='decision'&&decisionFailure)throw new Error('AI_MODEL_UNAVAILABLE');
@@ -155,6 +156,14 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const reply=await run("window.portfolio.updateWatchlist('add','999999','')");assert.equal(reply.ok,false);assert.equal(reply.error,'UNKNOWN_SYMBOL');
       await run('document.querySelector(`[aria-label="Watchlist"]`).scrollIntoView({block:"start"})');await wait(200);await capture('discover-watchlist');
       await run('document.querySelector(`[aria-label="Remove 005930"]`).click()');await until('!document.querySelector(`[aria-label="Watchlist entries"]`)','Watchlist remove failed');
+    });
+    await check('News matches disclosures to watchlist symbols and filters to portfolio-relevant items',async()=>{
+      dartFixture=true;await run('window.portfolio.importProviders()');await run("window.portfolio.updateWatchlist('add','005930','')");
+      await navigate('News');await until('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Refresh news"&&!b.disabled)','News controls not ready');await click('Refresh news');await until('Array.from(document.querySelectorAll(".news-entry")).some(e=>e.textContent.includes("IMPORTANT")&&e.querySelector(`[aria-label="Matched symbols"]`)?.textContent.includes("005930"))','Matched disclosure missing');
+      await run('document.querySelector(`[aria-label="Only news about my symbols"]`).click()');await wait(150);
+      const titles=await run('Array.from(document.querySelectorAll(".news-entry h3")).map(e=>e.textContent)');assert.equal(titles.length,1);assert.match(titles[0],/주요사항보고서/);
+      assert.equal(await run('document.querySelector(`[aria-label="News-triggered reviews"]`).value'),'disclosures');await capture('news-matched-disclosure');
+      await run("window.portfolio.updateWatchlist('remove','005930')");
     });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
