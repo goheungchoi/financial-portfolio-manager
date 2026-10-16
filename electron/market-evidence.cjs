@@ -1,0 +1,37 @@
+const DATASETS=['company','daily_technicals','minute_technicals','range_10m'];
+const TOOL={type:'function',name:'get_market_evidence',description:'Read company valuation/day/52-week ranges or computed SMA5/10/20 and fast stochastic (14,3) from daily or minute candles; range_10m is the last ten completed clock minutes. Only review-universe symbols. Missing metrics remain unavailable. No trading or credentials.',strict:true,parameters:{type:'object',properties:{symbol:{type:'string'},dataset:{type:'string',enum:DATASETS}},required:['symbol','dataset'],additionalProperties:false}};
+function validRequest(value,symbols){return value&&Object.keys(value).sort().join(',')==='dataset,symbol'&&DATASETS.includes(value.dataset)&&symbols.includes(value.symbol);}
+const number=value=>value===null||value===undefined||String(value).trim()===''||!Number.isFinite(Number(value))?null:Number(value);
+function company(output={},us=false){
+  const fields=us?{price:'last',dayOpen:'open',dayHigh:'high',dayLow:'low',high52Week:'h52p',low52Week:'l52p',PER:'perx',PBR:'pbrx',EPS:'epsx',BPS:'bpsx'}:{price:'stck_prpr',dayOpen:'stck_oprc',dayHigh:'stck_hgpr',dayLow:'stck_lwpr',high52Week:'w52_hgpr',low52Week:'w52_lwpr',PER:'per',PBR:'pbr',EPS:'eps',BPS:'bps'};
+  const metrics=Object.fromEntries(Object.entries(fields).map(([key,field])=>{const n=number(output[field]);return [key,n===0||(/price|High|Low|Open|Week/.test(key)&&n<0)?null:n];}));
+  return {...metrics,ROE:null,consensusTarget:null,unavailable:['ROE: no financial-statement adapter connected','consensusTarget: no analyst-consensus source connected'],periodBasis:'Broker supplied; valuation reporting period and quote exchange timestamp not supplied. Zero placeholder fields treated as unavailable.'};
+}
+function technicals(candles,interval,dataset,now=Date.now(),market='KR'){
+  const duration=interval==='1m'?60000:86400000;
+  const today=new Intl.DateTimeFormat('en-CA',{timeZone:market==='US'?'America/New_York':'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(now));
+  const seen=new Set();
+  const rows=candles.filter(c=>{
+    if(!['timestamp','open','high','low','close','volume'].every(k=>Number.isFinite(c[k]))||c.low<=0||c.high<Math.max(c.open,c.close)||c.low>Math.min(c.open,c.close)||c.volume<0||seen.has(c.timestamp))return false;
+    seen.add(c.timestamp);return interval==='1m'?c.timestamp+duration<=now:(c.date??new Date(c.timestamp+9*3600000).toISOString().slice(0,10))<today;
+  }).sort((a,b)=>a.timestamp-b.timestamp);
+  const last=rows.at(-1);const base={interval,bars:rows.length,asOf:last?.timestamp??null,formingBarExcluded:true,adjustment:'Daily broker-adjusted prices; minute bars as supplied',stale:!last?true:interval==='1m'?now-last.timestamp>180000:null};
+  if(dataset==='range_10m'){
+    const end=Math.floor(now/60000)*60000,start=end-600000;const window=rows.filter(c=>c.timestamp>=start&&c.timestamp<end);
+    const complete=window.length===10&&window.every((c,i)=>c.timestamp===start+i*60000);
+    return {...base,start,end,coverage:complete?'complete':'partial',bars:window.length,high:window.length?Math.max(...window.map(c=>c.high)):null,low:window.length?Math.min(...window.map(c=>c.low)):null,note:'Extrema of available completed one-minute bars; partial coverage is not the full ten-minute range.'};
+  }
+  const sma=n=>rows.length<n?null:rows.slice(-n).reduce((sum,c)=>sum+c.close,0)/n;
+  const kAt=end=>{if(end<14)return null;const w=rows.slice(end-14,end),high=Math.max(...w.map(c=>c.high)),low=Math.min(...w.map(c=>c.low));return high===low?null:100*(w.at(-1).close-low)/(high-low);};
+  const ks=[0,1,2].map(offset=>kAt(rows.length-offset));
+  return {...base,SMA5:sma(5),SMA10:sma(10),SMA20:sma(20),stochastic:{variant:'Fast stochastic: K=14 bars, D=SMA3(K)',K:ks[0],D:ks.every(v=>v!=null)?ks.reduce((a,b)=>a+b,0)/3:null},note:'Null means insufficient bars or zero range. Daily latest bar date must be checked for session/holiday gaps. Indicators are evidence, not buy/sell instructions.'};
+}
+class MarketEvidence {
+  constructor(fetchData){this.fetchData=fetchData;}
+  async get(args,context){
+    if(!validRequest(args,context.universe.map(r=>r.symbol)))return {status:'unavailable',reason:'INVALID_OR_OUT_OF_SCOPE_REQUEST'};
+    try{const value=await this.fetchData(args,context);return {symbol:args.symbol,dataset:args.dataset,...value};}
+    catch{return {symbol:args.symbol,dataset:args.dataset,status:'unavailable',reason:'DATA_SOURCE_UNAVAILABLE'};}
+  }
+}
+module.exports={TOOL,DATASETS,validRequest,company,technicals,MarketEvidence};

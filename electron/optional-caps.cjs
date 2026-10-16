@@ -1,0 +1,2 @@
+function optionalCaps(value={}){const caps={};for(const key of ['maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct']){const number=value[key];if(number==null||number===''){caps[key]=null;continue;}if(!Number.isFinite(number)||number<=0||number>(key==='maxCompanyPct'?100:1000000000)||key!=='maxCompanyPct'&&!Number.isSafeInteger(number))throw new Error('INVALID_LIMITS');caps[key]=number;}return caps;}
+module.exports={optionalCaps};

@@ -1,0 +1,37 @@
+const {app,dialog}=require('electron');const assert=require('node:assert/strict');const path=require('node:path');const fs=require('node:fs');
+app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);let posts=0;let submitted=false;let failUS=false;
+const domestic={accountKey:'overseas-fixture',source:'kis',environment:'mock',timestamp:new Date().toISOString(),cash:10000000,reportedTotal:10000000,holdings:[]};
+const balance={accountKey:'overseas-fixture:US',source:'kis-us',environment:'mock',currency:'USD',timestamp:new Date().toISOString(),cash:1000,reportedTotal:3000,holdings:[{symbol:'NASD:AAPL',name:'Apple',quantity:10,cost:150,price:200,marketValue:2000,availableQuantity:10}]};
+dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path.join(process.env.PORTFOLIO_SMOKE_DATA,'fake-never-read.json')]});
+require('../electron/kis-service.cjs').KisService.prototype.request=async function(operation){
+  if(operation==='us-context'&&failUS)throw new Error('US_CASH_AUTH_FAILED');
+  if(operation==='live-context')return {balance:domestic,quotes:[],marketSession:{open:false,status:'closed'}};
+  if(operation==='us-context')return {balance,quotes:[{symbol:'NASD:AAPL',price:200,retrievedAt:Date.now()}],marketSession:{open:true,status:'open'}};
+  if(operation==='us-prepare-order')return {balance,ticket:'fake-us-ticket'};
+  if(operation==='us-place-order'){posts++;submitted=true;return {brokerOrderId:'99'};}
+  if(operation==='us-orders')return {orders:submitted?[{orderId:'99',symbol:'NASD:AAPL',side:'Sell',quantity:2,filled:2,remaining:0,orderPrice:200.01,fillPrice:200.02,status:'Filled'}]:[]};
+  if(operation==='orders'||operation==='quotes')return operation==='orders'?{orders:[]}:[];
+  if(operation==='import'||operation==='refresh')return domestic;
+  throw new Error('UNEXPECTED_FIXTURE_OPERATION');
+};
+const timer=setTimeout(()=>{console.error('U.S. desktop timed out');app.exit(1);},30000);
+app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{try{
+  const run=code=>win.webContents.executeJavaScript(code),wait=()=>new Promise(resolve=>setTimeout(resolve,180));
+  const navigate=async name=>{await run(`Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent===${JSON.stringify(name)}).click()`);await wait();};
+  const input=async(selector,value)=>{await run(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));})()`);await wait();};
+  await run('window.portfolio.importKis()');await navigate('U.S. stocks');assert.ok((await run('document.querySelector("main").textContent')).includes('NASDAQ'));
+  assert.equal((await run("window.portfolio.usAction('get')")).state.portfolio.reportedTotal,3000);
+  await run("document.querySelector('.activation-consent input').click()");await wait();await run("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Activate for this session').click()");await wait();assert.equal((await run("window.portfolio.usAction('get')")).state.enabled,true);
+  await input('[aria-label="KIS order symbol"]','NASD:AAPL');await run("(()=>{const el=Array.from(document.querySelectorAll('label')).find(label=>label.textContent.startsWith('Side')).querySelector('select');el.value='Sell';el.dispatchEvent(new Event('change',{bubbles:true}));})()");await wait();
+  await input('input[step="0.01"]','200.01');await run("(()=>{const el=Array.from(document.querySelectorAll('label')).find(label=>label.textContent.startsWith('Shares')).querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'2');el.dispatchEvent(new Event('input',{bubbles:true}));})()");await wait();
+  await run("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Create proposal').click()");await wait();assert.equal(posts,0);assert.ok((await run('document.querySelector("main").textContent')).includes('Net proceeds'));
+  await run("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Approve MOCK order').click()");await wait();assert.equal(posts,1);await run("window.portfolio.usAction('reconcile')");assert.equal((await run("window.portfolio.usAction('get')")).state.orders[0].resultCosts.gross,400.04);
+  await navigate('Fees & taxes');assert.ok((await run('document.querySelector("main").textContent')).includes('South Korean resident'));const settings=await run('window.portfolio.getCosts()');await run(`window.portfolio.saveCosts(${JSON.stringify({...settings,usCommissionPct:.1,usdKRW:1400,annualRealizedKRW:0,taxBasisKRW:{'NASD:AAPL':200000}})})`);assert.equal((await run('window.portfolio.getCosts()')).usCommissionPct,.1);
+  await run("window.portfolio.configureRuntime({scope:'us',provider:'local'})");const review=await run('window.portfolio.reviewRuntime()');assert.equal(review.ok,true);assert.ok((await run('window.portfolio.getEvents()')).some(event=>event.title==='Supplied context'&&event.body.includes('tradingCosts')&&event.body.includes('USD')));
+  assert.equal((await run("window.portfolio.liveAction('get')")).state.orders.length,0);await run("window.portfolio.liveAction('configure',{symbols:[]},'ENABLE MOCK')");await run("window.portfolio.configureRuntime({scope:'both',provider:'local'})");assert.equal((await run('window.portfolio.reviewRuntime()')).ok,true);assert.ok((await run('window.portfolio.getEvents()')).some(event=>event.title==='Supplied context'&&event.body.includes('kis-combined')));
+  const combined=await run('window.portfolio.refreshPortfolio()');assert.equal(combined.complete,true);assert.equal(combined.sessions.KR,true);assert.equal(combined.sessions.US,true);assert.equal(combined.totals.equityKRW,14200000);await run("window.portfolio.setInstrumentMetadata('NASD:AAPL',{sector:'Technology',region:'Global technology'})");await navigate('Overview');assert.ok((await run('document.querySelector("main").textContent')).includes('Global technology'));assert.ok((await run('document.querySelector("main").textContent')).includes('14,200,000'));
+  await run("(()=>{const select=document.querySelector('[aria-label=\"Allocation grouping\"]');select.value='Sector';select.dispatchEvent(new Event('change',{bubbles:true}));})()");await wait();assert.ok((await run('document.querySelector("main").textContent')).includes('Technology'));
+  try{fs.writeFileSync(path.join(__dirname,'../artifacts/combined-portfolio.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());}catch{}
+  failUS=true;const failure=await run("window.portfolio.usAction('refresh')");assert.equal(failure.error,'US_CASH_AUTH_FAILED');await navigate('U.S. stocks');assert.ok((await run('document.querySelector("main").textContent')).includes('authentication failed'));failUS=false;await run("window.portfolio.usAction('refresh')");await navigate('U.S. stocks');await wait();try{fs.writeFileSync(path.join(__dirname,'../artifacts/overseas-trading.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());}catch{}
+  console.log('U.S. desktop passed: USD balances, checkbox activation, cents, fee estimates, approval, reconciliation and cost-aware review context.');clearTimeout(timer);app.quit();
+}catch(error){console.error(error);clearTimeout(timer);app.exit(1);}});});require('../electron/main.cjs');

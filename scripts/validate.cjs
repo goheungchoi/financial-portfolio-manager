@@ -1,0 +1,7 @@
+const fs=require('node:fs');const path=require('node:path');const {spawnSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..');const directory=path.join(root,'artifacts/validation');fs.mkdirSync(directory,{recursive:true});
+const tests=fs.readdirSync(path.join(root,'tests')).filter(file=>/\.test\.(cjs|mjs)$/.test(file)).map(file=>'tests/'+file);
+const stages=[['types',['node_modules/typescript/bin/tsc','--noEmit']],['build',['node_modules/vite/bin/vite.js','build']],['unit',['--test',...tests]],['ui',['tests/run-desktop.cjs']],['package',['scripts/package.cjs']],['portable-startup',['scripts/verify-package.cjs']]];
+const report={startedAt:new Date().toISOString(),status:'passed',stages:[]};
+for(const [name,args] of stages){const started=Date.now();console.log(`Validation: ${name}`);const result=spawnSync(process.execPath,args,{cwd:root,windowsHide:true,encoding:'utf8',timeout:name==='ui'?300000:120000,maxBuffer:8*1024*1024});const output=(result.stdout??'')+(result.stderr??'')+(result.error?'\n'+result.error.message:'');fs.writeFileSync(path.join(directory,name+'.log'),output);process.stdout.write(output);const status=result.status===0&&!result.error?'passed':'failed';report.stages.push({name,status,durationMs:Date.now()-started,log:name+'.log'});if(status==='failed'){report.status='failed';break;}}
+report.finishedAt=new Date().toISOString();fs.writeFileSync(path.join(directory,'latest.json'),JSON.stringify(report,null,2));console.log(`Validation ${report.status}: ${directory}`);process.exit(report.status==='passed'?0:1);
