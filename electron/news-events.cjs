@@ -46,7 +46,8 @@ class NewsEvents {
   }
   list(limit=100){return this.db.prepare('SELECT payload FROM news_events ORDER BY firstSeenAt DESC,rowid DESC LIMIT ?').all(limit).map(row=>JSON.parse(row.payload));}
   relevant(limit=8){return this.list(300).filter(event=>event.symbols.length).slice(0,limit);}
-  latestReceipt(){return this.list(300).map(event=>event.receipt).filter(Boolean).sort().at(-1)??null;}
+  // Today's stored DART receipts, so polling can stop at the first page it has already seen.
+  receipts(limit=1000){return this.list(limit).map(event=>event.receipt).filter(Boolean);}
   // Recent relevant events that have not triggered a review. 'disclosures' only counts high-importance DART filings.
   pending(mode,now=Date.now()){
     if(mode==='off')return [];

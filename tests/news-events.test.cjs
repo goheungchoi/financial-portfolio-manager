@@ -28,7 +28,7 @@ test('event store ingests once, filters pending by mode and window, and prunes o
   const created=store.ingest([dart('005930','삼성전자 · 주요사항보고서(유상증자결정)','20261016000010'),dart('005930','삼성전자 · 임원ㆍ주요주주특정증권등소유상황보고서','20261016000011'),headline('삼성전자 신제품'),headline('Unrelated market wrap',2)],securities,now);
   assert.equal(created.length,4);assert.equal(store.ingest([headline('삼성전자 신제품')],securities,now).length,0,'already-seen URLs are ignored');
   assert.equal(store.ingest([headline('삼성전자 신제품',9)],securities,now).length,0,'the same title from another feed is ignored');
-  assert.equal(store.latestReceipt(),'20261016000011');
+  assert.deepEqual(store.receipts().sort(),['20261016000010','20261016000011']);
   assert.deepEqual(store.pending('disclosures',now).map(e=>e.receipt),['20261016000010']);assert.equal(store.pending('all',now).length,3);assert.deepEqual(store.pending('off',now),[]);
   store.markTriggered(store.pending('all',now).map(e=>e.id),now);assert.equal(store.pending('all',now).length,0);
   store.ingest([dart('005930','삼성전자 · 합병결정','20261016000012')],securities,now);assert.equal(store.pending('disclosures',now+7*3600000).length,0,'events older than six hours do not trigger');

@@ -19,11 +19,11 @@ process.parentPort.on('message',async({data})=>{
     } else if(data.operation==='disclosures') {
       if(!dartKey)throw 0;
       const date=new Date(Date.now()+9*3600000).toISOString().slice(0,10).replaceAll('-','');
-      const stopAt=typeof data.stopAt==='string'&&/^\d{14}$/.test(data.stopAt)?data.stopAt:null;const rows=[];
-      // Page through today's list until an already-seen receipt (at most 5 pages of 100).
+      const seen=new Set(Array.isArray(data.seen)?data.seen.filter(receipt=>typeof receipt==='string'&&/^\d{14}$/.test(receipt)).slice(0,1000):[]);const rows=[];
+      // Page through today's list until a page contains an already-stored receipt (at most 5 pages of 100). Receipt numbers are not chronological across filers.
       for(let page=1;page<=5;page++){const response=await fetch('https://opendart.fss.or.kr/api/list.json?'+new URLSearchParams({crtfc_key:dartKey,bgn_de:date,end_de:date,page_no:String(page),page_count:'100'}),{redirect:'error',signal:AbortSignal.timeout(15000)});if(!response.ok)throw 0;
-        const body=await response.json();if(body.status!=='000'&&body.status!=='013')throw 0;const list=Array.isArray(body.list)?body.list:[];rows.push(...list);if(!list.length||page>=Number(body.total_page??1)||stopAt&&list.some(row=>String(row.rcept_no)<=stopAt))break;}
-      result=rows.slice(0,500).filter(row=>/^\d{14}$/.test(row.rcept_no)).map(row=>({title:String(row.corp_name+' · '+row.report_nm).slice(0,500),symbol:row.stock_code??'',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row.rcept_no,published:row.rcept_dt,source:'DART'}));
+        const body=await response.json();if(body.status!=='000'&&body.status!=='013')throw 0;const list=Array.isArray(body.list)?body.list:[];rows.push(...list);if(!list.length||page>=Number(body.total_page??1)||list.some(row=>seen.has(String(row.rcept_no))))break;}
+      result=rows.slice(0,500).filter(row=>/^\d{14}$/.test(row.rcept_no)).map(row=>({title:(String(row.corp_name??'').trim()+' · '+String(row.report_nm??'').trim()).slice(0,500),symbol:row.stock_code??'',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row.rcept_no,published:row.rcept_dt,source:'DART'}));
     } else throw 0;
     process.parentPort.postMessage({id:data.id,ok:true,snapshot:result});
   }catch(error){process.parentPort.postMessage({id:data.id,ok:false,usage:['decision','reflection'].includes(data.operation)?error.usage??null:null,model:['decision','reflection'].includes(data.operation)?error.model??null:null,code:data.operation==='decision'?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):'PROVIDER_REQUEST_FAILED'});}
