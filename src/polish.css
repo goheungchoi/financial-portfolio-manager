@@ -277,6 +277,49 @@ main{margin-left:var(--side-w)!important;padding-top:calc(var(--topbar-h) + 22px
 .settings-card{scroll-margin-top:calc(var(--topbar-h) + 56px)}
 @media (max-width:1000px){.breadcrumb>span:not(.crumb-sep):first-child,.breadcrumb .crumb-sep{display:none}.top-chip small{display:none}}
 .topbar button.brand.active{background:transparent}.topbar button.brand:hover{background:var(--hover)}
+
+/* Stage 3 · Home */
+.home-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:18px}
+.metric-card{margin:0;padding:18px 20px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.metric-card>small{font-size:12px;color:var(--muted)}
+.metric-card>strong{font-size:26px;font-weight:650;letter-spacing:-.4px;font-variant-numeric:tabular-nums;line-height:1.15}
+.metric-card>strong .live-number{font:inherit}
+.metric-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);min-height:18px}
+.metric-foot .tick-delta b{font-size:12px}
+.metric-card .portfolio-profit .profit-label{display:none}
+.metric-card .portfolio-profit .profit-amount{display:flex;align-items:baseline;gap:8px}
+.metric-card>.portfolio-profit .profit-amount b{font-size:26px;font-weight:650;letter-spacing:-.4px}
+.metric-card>.portfolio-profit .profit-amount span{font-size:13px}
+.metric-foot .portfolio-profit .profit-amount b{font-size:12px;font-weight:600}
+.metric-foot .portfolio-profit .profit-amount span{font-size:11px}
+.portfolio-profit.gain b,.portfolio-profit.gain span{color:var(--accent)}
+.portfolio-profit.loss b,.portfolio-profit.loss span{color:#d96c6c}
+.home-bottom{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:18px;margin-top:4px}
+.home-bottom>section{margin:0}
+.compact-rows{list-style:none;margin:6px 0 0;padding:0}
+.compact-rows>li{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--border);min-width:0;transform:none!important;border-radius:0!important;border-left:0!important;border-right:0!important;border-bottom:0!important;grid-template-columns:none}
+.compact-rows>li:first-child{border-top:0}
+.compact-rows .row-text,.compact-rows .company-link{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+.compact-rows .num{font-variant-numeric:tabular-nums;font-size:13px;text-align:right;width:92px;flex:none}
+.compact-rows .num.muted,.compact-rows .muted{color:var(--muted)}
+.compact-rows .num:last-child{width:44px}
+.compact-rows button:not(.company-link){font-size:12px;padding:5px 12px}
+.compact-rows .decision-tag{width:46px;text-align:center;flex:none;font-size:11px}
+.compact-rows .attention-icon{width:14px;flex:none;text-align:center}
+.attention-item{padding:9px 0!important}
+.all-clear{color:var(--muted);margin:6px 0 0}
+.ai-activity .section-head small{display:block;margin-top:4px;font-size:12px}
+.ai-activity .section-head .actions button{font-size:12px;padding:6px 12px}
+.small-line{font-size:12px;margin:8px 0 0}
+.home-allocation .chart-options{margin-top:0}
+.home-allocation .interactive-ring svg{max-width:200px}
+/* Emergency banner on every page */
+main>.emergency-notice{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 16px;padding:12px 16px;border:1px solid #d8a550;border-radius:10px;background:color-mix(in srgb,#d8a550 12%,var(--panel))}
+main>.emergency-notice b{font-size:13px}
+main>.emergency-notice span{font-size:12px;color:var(--body);flex:1}
+main>.emergency-notice button{font-size:12px;padding:6px 12px}
+@media (max-width:1100px){.home-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.home-bottom{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:860px){.home-metrics{grid-template-columns:minmax(0,1fr)}}
 /* AI scout */
 .scout-panel .section-head small{display:flex;align-items:center;gap:6px;margin-top:4px}
 .scout-summary{margin:4px 0 10px;font-size:14px;line-height:1.6;color:var(--text)}
@@ -290,3 +333,4 @@ main{margin-left:var(--side-w)!important;padding-top:calc(var(--topbar-h) + 22px
 .plan-lines{list-style:none;padding:0;margin:8px 0;display:flex;flex-direction:column;gap:6px}
 .plan-lines li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}
 .run-dot.tone-scout{background:#6aa7e8}.outcome-pill.tone-scout{background:rgba(106,167,232,.16);color:#6aa7e8}
+.metric-card .portfolio-profit{padding:0;gap:0}.metric-foot .portfolio-profit{display:inline-flex}

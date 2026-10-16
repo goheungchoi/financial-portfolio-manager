@@ -20,7 +20,8 @@ import { RuntimeSettings, type RuntimeReply, type RuntimeState, type RuntimeConf
 import {UnifiedPortfolio,type PortfolioState} from './UnifiedPortfolio';
 import {TradingCosts,type CostSettings} from './TradingCosts';
 import {LiveTrading,type LiveReply} from './LiveTrading';
-import {RuntimePulse,workspaceGroups,tabGuides,HOME,navLabels} from './WorkspaceUX';
+import {workspaceGroups,tabGuides,HOME,navLabels} from './WorkspaceUX';
+import {HomeMetrics,HomeHoldings,EmergencyBanner,usePortfolio} from './Home';
 import {TopBar} from './Shell';
 import './style.css';
 import './themes.css';
@@ -49,6 +50,8 @@ function App() {
     return()=>{removeEventListener('popstate',pop);removeEventListener('mouseup',mouse);removeEventListener('keydown',keys);};
   },[]);
   const openCompany=(symbol:string)=>show('Charts',symbol);
+  const [portfolio,setPortfolio]=usePortfolio(tab===HOME);const [portfolioBusy,setPortfolioBusy]=useState(false);
+  const refreshPortfolio=async()=>{setPortfolioBusy(true);try{const next=await window.portfolio?.refreshPortfolio();if(next)setPortfolio(next);}catch{setError('Could not refresh portfolio.');}finally{setPortfolioBusy(false);}};
   const go=(name:string)=>show(name==='KIS account'?'Connections':name);
   const [theme, setTheme] = useState<Theme>('dark');
   const [market, setMarket] = useState<MarketState | null>(null);
@@ -125,8 +128,7 @@ function App() {
   useEffect(() => { if (scroll && tab === 'AI console') end.current?.scrollIntoView({ behavior: 'smooth' }); }, [events, scroll, tab]);
   const shown = events.filter(e => (filter === 'All' || e.kind === filter) && `${e.title} ${e.body} ${e.runId}`.toLowerCase().includes(query.toLowerCase()));
   const account=tab==='Paper trading'?'Paper · KRW':isKis||kis.snapshot?`KIS ${kis.snapshot?.environment==='live'?'live':'mock'}`:'Not connected';
-  return <div className="app"><TopBar tab={tab} canBack={place.index>0} canForward={place.index<place.last} onBack={back} onForward={forward} onNavigate={go} market={market} isKis={isKis} account={account} theme={theme} onTheme={()=>void toggleTheme()}/><aside><nav aria-label="Workspace">{workspaceGroups.map(group=><div className="nav-group" key={group.label}>{group.label&&<div className="nav-label">{group.label}</div>}{group.tabs.map(name=>{const badge=name==='Journal'?attention?.counts.lessons:name==='News'?attention?.counts.news:attention?.counts.approvals[name];return <div className="nav-row" key={name}><button data-tab={name} title={tabGuides[name].description} aria-current={tab===name?'page':undefined} className={tab===name?'nav active':'nav'} onClick={()=>show(name)}>{navLabels[name]??name}</button>{badge?<span className={`nav-badge ${attention?.counts.approvals[name]?'urgent':''}`} title={name==='Journal'?'Lessons to review':name==='News'?'Important disclosures today':'Orders waiting for approval'}>{badge}</span>:null}</div>;})}</div>)}</nav></aside><main>{tab===HOME&&<RuntimePulse onNavigate={go} expanded/>}{tab===HOME&&<div className="dashboard-row"><AttentionPanel attention={attention} onNavigate={go}/><AiActivity onNavigate={go}/></div>}{error && <div role="alert" className="notice error">{error}</div>}
-  {tab === HOME && isKis && <UnifiedPortfolio onCompany={openCompany}/>}
+  return <div className="app"><TopBar tab={tab} canBack={place.index>0} canForward={place.index<place.last} onBack={back} onForward={forward} onNavigate={go} market={market} isKis={isKis} account={account} theme={theme} onTheme={()=>void toggleTheme()}/><aside><nav aria-label="Workspace">{workspaceGroups.map(group=><div className="nav-group" key={group.label}>{group.label&&<div className="nav-label">{group.label}</div>}{group.tabs.map(name=>{const badge=name==='Journal'?attention?.counts.lessons:name==='News'?attention?.counts.news:attention?.counts.approvals[name];return <div className="nav-row" key={name}><button data-tab={name} title={tabGuides[name].description} aria-current={tab===name?'page':undefined} className={tab===name?'nav active':'nav'} onClick={()=>show(name)}>{navLabels[name]??name}</button>{badge?<span className={`nav-badge ${attention?.counts.approvals[name]?'urgent':''}`} title={name==='Journal'?'Lessons to review':name==='News'?'Important disclosures today':'Orders waiting for approval'}>{badge}</span>:null}</div>;})}</div>)}</nav></aside><main><EmergencyBanner/>{tab===HOME&&isKis&&portfolio&&<HomeMetrics state={portfolio}/>}{tab===HOME&&<div className="dashboard-row"><AttentionPanel attention={attention} onNavigate={go}/><AiActivity onNavigate={go}/></div>}{tab===HOME&&isKis&&portfolio&&<HomeHoldings state={portfolio} busy={portfolioBusy} onCompany={openCompany} onAll={()=>go('Holdings')} onRefresh={()=>void refreshPortfolio()}/>}{error && <div role="alert" className="notice error">{error}</div>}
   {[HOME,'Holdings','Charts'].includes(tab)&&!isKis&&<section className="connection-empty"><h2>{kis.status==='connecting'?'Connecting your portfolio…':'Connect your portfolio'}</h2><p>{kis.status==='connecting'?'Restoring your saved KIS connection.':'Connect a KIS account to see holdings, company information and prices.'}</p>{kis.status!=='connecting'&&<button className="primary" onClick={()=>go('Connections')}>Connect account</button>}<button onClick={()=>show('Paper trading')}>Open paper trading</button></section>}
   {tab === 'Holdings' && isKis && <UnifiedPortfolio mode="holdings" onCompany={openCompany}/>}
   {tab === 'Charts' && isKis && <CompanyView initialSymbol={chartSymbol}/>}
