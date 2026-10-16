@@ -143,7 +143,7 @@ function App() {
   {tab === 'U.S. stocks' && <LiveTrading key={'us:'+market?.connectionId} market="US" draftKey={`us:${market?.connectionId??'disconnected'}`}/>}
   {tab === 'Fees & taxes' && <><TradingCosts/><TaxLedger/></>}
   {tab === 'KIS trading' && <LiveTrading key={market?.connectionId??'disconnected'} draftKey={`kis:${market?.connectionId??'disconnected'}`}/>}
-  {['Journal','News','Engine settings'].includes(tab) && <RuntimeSettings key={tab} mode={tab==='News'?'news':tab==='Journal'?'journal':'settings'}/>}
+  {['Journal','News','Engine settings'].includes(tab) && <RuntimeSettings key={tab} mode={tab==='News'?'news':tab==='Journal'?'journal':'settings'} onNavigate={go}/>}
   {tab === 'AI console' && <AiConsole events={events}/>}
   </main></div>;
 }
