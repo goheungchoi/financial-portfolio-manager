@@ -93,3 +93,4 @@ aside > * { flex-shrink:0; }
 .search-row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.search-row input{flex:1 1 240px;min-width:0}
 .row-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
 [aria-label="Search results"] td:nth-child(2),[aria-label="Screener results"] td:nth-child(2),[aria-label="Watchlist entries"] td:nth-child(2),[aria-label="Watchlist entries"] td:nth-child(4){text-align:left}
+.symbol-tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}.warning-badge{color:var(--warning,#b45309);border-color:currentColor}

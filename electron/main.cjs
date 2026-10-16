@@ -61,10 +61,10 @@ async function refreshNews() {
   try {
     const requests=[];
     if(automation.config.newsURL)requests.push(require('./news.cjs').fetchFeed(automation.config.newsURL));
-    if(automation.providerStatus.dartConnected)requests.push(providerService.request('disclosures'));
+    if(automation.providerStatus.dartConnected)requests.push(providerService.request('disclosures',{stopAt:automation.newsEvents.latestReceipt()}));
     const results=await Promise.allSettled(requests);const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
     const failed=results.some(r=>r.status==='rejected');
-    if(!failed||items.length){automation.news=[...new Map(items.map(item=>[item.url,item])).values()].sort((a,b)=>(Date.parse(b.published)||0)-(Date.parse(a.published)||0)).slice(0,100);automation.newsUpdatedAt=Date.now();}
+    if(!failed||items.length){automation.news=[...new Map(items.map(item=>[item.url,item])).values()].sort((a,b)=>(Date.parse(b.published)||0)-(Date.parse(a.published)||0)).slice(0,100);automation.newsUpdatedAt=Date.now();automation.newsEvents.ingest(items,automation.relevantSecurities());}
     automation.newsError=failed?'NEWS_REFRESH_FAILED':null;
   }catch{automation.newsError='NEWS_REFRESH_FAILED';}finally{newsBusy=false;lastNews=Date.now();}
 }
@@ -136,7 +136,7 @@ app.whenReady().then(async () => {
     automation?.tick();if(notifier){notifier.observe([...paper.orders(),...live.orders(),...(usLive?.orders()??[])]);void notifier.tick();}
     if(kisState.snapshot && !kisService.isBusy && !live.busy && Date.now()-lastReconcile>30000){lastReconcile=Date.now();void live.reconcile().catch(()=>{});if(usSnapshot)void usLive.reconcile().catch(()=>{});}
     if(kisState.snapshot&&!kisService.isBusy&&!usRefreshing&&Date.now()>(kisService.cooldownUntil??0)&&Date.now()-lastUSRefresh>60000){lastUSRefresh=Date.now();usRefreshing=true;void automation.refreshUS().catch(error=>{usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}).finally(()=>{usRefreshing=false;});}
-    if(automation && Date.now()-lastNews>1800000 && (automation.config.newsURL||automation.providerStatus.dartConnected))void refreshNews();
+    if(automation && Date.now()-lastNews>(automation.config.enabled&&automation.config.newsTrigger!=='off'?300000:1800000) && (automation.config.newsURL||automation.providerStatus.dartConnected))void refreshNews();
     const state = marketState();
     for (const win of BrowserWindow.getAllWindows()) win.webContents.send('market:changed',state);
   };
@@ -189,6 +189,9 @@ app.whenReady().then(async () => {
     update_watchlist:async args=>{const scope=watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');return require('./discovery.cjs').applyAiUpdate(watchlist,scope,args);}
   };
   live.extraSymbols=()=>automation.discovery.symbols('KR');
+  // News matters for holdings, watchlist, allowlists and AI-watched symbols.
+  automation.relevantSecurities=()=>{const symbols=new Set([...(kisState.snapshot?.holdings??[]).map(row=>row.symbol),...(usSnapshot?.holdings??[]).map(row=>row.symbol),...automation.discovery.list().map(row=>row.symbol),...(live.getState().policy?.symbols??[]),...(usLive.getState().policy?.symbols??[]),...automation.watches.list(automation.watchScope()).map(row=>row.symbol),...(automation.config.scope==='paper'?paper.getState().universe.map(row=>row.symbol):[])]);
+    return [...symbols].map(symbol=>{const known=master.get(symbol);const held=[...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].find(row=>row.symbol===symbol);return {symbol,name:known?.name??held?.name??'',englishName:known?.englishName??''};});};
   if(masterFetch){void master.refresh().catch(()=>{});setInterval(()=>void master.refresh().catch(()=>{}),3600000).unref();}
   const discoveryState=()=>({master:master.status(),watchlist:automation.discovery.list(),connected:Boolean(watchScope())});
   const discoveryAction=action=>async(event,...args)=>{authorize(event);try{const data=await action(...args);return {ok:true,data,state:discoveryState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED',state:discoveryState()};}};
@@ -229,7 +232,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:lesson-trial',(event,action,id,value)=>{authorize(event);try{automation.syncLearning();if(automation.learningError)throw Error('LOCAL_EVALUATION_FAILED');if(action==='start')automation.trials.start(id,value);else if(action==='stop')automation.trials.stop(id);else throw Error('INVALID_TRIAL');return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:['LESSON_CHANGED','INVALID_TRIAL','TRIAL_ACTIVE','TRIAL_NOT_FOUND'].includes(error.message)?error.message:'LOCAL_EVALUATION_FAILED'};}});
   ipcMain.handle('runtime:review-lesson',(event,id,value)=>{authorize(event);try{automation.syncLearning();if(automation.learningError)throw new Error('LESSON_REVIEW_FAILED');automation.memory.review(id,value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:['LESSON_CHANGED','OUTCOME_NOT_FINAL','INVALID_LESSON_REVIEW','LESSON_NOT_FOUND'].includes(error.message)?error.message:'LESSON_REVIEW_FAILED',state:runtimeState()};}});
   ipcMain.handle('runtime:lesson',(event,id,approved)=>{authorize(event);try{automation.approveLesson(id,approved);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:'INVALID_REQUEST'};}});
-  ipcMain.handle('runtime:open-news',(event,url)=>{authorize(event);if(automation.news.some(item=>item.url===url))void shell.openExternal(url);});
+  ipcMain.handle('runtime:open-news',(event,url)=>{authorize(event);if(typeof url==='string'&&(automation.news.some(item=>item.url===url)||automation.newsEvents.list(300).some(item=>item.url===url)))void shell.openExternal(url);});
   const paperAction=action=>event=>{authorize(event);try{return {ok:true,data:action()};}catch{return {ok:false,error:'PAPER_REQUEST_FAILED'};}};
   ipcMain.handle('paper:get',paperAction(()=>paper.getState()));
   ipcMain.handle('paper:loss',(event,value)=>{authorize(event);try{return {ok:true,state:paper.configureLoss(value)};}catch{return {ok:false,error:'INVALID_LOSS_LIMIT'};}});
