@@ -1,5 +1,5 @@
 const {validRequest}=require('./market-evidence.cjs');
-async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,requestScout}){
+async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,briefScout}){
   let continuation;const usage={inputTokens:0,outputTokens:0};const cache=new Map();
   for(let round=0;round<3;round++){
     const result=await request({research:Boolean(evidence),final:round===2,continuation});
@@ -9,7 +9,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
     continuation=result.continuation;
     for(const call of result.toolCalls){
       if(call.name==='set_review_interval'&&setInterval){const value=await setInterval(call.args);log('Tool','Review interval updated',JSON.stringify(value));continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(value)});continue;}
-      if(call.name==='request_scout'&&requestScout){const value=await requestScout(call.args);log('Tool','Scout requested',JSON.stringify(value));continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(value)});continue;}
+      if(call.name==='brief_scout'&&briefScout){const value=await briefScout(call.args);log('Tool','Scout brief',JSON.stringify({brief:call.args,result:value}));continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(value)});continue;}
       if(call.name==='set_review_watch'&&setWatch){const value=await setWatch(call.args);log('Tool','Review watch updated',JSON.stringify(value));continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(value)});continue;}
       if(discovery&&['screen_market','search_securities','update_watchlist'].includes(call.name)){log('Agent','Discovery request',JSON.stringify(call.args));const key=call.name==='update_watchlist'?null:call.name+JSON.stringify(call.args);let value=key?cache.get(key):undefined;if(!value){try{value=await discovery[call.name](call.args);}catch(error){value={status:'unavailable',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED'};}if(key)cache.set(key,value);}log('Tool','Discovery result',JSON.stringify(value));continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(value)});continue;}
       if(call.name!=='get_market_evidence'||!validRequest(call.args,context.universe.map(row=>row.symbol)))throw new Error('INVALID_AI_RESPONSE');

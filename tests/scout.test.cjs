@@ -100,30 +100,34 @@ test('AI scout requests are limited to three a day, two hours apart, per account
   store.noteRequest('kis:a','2026-10-16',t0+7200000);store.noteRequest('kis:a','2026-10-16',t0+14400000);assert.equal(store.requests('kis:a','2026-10-16',t0+30000000).remainingToday,0);
   assert.equal(store.requests('kis:a','2026-10-17',t0+90000000).remainingToday,3,'a new Seoul day resets the count');assert.equal(store.requests('kis:b','2026-10-16',t0).remainingToday,3,'per account');
 });
-test('a trading review can ask for a scout run, which starts after the review ends',async()=>{
+test('a trading review can brief the scout and ask for a run, which starts after the review ends',async()=>{
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
   const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
   const supplied=[];let reviewRound=0;let scoutStarted;const scoutDone=new Promise(resolve=>{scoutStarted=resolve;});
   const provider={request:async(operation,payload)=>{supplied.push([operation,payload]);
-    if(operation==='decision'){reviewRound++;if(reviewRound===1)return {toolCalls:[{name:'request_scout',callId:'q1',args:{reason:'No plan yet and the market moved 3%.'}}],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}};return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for the scout.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}
-    if(operation==='scout'){scoutStarted();return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[]},usage:{inputTokens:1,outputTokens:1}};}}};
+    if(operation==='decision'){reviewRound++;if(reviewRound===1)return {toolCalls:[{name:'brief_scout',callId:'q1',args:{request:'run',reason:'No plan yet and the market moved 3%.',lookingFor:'Dividend payers below book value',avoid:'',questions:'',feedback:[]}}],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}};return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for the scout.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}
+    if(operation==='scout'){scoutStarted();const id=payload.context.briefs[0].id;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[{briefId:id,answer:'Found two banks below book.'},{briefId:'B-nope',answer:'x'}],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
   automation.discovery={list:()=>[],symbols:()=>[],screen_market:async()=>({}),search_securities:async()=>({}),research:async()=>({}),update_watchlist:async()=>({})};
   automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.review();
-  const first=supplied.find(([op])=>op==='decision')[1];assert.equal(first.context.scoutRequests.allowed,true);assert.equal(first.context.scoutRequests.remainingToday,3);
+  const first=supplied.find(([op])=>op==='decision')[1];assert.equal(first.context.scoutBrief.runAllowed,true);assert.equal(first.context.scoutBrief.remainingRunsToday,3);
   await scoutDone;await new Promise(resolve=>setImmediate(resolve));
   assert.ok(supplied.some(([op])=>op==='scout'),'the requested scout ran');
-  const scope=automation.watchScope();assert.equal(automation.requestScout(scope,{reason:'Again'}).status,'rejected','too soon after the last request');
-  assert.equal(automation.requestScout(scope,{reason:''}).status,'rejected');
-  automation.configure({scoutAiRequests:false});assert.equal(automation.scoutRequestState(scope),null,'can be turned off');
+  const scoutContext=supplied.find(([op])=>op==='scout')[1].context;assert.equal(scoutContext.briefs[0].lookingFor,'Dividend payers below book value');assert.equal(scoutContext.briefs[0].reason,'No plan yet and the market moved 3%.');
+  const scope=automation.watchScope();const latest=automation.scoutStore.latest(scope);assert.deepEqual(latest.answered.map(a=>a.answer),['Found two banks below book.'],'unknown brief ids are ignored');
+  assert.equal(automation.briefs.open(scope).length,0,'answered briefs close');
+  const again=automation.briefScout(scope,{request:'run',reason:'Again',lookingFor:'',avoid:'',questions:'',feedback:[]});assert.equal(again.status,'saved');assert.match(again.run,/too soon/,'a run is refused but the brief is kept');
+  assert.equal(automation.briefScout(scope,{request:'note',reason:'',lookingFor:'',avoid:'',questions:'',feedback:[]}).status,'rejected','an empty brief is rejected');
+  await automation.review();const second=supplied.filter(([op])=>op==='decision').at(-1)[1].context;assert.equal(second.scoutPlan.briefAnswers[0].answer,'Found two banks below book.','the review sees the answer');assert.equal(second.scoutBrief.openBriefs.length,1);
+  automation.configure({scoutAiRequests:false});const off=automation.scoutBriefState(scope);assert.equal(off.runAllowed,false);assert.equal(off.runRequests,'turned off','notes stay available while run requests are off');
 });
-test('reviews are offered request_scout only when a request is allowed',async()=>{
+test('reviews are offered brief_scout only when the scout is in use',async()=>{
   const {AiClient}=require('../electron/ai-client.cjs');const bodies=[];
   const client=new AiClient('sk-fixture-key-123',async(url,options)=>{bodies.push(JSON.parse(options.body));return new Response(JSON.stringify({status:'completed',usage:{input_tokens:1,output_tokens:1},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'ok'})}]}]}));});
-  await client.decide({universe:[],scoutRequests:{allowed:true,remainingToday:3}},{research:true});await client.decide({universe:[],scoutRequests:{allowed:false,remainingToday:0}},{research:true});
-  assert.ok(bodies[0].tools.some(t=>t.name==='request_scout'));assert.ok(!bodies[1].tools.some(t=>t.name==='request_scout'));
+  await client.decide({universe:[],scoutBrief:{runAllowed:false,openBriefs:[]}},{research:true});await client.decide({universe:[]},{research:true});
+  assert.ok(bodies[0].tools.some(t=>t.name==='brief_scout'));assert.ok(!bodies[1].tools.some(t=>t.name==='brief_scout'));
 });
 test('the scout reports a disconnected KIS account instead of starting',()=>{
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
@@ -142,4 +146,52 @@ test('with both markets, a failed U.S. account check does not stop the scout',as
   automation.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   const saved=await automation.scout();assert.equal(saved.plan.summary,'Korea only today.');
   assert.deepEqual(context.accounts.map(a=>a.market),['KR','US']);assert.equal(context.accounts[1].status,'unavailable');assert.equal(context.accounts[1].reason,'US_CASH_BROKER_REJECTED');
+});
+test('briefs are normalized, expire after three days and keep at most six open per account',()=>{
+  const {normalizeBrief,BriefStore}=require('../electron/scout-feedback.cjs');
+  assert.equal(normalizeBrief({request:'note',reason:'',lookingFor:' ',avoid:'',questions:'',feedback:[]}),null,'nothing to act on');
+  assert.equal(normalizeBrief({request:'run',reason:'Market fell 4%.',lookingFor:'',avoid:'',questions:'',feedback:[]}).request,'run','a run request with a reason is enough');
+  const b=normalizeBrief({request:'note',reason:'',lookingFor:'x'.repeat(500),avoid:'Batteries',questions:'',feedback:[{symbol:'000660',verdict:'passed',reason:'Too extended'},{symbol:'BAD',verdict:'passed',reason:''},{symbol:'005930',verdict:'maybe',reason:''}]});
+  assert.ok(b.lookingFor.length<=300);assert.deepEqual(b.feedback.map(f=>f.symbol),['000660'],'bad symbols and verdicts are dropped');
+  let now=Date.parse('2026-10-16T01:00:00Z');const store=new BriefStore(new DatabaseSync(':memory:'),()=>now);
+  const first=store.add('kis:a',b);assert.ok(first.asked.includes('Avoid: Batteries'));assert.ok(first.asked.includes('000660 passed (Too extended)'));
+  for(let i=0;i<6;i++){now+=1000;store.add('kis:a',normalizeBrief({request:'note',reason:'',lookingFor:'n'+i,avoid:'',questions:'',feedback:[]}));}
+  assert.equal(store.open('kis:a').length,6);assert.ok(!store.open('kis:a').some(r=>r.id===first.id),'the oldest is dropped');assert.equal(store.open('kis:b').length,0,'per account');
+  assert.equal(store.feedback('kis:a',0).get('000660').verdict,'passed','feedback outlives the brief');
+  now+=3*86400000+10000;assert.equal(store.open('kis:a').length,0,'stale briefs expire');
+});
+test('scout picks are tracked from the first plan that names them and scored against the benchmark',()=>{
+  const {ScoutScorecard}=require('../electron/scout-feedback.cjs');const {Scoreboard}=require('../electron/scoreboard.cjs');
+  const db=new DatabaseSync(':memory:');let now=Date.parse('2026-09-01T01:00:00Z');const board=new Scoreboard(db,()=>now);
+  db.exec('CREATE TABLE benchmark_closes(idx TEXT,day TEXT,close REAL);CREATE TABLE reviews(id TEXT PRIMARY KEY,payload TEXT)');
+  const days=Array.from({length:30},(_,i)=>new Date(Date.parse('2026-09-01T00:00:00Z')+i*86400000).toISOString().slice(0,10));
+  board.saveCloses('005930',days.map((day,i)=>({day,close:100+i})));for(const [i,day] of days.entries())db.prepare('INSERT INTO benchmark_closes VALUES(?,?,?)').run('KOSPI',day,1000+i*5);
+  const card=new ScoutScorecard(db,board,()=>now);
+  const plan=targets=>({summary:'',cashTargetPct:null,focus:'',targets:targets.map(([symbol,role])=>({symbol,name:symbol,role,targetWeightPct:null,thesis:'t',risks:''}))});
+  card.record('kis:a',plan([['005930','candidate'],['000660','trim']]),now);
+  assert.deepEqual(card.rows('kis:a').map(r=>r.symbol),['005930'],'only candidate and add targets are picks');
+  now+=3600000;card.record('kis:a',plan([['005930','hold']]),now);assert.equal(card.rows('kis:a').length,1,'a pick the trader bought stays the same pick');
+  db.prepare('INSERT INTO reviews VALUES(?,?)').run('r1',JSON.stringify({timestamp:now,decision:{action:'Buy',symbol:'005930'},proposalId:'p',orderId:'o'}));
+  now+=3600000;card.record('kis:a',plan([]),now);assert.ok(card.rows('kis:a')[0].endedAt,'dropped from the plan');
+  const built=card.build('kis:a',new Map([['005930',{verdict:'acted',reason:'Bought on the dip',at:now}]]));const pick=built.picks[0];
+  assert.equal(pick.acted,'bought');assert.equal(pick.feedback.reason,'Bought on the dip');
+  assert.equal(pick.horizons[5].stockReturn,0.05);assert.equal(pick.horizons[5].benchmarkReturn,0.025);assert.equal(pick.horizons[5].excess,0.025);
+  assert.deepEqual(built.summary[20],{scored:1,beatBenchmark:1,meanExcess:0.1});
+  const context=card.context('kis:a',new Map());assert.equal(context.picks[0].excess20,0.1);assert.equal(context.picks[0].active,false);assert.ok(context.note.includes('mostly noise'));
+  card.record('kis:a',plan([['000660','add']]),now);assert.deepEqual(card.pendingSymbols(10,0),['000660'],'only picks without a 20-day result need prices');
+});
+test('the scout reads its scorecard and earlier self-reviews, and plans carry answers and a self-review',async()=>{
+  const plan=validatePlan({summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[{briefId:'B-1',answer:'Done.'},{briefId:'B-2',answer:'  '}],retrospective:'Weight valuation more.'});
+  assert.deepEqual(plan.briefAnswers,[{briefId:'B-1',answer:'Done.'}]);assert.equal(plan.retrospective,'Weight valuation more.');
+  const old=validatePlan({summary:'s',cashTargetPct:null,focus:'',targets:[]});assert.deepEqual(old.briefAnswers,[]);assert.equal(old.retrospective,'','earlier plans without the new fields still load');
+  const {SCHEMA,INSTRUCTIONS}=require('../electron/scout.cjs');assert.ok(SCHEMA.required.includes('briefAnswers')&&SCHEMA.required.includes('retrospective'));assert.ok(INSTRUCTIONS.includes('too few to judge'));
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
+  const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
+  const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
+  const contexts=[];let n=0;const provider={request:async(operation,payload)=>{contexts.push(payload.context);n++;return {plan:{summary:'s'+n,cashTargetPct:null,focus:'',targets:[{symbol:'005930',name:'Samsung',role:'candidate',targetWeightPct:10,thesis:'Upside.',risks:''}],briefAnswers:[],retrospective:n===1?'Too few results to judge yet.':''},usage:{inputTokens:1,outputTokens:1}};}};
+  const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[],symbols:()=>[]};
+  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  await automation.scout();assert.equal(contexts[0].scorecard,undefined,'no picks yet');assert.equal(contexts[0].retrospectives,undefined);
+  await automation.scout();assert.equal(contexts[1].scorecard.picks[0].symbol,'005930');assert.equal(contexts[1].scorecard.picks[0].tradingReviews,'not yet');assert.equal(contexts[1].retrospectives[0].note,'Too few results to judge yet.');
+  const state=automation.getState().scout;assert.equal(state.scorecard.picks.length,1,'the same pick across runs');assert.deepEqual(state.briefs,[]);
 });
