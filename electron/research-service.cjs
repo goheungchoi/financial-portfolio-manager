@@ -73,6 +73,8 @@ class ResearchService {
       return {status:'ok',retrievedAt:main.retrievedAt,data:{...d,...(leverage?{leverage}:{})}};
     }
     if(name==='holdings'&&main.status==='ok'){
+      // Sector names come from the market overview (KOSPI sector indices); load it once if it is not cached yet.
+      if(!this.cached('MARKET','market'))await this.market();
       const names=new Map((this.cached('MARKET','market')?.value?.kospiSectors??[]).map(r=>[r.code,r.name]));const mix=new Map();
       for(const h of main.data.holdings??[]){const sector=this.master?.get?.(h.symbol)?.sector??null;const key=sector??'other';mix.set(key,(mix.get(key)??0)+h.weightPct);}
       const sectors=[...mix.entries()].map(([code,weightPct])=>({code:code==='other'?null:code,name:code==='other'?'Other or unlisted':names.get(code)??`Sector ${code}`,weightPct:Math.round(weightPct*10)/10})).sort((a,b)=>b.weightPct-a.weightPct);

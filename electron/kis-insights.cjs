@@ -158,7 +158,7 @@ function etfHoldings(summary={},rows=[]){
   const top=n=>round(list.slice(0,n).reduce((s,r)=>s+r.weightPct,0));
   return {constituents:positive(summary.etf_cnfg_issu_cnt),listed:list.length,holdings:list.slice(0,40),top5WeightPct:list.length?top(5):null,top10WeightPct:list.length?top(10):null,
     herfindahl:list.length?round(list.reduce((s,r)=>s+(r.weightPct/100)**2,0),3):null,
-    note:list.length?'Weights are shares of the basket by value from the KIS constituent list.':'KIS lists no constituents for this fund (common for funds holding foreign assets, futures or swaps).'};
+    note:list.length?`Weights are shares of the basket by value${positive(summary.etf_cnfg_issu_cnt)>list.length?`; KIS lists the largest ${list.length} of ${positive(summary.etf_cnfg_issu_cnt)} holdings, so sector shares cover those`:''}.`:'KIS lists no constituents for this fund (common for funds holding foreign assets, futures or swaps).'};
 }
 const US=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/;
 // One section of research for one Korean listing. `client` is the read-only KIS client.
