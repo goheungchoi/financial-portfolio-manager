@@ -10,7 +10,7 @@ export function AppUpdates(){
   const act=async(task:()=>Promise<UpdateReply>)=>{setBusy(true);setNotice('');try{const reply=await task();setState(reply.state);if(!reply.ok)setNotice(ERRORS[reply.error??'']??'The request could not be completed.');}catch{setNotice('Could not reach the engine.');}finally{setBusy(false);}};
   const s=state;const label=s.status==='disabled'?'Development build':s.status==='checking'?'Checking…':s.status==='available'?`Version ${s.available?.version} available`:s.status==='downloading'?`Downloading ${s.progress??0}%`:s.status==='downloaded'?`Version ${s.available?.version} ready to install`:s.status==='up-to-date'?'Up to date':s.status==='error'?'Last check failed':'Not checked yet';
   return <section aria-label="App updates"><div className="section-head"><div><h2>App updates</h2><small>Version {s.current}{s.checkedAt?` · checked ${new Date(s.checkedAt).toLocaleString()}`:''}</small></div><span className="badge">{label.toUpperCase()}</span></div>
-    {s.status==='disabled'?<p className="muted">Updates are available in the installed app. This copy was started from source.</p>:<>
+    {s.status==='disabled'?<p className="muted">Updates are available in the installed app. This copy runs from source or a portable folder.</p>:<>
       <div className="actions">
         <button disabled={busy||['checking','downloading'].includes(s.status)} onClick={()=>void act(()=>window.portfolio!.checkForUpdates())}>Check for updates</button>
         {s.status==='available'&&<button className="primary" disabled={busy} onClick={()=>void act(()=>window.portfolio!.downloadUpdate())}>Download {s.available?.version}</button>}

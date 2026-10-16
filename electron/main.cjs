@@ -243,8 +243,9 @@ app.whenReady().then(async () => {
   setTimeout(()=>{void refreshMacro();},macroSeed?0:30000).unref?.();setInterval(()=>{if(Date.now()-macroAt>6*3600000)void refreshMacro();},600000).unref();
   const macroState=()=>({snapshot:macro.get(),refreshing:Boolean(macroTask),error:macroError,ecosConnected:Boolean(automation.providerStatus.ecosConnected),fredConnected:Boolean(automation.providerStatus.fredConnected)});
   // App updates from GitHub Releases, for installed builds only (PORTFOLIO_UPDATE_TEST names an update config file for local tests).
-  const updateTest=Boolean(process.env.PORTFOLIO_UPDATE_TEST);
-  const updates=new (require('./app-updates.cjs').AppUpdates)({updater:(app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA)||updateTest?(()=>{const {autoUpdater}=require('electron-updater');if(updateTest){autoUpdater.forceDevUpdateConfig=true;autoUpdater.updateConfigPath=process.env.PORTFOLIO_UPDATE_TEST;}return autoUpdater;})():null,enabled:(app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA)||updateTest,version:app.getVersion(),db:store.db,
+  // Only installer builds carry app-update.yml (and electron-updater); portable folder builds and source runs have no updates.
+  const updateTest=Boolean(process.env.PORTFOLIO_UPDATE_TEST);const installed=app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA&&require('node:fs').existsSync(path.join(process.resourcesPath,'app-update.yml'));
+  const updates=new (require('./app-updates.cjs').AppUpdates)({updater:installed||updateTest?(()=>{const {autoUpdater}=require('electron-updater');if(updateTest){autoUpdater.forceDevUpdateConfig=true;autoUpdater.updateConfigPath=process.env.PORTFOLIO_UPDATE_TEST;}return autoUpdater;})():null,enabled:installed||updateTest,version:app.getVersion(),db:store.db,
     canInstall:()=>{if(automation.config.enabled&&automation.sessionArmed)return 'AUTO_TRADING_ARMED';if(automation.busy)return 'REVIEW_RUNNING';for(const engine of [live,usLive]){try{if(engine.orders().some(o=>['Submitting','Uncertain','Accepted','Partially filled'].includes(o.status)))return 'ORDERS_OPEN';}catch{}}return null;},
     onChange:state=>{for(const win of BrowserWindow.getAllWindows())win.webContents.send('update:changed',state);}});
   setTimeout(()=>updates.tick(),30000).unref?.();setInterval(()=>updates.tick(),600000).unref();
