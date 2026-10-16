@@ -15,7 +15,7 @@ The API provider now supports an application-executed function-calling loop, sim
 - `get_market_evidence(symbol, dataset)` supports `company`, `daily_technicals`, `minute_technicals`, and `range_10m`.
 - `set_review_watch(symbol, percent, price, direction, reason)` changes monitoring only. Percent is 0.1–50, or null to use the user's default. Price is a positive native-currency alert level, or null to remove it. Above/below levels fire once when reached; they do not need to cross from the opposite side. Percentage baselines reset after successful reviews. Saved watches are isolated by account and selected scope, survive restart, and are visible/resettable in Engine settings. Restart still pauses scheduled reviews.
 
-There are at most two tool rounds and three AI requests per review. Each request reserves the existing $0.01 estimate and consumes one daily call allowance, including failed requests. This is not actual invoiced token cost. Repeated data requests within the same review use a cache. Every request/result and watch change is logged in AI console; total token usage is recorded with the decision. Reaching the budget stops the review rather than bypassing it. A saved watch may remain even if a later AI request fails; no trade is submitted from an incomplete review.
+There are at most two tool rounds and three AI requests per review. Each request reserves a model-aware cost estimate (at least $0.01) and consumes one daily call allowance, including failed requests; reported token usage later replaces the reservation where available (see [Learning pipeline](LEARNING-PIPELINE.md#usage-accounting-update-2026-10-16)). This is not actual invoiced token cost. Repeated data requests within the same review use a cache. Every request/result and watch change is logged in AI console; total token usage is recorded with the decision. Reaching the budget stops the review rather than bypassing it. A saved watch may remain even if a later AI request fails; no trade is submitted from an incomplete review.
 
 ## Data coverage
 
@@ -31,7 +31,7 @@ Synthetic paper evidence is explicitly labeled and cannot supply company fundame
 
 Recorded sales now produce structured, evidence-linked review checklists in Journal, for both simulation and app-originated broker records. They describe observed results, cost certainty and missing evidence; they do not infer why the market moved. Candidate texts need approval before retrieval. Approved structured memory is matched to the symbol and account, and simulation is excluded from broker reviews. Changed economic evidence resets approval; mere observation timestamp changes do not. Legacy memory lacks broker provenance and is therefore restricted to paper context.
 
-Still pending: LLM causal reflection with appropriate uncertainty, benchmark/horizon evaluation, external trade/tax-lot reconstruction, contradiction handling, and out-of-sample validation of claimed improvements. This increment does not train model weights or establish profitable self-improvement.
+Later increments added opt-in AI post-trade reflection, a lesson lifecycle and forward lesson trials; see [Learning pipeline](LEARNING-PIPELINE.md). Still pending: benchmark/horizon evaluation, external trade/tax-lot reconstruction, contradiction handling, and out-of-sample validation of claimed improvements. This increment does not train model weights or establish profitable self-improvement.
 
 ## Official references used
 

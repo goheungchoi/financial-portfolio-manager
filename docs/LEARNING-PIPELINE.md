@@ -28,7 +28,7 @@ Retrieval requires the same broker account and symbol (or paper-only provenance)
 
 ## Still outstanding
 
-External broker trade imports; complete entry/exit lot matching and corporate actions; forward horizons and benchmarks; paper replay / held-out validation; quantitative comparison against an unchanged strategy; automatic lesson promotion. No learned strategy change or profitability improvement is claimed.
+External broker trade imports; complete entry/exit lot matching and corporate actions; forward horizons and benchmarks; held-out validation of arbitrary lessons; aggregate comparison against an unchanged strategy across many cases (the offline replay and forward lesson trials below cover single explicit rules only); automatic lesson promotion. No learned strategy change or profitability improvement is claimed.
 
 ## Model configuration and usage
 
@@ -56,6 +56,14 @@ Implemented against the official Responses structured-output format: https://dev
 ## Offline replay foundation
 
 Charts now includes a local, deterministic buy-and-hold versus closing-loss-threshold comparison on completed daily bars. The threshold signal executes at the following open, including price gaps. Earlier and later chronological halves are independently initialized; costs use explicit user commission and sale-levy assumptions. This is a fractional-share, full-fill illustration, excluding annual capital gains, FX, slippage and liquidity. It does not replay arbitrary natural-language lessons, persist a validation verdict, or promote lessons. Automatic lesson-to-policy mapping and full out-of-sample validation remain outstanding.
+
+## Forward lesson trials
+
+Journal → Reviewed lessons → “Test this lesson” turns an eligible, non-retired lesson into an explicit exit rule: exit below entry by a drop trigger, or protect gains after an activation gain by a drop from the peak. The user supplies a testable hypothesis, commission and slippage per side, sale levy and a 1–365 calendar-day deadline. Only one trial per lesson can collect at a time.
+
+Both arms start at 100 on the first fresh quote after the trial starts, paying identical entry costs. The baseline holds; the candidate exits on the next observed quote after its trigger, never on the triggering price itself. Quotes that are stale, old, duplicated, in the future or more than two minutes old are skipped, and gaps over two minutes are counted. Broker trials only use quotes from the lesson's own account; paper lessons use synthetic prices. The deadline is fixed at start, and prices are never backfilled. A trial ends as completed (at least two samples), insufficient-data, stopped by the user, or superseded when the lesson's evidence changes or it is retired. Results show net return, maximum drawdown and costs for both arms and persist across restart in `lesson_trials`.
+
+Trials make no broker or provider calls and never approve lessons or change trading rules. Annual capital gains tax, FX, liquidity, whole-share constraints and re-entry are excluded. Prices are only sampled while the app is open. This compares one explicit rule over one forward period; it is exploratory evidence, not validation of the AI strategy.
 
 ## AI review cadence
 
