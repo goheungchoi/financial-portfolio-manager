@@ -57,3 +57,13 @@ tr.flash-up td{animation:flash-up 1.4s ease-out}tr.flash-down td{animation:flash
 @keyframes flash-down{from{background:rgba(217,108,108,.25)}to{background:transparent}}
 @media (prefers-reduced-motion:reduce){tr.flash-up td,tr.flash-down td{animation:none}}
 .discover-footer h2{font-size:14px}
+.symbol-field{position:relative;display:block}
+.symbol-options{position:absolute;z-index:20;left:0;right:0;top:100%;margin:4px 0 0;padding:4px;list-style:none;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-height:280px;overflow:auto}
+.symbol-options li{display:flex;justify-content:space-between;gap:10px;padding:7px 9px;border-radius:6px;cursor:pointer;font-size:13px}
+.symbol-options li[aria-selected=true],.symbol-options li:hover{background:var(--hover,rgba(127,127,127,.12))}
+.symbol-options small{color:var(--muted)}
+.order-quote{font-size:13px;margin:8px 0 0}
+.home-trend{margin-top:14px}
+.home-trend-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.home-trend .research-spark{height:64px;margin:8px 0}
+.home-trend .metric-foot{display:flex;flex-wrap:wrap;gap:6px 18px}
