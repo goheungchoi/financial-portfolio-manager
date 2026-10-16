@@ -36,6 +36,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 17. **Partial** — Notifications: desktop and webhook, including guardrail alerts and the daily digest. No dedicated mobile app.
 18. **Done** — Automated unit and Electron UI tests with fixtures; no real orders or paid calls in tests.
 19. **Planned** — Signed installer and auto-update.
+20. **Planned, *new*** — **Token saving:** skip AI calls when nothing relevant changed since the last review; route routine reviews to a cheaper model and escalate to a stronger one for emergencies, important disclosures and any trade (the stronger model confirms trades); order context so stable parts are cached; send compact, delta-style context; prefetch commonly requested evidence to avoid tool round trips; run reflections at a discounted batch tier where available; degrade (cheaper model, longer interval) near the daily budget instead of stopping. Measure cost per review before and after.
 
 ## Roadmap
 
@@ -50,7 +51,8 @@ Each step is planned, implemented, tested and committed on its own before the ne
 | 5 | Learning scoreboard (item 15) | Builds on the benchmark from step 4. |
 | 6 | Charts: U.S. candles and pop-out window (item 6) | User-facing completeness. |
 | 7 | Macro inputs (item 14) | Useful context once discovery and events work. |
-| 8 | Installer and auto-update (item 19) | Release hardening. |
+| 8 | Token saving (item 20) | Best done once the context and tools are stable, so savings are measured against the final workload. |
+| 9 | Installer and auto-update (item 19) | Release hardening. |
 
 ## Testing with real credentials
 
