@@ -218,6 +218,10 @@ app.whenReady().then(async () => {
   const starters=new (require('./discovery.cjs').StarterCandidates)(screener);
   automation.discovery.starters=()=>starters.current(watchScope());
   live.nameOf=symbol=>master.get(symbol)?.name||null;
+  // Company research for the scout: Korean listings from the symbol list only, cached for six hours per symbol.
+  const researchCache=new Map();
+  automation.discovery.research=async args=>{const symbol=String(args?.symbol??'').trim();if(!/^[0-9]{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};if(master.status().total&&!master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');
+    const hit=researchCache.get(symbol);if(hit&&Date.now()-hit.at<6*3600000)return hit.value;const value={...await kisService.request('research',{symbol}),name:master.get(symbol)?.name??null};researchCache.set(symbol,{at:Date.now(),value});return value;};
   live.extraSymbols=async()=>{let allowed=[];try{allowed=live.policy()?.symbols??[];}catch{}return starters.symbols({scope:watchScope(),watched:automation.discovery.symbols('KR'),allowed,holdings:(kisState.snapshot?.holdings??[]).map(row=>row.symbol)});};
   // News matters for holdings, watchlist, allowlists and AI-watched symbols.
   automation.relevantSecurities=()=>{const symbols=new Set([...(kisState.snapshot?.holdings??[]).map(row=>row.symbol),...(usSnapshot?.holdings??[]).map(row=>row.symbol),...automation.discovery.list().map(row=>row.symbol),...(live.getState().policy?.symbols??[]),...(usLive.getState().policy?.symbols??[]),...automation.watches.list(automation.watchScope()).map(row=>row.symbol),...(automation.config.scope==='paper'?paper.getState().universe.map(row=>row.symbol):[])]);
@@ -323,6 +327,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:'INVALID_SETTINGS'};}});
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
+  ipcMain.handle('scout:run',async event=>{authorize(event);try{await automation.scout();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.scoutError??'SCOUT_FAILED',state:runtimeState()};}});
   ipcMain.handle('runtime:review',async event=>{authorize(event);try{await automation.review();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.',state:runtimeState()};}});
   ipcMain.handle('runtime:providers',async event=>{
     if(remembered.progress.providers==='connecting'){authorize(event);return {ok:false,error:'BUSY',state:runtimeState()};}

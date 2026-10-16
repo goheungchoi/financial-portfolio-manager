@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getRuntime: () => ipcRenderer.invoke('runtime:get'),
   configureRuntime: value => ipcRenderer.invoke('runtime:configure',value),
   reviewRuntime: () => ipcRenderer.invoke('runtime:review'),
+  runScout: () => ipcRenderer.invoke('scout:run'),
   importProviders: () => ipcRenderer.invoke('runtime:providers'),
   refreshNews: () => ipcRenderer.invoke('runtime:news'),
   resetReviewWatches: () => ipcRenderer.invoke('runtime:reset-watches'),

@@ -24,6 +24,9 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
   if(operation==='screen')return payload.request.market==='KR'?[{symbol:'005930',name:'raw',price:213500,changePct:1.67,volume:7179383,marketCap:1264e12,per:null,currency:'KRW'},{symbol:'069500',name:'etf',price:40000,changePct:-0.5,volume:100,marketCap:null,per:null,currency:'KRW'},{symbol:'45226K',name:'pref',price:5200,changePct:30,volume:1,marketCap:null,per:null,currency:'KRW'}]:[];
   if(operation==='orders'||operation==='us-orders')return {orders:[]};if(operation==='quotes')return [];
   if(operation==='charges')return {orderId:payload.orderId,filled:0,amount:0,charges:0,retrievedAt:Date.now()};if(operation==='us-charges')throw new Error('FEATURE_UNAVAILABLE');
+  if(operation==='research')return {symbol:payload.symbol,price:216000,analysts:{brokerages:22,buy:22,hold:0,sell:0,medianTarget:500000},estimates:null,annualRatios:[]};
+  if(operation==='scout'){if(!payload.options?.continuation)return {provider:'openai',toolCalls:[{name:'get_company_research',callId:'s1',args:{symbol:'005930'}}],continuation:[{role:'user',content:'fixture'}],usage:{inputTokens:50,outputTokens:5},model:'gpt-6-sol'};
+    return {provider:'openai',plan:{summary:'Memory makers lead earnings revisions; build a position on pullbacks and keep cash for volatility.',cashTargetPct:35,focus:'Samsung earnings at the end of October.',targets:[{symbol:'005930',name:'삼성전자',role:'candidate',targetWeightPct:25,thesis:'22 of 22 brokerages rate it Buy; median target well above the price.',risks:'Memory cycle.'}]},usage:{inputTokens:80,outputTokens:40},model:'gpt-6-sol'};}
   if(operation==='decision'&&decisionFailure)throw new Error('AI_MODEL_UNAVAILABLE');
   if(operation==='decision'&&payload.context.reviewInterval?.auto&&!payload.options?.continuation)return {provider:'openai',toolCalls:[{name:'set_review_interval',callId:'cadence',args:{minutes:5,reason:'Fixture volatility calls for closer monitoring.'}}],continuation:[],usage:{inputTokens:10,outputTokens:5}};
   if(operation==='decision'&&researchMode){
@@ -187,6 +190,17 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await run('document.querySelector(`[aria-label="Desktop alerts"]`).click()');await until('Boolean(document.querySelector(".settings-draft-bar"))','Save bar missing');
       assert.equal(await run('getComputedStyle(document.querySelector(".settings-draft-bar")).position'),'fixed');await capture('engine-settings-rows');
       await click('Discard');await until('!document.querySelector(".settings-draft-bar")','Discard failed');
+    });
+    await check('The AI scout runs from Discover, shows its plan and is scheduled from Engine settings',async()=>{
+      await run("window.portfolio.configureRuntime({scope:'kis',provider:'openai',shareKisWithAI:true,enabled:false,autoSubmit:false,openaiModel:'gpt-6-sol',reasoningEffort:'low'})");
+      await navigate('Discover');await until('Boolean(document.querySelector(`[aria-label="AI scout"]`))','Scout panel missing');
+      await click('Run scout');await until('document.querySelector(`[aria-label="Scout plan"]`)?.textContent.includes("삼성전자")','Scout plan not shown');
+      assert.ok(await run('document.querySelector(`[aria-label="AI scout"]`).textContent.includes("Cash target")'));
+      await run('document.querySelector(`[aria-label="AI scout"]`).scrollIntoView({block:"start"})');await wait(150);await capture('scout-plan');
+      await navigate('AI console');await until('Array.from(document.querySelectorAll(".run-item")).some(b=>b.textContent.includes("Plan"))','Scout run missing from console');
+      await navigate('Engine settings');await run('document.querySelector(`[aria-label="Scheduled scout runs"]`).click()');await until('Boolean(document.querySelector(`[aria-label="Scout schedule"]`))','Schedule select missing');
+      await click('Save changes');await until('(async()=>(await window.portfolio.getRuntime()).config.scoutEnabled===true)()','Scout schedule not saved');
+      await run("window.portfolio.configureRuntime({scoutEnabled:false,scope:'paper',provider:'local'})");
     });
     await check('News matches disclosures to watchlist symbols and filters to portfolio-relevant items',async()=>{
       dartFixture=true;await run('window.portfolio.importProviders()');await run("window.portfolio.updateWatchlist('add','005930','')");
