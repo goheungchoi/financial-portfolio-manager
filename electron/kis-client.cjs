@@ -218,12 +218,14 @@ class KisReadOnlyClient {
     const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
     const local=new Date(Date.now()+9*3600000);const minutes=local.getUTCHours()*60+local.getUTCMinutes();
     if(minutes<9*60 || minutes>=15*60+20)throw new KisError('SESSION_CLOSED');
+    // The mock server has no holiday calendar (CTCA0903R returns EGW02006), so mock accounts use weekdays and hours; the broker still rejects holiday orders.
+    if(this.#credentials.environment!=='live'){if([0,6].includes(local.getUTCDay()))throw new KisError('SESSION_CLOSED');return {open:true,basis:'trading hours (holiday calendar unavailable on mock accounts)'};}
     if(!this.holidayDay || this.holidayDay!==today) {
       const body=await this.quotation('chk-holiday','CTCA0903R',{BASS_DT:today.replaceAll('-',''),CTX_AREA_FK:'',CTX_AREA_NK:''});
       const rows=Array.isArray(body.output)?body.output:[body.output];const day=rows.find(row=>row?.bass_dt===today.replaceAll('-',''));
       if(!day || day.opnd_yn!=='Y')throw new KisError('SESSION_CLOSED');this.holidayDay=today;
     }
-    return {open:true};
+    return {open:true,basis:'KRX holiday calendar and trading hours'};
   }
   async prepareOrder(command) {
     if(!command||!/^\d{6}$/.test(command.symbol)||!['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!Number.isSafeInteger(command.limitPrice)||command.limitPrice<=0)throw new KisError('INVALID_ORDER');

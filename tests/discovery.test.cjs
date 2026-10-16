@@ -1,5 +1,5 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
-const {SecurityMaster,unzipSingle}=require('../electron/security-master.cjs');const {Watchlist,Screener,AI_LIMIT}=require('../electron/discovery.cjs');
+const {SecurityMaster,unzipSingle}=require('../electron/security-master.cjs');const {Watchlist,Screener,StarterCandidates,AI_LIMIT}=require('../electron/discovery.cjs');
 const {normalizeDomestic,normalizeOverseas,rankings}=require('../electron/kis-rankings.cjs');const {researchReview}=require('../electron/research-review.cjs');
 const {masterFiles,fetcherFor}=require('./discovery-fixtures.cjs');
 async function loadedMaster(db=new DatabaseSync(':memory:'),options){const master=new SecurityMaster(db,fetcherFor(masterFiles(),options));await master.refresh();return master;}
@@ -79,6 +79,7 @@ test('AI request includes discovery tools only when discovery is enabled',async(
   const client=new AiClient('fixture-private-key',async(_url,options)=>{body=JSON.parse(options.body);return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,explanation:'Fixture.'})}]}]})};});
   await client.decide({universe:[]},{research:true});assert.ok(!body.tools.some(tool=>tool.name==='screen_market'));
   await client.decide({universe:[],discovery:{enabled:true,watchlist:[]}},{research:true});assert.deepEqual(body.tools.filter(tool=>['screen_market','search_securities','update_watchlist'].includes(tool.name)).length,3);
+  assert.match(body.instructions,/lack of candidates is not a reason to Hold/);assert.match(body.instructions,/discovery\.starterCandidates/);
 });
 
 test('Korean review context quotes watchlist symbols after the allowlist',async()=>{
@@ -87,6 +88,27 @@ test('Korean review context quotes watchlist symbols after the allowlist',async(
   live.configure({symbols:['005930'],lossLimit:{mode:'off',value:0}},'ENABLE MOCK');live.extraSymbols=()=>['005930','247540','NASD:AAPL','247540'];
   await live.context();assert.deepEqual(request,{symbols:['005930'],extra:['247540']});
   live.extraSymbols=()=>[];await live.context();assert.deepEqual(request,{symbols:['005930']});
+});
+
+test('starter candidates fill an empty Korean universe with large companies, skip ETFs and give way to user choices',async()=>{
+  let now=0,calls=0,fail=false;const screener={screen:async query=>{calls++;if(fail)throw new Error('REQUEST_FAILED');assert.deepEqual([query.market,query.kind,query.type],['KR','market-cap','any']);return {rows:[{symbol:'005930',type:'stock'},{symbol:'069500',type:'etf'},{symbol:'000660',type:'stock'},{symbol:'NASD:AAPL',type:'stock'}]};}};
+  const starters=new StarterCandidates(screener,()=>now);
+  assert.deepEqual(await starters.symbols({scope:'acct'}),['005930','000660']);assert.deepEqual(starters.current('acct'),['005930','000660']);assert.deepEqual(starters.current('other'),[]);
+  await starters.symbols({scope:'acct'});assert.equal(calls,1,'cached within six hours');
+  assert.deepEqual(await starters.symbols({scope:'acct',watched:['247540']}),['247540']);assert.deepEqual(starters.current('acct'),[],'watchlist replaces starters');
+  assert.deepEqual(await starters.symbols({scope:'acct',allowed:['035420']}),[]);assert.deepEqual(await starters.symbols({scope:'acct',holdings:['005380']}),[]);
+  assert.deepEqual(await starters.symbols({scope:'acct',holdings:['NASD:NVDA']}),['005930','000660'],'U.S. holdings do not count as Korean candidates');
+  assert.deepEqual(await starters.symbols({scope:null}),[]);
+  now=7*3600000;fail=true;assert.deepEqual(await starters.symbols({scope:'acct'}),[],'a failed ranking leaves the universe empty');
+  now+=60000;await starters.symbols({scope:'acct'});assert.equal(calls,2,'failures retry after 15 minutes, not every review');
+  fail=false;now+=15*60000;assert.deepEqual(await starters.symbols({scope:'acct'}),['005930','000660']);
+});
+
+test('Korean review context names starter candidates and awaits async extra symbols',async()=>{
+  const db=new DatabaseSync(':memory:');const {LiveEngine}=require('../electron/live-engine.cjs');const snapshot={accountKey:'acct',environment:'mock',reportedTotal:10000000,cash:10000000,holdings:[]};let request;
+  const live=new LiveEngine(db,{request:async(operation,data)=>{request=data;return {balance:snapshot,quotes:[{symbol:'005930',price:70000,retrievedAt:1}],marketSession:{open:true,status:'open'}};}},()=>({status:'connected',snapshot}));
+  live.extraSymbols=async()=>['005930'];live.nameOf=symbol=>symbol==='005930'?'삼성전자':null;
+  const context=await live.context();assert.deepEqual(request,{symbols:[],extra:['005930']});assert.deepEqual(context.universe,[{symbol:'005930',name:'삼성전자',price:70000}]);
 });
 
 test('agent watchlist updates add up to three entries, reject per entry and never remove user entries',async()=>{

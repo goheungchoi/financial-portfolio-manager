@@ -48,4 +48,19 @@ function applyAiUpdate(watchlist,scope,args){
     catch(error){return {symbol,status:'rejected',reason:error.message};}});
   return {status:'ok',results,ignored:Math.max(0,args.entries.length-3)};
 }
-module.exports={Watchlist,Screener,TOOLS,TOOL_NAMES,AI_LIMIT,applyAiUpdate};
+// With no allowlist, watchlist or Korean holdings, the largest listed Korean companies seed the review universe.
+class StarterCandidates {
+  constructor(screener,clock=Date.now){this.screener=screener;this.clock=clock;this.state={scope:null,at:0,symbols:[]};this.active=[];}
+  async symbols({scope,watched=[],allowed=[],holdings=[]}){
+    this.active=[];
+    if(!scope||watched.length||allowed.length||holdings.some(krSymbol))return watched;
+    const age=this.clock()-this.state.at;
+    if(this.state.scope!==scope||age>(this.state.symbols.length?6*3600000:15*60000)){
+      let symbols=[];try{const result=await this.screener.screen({market:'KR',kind:'market-cap',type:'any',limit:20});symbols=result.rows.filter(row=>krSymbol(row.symbol)&&row.type!=='etf').map(row=>row.symbol).slice(0,10);}catch{}
+      this.state={scope,at:this.clock(),symbols};
+    }
+    this.active=this.state.symbols;return this.active;
+  }
+  current(scope){return this.state.scope===scope?this.active:[];}
+}
+module.exports={Watchlist,Screener,StarterCandidates,TOOLS,TOOL_NAMES,AI_LIMIT,applyAiUpdate};
