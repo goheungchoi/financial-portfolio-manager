@@ -29,7 +29,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 12. **Done** — **Market discovery:** daily KIS master files (KOSPI/KOSDAQ, NASDAQ/NYSE/AMEX) in a local security master with search; a KIS ranking screener (volume, gainers, losers, market value); a per-account watchlist the agent adds to (capped at 10 AI entries) whose symbols join review quotes. Follow-ups: fundamental/factor filters and automatic sector classification (item 5).
 13. **Done** — News and disclosures as inputs and triggers: matched to portfolio symbols, important DART filings flagged, news-triggered reviews batched every 10 minutes at most. Follow-ups: U.S. SEC filings, alias matching (abbreviations), licensed news.
 14. **Planned, *changed*** — Macro inputs from free official sources: Bank of Korea ECOS (rates, FX, CPI) and U.S. FRED, plus an economic calendar. *Analyst consensus is deferred:* there is no free licensed source; the field stays marked "not connected".
-15. **Partial** — Self-improvement. Done: outcome ledger, lessons with a reviewed lifecycle, opt-in AI reflection, replay and forward lesson trials. Planned: benchmark and horizon evaluation, a scoreboard showing whether approved lessons improved results, and contradiction checks between lessons.
+15. **Partial** — Self-improvement. Done: outcome ledger, lessons with a reviewed lifecycle, opt-in AI reflection, replay and forward lesson trials, and a **learning scoreboard**: broker Buy/Sell recommendations scored 1, 5 and 20 trading days later against KOSPI / S&P 500, completed trades against the benchmark over their holding period, per-lesson comparison of decisions made with and without each approved lesson, and keyword contradiction checks between approved lessons (also flagged to the AI). Remaining: significance testing, held-out validation and external trade import.
 16. **Done** — AI console showing what the program and agent exchanged.
 
 ### Operations
@@ -49,7 +49,7 @@ Each step is planned, implemented, tested and committed on its own before the ne
 | 2 | ~~Market discovery (item 12)~~ Done | The agent can now screen and build a watchlist beyond holdings. |
 | 3 | ~~Event-driven news and disclosures (item 13)~~ Done | Relevant disclosures now start a review within minutes. |
 | 4 | ~~Performance and settled cash (items 4, 7)~~ Done | Returns are now measured against KOSPI / S&P 500 with deposits excluded. |
-| 5 | Learning scoreboard (item 15) | Builds on the benchmark from step 4. |
+| 5 | ~~Learning scoreboard (item 15)~~ Done | Decisions and lessons are now scored against the benchmark. |
 | 6 | Charts: U.S. candles and pop-out window (item 6) | User-facing completeness. |
 | 7 | Macro inputs (item 14) | Useful context once discovery and events work. |
 | 7b | Accurate fees and taxes (item 21) | Requested as a side item; uses broker-reported fees and taxes per execution. |

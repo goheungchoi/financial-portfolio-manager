@@ -38,15 +38,16 @@ class LearningMemory {
   }
   list(){return this.db.prepare('SELECT * FROM lessons ORDER BY rowid DESC LIMIT 100').all().map(row=>({...row,evidence:this.describe(row.id),lifecycle:this.lifecycle(row.id)}));}
   summary(){const records=this.db.prepare('SELECT payload FROM lesson_lifecycle').all().map(r=>JSON.parse(r.payload));return {total:records.length,pending:records.filter(r=>['pending','needs-review'].includes(r.status)).length,approved:records.filter(r=>r.status==='approved'&&r.expiresAt>Date.now()).length,retired:records.filter(r=>r.status==='retired').length,expired:records.filter(r=>r.status==='expired'||r.status==='approved'&&r.expiresAt<=Date.now()).length,method:'Local evidence evaluation · no API calls',validation:'Paper replay not implemented; AI reflection requires review'};}
-  relevant(context,accounts=[]){
+  relevant(context,accounts=[]){return this.relevantLessons(context,accounts).map(row=>row.text);}
+  relevantLessons(context,accounts=[]){
     const paper=context.environment==='local-paper';const symbols=context.universe.map(row=>row.symbol);
     return this.db.prepare('SELECT lessons.id,lessons.text,lesson_evidence.payload FROM lessons LEFT JOIN lesson_evidence ON lessons.id=lesson_evidence.id WHERE approved=1 ORDER BY lessons.rowid DESC').all().flatMap(row=>{
-      if(!row.payload)return paper?[{text:row.text,score:0}]:[];
+      if(!row.payload)return paper?[{id:row.id,text:row.text,score:0}]:[];
       const evidence=JSON.parse(row.payload),state=this.lifecycle(row.id);
       if(!state||state.status!=='approved'||!(state.expiresAt>Date.now()))return [];
       if(!(paper?evidence.source==='paper':evidence.source==='broker'&&accounts.includes(evidence.accountKey))||!symbols.includes(evidence.symbol))return [];
-      const held=Boolean(context.positions?.[evidence.symbol]?.quantity);return [{text:`${row.text} Applicability: ${state.applicability}${state.note?' User-reviewed lesson: '+state.note:''} Review by ${new Date(state.expiresAt).toISOString().slice(0,10)}.`,score:(held?10:0)+(state.approvedAt??0)/1e15}];
-    }).sort((a,b)=>b.score-a.score).slice(0,5).map(row=>row.text);
+      const held=Boolean(context.positions?.[evidence.symbol]?.quantity);return [{id:row.id,text:`${row.text} Applicability: ${state.applicability}${state.note?' User-reviewed lesson: '+state.note:''} Review by ${new Date(state.expiresAt).toISOString().slice(0,10)}.`,score:(held?10:0)+(state.approvedAt??0)/1e15}];
+    }).sort((a,b)=>b.score-a.score).slice(0,5).map(({id,text})=>({id,text}));
   }
 }
 module.exports={LearningMemory};

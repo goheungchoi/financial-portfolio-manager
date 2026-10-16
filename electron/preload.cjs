@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('portfolio', {
   addCashFlow: value => ipcRenderer.invoke('performance:add-flow', value),
   removeCashFlow: id => ipcRenderer.invoke('performance:remove-flow', id),
   refreshBenchmarks: () => ipcRenderer.invoke('performance:refresh-benchmarks'),
+  getScoreboard: () => ipcRenderer.invoke('scoreboard:get'),
+  refreshScoreboard: () => ipcRenderer.invoke('scoreboard:refresh'),
   getDiscovery: () => ipcRenderer.invoke('discovery:get'),
   searchSecurities: (query, market) => ipcRenderer.invoke('discovery:search', query, market),
   screenMarket: query => ipcRenderer.invoke('discovery:screen', query),

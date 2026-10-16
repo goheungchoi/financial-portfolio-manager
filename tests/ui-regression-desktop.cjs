@@ -4,7 +4,7 @@ app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
 // Offline symbol-list fixtures served to the app instead of KIS's download server.
 const masterDir=path.join(process.env.PORTFOLIO_SMOKE_DATA,'master-fixtures');fs.mkdirSync(masterDir,{recursive:true});for(const [name,data] of Object.entries(require('./discovery-fixtures.cjs').masterFiles()))fs.writeFileSync(path.join(masterDir,name),data);process.env.PORTFOLIO_MASTER_DIR=masterDir;
 const seedDay=offset=>new Date(Date.now()+9*3600000-offset*86400000).toISOString().slice(0,10);
-process.env.PORTFOLIO_PERFORMANCE_SEED=JSON.stringify({account:'ui-regression-fixture',history:[[5,9700000],[4,9800000],[3,9750000],[2,9900000],[1,9950000]].map(([offset,value])=>({day:seedDay(offset),at:0,KRW:{equity:value,cash:value},USD:null,fx:null,equityKRW:value}))});
+process.env.PORTFOLIO_PERFORMANCE_SEED=JSON.stringify({account:'ui-regression-fixture',history:[[5,9700000],[4,9800000],[3,9750000],[2,9900000],[1,9950000]].map(([offset,value])=>({day:seedDay(offset),at:0,KRW:{equity:value,cash:value},USD:null,fx:null,equityKRW:value})),reviews:[['seed-buy','Buy',7],['seed-sell','Sell',6],['seed-hold','Hold',6]].map(([id,action,offset])=>({id,timestamp:Date.now()-offset*86400000,provider:'openai',model:'gpt-6-luna',decision:{action,symbol:'005930',quantity:1,explanation:'Seeded decision'},contextEvidence:{environment:'kis',quote:{symbol:'005930',price:100},reviewedLessons:[]},orderId:null}))});
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/ui-regression');fs.mkdirSync(output,{recursive:true});
 const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;let dartFixture=false;
 const domestic={accountKey:'ui-regression-fixture',environment:'mock',source:'kis',cash:10000000,reportedTotal:10000000,holdings:[]};
@@ -176,6 +176,13 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await click('Record deposit');await until('document.querySelector(`[aria-label="Recorded flows"]`)?.textContent.includes("Monthly saving")','Deposit not recorded');
       await run('document.querySelector(`[aria-label="Account performance"]`).scrollIntoView({block:"start"})');await wait(200);await capture('performance-returns');
       await run('document.querySelector(`[aria-label^="Remove flow"]`).click()');await until('!document.querySelector(`[aria-label="Recorded flows"]`)','Flow not removed');
+    });
+    await check('Learning scoreboard scores past decisions against KOSPI',async()=>{
+      await navigate('Journal');await click('Scoreboard');await until('Boolean(document.querySelector(`[aria-label="Decision scores by horizon"]`))','Scoreboard missing');
+      await until('document.querySelectorAll(".score-bar").length>=2','Decision bars missing (opening the scoreboard fetches prices)');
+      const row=await run('Array.from(document.querySelectorAll(`[aria-label="Decision scores by horizon"] tbody tr`)).find(r=>r.cells[0].textContent==="Buy").cells[2].textContent');assert.ok(row.includes('+')&&row.includes('of 1'),'the seeded buy beat a slower benchmark: '+row);
+      assert.ok(await run('document.querySelector(`[aria-label="Learning scoreboard"]`).textContent.includes("holds not scored")'));
+      await run('document.querySelector(`[aria-label="Learning scoreboard"]`).scrollIntoView({block:"start"})');await until(`Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="Refresh prices")`,"Refresh did not finish");await wait(200);await capture("learning-scoreboard");
     });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
