@@ -39,7 +39,10 @@ test('the research loop runs tools until the plan, reports tool failures as data
   const result=await runScout({request,tools:{get_company_research:async()=>({price:1}),screen_market:async()=>{throw new Error('RATE_LIMITED');}},log:(kind,title,body)=>logs.push([kind,title,body])});
   assert.equal(result.rounds,2);assert.deepEqual(result.usage,{inputTokens:30,outputTokens:5});assert.equal(calls[1].length,3,'two tool outputs appended');
   assert.ok(logs.some(([,title,body])=>title==='Scout result · screen_market'&&body.includes('RATE_LIMITED')));
-  await assert.rejects(runScout({request:async()=>({toolCalls:[1,2,3,4].map(i=>({name:'search_securities',callId:String(i),args:{}})),continuation:[]}),tools:{},log:()=>{}}),/INVALID_AI_RESPONSE/,'too many calls in one round');
+  let sent;let ran=0;const burst=await runScout({request:async({continuation})=>{if(!continuation)return {toolCalls:[1,2,3,4,5,6,7,8].map(i=>({name:'search_securities',callId:String(i),args:{query:String(i)}})),continuation:[]};sent=continuation;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[]}};},tools:{search_securities:async()=>{ran++;return {rows:[]};}},log:()=>{}});
+  assert.equal(burst.rounds,2);assert.equal(ran,6,'six requests run per round');assert.equal(sent.length,8,'every request is answered');assert.equal(sent.filter(o=>o.output.includes('skipped')).length,2,'the rest are told to ask again');
+  const unknown=await runScout({request:async({continuation})=>continuation?{plan:{summary:'s',cashTargetPct:null,focus:'',targets:[]}}:{toolCalls:[{name:'unknown:web_search',callId:'u',args:{}}],continuation:[]},tools:{},log:()=>{}});assert.equal(unknown.rounds,2,'an unknown tool is answered, not fatal');
+  await assert.rejects(runScout({request:async()=>({usage:{}}),tools:{},log:()=>{}}),error=>error.detail==='the model returned neither a plan nor a tool request');
   let finals=0;await assert.rejects(runScout({request:async({final})=>{if(final)finals++;return {toolCalls:[{name:'x',callId:'1',args:{}}],continuation:[]};},tools:{},log:()=>{},maxRounds:3}),/INVALID_AI_RESPONSE/);assert.equal(finals,1,'only the last round is final');
 });
 test('a scout run is metered, saves the plan and the next trading review receives it',async()=>{
@@ -80,4 +83,12 @@ test('the scout request offers research and discovery tools, asks for a plan and
   assert.deepEqual(bodies[0].tools.map(t=>t.name).sort(),['get_company_research','screen_market','search_securities','update_watchlist']);assert.equal(bodies[0].text.format.name,'portfolio_plan');assert.equal(bodies[0].tool_choice,'auto');
   const second=await client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low',final:true,continuation:first.continuation});
   assert.equal(bodies[1].tool_choice,'none');assert.equal(second.plan.cashTargetPct,10);
+});
+test('the scout client accepts several tool requests at once and explains malformed replies',async()=>{
+  const {AiClient}=require('../electron/ai-client.cjs');let output;
+  const client=new AiClient('sk-fixture-key-123',async()=>new Response(JSON.stringify({status:'completed',model:'gpt-6-sol',usage:{input_tokens:1,output_tokens:1},output})));
+  output=[1,2,3,4,5].map(i=>({type:'function_call',name:i===5?'web_search':'screen_market',call_id:'c'+i,arguments:JSON.stringify({market:'KR'})}));
+  const reply=await client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low'});assert.equal(reply.toolCalls.length,5);assert.equal(reply.toolCalls[4].name,'unknown:web_search');
+  output=[{type:'function_call',name:'screen_market',call_id:'c1',arguments:'{not json'}];await assert.rejects(client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low'}),error=>error.message==='INVALID_AI_RESPONSE'&&error.detail==='tool arguments were not valid JSON');
+  output=[{type:'message',content:[{type:'output_text',text:'{"summary":"s"}'}]}];await assert.rejects(client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low'}),error=>error.detail==='the plan did not match the required format');
 });

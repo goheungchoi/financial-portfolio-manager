@@ -14,7 +14,7 @@ class KisService {
       if(message.type==='stream'){this.onStatus?.(message.state);return;}
       const pending=this.pending.get(message.id);if(!pending)return;
       clearTimeout(pending.timer);this.pending.delete(message.id);
-      if(message.ok)pending.resolve(message.snapshot);else {const error=new Error(message.code);if(this.workerScript==='provider-worker.cjs'){error.usage=message.usage??null;error.model=message.model??null;}if(Number.isFinite(message.retryAt)){this.cooldownUntil=message.retryAt;error.retryAt=message.retryAt;}if(Number.isInteger(message.httpStatus)&&message.httpStatus>=100&&message.httpStatus<=599)error.httpStatus=message.httpStatus;if(/^[A-Z0-9_-]{1,24}$/.test(message.brokerCode??''))error.brokerCode=message.brokerCode;pending.reject(error);}
+      if(message.ok)pending.resolve(message.snapshot);else {const error=new Error(message.code);if(this.workerScript==='provider-worker.cjs'){error.usage=message.usage??null;error.model=message.model??null;if(message.detail)error.detail=message.detail;}if(Number.isFinite(message.retryAt)){this.cooldownUntil=message.retryAt;error.retryAt=message.retryAt;}if(Number.isInteger(message.httpStatus)&&message.httpStatus>=100&&message.httpStatus<=599)error.httpStatus=message.httpStatus;if(/^[A-Z0-9_-]{1,24}$/.test(message.brokerCode??''))error.brokerCode=message.brokerCode;pending.reject(error);}
     });
     worker.on('exit',()=>{if(this.worker===worker){this.worker=null;this.rejectPending();this.onStatus?.({status:'unavailable',subscribed:0});}});
   }

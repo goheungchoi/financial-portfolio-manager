@@ -10,7 +10,7 @@ export function ScoutPanel({onOpenChart,onNavigate}:{onOpenChart(symbol:string):
   useEffect(()=>{let alive=true;const load=()=>window.portfolio?.getRuntime().then(v=>{if(alive)setScout(v.scout??null);}).catch(()=>{});void load();const t=setInterval(load,4000);return()=>{alive=false;clearInterval(t);};},[]);
   if(!window.portfolio||!scout)return null;
   const busy=running||scout.busy;const latest=scout.latest;const plan=latest?.plan;
-  const run=async()=>{setRunning(true);setNote('');try{const reply=await window.portfolio!.runScout();if(reply.state?.scout)setScout(reply.state.scout);if(!reply.ok)setNote(ERRORS[reply.error??'']??scout.blocked??'The scout run did not finish. See Console.');}catch{setNote('Could not reach the engine.');}finally{setRunning(false);}};
+  const run=async()=>{setRunning(true);setNote('');try{const reply=await window.portfolio!.runScout();if(reply.state?.scout)setScout(reply.state.scout);if(!reply.ok){const detail=reply.state?.scout?.lastErrorDetail;setNote(ERRORS[reply.error??'']??(detail?`The scout run stopped: ${detail}.`:scout.blocked??'The scout run did not finish. See Console.'));}}catch{setNote('Could not reach the engine.');}finally{setRunning(false);}};
   const status=busy?'Researching the market…':scout.blocked?scout.blocked:latest?`Updated ${ago(latest.timestamp)}${latest.model?' · '+latest.model:''}`:'No plan yet';
   return <section className="scout-panel" aria-label="AI scout" aria-busy={busy}>
     <div className="section-head"><div><h2>AI scout</h2><small className={busy?'loading-label':''}>{busy&&<span className="spinner" aria-hidden="true"/>}{status}{scout.enabled&&!scout.blocked?` · runs ${scout.times.join(', ')} on weekdays`:''}</small></div>
