@@ -12,7 +12,7 @@ const D='/uapi/domestic-stock/v1/';
 // Overview: price, valuation, size and 52-week range from the current quote.
 function overview(output={}){
   const q=output??{};
-  return {price:positive(q.stck_prpr),changePct:num(q.prdy_ctrt),per:positive(q.per),pbr:positive(q.pbr),eps:num(q.eps),bps:num(q.bps),
+  return {price:positive(q.stck_prpr),changePct:num(q.prdy_ctrt),per:positive(q.per),pbr:positive(q.pbr),eps:num(q.eps)||null,bps:num(q.bps)||null,
     marketCapKRW:positive(q.hts_avls)!=null?q.hts_avls*1e8:null,listedShares:positive(q.lstn_stcn),high52Week:positive(q.w52_hgpr),low52Week:positive(q.w52_lwpr),
     foreignOwnershipPct:num(q.hts_frgn_ehrt),volume:num(q.acml_vol),turnoverPct:num(q.vol_tnrt),marginRatePct:num(q.marg_rate),
     sectorName:String(q.bstp_kor_isnm??'').trim()||null,status:String(q.iscd_stat_cls_code??'').trim()||null};
@@ -28,10 +28,12 @@ function dividends(rows,symbol,price,today){
   const byYear={};for(const p of paid){const y=p.recordDate.slice(0,4);byYear[y]=(byYear[y]??0)+p.perShare;}
   const years=Object.keys(byYear).sort().reverse().slice(0,5).map(year=>({year,perShare:round(byYear[year],0),payments:paid.filter(p=>p.recordDate.startsWith(year)).length}));
   // Frequency counts record dates, including ones whose amount is not set yet.
-  const count=trailing.length,dates=payments.filter(p=>p.recordDate>yearAgo&&p.recordDate<=today&&(p.perShare!=null||p.pending)).length;
+  // A blank amount long after the record date is a gap in the KSD data, not an announcement still to come.
+  const recentPending=p=>p.pending&&p.recordDate>=shift(today,60);
+  const count=trailing.length,dates=payments.filter(p=>p.recordDate>yearAgo&&p.recordDate<=today&&(p.perShare!=null||recentPending(p))).length;
   return {payments:payments.slice(0,12),trailing12mPerShare:count?round(trailing12m,0):null,trailingYieldPct:count&&price?round(trailing12m/price*100,2):null,
     frequency:dates>=4?'quarterly':dates>=2?'semiannual':dates===1?'annual':paid.length?'irregular':'none',annualTotals:years,
-    upcoming:payments.filter(p=>p.recordDate>=today||p.pending).slice(0,3),
+    upcoming:payments.filter(p=>p.recordDate>=today||recentPending(p)).slice(0,3),
     note:'Per-share cash dividends by record date (KSD schedule). Pending means the amount is not set yet. Calendar-year totals mix fiscal periods.'};
 }
 

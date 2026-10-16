@@ -220,6 +220,15 @@ test('U.S. stocks: KIS quote overview and S&P 500 risk; SEC financials, dividend
   const agent=await s.agent({symbol:'NASD:AAPL',sections:[]});assert.deepEqual(Object.keys(agent).filter(k=>['overview','financials','risk'].includes(k)).sort(),['financials','overview','risk']);
   assert.equal((await s.agent({symbol:'AAPL',sections:[]})).reason,'INVALID_SYMBOL');
 });
+test('live-run fixes: stale blank dividends, monthly sales filings, own preferred shares and zero EPS',()=>{
+  const d=insights.dividends([{record_date:'20251231',sht_cd:'105560',divi_kind:'결산',per_sto_divi_amt:'0'},{record_date:'20260930',sht_cd:'105560',divi_kind:'분기',per_sto_divi_amt:'0'},{record_date:'20260630',sht_cd:'105560',divi_kind:'분기',per_sto_divi_amt:'1605'}],'105560',160300,'2026-10-17');
+  assert.deepEqual(d.upcoming.map(p=>p.recordDate),['2026-09-30'],'a blank amount ten months on is not upcoming');
+  const t=dart.earningsTiming([{kind:'earnings',date:'2026-10-01'},{kind:'earnings',date:'2026-07-24'}],'2026-10-17');assert.equal(t.lastRelease,'2026-07-24');assert.equal(t.nextExpected,'2026-10-24');
+  assert.equal(insights.overview({stck_prpr:'169000',eps:'0',bps:'0'}).eps,null);
+  const {SecurityMaster}=require('../electron/security-master.cjs');const master=new SecurityMaster(new DatabaseSync(':memory:'),async()=>({ok:false}));
+  master.replace('KOSPI',[['005930',1e15],['005935',1e14],['000660',9e14]].map(([symbol,marketCap])=>({symbol,name:symbol,englishName:'',market:'KOSPI',type:'stock',isin:'',industry:'0027',sector:'0013',marketCap})));
+  assert.deepEqual(master.peers('005930').map(p=>p.symbol),['000660']);
+});
 test('scout and trading reviews are offered the market overview tool',async()=>{
   const {AiClient}=require('../electron/ai-client.cjs');const bodies=[];
   const reply=text=>new Response(JSON.stringify({status:'completed',usage:{input_tokens:1,output_tokens:1},output:[{type:'message',content:[{type:'output_text',text}]}]}));

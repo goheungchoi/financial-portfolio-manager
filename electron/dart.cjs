@@ -41,9 +41,11 @@ function dividendTable(rows){
 }
 // Next earnings release, estimated from the lag after quarter end of the latest preliminary-earnings filing.
 function earningsTiming(items,today){
-  const releases=items.filter(i=>i.kind==='earnings'&&i.date).map(i=>i.date).sort().reverse();if(!releases.length)return null;const last=releases[0];
   const quarterEnd=day=>{const [y,m]=day.split('-').map(Number);const q=Math.floor((m-1)/3);const endMonth=q*3;return endMonth===0?`${y-1}-12-31`:new Date(Date.UTC(y,endMonth,0)).toISOString().slice(0,10);};
-  const lag=Math.round((Date.parse(last)-Date.parse(quarterEnd(last)))/86400000);if(lag<0||lag>100)return {lastRelease:last};
+  const lagOf=day=>Math.round((Date.parse(day)-Date.parse(quarterEnd(day)))/86400000);
+  // Quarterly results come 5 to 60 days after quarter end; filings right after it are usually monthly sales reports.
+  const releases=items.filter(i=>i.kind==='earnings'&&i.date).map(i=>i.date).sort().reverse();if(!releases.length)return null;
+  const last=releases.find(d=>lagOf(d)>=5&&lagOf(d)<=60);if(!last)return {lastRelease:releases[0]};const lag=lagOf(last);
   let end=quarterEnd(last);let next;do{const [y,m]=end.split('-').map(Number);end=new Date(Date.UTC(y,m+3,0)).toISOString().slice(0,10);next=new Date(Date.parse(end)+lag*86400000).toISOString().slice(0,10);}while(next<today);
   return {lastRelease:last,daysAfterQuarterEnd:lag,nextExpected:next,basis:'Estimated from the timing of the last preliminary-earnings filing; not an announced date.'};
 }
