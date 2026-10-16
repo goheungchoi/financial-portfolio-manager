@@ -92,3 +92,36 @@ test('the scout client accepts several tool requests at once and explains malfor
   output=[{type:'function_call',name:'screen_market',call_id:'c1',arguments:'{not json'}];await assert.rejects(client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low'}),error=>error.message==='INVALID_AI_RESPONSE'&&error.detail==='tool arguments were not valid JSON');
   output=[{type:'message',content:[{type:'output_text',text:'{"summary":"s"}'}]}];await assert.rejects(client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low'}),error=>error.detail==='the plan did not match the required format');
 });
+test('AI scout requests are limited to three a day, two hours apart, per account',()=>{
+  const store=new ScoutStore(new DatabaseSync(':memory:'));const t0=Date.parse('2026-10-16T01:00:00Z');
+  assert.deepEqual(store.requests('kis:a','2026-10-16',t0),{remainingToday:3,nextAllowedAt:null});
+  store.noteRequest('kis:a','2026-10-16',t0);let s=store.requests('kis:a','2026-10-16',t0+60000);assert.equal(s.remainingToday,2);assert.equal(s.nextAllowedAt,t0+7200000);
+  assert.equal(store.requests('kis:a','2026-10-16',t0+7200000).nextAllowedAt,null,'allowed again after two hours');
+  store.noteRequest('kis:a','2026-10-16',t0+7200000);store.noteRequest('kis:a','2026-10-16',t0+14400000);assert.equal(store.requests('kis:a','2026-10-16',t0+30000000).remainingToday,0);
+  assert.equal(store.requests('kis:a','2026-10-17',t0+90000000).remainingToday,3,'a new Seoul day resets the count');assert.equal(store.requests('kis:b','2026-10-16',t0).remainingToday,3,'per account');
+});
+test('a trading review can ask for a scout run, which starts after the review ends',async()=>{
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
+  const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
+  const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
+  const supplied=[];let reviewRound=0;let scoutStarted;const scoutDone=new Promise(resolve=>{scoutStarted=resolve;});
+  const provider={request:async(operation,payload)=>{supplied.push([operation,payload]);
+    if(operation==='decision'){reviewRound++;if(reviewRound===1)return {toolCalls:[{name:'request_scout',callId:'q1',args:{reason:'No plan yet and the market moved 3%.'}}],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}};return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for the scout.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}
+    if(operation==='scout'){scoutStarted();return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[]},usage:{inputTokens:1,outputTokens:1}};}}};
+  const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
+  automation.discovery={list:()=>[],symbols:()=>[],screen_market:async()=>({}),search_securities:async()=>({}),research:async()=>({}),update_watchlist:async()=>({})};
+  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  await automation.review();
+  const first=supplied.find(([op])=>op==='decision')[1];assert.equal(first.context.scoutRequests.allowed,true);assert.equal(first.context.scoutRequests.remainingToday,3);
+  await scoutDone;await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(supplied.some(([op])=>op==='scout'),'the requested scout ran');
+  const scope=automation.watchScope();assert.equal(automation.requestScout(scope,{reason:'Again'}).status,'rejected','too soon after the last request');
+  assert.equal(automation.requestScout(scope,{reason:''}).status,'rejected');
+  automation.configure({scoutAiRequests:false});assert.equal(automation.scoutRequestState(scope),null,'can be turned off');
+});
+test('reviews are offered request_scout only when a request is allowed',async()=>{
+  const {AiClient}=require('../electron/ai-client.cjs');const bodies=[];
+  const client=new AiClient('sk-fixture-key-123',async(url,options)=>{bodies.push(JSON.parse(options.body));return new Response(JSON.stringify({status:'completed',usage:{input_tokens:1,output_tokens:1},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'ok'})}]}]}));});
+  await client.decide({universe:[],scoutRequests:{allowed:true,remainingToday:3}},{research:true});await client.decide({universe:[],scoutRequests:{allowed:false,remainingToday:0}},{research:true});
+  assert.ok(bodies[0].tools.some(t=>t.name==='request_scout'));assert.ok(!bodies[1].tools.some(t=>t.name==='request_scout'));
+});

@@ -53,6 +53,7 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
 
     <Card id="eng-scout" title="AI scout" label="Scout settings" hint={state.scout?.blocked??'Researches the market, keeps a shortlist on your watchlist and writes a plan for the trading reviews. It never trades.'}>
       <Row title="Scheduled scout runs" hint="Weekdays, Seoul time. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
+      <Row title="Reviews can ask for a scout run" hint="When the plan looks stale. Up to 3 a day, at least 2 hours apart."><Switch label="Reviews can request a scout run" disabled={busy} checked={config.scoutAiRequests} onChange={v=>edit('scoutAiRequests',v)}/></Row>
       {config.scoutEnabled&&<Row title="When"><select aria-label="Scout schedule" disabled={busy} value={config.scoutSchedule} onChange={e=>edit('scoutSchedule',e.target.value)}><option value="daily">09:10</option><option value="twice">09:10 and 13:00</option><option value="kr-us">09:10 and 22:40 (U.S. open)</option><option value="three">09:10, 13:00 and 22:40</option></select></Row>}
     </Card>
 
