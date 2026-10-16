@@ -218,10 +218,11 @@ app.whenReady().then(async () => {
   const starters=new (require('./discovery.cjs').StarterCandidates)(screener);
   automation.discovery.starters=()=>starters.current(watchScope());
   live.nameOf=symbol=>master.get(symbol)?.name||null;
-  // Company research for the scout: Korean listings from the symbol list only, cached for six hours per symbol.
-  const researchCache=new Map();
-  automation.discovery.research=async args=>{const symbol=String(args?.symbol??'').trim();if(!/^[0-9]{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};if(master.status().total&&!master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');
-    const hit=researchCache.get(symbol);if(hit&&Date.now()-hit.at<6*3600000)return hit.value;const value={...await kisService.request('research',{symbol}),name:master.get(symbol)?.name??null};researchCache.set(symbol,{at:Date.now(),value});return value;};
+  // Company research for the agents and the Company page: KIS sections plus OpenDART filings, cached per source.
+  const research=new (require('./research-service.cjs').ResearchService)({db:store.db,master,kis:(operation,payload)=>kisService.request(operation,payload),provider:(operation,payload)=>providerService.request(operation,payload),kisReady:()=>Boolean(kisState.snapshot),dartReady:()=>Boolean(automation.providerStatus.dartConnected)});
+  automation.discovery.research=args=>research.agent(args);
+  ipcMain.handle('research:open-filing',(event,url)=>{authorize(event);if(typeof url==='string'&&/^https:\/\/dart\.fss\.or\.kr\/dsaf001\/main\.do\?rcpNo=\d{14}$/.test(url))void shell.openExternal(url);});
+  ipcMain.handle('research:company',async(event,symbol,sections,refresh)=>{authorize(event);if(typeof symbol!=='string'||!/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol))throw new Error('INVALID_REQUEST');return research.profile(symbol,{sections:Array.isArray(sections)?sections.filter(s=>typeof s==='string').slice(0,12):undefined,refresh:refresh===true});});
   live.extraSymbols=async()=>{let allowed=[];try{allowed=live.policy()?.symbols??[];}catch{}return starters.symbols({scope:watchScope(),watched:automation.discovery.symbols('KR'),allowed,holdings:(kisState.snapshot?.holdings??[]).map(row=>row.symbol)});};
   // News matters for holdings, watchlist, allowlists and AI-watched symbols.
   automation.relevantSecurities=()=>{const symbols=new Set([...(kisState.snapshot?.holdings??[]).map(row=>row.symbol),...(usSnapshot?.holdings??[]).map(row=>row.symbol),...automation.discovery.list().map(row=>row.symbol),...(live.getState().policy?.symbols??[]),...(usLive.getState().policy?.symbols??[]),...automation.watches.list(automation.watchScope()).map(row=>row.symbol),...(automation.config.scope==='paper'?paper.getState().universe.map(row=>row.symbol):[])]);

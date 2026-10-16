@@ -1,0 +1,87 @@
+// Company research shared by the agents and the Company page: sections fetched on demand, cached in SQLite,
+// composed from KIS (quotes, analysts, estimates, ratios, KSD dividends and meetings) and OpenDART (filings, annual dividend table).
+const {seoulDate}=require('./kis-activity.cjs');
+const HOUR=3600000;
+const SECTIONS=['overview','analysts','estimates','financials','dividends','events'];
+const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
+// Raw sources and how long each stays fresh.
+const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'}};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends']};
+const FAILURE_TTL=10*60000;
+const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
+// Null, empty and "not applicable" values are dropped so the agents only read what exists.
+function prune(value){
+  if(Array.isArray(value)){const out=value.map(prune).filter(v=>v!==undefined);return out.length?out:undefined;}
+  if(value&&typeof value==='object'){const out={};for(const [k,v] of Object.entries(value)){const p=prune(v);if(p!==undefined)out[k]=p;}return Object.keys(out).length?out:undefined;}
+  return value===null||value===''?undefined:value;
+}
+class ResearchService {
+  constructor({db,master,kis,provider,kisReady=()=>true,dartReady=()=>false,clock=Date.now}){
+    this.db=db;this.master=master;this.kis=kis;this.provider=provider;this.kisReady=kisReady;this.dartReady=dartReady;this.clock=clock;this.inflight=new Map();this.failures=new Map();
+    db.exec('CREATE TABLE IF NOT EXISTS research_cache(symbol TEXT NOT NULL,source TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,source))');
+  }
+  cached(symbol,source){const row=this.db.prepare('SELECT at,payload FROM research_cache WHERE symbol=? AND source=?').get(symbol,source);return row?{at:row.at,value:JSON.parse(row.payload)}:null;}
+  // One raw source: fresh cache, a recent failure, or a new fetch (shared by concurrent callers).
+  async source(symbol,source,refresh=false){
+    const spec=SOURCES[source];const hit=this.cached(symbol,source);
+    if(hit&&!refresh&&this.clock()-hit.at<spec.ttl)return {status:'ok',retrievedAt:hit.at,data:hit.value};
+    const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL)return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};
+    const key=symbol+'|'+source;if(this.inflight.has(key))return this.inflight.get(key);
+    const task=(async()=>{
+      try{
+        let value;
+        if(spec.from==='dart'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider('dart-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
+        else{if(!this.kisReady())throw new Error('KIS_NOT_CONNECTED');value=await this.kis('research-section',{symbol,section:source});}
+        const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);
+        return {status:'ok',retrievedAt:at,data:value};
+      }catch(error){const reason=code(error);this.failures.set(symbol+source,{at:this.clock(),reason});return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason};}
+      finally{this.inflight.delete(key);}
+    })();
+    this.inflight.set(key,task);return task;
+  }
+  // A public section built from its sources; sources are fetched one after another (KIS calls are paced anyway).
+  async section(symbol,name,refresh=false){
+    if(!SECTIONS.includes(name))return {status:'unavailable',reason:'UNKNOWN_SECTION'};
+    if(!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};
+    const parts={};for(const source of NEEDS[name])parts[source]=await this.source(symbol,source,refresh);
+    const ok=s=>parts[s]?.status==='ok'?parts[s].data:null;const at=Math.min(...Object.values(parts).filter(p=>p.status==='ok').map(p=>p.retrievedAt));
+    const main=parts[NEEDS[name][0]];
+    if(name==='dividends'){if(main.status!=='ok')return main;return {status:'ok',retrievedAt:at,data:{...main.data,annualReport:ok('dart')?.dividends??null,...(parts.dart.status!=='ok'?{annualReportUnavailable:parts.dart.reason}:{})}};}
+    if(name==='events'){
+      const dart=ok('dart'),meetings=ok('meetings')?.meetings??[],dividends=ok('dividends');if(!dart&&!ok('meetings'))return {status:'unavailable',reason:parts.dart.reason??parts.meetings.reason};
+      const today=seoulDate(this.clock());
+      const upcoming=[...meetings.filter(m=>m.date>=today).map(m=>({date:m.date,kind:'meeting',title:(m.type??'Shareholder meeting')+(m.agenda.length?': '+m.agenda.slice(0,3).join(', '):'')})),
+        ...(dividends?.upcoming??[]).filter(p=>p.recordDate>=today).map(p=>({date:p.recordDate,kind:'dividend',title:`Dividend record date (${({'결산':'year-end','분기':'quarterly','중간':'interim'})[p.kind]??p.kind??'cash'})${p.perShare?` · ${p.perShare.toLocaleString()} KRW`:' · amount not set'}`})),
+        ...(dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
+      return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
+    }
+    return main.status==='ok'?{status:'ok',retrievedAt:main.retrievedAt,data:main.data,...(main.stale?{stale:true}:{})}:main;
+  }
+  identity(symbol){const row=this.master?.get?.(symbol);return row?{name:row.name,market:row.market,type:row.type,sector:row.sector??null,sectorName:row.sectorName??null}:{name:null};}
+  async profile(symbol,{sections=SECTIONS,refresh=false}={}){
+    const out={symbol,...this.identity(symbol),asOf:seoulDate(this.clock()),sections:{}};
+    for(const name of sections.filter(s=>SECTIONS.includes(s)))out.sections[name]=await this.section(symbol,name,refresh);
+    return out;
+  }
+  // Compact research for the agents: requested sections only, nulls removed, long lists shortened.
+  async agent(args){
+    const symbol=String(args?.symbol??'').trim().toUpperCase();
+    if(!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'};
+    if(this.master?.status?.().total&&!this.master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};
+    const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:AGENT_DEFAULT;
+    const profile=await this.profile(symbol,{sections});const out={symbol,name:profile.name,market:profile.market,asOf:profile.asOf};
+    for(const [name,section] of Object.entries(profile.sections))out[name]=section.status==='ok'?digest(name,section.data):{unavailable:section.reason};
+    out.note='Third-party and broker data; check dates. Analyst targets and estimates are opinions. Null fields were left out.';
+    return prune(out);
+  }
+}
+// Per-section shortening for the agents.
+function digest(name,d){
+  if(name==='analysts')return {...d,latest:d.latest?.slice(0,4),targetRevisions:d.targetRevisions?{...d.targetRevisions,recent:d.targetRevisions.recent.slice(0,3)}:undefined};
+  if(name==='dividends')return {trailing12mPerShare:d.trailing12mPerShare,trailingYieldPct:d.trailingYieldPct,frequency:d.frequency,annualTotals:d.annualTotals?.slice(0,4),upcoming:d.upcoming,annualReport:d.annualReport?.years,annualReportUnavailable:d.annualReportUnavailable};
+  if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
+  if(name==='financials')return {annualRatios:d.annualRatios};
+  return d;
+}
+module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,prune,digest};

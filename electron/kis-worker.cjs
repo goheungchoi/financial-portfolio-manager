@@ -60,9 +60,9 @@ process.parentPort.on('message',async ({data})=>{
     if(operation==='index-history') {
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-index.cjs').indexHistory(client,data.request)});return;
     }
-    if(operation==='research') {
-      if(typeof data.symbol!=='string'||!/^\d{6}$/.test(data.symbol))throw 0;
-      process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-research.cjs').companyResearch(client,data.symbol,require('./kis-activity.cjs').seoulDate())});return;
+    if(operation==='research-section') {
+      if(typeof data.symbol!=='string'||typeof data.section!=='string')throw 0;
+      process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-insights.cjs').fetchSection(client,data.symbol,data.section,require('./kis-activity.cjs').seoulDate(),data.context??{})});return;
     }
     if(operation==='screen') {
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-rankings.cjs').rankings(client,data.request)});return;
