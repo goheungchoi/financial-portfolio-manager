@@ -110,3 +110,7 @@ aside > * { flex-shrink:0; }
 .conflict-list{margin:4px 0 8px;padding-left:18px}.conflict-list li{margin:4px 0}
 main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-window section{margin-bottom:18px}
 @media(max-width:700px){main.chart-window{margin:0;padding:12px 16px}}
+.macro-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin:8px 0 18px}
+.macro-tile{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--border,rgba(127,127,127,.3));border-radius:10px}.macro-tile strong{font-size:1.35rem}.macro-tile strong .muted{font-size:.8rem;font-weight:400}
+.macro-spark{width:100%;height:32px;display:block}.macro-spark path{fill:none;stroke:var(--perf-portfolio);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.macro-up,.macro-down{font-size:.85rem}.macro-today td{font-weight:600}

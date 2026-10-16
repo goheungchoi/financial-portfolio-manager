@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
-export const workspaceGroups=[{label:'Portfolio',tabs:['Overview','Holdings','Charts','Performance']},{label:'Trading',tabs:['Paper trading','KIS trading','U.S. stocks','Activity']},{label:'Research',tabs:['Discover','Journal','AI console','News']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes']}];
+export const workspaceGroups=[{label:'Portfolio',tabs:['Overview','Holdings','Charts','Performance']},{label:'Trading',tabs:['Paper trading','KIS trading','U.S. stocks','Activity']},{label:'Research',tabs:['Discover','Journal','AI console','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes']}];
 export const tabGuides:Record<string,{description:string;next:string;target:string}>={
   Overview:{description:'See where your money is invested, how positions are performing, and whether the engine is ready.',next:'Connect your account',target:'Connections'},
   Holdings:{description:'Inspect each company, position size, latest price and unrealized gain or loss.',next:'Explore price history',target:'Charts'},
@@ -15,6 +15,7 @@ export const tabGuides:Record<string,{description:string;next:string;target:stri
   Journal:{description:'Read actual portfolio decisions and approve useful lessons for future reviews. Hold is a valid completed decision.',next:'Inspect the program–agent exchange',target:'AI console'},
   'AI console':{description:'Inspect supplied context, decisions, risk checks and tool results.',next:'Run a portfolio review',target:'Engine settings'},
   News:{description:'Configure a public news feed or DART connection and read available headlines. Coverage is limited to your configured sources.',next:'Add a DART key',target:'Connections'},
+  Macro:{description:'Official interest rates, inflation, exchange rates and volatility for Korea and the U.S., plus upcoming U.S. release dates. The AI uses them as background context.',next:'Add ECOS or FRED keys',target:'Connections'},
   'Engine settings':{description:'Choose how the engine behaves: decision provider, portfolio, schedule, budget and submission preferences. Keys and accounts are managed in Connections.',next:'Practice the workflow',target:'Paper trading'},
   Connections:{description:'Connect your KIS brokerage account and optional AI, news and alert keys. Each connection shows its status, the remembered file and reconnect controls. Connecting alone does not enable trading.',next:'Configure the engine',target:'Engine settings'}
 };

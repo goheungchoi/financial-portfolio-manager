@@ -67,10 +67,12 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
     </section>
 
     <section className="connection-card" aria-label="Provider keys">
-      <div className="section-head"><div><h2>AI, news &amp; alert keys</h2><small>Optional · OpenAI, Open DART and a mobile webhook in one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
+      <div className="section-head"><div><h2>AI, news &amp; alert keys</h2><small>Optional · OpenAI, Open DART, ECOS, FRED and a mobile webhook in one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
       <div className="connection-facts">
         <span>OpenAI <b>{providers?.aiConnected?'Key loaded':'Not configured'}</b></span>
         <span>Open DART <b>{providers?.dartConnected?'Key loaded':'Not configured'}</b></span>
+        <span>Bank of Korea ECOS <b>{providers?.ecosConnected?'Key loaded':'Sample access'}</b></span>
+        <span>FRED calendar <b>{providers?.fredConnected?'Key loaded':'Not configured'}</b></span>
         <span>Mobile webhook <b>{providers?.pushConnected?'Configured':'Not configured'}</b></span>
         <span>File <b>{providerFile?.name??'None imported'}{providerFile?.remembered?' · reconnects at launch':''}</b></span>
       </div>
@@ -81,7 +83,7 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
         <span className="action-spacer"/>
         <button className="danger" disabled={busy||!providerFile?.remembered||providerFile.status==='connecting'} onClick={()=>void fileAction('providers','forget')}>Forget &amp; disconnect</button>
       </div>
-      <details className="inline-help"><summary>Provider JSON format</summary><pre>{JSON.stringify({openaiApiKey:'OPTIONAL_OPENAI_API_KEY',dartApiKey:'OPTIONAL_OPEN_DART_KEY',pushWebhookURL:'https://YOUR_PRIVATE_WEBHOOK'},null,2)}</pre><p className="muted">Importing an OpenAI key selects and saves the OpenAI decision provider automatically. Choose the model and budget in Engine settings.</p></details>
+      <details className="inline-help"><summary>Provider JSON format</summary><pre>{JSON.stringify({openaiApiKey:'OPTIONAL_OPENAI_API_KEY',dartApiKey:'OPTIONAL_OPEN_DART_KEY',ecosApiKey:'OPTIONAL_ECOS_KEY',fredApiKey:'OPTIONAL_FRED_KEY',pushWebhookURL:'https://YOUR_PRIVATE_WEBHOOK'},null,2)}</pre><p className="muted">Importing an OpenAI key selects and saves the OpenAI decision provider automatically. Choose the model and budget in Engine settings. Macro data works without keys (FRED downloads and ECOS sample access); an ECOS key removes the sample row limit and a FRED key adds the U.S. release calendar. Both keys are free from ecos.bok.or.kr and fred.stlouisfed.org.</p></details>
     </section>
 
     <section className="connection-card" aria-label="External agent bridge">
