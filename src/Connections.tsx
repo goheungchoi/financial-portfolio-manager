@@ -52,23 +52,23 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
           <div><small>Settled cash (D+2)</small><strong>{settled==null?'—':money(settled)}</strong><span>Deposit {money(data.cash)} · not confirmed buying power</span></div>
           <div><small>Korean positions</small><strong>{data.holdings.length}</strong><button className="link-button" onClick={()=>onNavigate('Holdings')}>View holdings →</button></div>
         </div>
-        <details className="inline-help reconciliation"><summary>Why this differs from Combined equity on Overview</summary>
+        <details className="inline-help reconciliation"><summary>Why this differs from Home</summary>
           <table><tbody>
             <tr><td>Korean holdings at KIS prices</td><td>{money(holdingsAtKis)}</td></tr>
             <tr><td>Cash counted by KIS (reported total − holdings)</td><td>{money(kisCash)}</td></tr>
             <tr><th>KIS reported total</th><th>{money(data.reportedTotal)}</th></tr>
-            <tr><td>Settled (D+2) cash used by Overview</td><td>{settled==null?'Not reported':money(settled)}</td></tr>
+            <tr><td>Settled (D+2) cash used by Home</td><td>{settled==null?'Not reported':money(settled)}</td></tr>
             <tr><td>Total deposit balance</td><td>{money(data.cash)}</td></tr>
             <tr><td>Still settling (deposit − settled cash)</td><td className={Math.abs(unsettled)>0?'warning-text':''}>{money(unsettled)}</td></tr>
           </tbody></table>
-          <Note summary="Why this can differ from the KIS total">Both KIS and Overview value Korean cash at settled (D+2) cash, which already removes money for purchases that have not settled and adds proceeds of unsettled sales. Overview can still differ from the KIS total because it prices holdings with streamed quotes, and in “All markets” it adds the U.S. account converted at the displayed exchange rate. A non-zero “still settling” amount means recent trades have not settled yet.</Note>
+          <Note summary="Why this can differ from the KIS total">Both KIS and Home value Korean cash at settled (D+2) cash, which already removes money for purchases that have not settled and adds proceeds of unsettled sales. Home can still differ from the KIS total because it prices holdings with streamed quotes, and in “All markets” it adds the U.S. account converted at the displayed exchange rate. A non-zero “still settling” amount means recent trades have not settled yet.</Note>
         </details>
       </>:<details className="inline-help" open={!kisFile?.remembered}><summary>Credential file format</summary><pre>{JSON.stringify({environment:'mock',appKey:'YOUR_APP_KEY',appSecret:'YOUR_APP_SECRET',accountNumber:'12345678',accountProductCode:'01'},null,2)}</pre><p className="muted">Use mock or live credentials matching the selected environment. Keep the original file outside this workspace; importing does not remove or protect it.</p></details>}
-      <p className="muted small-print">Read only. Keys and access tokens stay in the broker process. Balances refresh every two minutes; connecting alone does not enable trading.</p>
+      <p className="muted small-print">Read only. Connecting doesn’t enable trading.</p>
     </section>
 
     <section className="connection-card" aria-label="Provider keys">
-      <div className="section-head"><div><h2>AI, news &amp; alert keys</h2><small>Optional · OpenAI, Open DART, ECOS, FRED and a mobile webhook in one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
+      <div className="section-head"><div><h2>AI, news &amp; alert keys</h2><small>Optional · one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
       <div className="connection-facts">
         <span>OpenAI <b>{providers?.aiConnected?'Key loaded':'Not configured'}</b></span>
         <span>Open DART <b>{providers?.dartConnected?'Key loaded':'Not configured'}</b></span>
