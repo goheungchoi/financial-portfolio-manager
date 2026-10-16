@@ -10,7 +10,7 @@ Install with `release/installer/Financial-Portfolio-Manager-Setup-<version>.exe`
 
 **Updates:** Connections → App updates checks this app's GitHub Releases (automatically every 6 hours unless turned off). You start the download, which is verified against the published SHA-512 checksum, and choose when to restart and install; installing is blocked while auto trading is armed, a broker order is open or a review is running.
 
-**Publishing a release:** sign in with `gh auth login` (or set `GH_TOKEN` to a token with `repo` scope), make sure the GitHub repository in `package.json` → `build.publish` exists, raise `version` in `package.json`, then run `npm run release`. electron-builder uploads the installer, its blockmap and `latest.yml` to a release for that version.
+**Publishing a release:** sign in with `gh auth login` (or set `GH_TOKEN` to a token with `repo` scope), make sure the GitHub repository in `package.json` → `build.publish` exists, raise `version` in `package.json`, then run `npm run release`. The script creates a draft release, uploads the installer, its blockmap and `latest.yml`, checks that `latest.yml` matches the installer, and only then publishes the release. It refuses a version that is already published.
 
 Development requires Node.js 22.13+:
 
