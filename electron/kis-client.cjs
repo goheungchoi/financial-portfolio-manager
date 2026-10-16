@@ -100,9 +100,18 @@ class KisReadOnlyClient {
     if(price<=0)throw new KisError('INVALID_RESPONSE');
     return {symbol,price,retrievedAt:Date.now()};
   }
-  async getDailyHistory(symbol) {
+  // KIS returns at most 100 daily rows per request; extra pages continue before the earliest row.
+  async getDailyHistory(symbol,pages=1) {
     if(typeof symbol!=='string' || !/^[A-Z0-9]{6}$/.test(symbol))throw new KisError('INVALID_INSTRUMENT');
-    const end=new Date();const start=new Date(end.getTime()-180*86400000);
+    const rows=new Map();let end=new Date();
+    for(let page=0;page<pages;page++){
+      const batch=await this.dailyPage(symbol,end);for(const candle of batch)rows.set(candle.timestamp,candle);
+      if(batch.length<90)break;end=new Date(Math.min(...batch.map(c=>c.timestamp))-86400000);
+    }
+    return [...rows.values()].sort((a,b)=>a.timestamp-b.timestamp).slice(-100*pages);
+  }
+  async dailyPage(symbol,end) {
+    const start=new Date(end.getTime()-180*86400000);
     const date=value=>{
       const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(value);
       return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('');
@@ -119,7 +128,7 @@ class KisReadOnlyClient {
       const candle={timestamp,open:amount(row.stck_oprc),high:amount(row.stck_hgpr),low:amount(row.stck_lwpr),close:amount(row.stck_clpr),volume:amount(row.acml_vol)};
       if(candle.low<=0 || candle.high<Math.max(candle.open,candle.close) || candle.low>Math.min(candle.open,candle.close) || candle.volume<0)throw new KisError('INVALID_RESPONSE');
       return candle;
-    }).sort((a,b)=>a.timestamp-b.timestamp).slice(-100);
+    }).sort((a,b)=>a.timestamp-b.timestamp);
   }
   async getBalance() {
     await this.authenticate();

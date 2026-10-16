@@ -108,3 +108,5 @@ aside > * { flex-shrink:0; }
 .score-bar{stroke:var(--panel,#fff);stroke-width:1}.score-bar.up{fill:var(--perf-portfolio)}.score-bar.down{fill:var(--perf-benchmark)}.score-bar.active{stroke:var(--text,currentColor);stroke-width:1.5}
 .swatch.score-up{background:var(--perf-portfolio)}.swatch.score-down{background:var(--perf-benchmark)}
 .conflict-list{margin:4px 0 8px;padding-left:18px}.conflict-list li{margin:4px 0}
+main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-window section{margin-bottom:18px}
+@media(max-width:700px){main.chart-window{margin:0;padding:12px 16px}}

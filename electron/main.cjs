@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Notification, shell, Menu } = require('electron');
 if(!process.env.PORTFOLIO_SMOKE_DATA&&!app.requestSingleInstanceLock()){app.quit();process.exit(0);}
-app.on('second-instance',()=>{const window=BrowserWindow.getAllWindows()[0];if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
+let mainWindow=null;const chartWindows=new Map();
+app.on('second-instance',()=>{const window=mainWindow&&!mainWindow.isDestroyed()?mainWindow:BrowserWindow.getAllWindows()[0];if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
 const { PortfolioStore } = require('./storage.cjs');
 const { KisService } = require('./kis-service.cjs');
 const { buildKisMarket } = require('./kis-market.cjs');
@@ -119,7 +120,17 @@ function createWindow() {
   win.webContents.on('will-navigate', event => event.preventDefault());
   if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Overview'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[4].config.enabled)throw 0;console.log('Portable build verified: renderer, private IPC, SQLite, paused paper engine and disabled broker automation.');app.quit();}catch{console.error('Portable build verification failed.');app.exit(1);}});
   win.loadFile(page, { hash: 'overview' });
+  // Pop-out chart windows belong to the main window and close with it.
+  mainWindow=win;win.on('closed',()=>{if(mainWindow===win)mainWindow=null;for(const chart of chartWindows.values())if(!chart.isDestroyed())chart.close();});
   return win;
+}
+// One chart-only window per symbol, loading the same page so IPC authorization is unchanged.
+function openChartWindow(symbol){
+  const existing=chartWindows.get(symbol);if(existing&&!existing.isDestroyed()){if(existing.isMinimized())existing.restore();existing.focus();return existing;}
+  const win=new BrowserWindow({show:!verificationDirectory,width:1040,height:780,minWidth:560,minHeight:480,backgroundColor:store?.getTheme()==='light'?'#f3f6fa':'#181818',title:symbol+' · Chart',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,sandbox:true,nodeIntegration:false}});
+  win.removeMenu?.();win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',event=>event.preventDefault());
+  chartWindows.set(symbol,win);win.on('closed',()=>{if(chartWindows.get(symbol)===win)chartWindows.delete(symbol);});
+  win.loadFile(page,{hash:'chart:'+encodeURIComponent(symbol)});return win;
 }
 app.whenReady().then(async () => {
   domain = await import('../src/domain.mjs');
@@ -152,6 +163,7 @@ app.whenReady().then(async () => {
   const portfolioView=new PortfolioView(store.db);automation.metadata=()=>portfolioView.metadata();automation.fx=()=>usSnapshot?.fx??(costs.get().usdKRW?{usdKRW:costs.get().usdKRW,source:'User indicative rate',timestamp:null}:null);
   const portfolioState=()=>{const kr=kisState.snapshot?{...kisState.snapshot,holdings:buildKisMarket(kisState,kisQuotes).snapshot.holdings}:null;return {...combinePortfolio(kr,usSnapshot,automation.fx(),portfolioView.metadata()),valuationSample:Math.floor(Date.now()/1000),sessions:{KR:live.enabled,US:usLive.enabled},usError:usLive.refreshError??null,brokerCode:usLive.brokerCode??null,httpStatus:usLive.httpStatus??null,warnings:usLive.refreshWarnings??[]};};
   const companyCache=new Map();let companyBusy=false;
+  ipcMain.handle('chart:pop-out',(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))throw new Error('INVALID_REQUEST');openChartWindow(symbol);return true;});
   ipcMain.handle('company:get',async(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))return {error:'Enter a six-digit Korean code or exchange:ticker, such as NASD:AAPL.'};if(!kisState.snapshot)return {error:'Connect your KIS account first.'};const generation=kisGeneration,key=generation+':'+symbol,cached=companyCache.get(key);if(cached&&Date.now()-cached.timestamp<30000)return cached.value;if(companyBusy)return {error:'Another company request is loading. Please retry.'};companyBusy=true;
     try{const value={symbol};for(const [name,dataset] of [['company','company'],['daily','daily_technicals'],['minute','minute_technicals']]){try{value[name]=await kisService.request('company-chart',{request:{symbol,dataset}});}catch{value[name]={status:'unavailable'};}}if(generation!==kisGeneration)return {error:'Account changed. Refresh the company view.'};if(companyCache.size>30)companyCache.clear();companyCache.set(key,{timestamp:Date.now(),value});return value;}finally{companyBusy=false;}
   });
