@@ -240,6 +240,23 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await run("document.querySelector(`[aria-label=\"Korea short and leverage\"]`).scrollIntoView({block:\"start\"})");await wait(150);await capture("short-leverage-settings");
       await run('document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`).click()');await wait(100);await click('Save Korea settings');await until('document.querySelector(`[aria-label="Korea short and leverage"] .badge`)?.textContent==="OFF"','Policy not reset');
     });
+    await check('Overview shows attention items and AI activity; paper trades in one step; the console reads as conversations',async()=>{
+      await navigate('Overview');await until('Boolean(document.querySelector(`[aria-label="Needs your attention"]`))&&Boolean(document.querySelector(`[aria-label="AI activity"]`))','Dashboard panels missing');
+      assert.ok(await run('document.querySelector(`[aria-label="AI activity"] .decision-feed li`)!==null'),'recent decisions listed');
+      await navigate('Paper trading');await until('Boolean(document.querySelector(`[aria-label="Simulation running"]`))','Simulation switch missing');
+      if(!(await run('document.querySelector(`[aria-label="Simulation running"]`).checked')))await run('document.querySelector(`[aria-label="Simulation running"]`).click()');
+      await until('document.querySelector(`[aria-label="Simulation running"]`).checked','Simulation did not start');
+      await run('document.querySelector(`.price-board tbody tr .mini.buy`).click()');await wait(100);
+      await until(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Place paper buy order'&&!b.disabled)`,'Order button not ready');await click('Place paper buy order');
+      await until('document.querySelector(`[aria-label="Paper order ticket"]`).textContent.includes("placed")','Paper order not placed');
+      await run('document.querySelector(`[aria-label="Simulation running"]`).click()');await until('!document.querySelector(`[aria-label="Simulation running"]`).checked','Simulation did not pause');
+      await navigate('AI console');await until('document.querySelectorAll(".run-item").length>0&&Boolean(document.querySelector(".bubble.from-ai"))','Conversation view missing');
+      assert.equal(await run('document.querySelector(".run-item").getAttribute("aria-current")'),'true','latest run selected');
+      await capture('ai-console-conversation');
+    });
+    // Optional design review: full-page screenshots of every tab (PORTFOLIO_TOUR=1).
+    if(process.env.PORTFOLIO_TOUR){win.setSize(1280,900);await run("document.documentElement.dataset.theme='dark'");const tabs=await run('Array.from(document.querySelectorAll(".nav")).map(b=>b.textContent)');
+      win.webContents.on("console-message",(...args)=>{const m=args[0]?.message??args[2];if(/error/i.test(String(m)))console.log("renderer: "+String(m).slice(0,600));});console.log("tour tabs: "+tabs.join(" | "));for(const tab of tabs){try{await navigate(tab);}catch(error){console.log("tour skip "+tab+": "+error.message);continue;}await wait(600);const height=await run('Math.min(6000,document.documentElement.scrollHeight)');win.setSize(1280,height);await wait(300);await capture('tour-'+tab.toLowerCase().replace(/[^a-z]+/g,'-'));win.setSize(1280,900);}}
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
 });});require('../electron/main.cjs');
