@@ -1,0 +1,311 @@
+const { app, BrowserWindow, ipcMain, dialog, Notification, shell, Menu } = require('electron');
+if(!process.env.PORTFOLIO_SMOKE_DATA&&!app.requestSingleInstanceLock()){app.quit();process.exit(0);}
+app.on('second-instance',()=>{const window=BrowserWindow.getAllWindows()[0];if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
+const { PortfolioStore } = require('./storage.cjs');
+const { KisService } = require('./kis-service.cjs');
+const { buildKisMarket } = require('./kis-market.cjs');
+const { PaperEngine } = require('./paper-engine.cjs');
+const {LiveEngine}=require('./live-engine.cjs');
+const {TradingCosts}=require('./trading-costs.cjs');
+const {PortfolioView,combinePortfolio}=require('./portfolio-view.cjs');let usLive,costs,usSnapshot=null;let lastUSRefresh=0,usRefreshing=false;
+const {Automation}=require('./automation.cjs');const {Notifications}=require('./notifications.cjs');
+const providerService=new KisService('provider-worker.cjs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const kisService = new KisService();
+let streamState={status:'disconnected',subscribed:0};
+kisService.onStatus=state=>{streamState={status:state.status,subscribed:state.subscribed,retryInMs:state.retryInMs};if(kisState.snapshot)broadcastMarket();};
+kisService.onQuote=quote=>{
+  if(!kisState.snapshot?.holdings.some(row=>row.symbol===quote.symbol))return;
+  const previous=kisQuotes.get(quote.symbol);
+  if(previous?.source==='stream' && (quote.timestamp<previous.timestamp || quote.timestamp===previous.timestamp && quote.cumulativeVolume<=previous.cumulativeVolume))return;
+  kisQuotes.set(quote.symbol,{symbol:quote.symbol,price:quote.price,timestamp:quote.timestamp,receivedAt:quote.receivedAt,cumulativeVolume:quote.cumulativeVolume,source:'stream'});
+};
+let kisState = {status:'disconnected',snapshot:null,error:null};
+let kisBusy = false;
+let kisGeneration=0;
+let quoteBusy=false;
+let nextQuoteAttempt=0;
+let kisQuotes=new Map();
+const kisHistory=new Map();
+let quoteTimer;
+let accountTimer;
+function kisErrorCode(error) {
+  const allowed=['INVALID_CREDENTIAL_FILE','INVALID_RESPONSE','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','INCOMPLETE_BALANCE','BROKER_UNAVAILABLE','BUSY','INCOMPLETE_HISTORY','INVALID_DATE_RANGE','FEATURE_UNAVAILABLE'];
+  return allowed.includes(error?.message)?error.message:'REQUEST_FAILED';
+}
+let events = [];
+let running = false;
+let domain;
+let store;
+let paper;
+let automation;let notifier;let agentBridge;let live;let remembered;let newsBusy=false;let lastNews=0;let closing=false;let lastReconcile=0;
+async function connectProviderFile(file,selectProvider=true){
+  remembered.progress.providers='connecting';remembered.errors.providers=null;
+  try{providerService.disconnect();const flags=await providerService.request('import',file);if(closing)return;automation.providerStatus=flags;if(flags.aiConnected&&selectProvider)automation.configure({provider:'openai'});remembered.remember('providers',file);remembered.progress.providers='connected';}
+  catch{if(closing)return;providerService.disconnect();automation.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};remembered.progress.providers='error';remembered.errors.providers='Could not reopen provider JSON. Reimport it if moved, deleted or invalid.';throw new Error('PROVIDER_IMPORT_FAILED');}
+}
+async function connectKisFile(file){
+  kisBusy=true;live.stop();usLive?.stop();usSnapshot=null;const generation=++kisGeneration;remembered.progress.kis='connecting';remembered.errors.kis=null;streamState={status:'connecting',subscribed:0};nextQuoteAttempt=0;kisQuotes.clear();kisHistory.clear();kisService.disconnect();kisState={status:'connecting',snapshot:null,error:null};broadcastMarket();
+  try{const snapshot=await kisService.request('import',file);if(closing||generation!==kisGeneration)return;kisState={status:'connected',snapshot,error:null};remembered.remember('kis',file);remembered.progress.kis='connected';}
+  catch(error){if(closing||generation!==kisGeneration)return;kisService.disconnect();kisState={status:'disconnected',snapshot:null,error:kisErrorCode(error)};remembered.progress.kis='error';remembered.errors.kis='Could not reconnect. Check the file location, credentials and network, or import again.';}
+  finally{kisBusy=false;if(!closing){broadcastMarket();void pollKisQuotes();}}
+}
+function interaction(runId,kind,title,body) {
+  if(closing)return;
+  store.appendEvent({id:require('node:crypto').randomUUID(),runId,timestamp:new Date().toISOString(),kind,title,body});events=store.getEvents();
+  for(const win of BrowserWindow.getAllWindows())win.webContents.send('events:changed',events);
+}
+async function refreshNews() {
+  if(newsBusy)return;newsBusy=true;
+  try {
+    const requests=[];
+    if(automation.config.newsURL)requests.push(require('./news.cjs').fetchFeed(automation.config.newsURL));
+    if(automation.providerStatus.dartConnected)requests.push(providerService.request('disclosures'));
+    const results=await Promise.allSettled(requests);const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
+    const failed=results.some(r=>r.status==='rejected');
+    if(!failed||items.length){automation.news=[...new Map(items.map(item=>[item.url,item])).values()].sort((a,b)=>(Date.parse(b.published)||0)-(Date.parse(a.published)||0)).slice(0,100);automation.newsUpdatedAt=Date.now();}
+    automation.newsError=failed?'NEWS_REFRESH_FAILED':null;
+  }catch{automation.newsError='NEWS_REFRESH_FAILED';}finally{newsBusy=false;lastNews=Date.now();}
+}
+let marketProvider;
+let marketCache;
+let marketTimer;
+let snapshotTimer;
+let feedPaused = false;
+let revision = 0;
+function syntheticState() {
+  const quotes = marketCache.snapshot();
+  const saved = store.latestSnapshot();
+  const snapshot = { ...saved, holdings:saved.holdings.map(row=>({...row,price:quotes.find(q=>q.symbol===row.symbol)?.price ?? row.price})) };
+  return {revision:++revision,source:'synthetic',paused:feedPaused,status:feedPaused?'paused':quotes.some(q=>q.stale)?'stale':'connected',quotes,snapshot};
+}
+function marketState() {return kisState.snapshot?{...buildKisMarket(kisState,kisQuotes),connectionId:kisGeneration,stream:streamState,revision:++revision}:syntheticState();}
+function broadcastMarket() {const state=marketState();for(const win of BrowserWindow.getAllWindows())win.webContents.send('market:changed',state);}
+async function pollKisQuotes() {
+  if(kisService.isBusy || kisBusy || quoteBusy || !kisState.snapshot || Date.now()<nextQuoteAttempt)return;
+  quoteBusy=true;const generation=kisGeneration;
+  try {
+    const watched=automation?.watches.list(automation.watchScope()).map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol))??[];const selected=live?.getState().policy?.symbols??[];
+    const quotes=await kisService.request('quotes',{symbols:[...new Set([...watched,...selected,...kisState.snapshot.holdings.map(row=>row.symbol)])].filter(symbol=>/^\d{6}$/.test(symbol)).slice(0,20)});
+    if(generation===kisGeneration) {
+      for(const quote of quotes){const previous=kisQuotes.get(quote.symbol);if(previous?.source!=='stream' || Date.now()-previous.receivedAt>60000)kisQuotes.set(quote.symbol,{...quote,source:'rest'});}
+      broadcastMarket();
+    }
+  } catch(error) {if(generation===kisGeneration && kisState.snapshot){const code=kisErrorCode(error);if(code==='RATE_LIMITED')nextQuoteAttempt=Date.now()+120000;kisState={...kisState,status:'error',error:code};broadcastMarket();}}
+  finally {quoteBusy=false;}
+}
+async function refreshKisBalance() {
+  if(kisService.isBusy || kisBusy || !kisState.snapshot)return kisState;
+  kisBusy=true;const generation=kisGeneration;
+  try {
+    const snapshot=await kisService.request('refresh');
+    if(generation===kisGeneration){kisState={status:'connected',snapshot,error:null};live?.observeBalance(snapshot);kisQuotes=new Map([...kisQuotes].filter(([symbol])=>snapshot.holdings.some(h=>h.symbol===symbol)));broadcastMarket();}
+  } catch(error){if(generation===kisGeneration){kisState={...kisState,status:'error',error:kisErrorCode(error)};broadcastMarket();}}
+  finally {kisBusy=false;}
+  return kisState;
+}
+app.setName('Financial Portfolio Manager');
+const verificationDirectory=process.argv.includes('--verify-build')?process.env.PORTFOLIO_VERIFY_DIR:null;
+if(verificationDirectory){if(!path.isAbsolute(verificationDirectory))throw new Error('Absolute verification directory required');app.setPath('userData',verificationDirectory);}
+const page = path.join(__dirname, '../dist/index.html');
+const allowedURL = pathToFileURL(page).href;
+function authorize(event) {
+  if (event.senderFrame !== event.sender.mainFrame || event.senderFrame.url.split('#')[0] !== allowedURL || !BrowserWindow.fromWebContents(event.sender)) throw new Error('Unauthorized IPC sender');
+}
+function createWindow() {
+  const win = new BrowserWindow({ show:!verificationDirectory, width: 1360, height: 880, minWidth: 760, minHeight: 600, backgroundColor: store?.getTheme() === 'light' ? '#f3f6fa' : '#181818', title: 'Financial Portfolio Manager', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', event => event.preventDefault());
+  if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Overview'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[4].config.enabled)throw 0;console.log('Portable build verified: renderer, private IPC, SQLite, paused paper engine and disabled broker automation.');app.quit();}catch{console.error('Portable build verification failed.');app.exit(1);}});
+  win.loadFile(page, { hash: 'overview' });
+  return win;
+}
+app.whenReady().then(async () => {
+  domain = await import('../src/domain.mjs');
+  store = new PortfolioStore(path.join(app.getPath('userData'), 'portfolio.sqlite'));
+  remembered=new (require('./remembered-files.cjs').RememberedFiles)(store.db);
+  events = store.getEvents();
+  if (!store.latestSnapshot()) store.saveSnapshot({timestamp:new Date().toISOString(), cash:domain.cash, holdings:domain.holdings});
+  const market = await import('../src/market.mjs');
+  marketCache = new market.MarketCache(store.latestSnapshot().holdings.map(row=>row.symbol));
+  marketProvider = new market.SyntheticMarketProvider(store.latestSnapshot().holdings);
+  const startFeed = () => marketProvider.start(quote=>marketCache.accept(quote));
+  const publishMarket = () => {
+    paper?.tick();
+    automation?.tick();if(notifier){notifier.observe([...paper.orders(),...live.orders(),...(usLive?.orders()??[])]);void notifier.tick();}
+    if(kisState.snapshot && !kisService.isBusy && !live.busy && Date.now()-lastReconcile>30000){lastReconcile=Date.now();void live.reconcile().catch(()=>{});if(usSnapshot)void usLive.reconcile().catch(()=>{});}
+    if(kisState.snapshot&&!kisService.isBusy&&!usRefreshing&&Date.now()>(kisService.cooldownUntil??0)&&Date.now()-lastUSRefresh>60000){lastUSRefresh=Date.now();usRefreshing=true;void automation.refreshUS().catch(error=>{usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}).finally(()=>{usRefreshing=false;});}
+    if(automation && Date.now()-lastNews>1800000 && (automation.config.newsURL||automation.providerStatus.dartConnected))void refreshNews();
+    const state = marketState();
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('market:changed',state);
+  };
+  startFeed();
+  paper=new PaperEngine(store.db,domain.holdings,()=>marketCache.snapshot());
+  automation=new Automation(store.db,paper,providerService,interaction);
+  live=new LiveEngine(store.db,kisService,()=>kisState);automation.live=live;
+  costs=new TradingCosts(store.db);live.costs=costs;automation.costs=costs;
+  const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload)};
+  usLive=new LiveEngine(store.db,usBroker,()=>({snapshot:kisState.snapshot&&usSnapshot?.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot:null}),{market:'US'});usLive.costs=costs;automation.usLive=usLive;
+  let usRefreshTask=null,usRefreshGeneration=-1;
+  automation.refreshUS=()=>{if(usRefreshTask&&usRefreshGeneration===kisGeneration)return usRefreshTask;const generation=kisGeneration;usRefreshGeneration=generation;lastUSRefresh=Date.now();const task=(async()=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');const selected=usLive.getState().policy?.symbols??[];const watched=automation.watches.list(automation.watchScope()).map(row=>row.symbol).filter(symbol=>/^(NASD|NYSE|AMEX):/.test(symbol));const symbols=watched.length?[...new Set([...watched,...(selected.length?selected:(usSnapshot?.holdings??[]).map(row=>row.symbol))])].slice(0,20):selected;const value=await kisService.request('us-context',{symbols});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');if(!value.balance||value.balance.accountKey!==kisState.snapshot?.accountKey+':US')throw new Error('ACCOUNT_CHANGED');usSnapshot=value.balance;usLive.refreshWarnings=value.warnings??[];usLive.refreshError=null;usLive.brokerCode=null;usLive.httpStatus=null;automation.usQuotes=value.quotes.map(row=>({...row,timestamp:row.retrievedAt}));usLive.observeBalance(value.balance);return value;})().catch(error=>{if(generation===kisGeneration){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;usLive.httpStatus=Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null;}throw error;}).finally(()=>{if(usRefreshTask===task)usRefreshTask=null;});usRefreshTask=task;return task;};
+  const portfolioView=new PortfolioView(store.db);automation.metadata=()=>portfolioView.metadata();automation.fx=()=>usSnapshot?.fx??(costs.get().usdKRW?{usdKRW:costs.get().usdKRW,source:'User indicative rate',timestamp:null}:null);
+  const portfolioState=()=>{const kr=kisState.snapshot?{...kisState.snapshot,holdings:buildKisMarket(kisState,kisQuotes).snapshot.holdings}:null;return {...combinePortfolio(kr,usSnapshot,automation.fx(),portfolioView.metadata()),valuationSample:Math.floor(Date.now()/1000),sessions:{KR:live.enabled,US:usLive.enabled},usError:usLive.refreshError??null,brokerCode:usLive.brokerCode??null,httpStatus:usLive.httpStatus??null,warnings:usLive.refreshWarnings??[]};};
+  const companyCache=new Map();let companyBusy=false;
+  ipcMain.handle('company:get',async(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))return {error:'Enter a six-digit Korean code or exchange:ticker, such as NASD:AAPL.'};if(!kisState.snapshot)return {error:'Connect your KIS account first.'};const generation=kisGeneration,key=generation+':'+symbol,cached=companyCache.get(key);if(cached&&Date.now()-cached.timestamp<30000)return cached.value;if(companyBusy)return {error:'Another company request is loading. Please retry.'};companyBusy=true;
+    try{const value={symbol};for(const [name,dataset] of [['company','company'],['daily','daily_technicals'],['minute','minute_technicals']]){try{value[name]=await kisService.request('company-chart',{request:{symbol,dataset}});}catch{value[name]={status:'unavailable'};}}if(generation!==kisGeneration)return {error:'Account changed. Refresh the company view.'};if(companyCache.size>30)companyCache.clear();companyCache.set(key,{timestamp:Date.now(),value});return value;}finally{companyBusy=false;}
+  });
+  ipcMain.handle('portfolio:get',event=>{authorize(event);return portfolioState();});
+  ipcMain.handle('portfolio:metadata',(event,symbol,value)=>{authorize(event);portfolioView.save(symbol,value);return portfolioState();});
+  ipcMain.handle('portfolio:refresh',async event=>{authorize(event);await refreshKisBalance();if(kisState.snapshot){try{await automation.refreshUS();}catch(error){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);}}return portfolioState();});
+  ipcMain.handle('costs:get',event=>{authorize(event);return costs.get();});
+  ipcMain.handle('costs:save',(event,value)=>{authorize(event);return costs.save(value);});
+  for(const name of ['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'])ipcMain.handle('us:'+name,async(event,...args)=>{authorize(event);try{let data;if(name==='get')data=null;else if(name==='refresh'){if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');await automation.refreshUS();data=null;}else if(name==='auto-off'){usLive.autoEnabled=false;}else if(name==='auto')data=usLive.enableAuto(...args);else if(name==='link')data=await usLive.linkUncertain(...args);else data=await usLive[name](...args);return {ok:true,data,state:usLive.getState()};}catch(error){if(name==='refresh'){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}const allowed=['NO_FUNDED_BALANCE','KIS_NOT_CONNECTED','ACTIVATION_REQUIRED','INVALID_LIMITS','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','RECONCILIATION_REQUIRED','KIS_TRADING_DISABLED','DISABLED_OR_EXPIRED','BROKER_REJECTED','ORDER_UNCERTAIN','ACCOUNT_CHANGED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:require('./us-errors.cjs').publicUSCode(error.message),state:usLive.getState()};}});
+  
+  notifier=new Notifications(store.db,providerService,()=>({...automation.config,pushConnected:automation.providerStatus.pushConnected}),message=>{if(Notification.isSupported())new Notification({title:'Financial Portfolio Manager',body:message}).show();});
+  agentBridge=require('./agent-bridge.cjs').startBridge(app.getPath('userData'),paper,decision=>automation.review('External agent',decision));
+  automation.evidence=new (require('./market-evidence.cjs').MarketEvidence)(async(args,context)=>{
+    if(context.environment==='local-paper'){
+      if(args.dataset==='company')return {status:'unavailable',reason:'SIMULATION_HAS_NO_COMPANY_FUNDAMENTALS'};
+      const interval=args.dataset==='daily_technicals'?'1d':'1m';return {status:'available',source:'synthetic',retrievedAt:Date.now(),data:require('./market-evidence.cjs').technicals(marketProvider.getHistory(args.symbol,interval),interval,args.dataset)};
+    }
+    const generation=kisGeneration;const result=await kisService.request('market-evidence',{request:args});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');return result;
+  });
+  automation.marketQuotes=()=>[...kisQuotes.values()];
+  const runtimeState=()=>({...automation.getState(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()});
+  ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='providers'){providerService.disconnect();automation.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();usSnapshot=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
+  ipcMain.handle('connections:reconnect',async(event,kind)=>{authorize(event);if(!['kis','providers'].includes(kind))throw new Error('INVALID_REQUEST');const file=remembered.get(kind);if(file&&remembered.progress[kind]!=='connecting'){try{await(kind==='kis'?connectKisFile(file):connectProviderFile(file));}catch{}}return runtimeState();});
+  const liveAction=action=>async(event,...args)=>{authorize(event);try{const data=await action(...args);return {ok:true,data,state:live.getState()};}catch(error){const allowed=['NO_FUNDED_BALANCE','INVALID_LOSS_LIMIT','ACTIVATION_REQUIRED','INVALID_LIMITS','APPROVAL_REQUIRED','KIS_NOT_CONNECTED','KIS_TRADING_DISABLED','INVALID_ORDER','INSTRUMENT_NOT_ALLOWED','ORDER_SIZE_LIMIT','KIS_ORDER_BUSY','UNKNOWN_ORDER','DISABLED_OR_EXPIRED','RECONCILIATION_REQUIRED','DAILY_TURNOVER_LIMIT','DAILY_LOSS_LIMIT','CONCENTRATION_LIMIT','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','DAILY_SESSION_SETUP_REQUIRED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:'KIS_ORDER_FAILED',state:live.getState()};}};
+  ipcMain.handle('live:get',liveAction(()=>live.getState()));
+  ipcMain.handle('live:configure',liveAction((value,phrase)=>live.configure(value,phrase)));
+  ipcMain.handle('live:stop',liveAction(()=>live.stop()));
+  ipcMain.handle('live:auto',liveAction(phrase=>live.enableAuto(phrase)));
+  ipcMain.handle('live:auto-off',liveAction(()=>{live.autoEnabled=false;return live.getState();}));
+  ipcMain.handle('live:propose',liveAction(command=>live.propose(command)));
+  ipcMain.handle('live:submit',liveAction((id,phrase)=>live.submit(id,phrase)));
+  ipcMain.handle('live:reconcile',liveAction(()=>live.reconcile()));
+  ipcMain.handle('live:link',liveAction((id,brokerId,phrase)=>live.linkUncertain(id,brokerId,phrase)));
+  ipcMain.handle('runtime:start',async(event,token)=>{authorize(event);try{const message=await require('./auto-launch.cjs').start(automation,token);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.message,state:runtimeState()};}});
+  ipcMain.handle('runtime:stop',event=>{authorize(event);const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};});
+  ipcMain.handle('runtime:get',event=>{authorize(event);return runtimeState();});
+  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:'INVALID_SETTINGS'};}});
+  ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
+  ipcMain.handle('runtime:review',async event=>{authorize(event);try{await automation.review();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.',state:runtimeState()};}});
+  ipcMain.handle('runtime:providers',async event=>{
+    if(remembered.progress.providers==='connecting'){authorize(event);return {ok:false,error:'BUSY',state:runtimeState()};}
+    authorize(event);const selected=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'Import provider configuration',filters:[{name:'Provider JSON',extensions:['json']}],properties:['openFile']});
+    if(selected.canceled)return {ok:true,state:runtimeState()};
+    try{remembered.forget('providers');await connectProviderFile(selected.filePaths[0]);return {ok:true,state:runtimeState()};}
+    catch{return {ok:false,error:'PROVIDER_IMPORT_FAILED',state:runtimeState()};}
+  });
+  ipcMain.handle('runtime:news',async event=>{authorize(event);await refreshNews();return runtimeState();});
+  ipcMain.handle('runtime:outcome-history',(event,id)=>{authorize(event);return automation.outcomes.history(id);});
+  ipcMain.handle('runtime:lesson-trial',(event,action,id,value)=>{authorize(event);try{automation.syncLearning();if(automation.learningError)throw Error('LOCAL_EVALUATION_FAILED');if(action==='start')automation.trials.start(id,value);else if(action==='stop')automation.trials.stop(id);else throw Error('INVALID_TRIAL');return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:['LESSON_CHANGED','INVALID_TRIAL','TRIAL_ACTIVE','TRIAL_NOT_FOUND'].includes(error.message)?error.message:'LOCAL_EVALUATION_FAILED'};}});
+  ipcMain.handle('runtime:review-lesson',(event,id,value)=>{authorize(event);try{automation.syncLearning();if(automation.learningError)throw new Error('LESSON_REVIEW_FAILED');automation.memory.review(id,value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:['LESSON_CHANGED','OUTCOME_NOT_FINAL','INVALID_LESSON_REVIEW','LESSON_NOT_FOUND'].includes(error.message)?error.message:'LESSON_REVIEW_FAILED',state:runtimeState()};}});
+  ipcMain.handle('runtime:lesson',(event,id,approved)=>{authorize(event);try{automation.approveLesson(id,approved);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:'INVALID_REQUEST'};}});
+  ipcMain.handle('runtime:open-news',(event,url)=>{authorize(event);if(automation.news.some(item=>item.url===url))void shell.openExternal(url);});
+  const paperAction=action=>event=>{authorize(event);try{return {ok:true,data:action()};}catch{return {ok:false,error:'PAPER_REQUEST_FAILED'};}};
+  ipcMain.handle('paper:get',paperAction(()=>paper.getState()));
+  ipcMain.handle('paper:loss',(event,value)=>{authorize(event);try{return {ok:true,state:paper.configureLoss(value)};}catch{return {ok:false,error:'INVALID_LOSS_LIMIT'};}});
+  ipcMain.handle('paper:caps',(event,value)=>{authorize(event);try{return {ok:true,state:paper.configureCaps(value)};}catch{return {ok:false,error:'INVALID_LIMITS'};}});
+  ipcMain.handle('paper:propose',(event,command)=>{authorize(event);try{return {ok:true,data:paper.propose(command),state:paper.getState()};}catch{return {ok:false,error:'INVALID_REQUEST'};}});
+  ipcMain.handle('paper:submit',(event,id)=>{authorize(event);try{if(typeof id!=='string')throw 0;return {ok:true,data:paper.submit(id),state:paper.getState()};}catch{return {ok:false,error:'PAPER_REQUEST_FAILED'};}});
+  ipcMain.handle('paper:pause',(event,paused)=>{authorize(event);try{return {ok:true,state:paper.setPaused(paused)};}catch{return {ok:false,error:'INVALID_REQUEST'};}});
+  ipcMain.handle('paper:cancel',(event,id)=>{authorize(event);try{if(typeof id!=='string')throw 0;return {ok:true,state:paper.cancel(id)};}catch{return {ok:false,error:'PAPER_REQUEST_FAILED'};}});
+  marketTimer = setInterval(publishMarket,1000);
+  quoteTimer=setInterval(()=>void pollKisQuotes(),30000);
+  accountTimer=setInterval(()=>void refreshKisBalance(),120000);
+  snapshotTimer = setInterval(()=> {
+    if (!feedPaused) store.saveSnapshot({...syntheticState().snapshot,timestamp:new Date().toISOString()});
+  },30000);
+  ipcMain.handle('market:get',event=>{authorize(event);return marketState();});
+  ipcMain.handle('market:pause',(event,paused)=>{
+    authorize(event);
+    if(kisState.snapshot)return;
+    if (typeof paused !== 'boolean') throw new Error('Invalid feed control');
+    feedPaused=paused;
+    if (paused) marketProvider.stop(); else startFeed();
+    publishMarket();
+  });
+  ipcMain.handle('market:history',async(event,symbol,interval)=>{
+    authorize(event);
+    if(!kisState.snapshot)return marketProvider.getHistory(symbol,interval);
+    if(!['1d','1m','5m'].includes(interval) || !kisState.snapshot.holdings.some(h=>h.symbol===symbol))throw new Error('Unsupported instrument or interval');
+    const key=symbol+':'+interval;
+    const existing=kisHistory.get(key);
+    const duration=interval==='1d'?60000:30000;
+    if(existing && existing.bucket===Math.floor(Date.now()/duration))return existing.candles;
+    const generation=kisGeneration;
+    const candles=await kisService.request('history',{symbol,interval});
+    if(generation!==kisGeneration)throw new Error('Connection changed');
+    kisHistory.set(key,{bucket:Math.floor(Date.now()/duration),candles});return candles;
+  });
+  ipcMain.handle('snapshot:get', event => { authorize(event); return store.latestSnapshot(); });
+  ipcMain.handle('theme:get', event => { authorize(event); return store.getTheme(); });
+  ipcMain.handle('theme:set', (event, theme) => {
+    authorize(event);
+    const value = store.setTheme(theme);
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('theme:changed', value);
+    return value;
+  });
+  ipcMain.handle('kis:get',event=>{authorize(event);return kisState;});
+  ipcMain.handle('kis:activity',async(event,kind,startDate,endDate)=>{
+    authorize(event);
+    if(!kisState.snapshot)return {ok:false,error:'NOT_CONNECTED'};
+    if(kisBusy)return {ok:false,error:'BUSY'};
+    if(!['orders','profit'].includes(kind))return {ok:false,error:'INVALID_REQUEST'};
+    const generation=kisGeneration;
+    try {
+      require('./kis-activity.cjs').validateRange(startDate,endDate);
+      const data=await kisService.request(kind,{startDate,endDate});
+      if(generation!==kisGeneration)return {ok:false,error:'CONNECTION_CHANGED'};
+      return {ok:true,data};
+    }catch(error){return {ok:false,error:kisErrorCode(error)};}
+  });
+  ipcMain.handle('kis:import',async event=>{
+    authorize(event);
+    if(kisBusy)return {...kisState,error:'BUSY'};
+    kisBusy=true;
+    try {
+      const selected=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'Import KIS credentials',filters:[{name:'Credential JSON',extensions:['json']}],properties:['openFile']});
+      if(selected.canceled || !selected.filePaths[0])return kisState;
+      remembered.forget('kis');await connectKisFile(selected.filePaths[0]);
+    } catch(error) {kisService.disconnect();kisState={status:'disconnected',snapshot:null,error:kisErrorCode(error)};}
+    finally {kisBusy=false;broadcastMarket();void pollKisQuotes();}
+    return kisState;
+  });
+  ipcMain.handle('kis:refresh',async event=>{authorize(event);return refreshKisBalance();});
+  ipcMain.handle('kis:disconnect',event=>{authorize(event);remembered.progress.kis='disconnected';live.stop();usLive?.stop();usSnapshot=null;kisGeneration++;streamState={status:'disconnected',subscribed:0};kisQuotes.clear();kisHistory.clear();kisService.disconnect();kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();return kisState;});
+  ipcMain.handle('events:get', event => { authorize(event); return events; });
+  ipcMain.handle('events:export',async event=>{authorize(event);const selected=await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender),{title:'Export interaction journal',defaultPath:'portfolio-journal.json',filters:[{name:'JSON',extensions:['json']}]});if(!selected.canceled&&selected.filePath)await require('node:fs/promises').writeFile(selected.filePath,JSON.stringify({exportedAt:new Date().toISOString(),events,reviews:automation.getState().reviews,lessons:automation.getState().lessons},null,2));});
+  ipcMain.handle('demo:run', async event => {
+    if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('TEST_ONLY');
+    authorize(event);
+    if (running) return;
+    running = true;
+    try {
+      const state = syntheticState();
+      const run = domain.demoEvents(require('node:crypto').randomUUID(), new Date().toISOString(), {...state.snapshot,market:{source:state.source,status:state.status,quotes:state.quotes.map(({symbol,timestamp,stale})=>({symbol,timestamp,stale}))}});
+      for (const item of run) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        store.appendEvent({ ...item, timestamp: new Date().toISOString() });
+        events = store.getEvents();
+        for (const win of BrowserWindow.getAllWindows()) win.webContents.send('events:changed', events);
+      }
+    } finally { running = false; }
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'File',submenu:[{role:'quit'}]},{role:'editMenu'},{label:'View',submenu:[{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'},{type:'separator'},{role:'togglefullscreen'}]},{role:'windowMenu'}]));
+  createWindow();
+  if(!verificationDirectory)void remembered.restore({kis:connectKisFile,providers:file=>connectProviderFile(file,false)});
+  app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
+}).catch(() => { dialog.showErrorBox('Startup failed', 'The local portfolio database could not be opened. The app will close without submitting any orders.'); app.exit(1); });
+app.on('will-quit', () => {
+  closing=true;if(automation)automation.disposed=true;if(notifier)notifier.disposed=true;live?.stop();
+  agentBridge?.close();providerService.disconnect();
+  kisService.disconnect();
+  clearInterval(quoteTimer);clearInterval(accountTimer);
+  clearInterval(marketTimer); clearInterval(snapshotTimer); marketProvider?.stop();
+  if (store && marketCache && !feedPaused) store.saveSnapshot({...syntheticState().snapshot,timestamp:new Date().toISOString()});
+  store?.close();
+});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

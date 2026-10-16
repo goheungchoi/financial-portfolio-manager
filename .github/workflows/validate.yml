@@ -1,0 +1,32 @@
+name: Desktop validation
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run validate
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-validation
+          path: |
+            artifacts/validation/
+            artifacts/ui-tests/latest.json
+            artifacts/ui-tests/run-*/report.*
+            artifacts/ui-tests/run-*/ui-regression.json
+            artifacts/ui-tests/run-*/*.png
+            artifacts/ui-tests/run-*/*.log
+          retention-days: 14

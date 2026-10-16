@@ -1,0 +1,32 @@
+{
+  "name": "financial-portfolio-manager",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "start": "npm run build && electron .",
+    "test": "node --test tests/lesson-trials.test.cjs tests/ai-accounting.test.cjs tests/review-interval.test.cjs tests/paper-replay.test.mjs tests/ai-errors.test.cjs tests/reflection.test.cjs tests/ai-models.test.cjs tests/learning-pipeline.test.cjs tests/auto-launch.test.cjs tests/domain.test.mjs tests/storage.test.cjs tests/market.test.mjs tests/kis.test.cjs tests/kis-stream.test.cjs tests/activity.test.mjs tests/paper.test.cjs tests/runtime.test.cjs tests/overseas.test.cjs tests/outcomes.test.cjs tests/evidence.test.cjs tests/portfolio-profit.test.mjs",
+    "package": "npm run build && node scripts/package.cjs",
+    "test:package": "node scripts/verify-package.cjs",
+    "test:desktop": "npm run build && node tests/run-desktop.cjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:ui": "npm run build && node tests/run-desktop.cjs",
+    "validate": "node scripts/validate.cjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "electron": "^44.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1"
+  }
+}

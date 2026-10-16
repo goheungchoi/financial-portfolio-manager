@@ -1,0 +1,3 @@
+const fs=require('node:fs');const path=require('node:path');const {spawnSync}=require('node:child_process');
+const build=JSON.parse(fs.readFileSync(path.join(__dirname,'../release/latest.json'),'utf8'));fs.mkdirSync(path.join(__dirname,'../artifacts'),{recursive:true});const directory=fs.mkdtempSync(path.join(__dirname,'../artifacts/package-verify-'));
+const result=spawnSync(build.executable,['--verify-build'],{windowsHide:true,encoding:'utf8',timeout:20000,env:{...process.env,PORTFOLIO_VERIFY_DIR:directory}});process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');if(result.status!==0||!result.stdout?.includes('Portable build verified:'))process.exit(1);

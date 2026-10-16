@@ -1,0 +1,12 @@
+const fs=require('node:fs');const path=require('node:path');
+const root=path.resolve(__dirname,'..');const electron=path.dirname(require('electron'));const destination=path.join(root,'release','Financial-Portfolio-Manager-'+new Date().toISOString().replace(/[:.]/g,'-'));
+fs.mkdirSync(destination,{recursive:true});fs.cpSync(electron,destination,{recursive:true});
+const application=path.join(destination,'resources','app');fs.mkdirSync(application,{recursive:true});
+for(const name of ['electron','dist'])fs.cpSync(path.join(root,name),path.join(application,name),{recursive:true});
+fs.mkdirSync(path.join(application,'src'));for(const name of ['domain.mjs','market.mjs'])fs.copyFileSync(path.join(root,'src',name),path.join(application,'src',name));
+fs.mkdirSync(path.join(application,'scripts'));fs.copyFileSync(path.join(root,'scripts','agent-bridge.cjs'),path.join(application,'scripts','agent-bridge.cjs'));
+fs.writeFileSync(path.join(application,'package.json'),JSON.stringify({name:'financial-portfolio-manager',version:require('../package.json').version,main:'electron/main.cjs'}));
+fs.copyFileSync(path.join(root,'README.md'),path.join(destination,'README.md'));fs.renameSync(path.join(destination,'electron.exe'),path.join(destination,'Financial Portfolio Manager.exe'));
+if(fs.existsSync(path.join(root,'docs')))fs.cpSync(path.join(root,'docs'),path.join(destination,'docs'),{recursive:true});
+console.log('Portable Windows application: '+destination);
+fs.writeFileSync(path.join(root,'release','latest.json'),JSON.stringify({directory:destination,executable:path.join(destination,'Financial Portfolio Manager.exe')},null,2));
