@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getScoreboard: () => ipcRenderer.invoke('scoreboard:get'),
   refreshScoreboard: () => ipcRenderer.invoke('scoreboard:refresh'),
   getDiscovery: () => ipcRenderer.invoke('discovery:get'),
+  getWatchQuotes: () => ipcRenderer.invoke('discovery:quotes'),
   searchSecurities: (query, market) => ipcRenderer.invoke('discovery:search', query, market),
   screenMarket: query => ipcRenderer.invoke('discovery:screen', query),
   updateWatchlist: (action, symbol, value) => ipcRenderer.invoke('discovery:watch', action, symbol, value),

@@ -20,7 +20,8 @@ kisService.onQuote=quote=>{
   if(!kisState.snapshot?.holdings.some(row=>row.symbol===quote.symbol))return;
   const previous=kisQuotes.get(quote.symbol);
   if(previous?.source==='stream' && (quote.timestamp<previous.timestamp || quote.timestamp===previous.timestamp && quote.cumulativeVolume<=previous.cumulativeVolume))return;
-  kisQuotes.set(quote.symbol,{symbol:quote.symbol,price:quote.price,timestamp:quote.timestamp,receivedAt:quote.receivedAt,cumulativeVolume:quote.cumulativeVolume,source:'stream'});
+  // Streamed ticks carry only the price; the previous close from the last REST quote is kept for day change.
+  kisQuotes.set(quote.symbol,{symbol:quote.symbol,price:quote.price,timestamp:quote.timestamp,receivedAt:quote.receivedAt,cumulativeVolume:quote.cumulativeVolume,previousClose:previous?.previousClose??null,source:'stream'});
 };
 let kisState = {status:'disconnected',snapshot:null,error:null};
 let kisBusy = false;
@@ -92,7 +93,7 @@ async function pollKisQuotes() {
     const watched=automation?.watches.list(automation.watchScope()).map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol))??[];const selected=live?.getState().policy?.symbols??[];
     const quotes=await kisService.request('quotes',{symbols:[...new Set([...watched,...selected,...kisState.snapshot.holdings.map(row=>row.symbol),...(automation?.discovery?.symbols('KR')??[])])].filter(symbol=>/^\d{6}$/.test(symbol)).slice(0,20)});
     if(generation===kisGeneration) {
-      for(const quote of quotes){const previous=kisQuotes.get(quote.symbol);if(previous?.source!=='stream' || Date.now()-previous.receivedAt>60000)kisQuotes.set(quote.symbol,{...quote,source:'rest'});}
+      for(const quote of quotes){const previous=kisQuotes.get(quote.symbol);if(previous?.source!=='stream' || Date.now()-previous.receivedAt>60000)kisQuotes.set(quote.symbol,{...quote,source:'rest'});else if(quote.previousClose)kisQuotes.set(quote.symbol,{...previous,previousClose:quote.previousClose});}
       broadcastMarket();
     }
   } catch(error) {if(generation===kisGeneration && kisState.snapshot){const code=kisErrorCode(error);if(code==='RATE_LIMITED')nextQuoteAttempt=Date.now()+120000;kisState={...kisState,status:'error',error:code};broadcastMarket();}}
@@ -312,9 +313,11 @@ app.whenReady().then(async () => {
   const discoveryState=()=>({master:master.status(),watchlist:automation.discovery.list(),connected:Boolean(watchScope())});
   const discoveryAction=action=>async(event,...args)=>{authorize(event);try{const data=await action(...args);return {ok:true,data,state:discoveryState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED',state:discoveryState()};}};
   ipcMain.handle('discovery:get',discoveryAction(()=>null));
+  // Latest quotes the app already polls for watchlist and held symbols; no extra broker calls.
+  ipcMain.handle('discovery:quotes',event=>{authorize(event);const out={};for(const [symbol,q] of kisQuotes){const at=q.source==='stream'?q.receivedAt:q.retrievedAt;out[symbol]={price:q.price,previousClose:q.previousClose??null,changePct:q.previousClose?Math.round((q.price/q.previousClose-1)*10000)/100:q.changePct??null,at,source:q.source};}for(const q of automation.usQuotes??[])if(q?.symbol&&Number.isFinite(q.price))out[q.symbol]={price:q.price,previousClose:null,changePct:null,at:q.retrievedAt??null,source:'rest'};return out;});
   ipcMain.handle('discovery:search',discoveryAction((query,market)=>{if(typeof query!=='string'||![null,'KR','US'].includes(market??null))throw new Error('INVALID_REQUEST');return master.search(query,{market:market??null,limit:30}).map(securityRow);}));
   ipcMain.handle('discovery:screen',discoveryAction(query=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');return screener.screen(query);}));
-  ipcMain.handle('discovery:watch',discoveryAction((action,symbol,value)=>{const scope=watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');if(action==='add')return watchlist.add(scope,symbol,{source:'user',reason:typeof value==='string'?value.slice(0,300):''}).entry;if(action==='remove')return watchlist.remove(scope,symbol);if(action==='pin')return watchlist.pin(scope,symbol,value===true);throw new Error('INVALID_REQUEST');}));
+  ipcMain.handle('discovery:watch',discoveryAction((action,symbol,value)=>{if(action==='add')setTimeout(()=>void pollKisQuotes(),0);const scope=watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');if(action==='add')return watchlist.add(scope,symbol,{source:'user',reason:typeof value==='string'?value.slice(0,300):''}).entry;if(action==='remove')return watchlist.remove(scope,symbol);if(action==='pin')return watchlist.pin(scope,symbol,value===true);throw new Error('INVALID_REQUEST');}));
   ipcMain.handle('discovery:refresh-master',discoveryAction(()=>masterFetch?master.refresh(true):master.status()));
   const runtimeState=()=>({...automation.getState(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()});
   ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='providers'){providerService.disconnect();automation.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();usSnapshot=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
