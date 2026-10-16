@@ -18,3 +18,6 @@
 .research-panel .company-stats{margin-top:4px}
 .research-spark{width:100%;height:80px;color:var(--accent);margin:4px 0 8px;display:block}
 .research-panel .positive{color:var(--accent)}
+.research-scroll{overflow-x:auto}
+.research-self td{font-weight:600}
+.research-median td{color:var(--muted);border-top:1px solid var(--border)}

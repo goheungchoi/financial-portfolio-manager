@@ -2,13 +2,13 @@
 // composed from KIS (quotes, analysts, estimates, ratios, KSD dividends and meetings) and OpenDART (filings, annual dividend table).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
-const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk'];
+const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
-const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily']};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview']};
 const FAILURE_TTL=10*60000;
 const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
 // Null, empty and "not applicable" values are dropped so the agents only read what exists.
@@ -20,7 +20,7 @@ function prune(value){
 class ResearchService {
   constructor({db,master,kis,provider,kisReady=()=>true,dartReady=()=>false,clock=Date.now}){
     this.db=db;this.master=master;this.kis=kis;this.provider=provider;this.kisReady=kisReady;this.dartReady=dartReady;this.clock=clock;this.inflight=new Map();this.failures=new Map();
-    db.exec('CREATE TABLE IF NOT EXISTS research_cache(symbol TEXT NOT NULL,source TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,source))');
+    db.exec('CREATE TABLE IF NOT EXISTS research_cache(symbol TEXT NOT NULL,source TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,source));CREATE TABLE IF NOT EXISTS research_snapshots(symbol TEXT NOT NULL,day TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,day))');
   }
   cached(symbol,source){const row=this.db.prepare('SELECT at,payload FROM research_cache WHERE symbol=? AND source=?').get(symbol,source);return row?{at:row.at,value:JSON.parse(row.payload)}:null;}
   // One raw source: fresh cache, a recent failure, or a new fetch (shared by concurrent callers).
@@ -34,7 +34,7 @@ class ResearchService {
         let value;
         if(spec.from==='dart'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider('dart-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
         else{if(!this.kisReady())throw new Error('KIS_NOT_CONNECTED');value=await this.kis('research-section',{symbol,section:source});}
-        const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);
+        const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);this.snapshot(symbol,source,value);
         return {status:'ok',retrievedAt:at,data:value};
       }catch(error){const reason=code(error);this.failures.set(symbol+source,{at:this.clock(),reason});return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason};}
       finally{this.inflight.delete(key);}
@@ -64,7 +64,36 @@ class ResearchService {
       if(!metrics)return {status:'unavailable',reason:'INSUFFICIENT_HISTORY'};
       return {status:'ok',retrievedAt:main.retrievedAt,data:{...metrics,marketIndex:label,sectorIndex:sector?.status==='ok'?id.sector:null,closes:main.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
     }
+    if(name==='valuation'){
+      if(main.status!=='ok')return main;const o=ok('overview');const current={price:o?.price??null,per:o?.per??null,pbr:o?.pbr??null};
+      const vs=(value,range)=>value&&range?.median?Math.round((value/range.median-1)*1000)/10:null;
+      return {status:'ok',retrievedAt:main.retrievedAt,data:{...main.data,current,perVsMedianPct:vs(current.per,main.data.perRange),pbrVsMedianPct:vs(current.pbr,main.data.pbrRange)}};
+    }
+    if(name==='peers'){
+      const id=this.identity(symbol);const list=this.master?.peers?.(symbol,5)??[];if(!list.length)return {status:'unavailable',reason:'NO_PEERS'};
+      const rows=[];for(const peer of [{symbol,name:id.name,marketCap:id.marketCapKRW},...list]){const o=peer.symbol===symbol?main:await this.source(peer.symbol,'overview',refresh);const d=o.status==='ok'?o.data:{};
+        rows.push({symbol:peer.symbol,name:peer.name,self:peer.symbol===symbol,marketCapKRW:d.marketCapKRW??peer.marketCap??null,per:d.per??null,pbr:d.pbr??null,changePct:d.changePct??null});}
+      const median=key=>{const v=rows.filter(r=>!r.self&&r[key]!=null).map(r=>r[key]).sort((a,b)=>a-b);return v.length?v[Math.floor((v.length-1)/2)]:null;};const self=rows[0];
+      const prem=(key,m)=>self[key]!=null&&m?Math.round((self[key]/m-1)*1000)/10:null;const perMedian=median('per'),pbrMedian=median('pbr');
+      return {status:'ok',retrievedAt:main.status==='ok'?main.retrievedAt:this.clock(),data:{sector:id.sector,sectorName:main.status==='ok'?main.data.sectorName:null,rows,peerMedianPer:perMedian,peerMedianPbr:pbrMedian,perVsPeersPct:prem('per',perMedian),pbrVsPeersPct:prem('pbr',pbrMedian),note:'Peers are the largest listed stocks in the same KRX index sector.'}};
+    }
+    if((name==='analysts'||name==='estimates')&&main.status==='ok'){const trend=this.consensusTrend(symbol);return {status:'ok',retrievedAt:main.retrievedAt,data:{...main.data,...(trend?{consensusTrend:trend}:{})},...(main.stale?{stale:true}:{})};}
     return main.status==='ok'?{status:'ok',retrievedAt:main.retrievedAt,data:main.data,...(main.stale?{stale:true}:{})}:main;
+  }
+  // Daily consensus snapshots, so target and estimate revisions can be measured over weeks.
+  snapshot(symbol,source,value){
+    let fields=null;
+    if(source==='analysts'&&value?.medianTarget)fields={medianTarget:value.medianTarget,brokerages:value.brokerages};
+    if(source==='estimates'&&value?.forecastYears?.length){const i=value.years.indexOf(value.forecastYears[0]);if(i>=0)fields={estimateYear:value.forecastYears[0],eps:value.eps?.[i]??null,operatingProfit:value.operatingProfit?.[i]??null};}
+    if(!fields)return;const day=seoulDate(this.clock());const old=this.db.prepare('SELECT payload FROM research_snapshots WHERE symbol=? AND day=?').get(symbol,day);
+    this.db.prepare('INSERT INTO research_snapshots VALUES(?,?,?) ON CONFLICT(symbol,day) DO UPDATE SET payload=excluded.payload').run(symbol,day,JSON.stringify({...(old?JSON.parse(old.payload):{}),...fields}));
+  }
+  consensusTrend(symbol){
+    const rows=this.db.prepare('SELECT day,payload FROM research_snapshots WHERE symbol=? ORDER BY day').all(symbol).map(r=>({day:r.day,...JSON.parse(r.payload)}));if(rows.length<2)return null;
+    const today=rows.at(-1);const at=days=>{const target=new Date(Date.parse(today.day+'T00:00:00Z')-days*86400000).toISOString().slice(0,10);return rows.filter(r=>r.day<=target).at(-1)??null;};
+    const change=(from,key)=>from&&from[key]&&today[key]!=null&&(key!=='eps'&&key!=='operatingProfit'||from.estimateYear===today.estimateYear)?Math.round((today[key]/from[key]-1)*1000)/10:null;
+    const out={};for(const [label,days] of [['1m',28],['3m',85]]){const from=at(days);if(!from||from.day===today.day)continue;out[label]={since:from.day,medianTargetChangePct:change(from,'medianTarget'),epsChangePct:change(from,'eps'),operatingProfitChangePct:change(from,'operatingProfit'),...(today.estimateYear?{estimateYear:today.estimateYear}:{})};}
+    return Object.keys(out).length?out:{buildingSince:rows[0].day,note:'Revisions are measured from daily snapshots; a month of history is needed.'};
   }
   identity(symbol){const row=this.master?.get?.(symbol);return row?{name:row.name,market:row.market,type:row.type,sector:row.sector??null,marketCapKRW:row.marketCap??null}:{name:null};}
   async profile(symbol,{sections=SECTIONS,refresh=false}={}){
@@ -89,7 +118,9 @@ function digest(name,d){
   if(name==='analysts')return {...d,latest:d.latest?.slice(0,4),targetRevisions:d.targetRevisions?{...d.targetRevisions,recent:d.targetRevisions.recent.slice(0,3)}:undefined};
   if(name==='dividends')return {trailing12mPerShare:d.trailing12mPerShare,trailingYieldPct:d.trailingYieldPct,frequency:d.frequency,annualTotals:d.annualTotals?.slice(0,4),upcoming:d.upcoming,annualReport:d.annualReport?.years,annualReportUnavailable:d.annualReportUnavailable};
   if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
-  if(name==='financials')return {annualRatios:d.annualRatios};
+  if(name==='financials')return {periods:(d.periods??[]).slice(0,4).map(({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})=>({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})),annualRatios:d.periods?.length?undefined:d.annualRatios,note:'Periods not ending in December are year to date.'};
+  if(name==='valuation')return {...d,monthly:undefined};
+  if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};
   if(name==='flows')return {...d,investors:d.investors?{...d.investors,daily:undefined}:undefined,note:'Net buying in KRW; positive streak days mean consecutive net buying, negative mean selling. Short share is the percent of daily volume sold short; margin rate is loans outstanding as a percent of listed shares.'};
   if(name==='risk')return {...d,closes:undefined};
   return d;
