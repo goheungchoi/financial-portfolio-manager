@@ -2,7 +2,7 @@ const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activ
 // Daily account value history, user-recorded deposits/withdrawals and benchmark closes.
 // Returns are time-weighted: flows are applied at the start of their day, so deposits do not count as gains.
 const INDEXES={KOSPI:{market:'KR',label:'KOSPI'},SPX:{market:'US',label:'S&P 500'}};
-const PERIODS=[['1W',7],['1M',30],['3M',91],['YTD','ytd'],['All',null]];
+const PERIODS=[['1W',7],['1M',30],['3M',91],['YTD','ytd'],['1Y',365],['All',null]];
 const isDay=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(value+'T00:00:00Z'));
 const shift=(day,days)=>new Date(Date.parse(day+'T00:00:00Z')-days*86400000).toISOString().slice(0,10);
 class PerformanceHistory {
@@ -14,7 +14,12 @@ class PerformanceHistory {
   record(account,state){
     if(typeof account!=='string'||!account||!state?.totals)return null;const {KRW,USD,equityKRW}=state.totals;if(KRW==null&&USD==null)return null;
     const day=seoulDate(this.clock()),existing=this.db.prepare('SELECT payload FROM nav_history WHERE account=? AND day=?').get(account,day);const prior=existing?JSON.parse(existing.payload):{};
-    const row={day,at:this.clock(),KRW:KRW==null?prior.KRW??null:{equity:KRW,cash:state.cash?.KRW??null},USD:USD==null?prior.USD??null:{equity:USD,cash:state.cash?.USD??null},fx:state.fx?.usdKRW??prior.fx??null,equityKRW:equityKRW??prior.equityKRW??null};
+    // Each market keeps the day's first, highest and lowest observed value and a snapshot of its holdings.
+    const holdings=market=>(state.rows??[]).filter(r=>r.market===market&&Number.isFinite(r.quantity)&&Number.isFinite(r.price)).slice(0,80).map(r=>({symbol:r.symbol,name:r.name??r.symbol,quantity:r.quantity,value:r.quantity*r.price,cost:Number.isFinite(r.cost)?r.quantity*r.cost:null}));
+    const band=(old,equity,cash,market)=>({equity,cash,open:old?.open??equity,high:Math.max(old?.high??equity,equity),low:Math.min(old?.low??equity,equity),positions:holdings(market)});
+    const combined=equityKRW??prior.equityKRW??null;
+    const row={day,at:this.clock(),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
+      equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined)};
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
   }
   history(account){return this.db.prepare('SELECT payload FROM nav_history WHERE account=? ORDER BY day').all(account).map(row=>JSON.parse(row.payload));}
@@ -37,7 +42,14 @@ class PerformanceHistory {
       // Flows recorded on days without a valuation are folded into the next valued day.
       const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'||f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
       const netFlow=flow+skipped,base=previous?previous.value+netFlow:null;const dailyReturn=base>0&&Number.isFinite(base)?value/base-1:null;
-      if(dailyReturn!=null)index*=1+dailyReturn;points.push({day:row.day,value,flow:netFlow,dailyReturn,index});previous={day:row.day,value};
+      if(dailyReturn!=null)index*=1+dailyReturn;
+      // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
+      const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
+      const positions=parts.every(([m,f])=>!m||m.positions&&Number.isFinite(f))?parts.flatMap(([m,f])=>(m?.positions??[]).map(p=>({...p,value:p.value*f,cost:p.cost==null?null:p.cost*f}))):null;
+      const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
+      const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
+      const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
+      points.push({day:row.day,value,flow:netFlow,dailyReturn,index,pnl:previous?value-previous.value-netFlow:null,high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
     }
     return points;
   }
@@ -53,8 +65,30 @@ class PerformanceHistory {
       const from=closeOn(start.day),to=closeOn(end.day);
       return {label,start:start.day,end:end.day,partial,twr:end.index/start.index-1,gain:end.value-start.value-flows,flows,benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
-    return {kind,benchmark,start:points[0].day,end:end.day,points,periods};
+    const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
+    return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics};
   }
 }
+// Risk and attribution for the points from a start day: peak, trough, drawdowns, volatility, best and worst days,
+// daily P/L and the change in each holding's unrealized P/L.
+function analyze(points,from){
+  const pts=points.filter(p=>p.day>=from);if(!pts.length)return null;const first=pts[0],last=pts.at(-1);
+  const days=pts.slice(1);const rets=days.map(p=>p.dailyReturn).filter(Number.isFinite);
+  let top=-Infinity,maxDd=0;const drawdown=pts.map(p=>{top=Math.max(top,p.index);const dd=p.index/top-1;maxDd=Math.min(maxDd,dd);return {day:p.day,drawdownPct:dd*100};});
+  const by=(list,key,dir)=>list.reduce((best,p)=>best==null||dir*(p[key]-best[key])>0?p:best,null);
+  const mean=rets.length?rets.reduce((a,b)=>a+b,0)/rets.length:null;const sd=rets.length>=5?Math.sqrt(rets.reduce((a,b)=>a+(b-mean)**2,0)/(rets.length-1)):null;
+  const peak=by(pts,'value',1),trough=by(pts,'value',-1),high=by(pts,'high',1),low=by(pts,'low',-1);
+  const best=by(days.filter(p=>Number.isFinite(p.dailyReturn)),'dailyReturn',1),worst=by(days.filter(p=>Number.isFinite(p.dailyReturn)),'dailyReturn',-1);
+  let contributions=null;
+  if(first.positions&&last.positions){const map=new Map();const add=(list,key)=>{for(const p of list){if(p.cost==null)continue;const row=map.get(p.symbol)??{symbol:p.symbol,name:p.name,start:0,end:0,held:{}};row[key]=p.value-p.cost;row.held[key]=true;map.set(p.symbol,row);}};
+    add(first.positions,'start');add(last.positions,'end');contributions=[...map.values()].map(r=>({symbol:r.symbol,name:r.name,startUnrealized:r.start,endUnrealized:r.end,change:r.end-r.start,status:r.held.start&&r.held.end?'held':r.held.end?'new':'closed'})).sort((a,b)=>b.change-a.change);}
+  const r2=v=>v==null?null:Math.round(v*100)/100;
+  return {from:first.day,to:last.day,days:pts.length,startValue:first.value,endValue:last.value,twrPct:r2((last.index/first.index-1)*100),gain:last.value-first.value-days.reduce((a,p)=>a+p.flow,0),
+    peak:{value:peak.value,day:peak.day},trough:{value:trough.value,day:trough.day},intradayHigh:{value:high.high,day:high.day},intradayLow:{value:low.low,day:low.day},
+    maxDrawdownPct:r2(maxDd*100),currentDrawdownPct:r2(drawdown.at(-1).drawdownPct),volatilityPct:sd==null?null:r2(sd*Math.sqrt(252)*100),
+    bestDay:best?{day:best.day,returnPct:r2(best.dailyReturn*100),pnl:best.pnl}:null,worstDay:worst?{day:worst.day,returnPct:r2(worst.dailyReturn*100),pnl:worst.pnl}:null,
+    positiveDaysPct:rets.length?r2(rets.filter(v=>v>0).length/rets.length*100):null,unrealized:last.unrealized,cashSharePct:last.cash!=null&&last.value>0?r2(last.cash/last.value*100):null,
+    dailyPnl:days.map(p=>({day:p.day,pnl:p.pnl,returnPct:p.dailyReturn==null?null:r2(p.dailyReturn*100)})),drawdown:drawdown.map(d=>({day:d.day,drawdownPct:r2(d.drawdownPct)})),contributions};
+}
 function benchmarkFor(kind){return kind==='USD'?'SPX':'KOSPI';}
-module.exports={PerformanceHistory,INDEXES,benchmarkFor};
+module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze};

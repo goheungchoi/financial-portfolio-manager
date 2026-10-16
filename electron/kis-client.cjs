@@ -79,7 +79,7 @@ class KisReadOnlyClient {
   }
   async quotation(endpoint,trId,params) {
     await this.authenticate();await this.wait(550);
-    const {body}=await this.request((endpoint.startsWith('/uapi/domestic-stock/v1/')?endpoint:'/uapi/domestic-stock/v1/quotations/'+endpoint)+'?'+new URLSearchParams(params),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
+    const {body}=await this.request((/^\/uapi\/(domestic-stock|etfetn)\/v1\//.test(endpoint)?endpoint:'/uapi/domestic-stock/v1/quotations/'+endpoint)+'?'+new URLSearchParams(params),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
     if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
     return body;
   }
