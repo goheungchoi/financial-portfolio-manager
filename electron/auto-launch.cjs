@@ -10,6 +10,7 @@ function launchState(a){
 async function start(a,token){
   if(a.launching||a.busy)throw new Error('A review is already running. Wait for it to finish.');
   if(token!==launchState(a).token)throw new Error('Settings or account changed. Check the updated account label and try again.');
+  if(a.config.lossAction==='stop'&&a.emergencyState().active)throw new Error('The daily loss limit is reached and the guardrail keeps auto trading stopped today. Change Loss-limit response in Engine settings to restart.');
   if(a.config.provider==='external')throw new Error('Choose OpenAI in Engine settings to start automatic reviews.');
   if(a.config.provider==='openai'&&!a.providerStatus.aiConnected)throw new Error('Import your OpenAI key in Connections first.');
   if(a.config.scope!=='paper'&&a.config.provider!=='openai')throw new Error('Select OpenAI for broker auto trading. Local rules are for paper practice.');

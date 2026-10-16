@@ -25,7 +25,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 ### AI agent
 9. **Done, *changed*** — Engine: the app wakes the agent only when needed (interval the agent can choose, price moves, AI price watches, loss emergencies) through the OpenAI API with local budgets. *ChatGPT Plus / Dots is dropped:* Plus has no API access an app can use. The paper-only MCP bridge remains for external agents.
 10. **Done** — Approval-first or automatic buying and selling, per market, with optional caps.
-11. **Planned, *new*** — **Autopilot guardrails** for unattended trading: a hard daily-loss stop that blocks new buys (today a loss only triggers an emergency review), a max orders per day limit, a one-click kill switch that pauses reviews and automatic orders, and a daily digest of what the agent did sent through the existing webhook.
+11. **Done, *new*** — **Autopilot guardrails** for unattended trading: a chosen response to the daily loss limit (emergency reviews, block new AI buys, or stop for the day), a daily automatic order cap, a stop after consecutive failed reviews, and a daily digest sent through the existing desktop/webhook alerts. The existing Stop auto trading button is the kill switch.
 12. **Planned** — **Market discovery:** load the KIS stock master files (KOSPI/KOSDAQ, U.S. exchanges) into a local security master; add search, a watchlist the agent can propose to, and a screener tool (price, volume, valuation, momentum) so the agent can find opportunities beyond the 20 selected symbols.
 13. **Partial** — News and disclosures as inputs. Planned: a new disclosure or headline about a held or watched company triggers a review; issuer matching via the security master.
 14. **Planned, *changed*** — Macro inputs from free official sources: Bank of Korea ECOS (rates, FX, CPI) and U.S. FRED, plus an economic calendar. *Analyst consensus is deferred:* there is no free licensed source; the field stays marked "not connected".
@@ -33,7 +33,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 16. **Done** — AI console showing what the program and agent exchanged.
 
 ### Operations
-17. **Partial** — Notifications: desktop and webhook. Planned: the daily digest from item 11.
+17. **Partial** — Notifications: desktop and webhook, including guardrail alerts and the daily digest. No dedicated mobile app.
 18. **Done** — Automated unit and Electron UI tests with fixtures; no real orders or paid calls in tests.
 19. **Planned** — Signed installer and auto-update.
 
@@ -43,7 +43,7 @@ Each step is planned, implemented, tested and committed on its own before the ne
 
 | # | Feature | Why now |
 | --- | --- | --- |
-| 1 | Autopilot guardrails (item 11) | Unattended auto-trading is the main purpose; it needs a hard stop and a kill switch before the agent gets more reach. |
+| 1 | ~~Autopilot guardrails (item 11)~~ Done | Unattended auto-trading is the main purpose; it needs a hard stop and a kill switch before the agent gets more reach. |
 | 2 | Market discovery (item 12) | The agent can only consider holdings or 20 hand-picked symbols, which limits profit-seeking the most. |
 | 3 | Event-driven news and disclosures (item 13) | Reacting to a disclosure within minutes is a core reason to automate. |
 | 4 | Performance and settled cash (items 4, 7) | Correct cash and a benchmark are needed to judge both the agent and its lessons. |

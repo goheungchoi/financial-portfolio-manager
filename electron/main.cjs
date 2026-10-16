@@ -163,6 +163,7 @@ app.whenReady().then(async () => {
   for(const name of ['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'])ipcMain.handle('us:'+name,async(event,...args)=>{authorize(event);try{let data;if(name==='get')data=null;else if(name==='refresh'){if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');await automation.refreshUS();data=null;}else if(name==='auto-off'){usLive.autoEnabled=false;}else if(name==='auto')data=usLive.enableAuto(...args);else if(name==='link')data=await usLive.linkUncertain(...args);else data=await usLive[name](...args);return {ok:true,data,state:usLive.getState()};}catch(error){if(name==='refresh'){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}const allowed=['NO_FUNDED_BALANCE','KIS_NOT_CONNECTED','ACTIVATION_REQUIRED','INVALID_LIMITS','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','RECONCILIATION_REQUIRED','KIS_TRADING_DISABLED','DISABLED_OR_EXPIRED','BROKER_REJECTED','ORDER_UNCERTAIN','ACCOUNT_CHANGED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:require('./us-errors.cjs').publicUSCode(error.message),state:usLive.getState()};}});
   
   notifier=new Notifications(store.db,providerService,()=>({...automation.config,pushConnected:automation.providerStatus.pushConnected}),message=>{if(Notification.isSupported())new Notification({title:'Financial Portfolio Manager',body:message}).show();});
+  automation.notify=(id,message)=>notifier.notify(id,message);
   agentBridge=require('./agent-bridge.cjs').startBridge(app.getPath('userData'),paper,decision=>automation.review('External agent',decision));
   automation.evidence=new (require('./market-evidence.cjs').MarketEvidence)(async(args,context)=>{
     if(context.environment==='local-paper'){
@@ -189,6 +190,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:stop',event=>{authorize(event);const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};});
   ipcMain.handle('runtime:get',event=>{authorize(event);return runtimeState();});
   ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:'INVALID_SETTINGS'};}});
+  ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
   ipcMain.handle('runtime:review',async event=>{authorize(event);try{await automation.review();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.',state:runtimeState()};}});
   ipcMain.handle('runtime:providers',async event=>{

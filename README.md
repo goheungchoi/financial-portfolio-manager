@@ -45,6 +45,8 @@ Use **Engine settings → Agent guidelines** to describe profit protection, loss
 
 Daily turnover, per-order and company-allocation caps are **optional and off by default**. Blank means no app-imposed cap. A single company can represent 100% of invested positions, subject to cash, fees and share availability. If you explicitly configure an optional cap, execution enforces it. You can clear it later. Existing caps saved in earlier builds remain in their saved policies until replaced; a new blank-cap activation removes them.
 
+**Engine settings → Autopilot guardrails** sets hard limits for unattended trading: what happens when a market's daily loss limit is reached (emergency reviews only, block new AI buys, or stop auto trading for the day), a daily cap on automatic orders, and a stop after consecutive failed reviews. Each trip is logged in AI console and sent through the alerts you enabled. An optional daily digest summarizes equity change, reviews, orders, AI cost and guardrail events once a day at a chosen KST hour. Guardrails do not block orders you approve manually and do not cancel accepted broker orders.
+
 Providers:
 
 - **OpenAI API:** GPT-6 Luna, bounded structured output, no file/shell/trading tools, `store:false`, maximum 600 output tokens. API billing is separate from ChatGPT Plus. Daily request and local budget caps reserve USD 0.01/request, including failed or uncertain requests; this estimate is not the provider invoice or billing cap.

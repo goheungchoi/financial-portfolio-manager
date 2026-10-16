@@ -13,6 +13,12 @@ class Notifications {
       if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt) VALUES(?,?,?)').run(order.id+':'+order.status,message,Date.now());
     }
   }
+  // Engine-originated alerts (guardrails, digests) use the same desktop and webhook preferences as order alerts.
+  notify(id,message) {
+    const config=this.getConfig();
+    if(config.desktopAlerts)this.desktop(message);
+    if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt) VALUES(?,?,?)').run(id,message,Date.now());
+  }
   async tick() {
     if(this.busy || !this.getConfig().mobileAlerts || this.getConfig().pushConnected===false)return;this.busy=true;
     try {
