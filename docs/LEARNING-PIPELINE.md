@@ -49,6 +49,14 @@ Each call reserves an input-size/output-allowance estimate with overhead and mar
 
 The selected model/effort and each call's reservation/status are persisted in `ai_calls`; completed reviews also record the model. Reasoning calls allow 8,192 output tokens and a 75-second local timeout; no automatic model fallback or retry is introduced. Up to three calls may be made per review, with a fresh budget check for each.
 
+## Token saving (2026-10-16)
+
+Engine settings → Token saving. A scheduled review is skipped, with no provider call, when its state matches the last completed review: holdings, open orders, news, lessons, macro date, emergency and market sessions exactly, and prices, cash and values within half the price-movement trigger. Timestamps and performance history are ignored. A full review still runs at least every `maxSkipMinutes` (default 120). Emergency, user, price-movement and news reviews are never skipped. Skips are logged in the AI console and counted per day.
+
+`modelRouting` is `fixed` (default: always the selected model) or `auto`: scheduled and price-movement reviews use the routine model (default GPT-6 Luna, effort none), while emergencies, user requests and important DART disclosures use the selected model. If the routine model proposes a Buy or Sell, the selected model receives the same context plus `confirmation` and makes the final decision before any proposal is created; the review records the routing tier and whether the trade was confirmed unchanged. When 80% of the daily USD or call allowance is reserved and `degradeNearBudget` is on (default), routine reviews use the routine model and scheduled reviews run at twice the interval.
+
+The provider receives a compact context: null and empty values removed, decimals rounded to four places, news reduced to title, date, symbols and importance, and keys ordered from least to most frequently changing (price-dependent cost examples last). Requests carry a fixed `prompt_cache_key`. Measured on a real combined-market context with gpt-6-luna: input 2,986 → 2,676 tokens (−10%); identical repeats cached 2,673 tokens; a research round extending the previous prompt cached 2,674 of 2,820 tokens; a request whose prices changed inside the context cached nothing, so caching mainly cuts research rounds rather than consecutive scheduled reviews. Per-review tokens (including cached) and estimated cost for the last 20 reviews are shown in Engine settings.
+
 ## Post-trade AI reflection
 
 Engine settings can enable post-trade reflection, using the selected OpenAI model/effort with a separate daily call allowance and USD reservation budget. It defaults off. The worker runs while the app is open, independently of order automation. Broker evidence requires the existing KIS sharing permission. Enabling reflection includes existing eligible final sales, not just new fills.

@@ -9,7 +9,7 @@ test('paper-loss lessons are generated once, persist across restart and enter mo
     db.prepare('INSERT INTO paper_fills(id,payload) VALUES(?,?)').run('loss-fixture',JSON.stringify({id:'loss-fixture',side:'Sell',symbol:'005930',realized:-100}));
     automation.tick();automation.tick();let lessons=automation.getState().lessons;assert.equal(lessons.length,1);assert.equal(lessons[0].approved,0);assert.deepEqual(automation.context().reviewedLessons,[]);assert.match(lessons[0].text,/loss alone does not establish a decision mistake/);
     automation.approveLesson(lessons[0].id,true);const restarted=new Automation(db,paper,provider,()=>{});assert.equal(restarted.context().reviewedLessons.length,1);restarted.providerStatus.aiConnected=true;restarted.configure({provider:'openai'});await restarted.review();assert.equal(supplied.reviewedLessons[0],lessons[0].text);
-    restarted.approveLesson(lessons[0].id,false);await restarted.review();assert.deepEqual(supplied.reviewedLessons,[]);
+    restarted.approveLesson(lessons[0].id,false);await restarted.review();assert.deepEqual(supplied.reviewedLessons??[],[],"empty lists are omitted from the compact context");
   }finally{db.close();}
 });
 test('read-only broker review succeeds with no activation but never creates or submits an order',async()=>{

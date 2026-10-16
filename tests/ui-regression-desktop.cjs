@@ -219,6 +219,15 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await click('Check broker costs');await until('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="Check broker costs"&&!b.disabled)','Broker cost check did not finish');
       await run('document.querySelector(`[aria-label="Overseas capital gains"]`).scrollIntoView({block:"start"})');await wait(200);await capture('fees-taxes-ledger');
     });
+    await check('Token saving settings save and show today\'s review counts',async()=>{
+      await navigate('Engine settings');await until('Boolean(document.querySelector(`[aria-label="Token saving"]`))','Token saving section missing');
+      assert.equal(await run('document.querySelector(`[aria-label="Skip unchanged reviews"]`).checked'),true);
+      await run('(()=>{const el=document.querySelector(`[aria-label="Model routing"]`);Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value").set.call(el,"auto");el.dispatchEvent(new Event("change",{bubbles:true}));})()');
+      await click('Save engine settings');await until('(async()=>(await window.portfolio.getRuntime()).config.modelRouting==="auto")()','Routing not saved');
+      assert.ok(await run('document.querySelector(`[aria-label="Token saving"]`).textContent.includes("routing changes nothing")||document.querySelector(`[aria-label="Token saving"]`).textContent.includes("checks it before any order proposal")'));
+      await run('document.querySelector(`[aria-label="Token saving"]`).scrollIntoView({block:"start"})');await wait(200);await capture('token-saving');
+      await run("window.portfolio.configureRuntime({modelRouting:'fixed'})");
+    });
     await check('Short & leverage allows leveraged ETFs per market with approval and records product overrides',async()=>{
       await navigate('Short & leverage');await until('Boolean(document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`))','Korea leverage settings missing');
       assert.equal(await run('document.querySelector(`[aria-label="Korea automatic leveraged orders"]`).disabled'),true,'automatic mode needs the switch first');

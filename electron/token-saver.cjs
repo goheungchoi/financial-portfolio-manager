@@ -1,0 +1,63 @@
+const {createHash}=require('node:crypto');
+// Token saving for AI reviews: skip unchanged scheduled reviews, compact and order context for prompt caching,
+// and route routine reviews to a cheaper model while escalating important ones.
+const VOLATILE=/^(timestamp|retrievedAt|updatedAt|fetchedAt|generatedAt|heartbeat|savedAt|at|asOfTimestamp)$|At$/;
+const IGNORED=new Set(['performance','decisionScoreboard','triggerEvidence','reviewInterval','reviewWatches','paperVersion']);
+const MONEY=/price|last|close|value|equity|cash|amount|total|marketValue|pnl|gain|profit|cost|notional|evaluation/i;
+// Money-like numbers are kept as {money:value} so comparison can allow a tolerance; everything else must match exactly.
+function canonical(value,key=''){
+  if(Array.isArray(value))return value.map(item=>canonical(item));
+  if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().filter(k=>!VOLATILE.test(k)&&!IGNORED.has(k)&&value[k]!=null).map(k=>[k,canonical(value[k],k)]));
+  if(typeof value==='number'&&Number.isFinite(value)&&MONEY.test(key))return {money:value};
+  return value;
+}
+// Decision-relevant state: holdings, prices and cash (compared within a tolerance), news, lessons, macro date, emergency, sessions.
+// `exact` hashes everything except money values, so a structural change (new news item, sold shares) is detected cheaply.
+function fingerprint(context){
+  const state=canonical(context);const strip=v=>Array.isArray(v)?v.map(strip):v&&typeof v==='object'?('money' in v&&Object.keys(v).length===1?'#':Object.fromEntries(Object.entries(v).map(([k,x])=>[k,strip(x)]))):v;
+  return {exact:createHash('sha256').update(JSON.stringify(strip(state))).digest('hex'),state};
+}
+function within(a,b,pct){
+  if(Array.isArray(a))return Array.isArray(b)&&a.length===b.length&&a.every((x,i)=>within(x,b[i],pct));
+  if(a&&typeof a==='object'){if(!b||typeof b!=='object')return false;if('money' in a&&Object.keys(a).length===1)return 'money' in b&&(a.money===b.money||Math.abs(a.money-b.money)<=Math.max(Math.abs(a.money),Math.abs(b.money))*pct/100);const ka=Object.keys(a),kb=Object.keys(b);return ka.length===kb.length&&ka.every(k=>within(a[k],b[k],pct));}
+  return a===b;
+}
+// Skips only scheduled reviews whose state matches the last completed review (prices and cash within half the
+// price-movement tolerance), for at most maxSkipMinutes after that review.
+function shouldSkip({trigger,config,fingerprint:next,last,now=Date.now()}){
+  if(!config.skipUnchanged||trigger!=='Scheduled review'||!last||!next||last.exact!==next.exact)return false;
+  return now-last.completedAt<config.maxSkipMinutes*60000&&within(last.state,next.state,Math.max(0.1,(config.eventTolerancePct??3)/2));
+}
+// Removes null/empty values, rounds long decimals and puts stable parts first so repeated prompts share a cacheable prefix.
+// Ordered from least to most frequently changing. tradingCosts ends with its price-dependent oneShare examples.
+const STABLE_FIRST=['environment','market','currency','baseCurrency','objective','userGuidelines','reviewedLessons','lessonConflicts','discovery','reviewInterval','reviewWatches','decisionScoreboard','macro','tradingCosts'];
+const lastKey=(value,key)=>{if(Array.isArray(value))return value.map(v=>lastKey(v,key));if(!value||typeof value!=='object')return value;const {[key]:tail,...rest}=value;const out=Object.fromEntries(Object.entries(rest).map(([k,v])=>[k,lastKey(v,key)]));if(tail!==undefined)out[key]=tail;return out;};
+function prune(value){
+  if(Array.isArray(value)){const items=value.map(prune).filter(v=>v!==undefined);return items.length?items:undefined;}
+  if(value&&typeof value==='object'){const entries=Object.entries(value).map(([k,v])=>[k,prune(v)]).filter(([,v])=>v!==undefined);return entries.length?Object.fromEntries(entries):undefined;}
+  if(value===null||value===undefined||value==='')return undefined;
+  if(typeof value==='number'&&!Number.isInteger(value))return Math.round(value*10000)/10000;
+  return value;
+}
+// Keys the provider-side validation relies on are always kept, even when empty.
+function compact(context){
+  const pruned=prune(context)??{};const ordered={};
+  for(const key of STABLE_FIRST)if(key in pruned)ordered[key]=key==='tradingCosts'?lastKey(pruned[key],'oneShare'):pruned[key];
+  for(const [key,value] of Object.entries(pruned))if(!(key in ordered))ordered[key]=value;
+  ordered.universe=pruned.universe??[];
+  if(Array.isArray(ordered.news))ordered.news=ordered.news.map(({title,published,symbols,importance})=>prune({title:String(title??'').slice(0,160),published,symbols,importance})).filter(Boolean);
+  return ordered;
+}
+// Picks the model for this review. 'auto' sends routine reviews to the cheaper model; emergencies, user requests and
+// important disclosures use the configured model. Near the daily budget, routine reviews always use the cheaper model.
+function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false}){
+  const strong={openaiModel:config.openaiModel,reasoningEffort:config.reasoningEffort},routine={openaiModel:config.routineModel,reasoningEffort:config.routineEffort};
+  const important=emergencyActive?'emergency':trigger==='User request'?'user request':triggerEvidence?.kind==='news'&&(triggerEvidence.events??[]).some(e=>e.importance==='high')?'important disclosure':null;
+  if(important)return {...strong,tier:'escalated',reason:important};
+  if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
+  if(config.modelRouting==='auto')return {...routine,tier:'routine',reason:'routine review'};
+  return {...strong,tier:'fixed',reason:'fixed model'};
+}
+// The daily budget is "near" at 80% of the USD allowance or of the call count.
+function nearBudget(config,usage){return (!config.unlimitedBudget&&usage.reservedMicro>=config.maxUSDPerDay*1e6*0.8)||(!config.unlimitedCalls&&usage.calls>=Math.floor(config.maxCallsPerDay*0.8));}
+module.exports={fingerprint,shouldSkip,compact,route,nearBudget,canonical,within};
