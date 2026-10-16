@@ -229,6 +229,39 @@ test('live-run fixes: stale blank dividends, monthly sales filings, own preferre
   master.replace('KOSPI',[['005930',1e15],['005935',1e14],['000660',9e14]].map(([symbol,marketCap])=>({symbol,name:symbol,englishName:'',market:'KOSPI',type:'stock',isin:'',industry:'0027',sector:'0013',marketCap})));
   assert.deepEqual(master.peers('005930').map(p=>p.symbol),['000660']);
 });
+test('ETF facts: leverage factor and kind, NAV premium history, net assets; holdings with weights and concentration',()=>{
+  const f=insights.etfFund({stck_prpr:'70415',nav:'70396.16',dprt:'0.03',trc_errt:'7.48',etf_ntas_ttam:'40669',etf_trc_ert_mltp:'2.00',mbcr_name:'삼성자산운용(ETF)',etf_rprs_bstp_kor_isnm:'KOSPI200',etf_cnfg_issu_cnt:'209',etf_dvdn_cycl:'12',stck_lstn_date:'20100222',mtrt_date:'0'},
+    [{stck_bsop_date:'20261016',stck_clpr:'70415',nav:'70396.16',dprt:'0.03'},{stck_bsop_date:'20261015',stck_clpr:'67785',nav:'67501.61',dprt:'-0.42'}]);
+  assert.deepEqual([f.kind,f.leverageFactor,f.issuer,f.underlyingIndex,f.netAssetsKRW,f.listedOn,f.maturity],['leveraged',2,'삼성자산운용','KOSPI200',40669e8,'2010-02-22',null]);
+  assert.equal(f.avgAbsPremium20dPct,0.22);assert.equal(f.maxAbsPremium20dPct,0.42);assert.equal(insights.etfFund({etf_trc_ert_mltp:'-2.00'}).kind,'inverse');
+  const h=insights.etfHoldings({etf_cnfg_issu_cnt:'202'},[{stck_shrn_iscd:'000660',hts_kor_isnm:'SK하이닉스',etf_cnfg_issu_rlim:'24.17'},{stck_shrn_iscd:'005930',hts_kor_isnm:'삼성전자',etf_cnfg_issu_rlim:'34.03'},{stck_shrn_iscd:'',hts_kor_isnm:'원화현금',etf_cnfg_issu_rlim:'0.5'}]);
+  assert.deepEqual(h.holdings.map(x=>x.name),['삼성전자','SK하이닉스','원화현금']);assert.equal(h.top5WeightPct,58.7);assert.equal(h.constituents,202);
+  assert.match(insights.etfHoldings({etf_cnfg_issu_cnt:'504'},[]).note,/no constituents/);
+});
+test('funds get fund facts, holdings with sector mix and leverage drag; stock-only sections are refused',async()=>{
+  const dates=Array.from({length:60},(_,i)=>new Date(Date.parse('2026-08-01T00:00:00Z')+i*86400000).toISOString().slice(0,10));
+  const db=new DatabaseSync(':memory:');const types={'122630':'etf','005930':'stock'};
+  const s=new ResearchService({db,master:{get:symbol=>({name:symbol,market:'KOSPI',type:types[symbol]??'stock',sector:{'005930':'0013','000660':'0013'}[symbol]??null}),status:()=>({total:1})},provider:async()=>null,
+    kis:async(op,{section})=>section==='fund'?{leverageFactor:2,kind:'leveraged',nav:1}:section==='daily'?{closes:dates.map((date,i)=>({date,close:100*(1+(i%2?0.02:-0.02))}))}:section==='holdings'?{holdings:[{symbol:'005930',name:'삼성전자',weightPct:34},{symbol:'000660',name:'SK하이닉스',weightPct:24},{symbol:'',name:'현금',weightPct:1}]}:section==='overview'?{price:70415}:{closes:dates.map((date,i)=>({date,close:5000+i}))}});
+  db.prepare('INSERT INTO research_cache VALUES(?,?,?,?)').run('MARKET','market',Date.now(),JSON.stringify({kospiSectors:[{code:'0013',name:'전기·전자'}]}));
+  const fund=await s.section('122630','fund');assert.equal(fund.data.leverage.factor,2);assert.ok(fund.data.leverage.estimatedAnnualDragPct>0);
+  const hold=await s.section('122630','holdings');assert.deepEqual(hold.data.sectors,[{code:'0013',name:'전기·전자',weightPct:58},{code:null,name:'Other or unlisted',weightPct:1}]);
+  assert.equal((await s.section('122630','analysts')).reason,'NOT_FOR_FUNDS');assert.equal((await s.section('005930','fund')).reason,'FUNDS_ONLY');
+  const agent=await s.agent({symbol:'122630',sections:[]});assert.ok(agent.fund&&agent.holdings&&agent.risk&&agent.overview,'funds default to fund sections');
+});
+test('scout context names the buyable markets and per-account product permissions',async()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
+  const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
+  const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
+  live.exposure={policy:()=>({leveragedEtps:{enabled:true,maxPctOfEquity:20,maxHoldingDays:10},margin:{enabled:false},short:{enabled:false}}),context:()=>({products:[],warnings:[],leveragedEtps:{allowed:true}}),creditRisk:()=>null};
+  let context;const automation=new Automation(db,paper,{request:async(op,payload)=>{context=payload.context;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}},()=>{});
+  automation.live=live;automation.usLive={identity:()=>'acct:US',context:async()=>({market:'US',currency:'USD',equity:500,cash:0,positions:{}}),getState:()=>({})};automation.refreshUS=async()=>({});automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[],symbols:()=>[]};
+  automation.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  await automation.scout();
+  assert.deepEqual(context.opportunitySet.tradableMarkets,['KR','US']);assert.equal(context.opportunitySet.usStocksBuyable,false,'no USD cash');assert.match(context.opportunitySet.note,/Korean-listed ETFs/);
+  assert.equal(context.accounts[0].products.leveragedOrInverseEtps.allowed,true);assert.match(context.accounts[1].note,/No USD cash/);
+});
 test('scout and trading reviews are offered the market overview tool',async()=>{
   const {AiClient}=require('../electron/ai-client.cjs');const bodies=[];
   const reply=text=>new Response(JSON.stringify({status:'completed',usage:{input_tokens:1,output_tokens:1},output:[{type:'message',content:[{type:'output_text',text}]}]}));

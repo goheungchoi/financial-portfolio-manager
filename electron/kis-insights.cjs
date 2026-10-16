@@ -142,6 +142,24 @@ async function marketOverview(client){
     foreignTopBuys:topBuyers(foreign?.output,'frgn_ntby_tr_pbmn'),institutionTopBuys:topBuyers(institution?.output,'orgn_ntby_tr_pbmn'),
     note:'Sector moves are today versus the previous close. Foreign and institutional buying are preliminary intraday tallies by value.'};
 }
+// ETFs and ETNs: fund facts, NAV and premium/discount, tracking, leverage factor and holdings with weights.
+function etfFund(o={},navRows=[]){
+  const factor=num(o.etf_trc_ert_mltp);const nav=positive(o.nav),price=positive(o.stck_prpr);
+  const premiums=(Array.isArray(navRows)?navRows:[]).map(r=>({date:isoDay(r.stck_bsop_date),close:positive(r.stck_clpr),nav:positive(r.nav),premiumPct:num(r.dprt)})).filter(r=>r.date&&r.premiumPct!=null).sort((a,b)=>b.date.localeCompare(a.date));
+  const abs=premiums.map(r=>Math.abs(r.premiumPct));
+  return {issuer:String(o.mbcr_name??'').replace(/\(ETF\)$/,'').trim()||null,underlyingIndex:String(o.etf_rprs_bstp_kor_isnm??'').trim()||null,structure:String(o.etf_div_name??'').trim()||null,
+    leverageFactor:factor,kind:factor==null?null:factor<0?'inverse':Math.abs(factor)>1?'leveraged':'standard',price,nav,premiumPct:num(o.dprt),trackingErrorPct:num(o.trc_errt),
+    netAssetsKRW:positive(o.etf_ntas_ttam)!=null?positive(o.etf_ntas_ttam)*1e8:null,unitsOutstanding:positive(o.etf_crcl_stcn),constituents:positive(o.etf_cnfg_issu_cnt),creationUnit:positive(o.etf_cu_unit_scrt_cnt),
+    listedOn:isoDay(o.stck_lstn_date),maturity:isoDay(o.mtrt_date),distributionCycleMonths:positive(o.etf_dvdn_cycl),lpHoldingPct:num(o.lp_hldn_rate),yearHigh:positive(o.stck_dryy_hgpr),yearLow:positive(o.stck_dryy_lwpr),
+    premiumHistory:premiums.slice(0,25),avgAbsPremium20dPct:abs.length?round(abs.slice(0,20).reduce((a,b)=>a+b,0)/Math.min(20,abs.length),2):null,maxAbsPremium20dPct:abs.length?Math.max(...abs.slice(0,20)):null};
+}
+function etfHoldings(summary={},rows=[]){
+  const list=(Array.isArray(rows)?rows:[]).map(r=>({symbol:String(r.stck_shrn_iscd??'').trim(),name:String(r.hts_kor_isnm??'').trim(),weightPct:num(r.etf_cnfg_issu_rlim),changePct:num(r.prdy_ctrt),units:num(r.etf_cu_unit_scrt_cnt)})).filter(r=>r.name&&r.weightPct!=null).sort((a,b)=>b.weightPct-a.weightPct);
+  const top=n=>round(list.slice(0,n).reduce((s,r)=>s+r.weightPct,0));
+  return {constituents:positive(summary.etf_cnfg_issu_cnt),listed:list.length,holdings:list.slice(0,40),top5WeightPct:list.length?top(5):null,top10WeightPct:list.length?top(10):null,
+    herfindahl:list.length?round(list.reduce((s,r)=>s+(r.weightPct/100)**2,0),3):null,
+    note:list.length?'Weights are shares of the basket by value from the KIS constituent list.':'KIS lists no constituents for this fund (common for funds holding foreign assets, futures or swaps).'};
+}
 const US=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/;
 // One section of research for one Korean listing. `client` is the read-only KIS client.
 async function fetchSection(client,symbol,section,today){
@@ -178,6 +196,12 @@ async function fetchSection(client,symbol,section,today){
   }
   if(section==='estimates')return estimates(await q('estimate-perform','HHKST668300C0',{SHT_CD:symbol}));
   if(section==='financials')return financials(client,symbol);
+  if(section==='fund'){
+    const E='/uapi/etfetn/v1/quotations/';const price=await q(E+'inquire-price','FHPST02400000',{fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol});
+    let nav=[];try{nav=(await q(E+'nav-comparison-daily-trend','FHPST02440200',{fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol,fid_input_date_1:compact(shift(today,40)),fid_input_date_2:compact(today)})).output;}catch{}
+    if(!price.output||num(price.output.nav)==null)throw new Error('NOT_AN_ETF');return etfFund(price.output,nav);
+  }
+  if(section==='holdings'){const body=await q('/uapi/etfetn/v1/quotations/inquire-component-stock-price','FHKST121600C0',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_COND_SCR_DIV_CODE:'11216'});return etfHoldings(body.output1,body.output2);}
   if(section==='valuation'){
     const monthly=await q('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,2200)),FID_INPUT_DATE_2:compact(today),FID_PERIOD_DIV_CODE:'M',FID_ORG_ADJ_PRC:'0'});
     const ratio=await q(D+'finance/financial-ratio','FHKST66430300',{FID_DIV_CLS_CODE:'0',fid_cond_mrkt_div_code:'J',fid_input_iscd:symbol});
@@ -207,4 +231,4 @@ async function financials(client,symbol){
   if(Object.values(parts).every(v=>!v))throw new Error('DATA_SOURCE_UNAVAILABLE');
   return {periods:statements(parts),annualRatios:ratios(parts.ratio),units:'KRW amounts; ratios in %. Periods not ending in December are year to date.'};
 }
-module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
+module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
