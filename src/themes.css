@@ -115,3 +115,12 @@ main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-wi
 .macro-spark{width:100%;height:32px;display:block}.macro-spark path{fill:none;stroke:var(--perf-portfolio);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .macro-up,.macro-down{font-size:.85rem}.macro-today td{font-weight:600}
 .exposure-section{border-top:1px solid var(--border,rgba(127,127,127,.25));padding-top:8px;margin-top:12px}
+
+.perf-band{fill:var(--perf-portfolio);opacity:.14}
+.perf-bar.up{fill:var(--perf-portfolio)}.perf-bar.down{fill:#d96c6c}
+.perf-drawdown{fill:#d96c6c;opacity:.28;stroke:#d96c6c;stroke-width:1.5}
+.perf-periods,.perf-chart-tabs{width:max-content;max-width:100%;flex-wrap:wrap;margin:10px 0}
+.perf-stats{margin:6px 0 4px}
+.perf-contrib{margin-top:10px}
+.perf-sub{display:block;font-size:11px;color:var(--muted);margin-top:3px;font-weight:400}
+.perf-more{margin:2px 0 8px}

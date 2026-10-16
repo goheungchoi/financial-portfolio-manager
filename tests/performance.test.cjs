@@ -33,7 +33,7 @@ test('time-weighted returns exclude deposits and compare with the benchmark over
 test('a refresh missing one market keeps that market for the day; U.S. flows are converted in the combined series',()=>{
   let now=at('2026-10-01');const perf=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);
   perf.record('acct',{totals:{KRW:1000,USD:10,equityKRW:15000},cash:{},fx:{usdKRW:1400}});perf.record('acct',{totals:{KRW:1100,USD:null,equityKRW:null},cash:{},fx:null});
-  assert.deepEqual(perf.history('acct')[0].USD,{equity:10,cash:null});assert.equal(perf.history('acct')[0].equityKRW,15000);
+  assert.deepEqual(perf.history('acct')[0].USD,{equity:10,cash:null,open:10,high:10,low:10,positions:[]});assert.equal(perf.history('acct')[0].equityKRW,15000);
   now=at('2026-10-02');perf.addFlow('acct',{day:'2026-10-02',market:'US',amount:1,note:''});perf.record('acct',{totals:{KRW:1100,USD:11,equityKRW:16500},cash:{},fx:{usdKRW:1400}});
   const combined=perf.series('acct','COMBINED');assert.equal(combined[1].flow,1400);assert.ok(Math.abs(combined[1].dailyReturn-(16500/16400-1))<1e-12);
   assert.throws(()=>perf.addFlow('acct',{day:'2099-01-01',market:'KR',amount:1}),/INVALID_FLOW/);assert.throws(()=>perf.addFlow('acct',{day:'2026-10-02',market:'KR',amount:0}),/INVALID_FLOW/);
@@ -47,3 +47,19 @@ test('benchmark history pages backwards until the start date',async()=>{
   assert.equal(calls.length,2);assert.equal(result[0].day,'2026-09-10');assert.equal(result.at(-1).day,'2026-10-16');assert.equal(result.length,37);
   await assert.rejects(indexHistory(client,{index:'NIKKEI',start:'2026-01-01',end:'2026-02-01'}),/INVALID_REQUEST/);
 });
+test('daily records keep intraday high and low and holdings; analytics give peak, drawdown, daily P/L and contributions',()=>{
+  let now=at('2026-09-01');const perf=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);
+  const state=(equity,cash,rows)=>({totals:{KRW:equity,USD:null,equityKRW:null},cash:{KRW:cash},rows:rows.map(([symbol,quantity,price,cost])=>({symbol,name:symbol,market:'KR',quantity,price,cost}))});
+  const day=(d,values,rows)=>{now=at(d);for(const v of values)perf.record('acct',state(v,v-rows.reduce((s,[,q,p])=>s+q*p,0),rows));};
+  day('2026-09-01',[1000,1100,950,1000],[['A',1,500,400]]);
+  const first=perf.history('acct')[0].KRW;assert.deepEqual([first.open,first.high,first.low,first.equity],[1000,1100,950,1000]);assert.deepEqual(first.positions,[{symbol:'A',name:'A',quantity:1,value:500,cost:400}]);
+  day('2026-09-02',[1200],[['A',1,700,400]]);day('2026-09-03',[900],[['A',1,400,400],['B',2,100,120]]);day('2026-09-04',[1500],[['A',1,450,400],['B',2,100,120]]);perf.addFlow('acct',{day:'2026-09-04',market:'KR',amount:500});
+  for(const [i,v] of [1450,1500,1600,1550].entries())day(`2026-09-${String(5+i).padStart(2,'0')}`,[v],[['B',2,100,120]]);
+  const s=perf.summary('acct','KRW','KOSPI');const all=s.analytics.All;
+  assert.equal(all.peak.value,1600);assert.equal(all.trough.value,900);assert.equal(all.intradayHigh.value,1600);assert.equal(all.intradayLow.value,900);assert.equal(perf.summary('acct','KRW').points[0].high,1100);
+  assert.equal(all.maxDrawdownPct,-25,'1200 to 900');assert.deepEqual(all.dailyPnl.find(p=>p.day==='2026-09-04'),{day:'2026-09-04',pnl:100,returnPct:7.14},'a deposit is not profit');
+  assert.equal(all.worstDay.day,'2026-09-03');assert.ok(all.volatilityPct>0);assert.equal(all.unrealized,-40);assert.equal(all.cashSharePct,round2(1350/1550*100));
+  assert.deepEqual(all.contributions.map(c=>[c.symbol,c.change,c.status]),[['B',-40,'new'],['A',-100,'closed']]);
+  assert.equal(s.analytics['1W'].from,'2026-09-01');assert.ok(!('positions' in s.points[0]),'holdings stay out of the chart points');
+});
+const round2=v=>Math.round(v*100)/100;
