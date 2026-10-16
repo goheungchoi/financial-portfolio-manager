@@ -60,14 +60,31 @@ async function fetchEcos(fetch,key,spec,now){
   const latest=rows.at(-1).date,yearAgo=new Date(Date.parse(latest+'T00:00:00Z'));yearAgo.setUTCFullYear(yearAgo.getUTCFullYear()-1);
   return [...await ecosWindow(fetch,key,spec,shiftDays(yearAgo,-62),yearAgo),...rows];
 }
-async function fetchFred(fetch,spec,now){
-  const start=iso(shiftDays(new Date(now),spec.yoy?-800:spec.monthly?-400:-60));
-  const response=await fetch(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${spec.series}&cosd=${start}`,{redirect:'error',signal:AbortSignal.timeout(20000)});
+// FRED's CSV download stalls requests that carry no identifying User-Agent, as Electron's utility process sends them.
+const FRED_HEADERS={'user-agent':'FinancialPortfolioManager (+https://github.com/goheungchoi/financial-portfolio-manager)'};
+// FRED API JSON: observations [{date,value}]; missing values are ".".
+function parseFredJson(body){
+  if(!Array.isArray(body?.observations))throw new Error('INVALID_RESPONSE');
+  return body.observations.map(row=>({date:row.date,value:row.value==='.'||row.value==null||row.value===''?null:Number(row.value)})).filter(row=>isDay(row.date)&&Number.isFinite(row.value));
+}
+async function fetchFredOnce(fetch,spec,start,key){
+  // With a key, the documented API; without one, the public CSV download.
+  if(key){
+    const params=new URLSearchParams({series_id:spec.series,api_key:key,file_type:'json',observation_start:start});
+    const response=await fetch('https://api.stlouisfed.org/fred/series/observations?'+params,{redirect:'error',headers:FRED_HEADERS,signal:AbortSignal.timeout(20000)});
+    if(!response.ok)throw new Error(response.status===400||response.status===403?'FRED_KEY_REJECTED':'REQUEST_FAILED');return parseFredJson(await response.json());
+  }
+  const response=await fetch(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${spec.series}&cosd=${start}`,{redirect:'error',headers:FRED_HEADERS,signal:AbortSignal.timeout(20000)});
   if(!response.ok)throw new Error('REQUEST_FAILED');return parseFredCsv(await response.text());
+}
+async function fetchFred(fetch,spec,now,key=null){
+  const start=iso(shiftDays(new Date(now),spec.yoy?-800:spec.monthly?-400:-60));
+  // One retry covers a dropped connection; a rejected key is not retried.
+  try{return await fetchFredOnce(fetch,spec,start,key);}catch(error){if(error.message==='FRED_KEY_REJECTED'||error.message==='INVALID_RESPONSE')throw error;return fetchFredOnce(fetch,spec,start,key);}
 }
 async function fetchCalendar(fetch,key,now){
   const start=new Date(now);const params=new URLSearchParams({api_key:key,file_type:'json',realtime_start:iso(start),realtime_end:iso(shiftDays(start,45)),include_release_dates_with_no_data:'true',sort_order:'asc',limit:'1000'});
-  const response=await fetch('https://api.stlouisfed.org/fred/releases/dates?'+params,{redirect:'error',signal:AbortSignal.timeout(20000)});if(!response.ok)throw new Error(response.status===400||response.status===403?'FRED_KEY_REJECTED':'REQUEST_FAILED');
+  const response=await fetch('https://api.stlouisfed.org/fred/releases/dates?'+params,{redirect:'error',headers:FRED_HEADERS,signal:AbortSignal.timeout(20000)});if(!response.ok)throw new Error(response.status===400||response.status===403?'FRED_KEY_REJECTED':'REQUEST_FAILED');
   return calendarRows((await response.json()).release_dates,iso(start));
 }
 function calendarRows(rows,today){
@@ -79,7 +96,7 @@ async function fetchMacro(fetch,{ecosKey=null,fredKey=null,now=Date.now()}={}){
   const errors=[];const series=[];
   // FRED downloads run in parallel; ECOS requests run one at a time to stay within its limits.
   let chain=Promise.resolve();const ecos=spec=>{const run=chain.then(()=>fetchEcos(fetch,ecosKey||ECOS_SAMPLE,spec,now));chain=run.catch(()=>{});return run;};
-  const settled=await Promise.allSettled(SERIES.map(spec=>spec.source==='ECOS'?ecos(spec):fetchFred(fetch,spec,now)));
+  const settled=await Promise.allSettled(SERIES.map(spec=>spec.source==='ECOS'?ecos(spec):fetchFred(fetch,spec,now,fredKey)));
   settled.forEach((result,i)=>{const spec=SERIES[i];if(result.status==='fulfilled')series.push(summarize(spec,result.value));else errors.push({id:spec.id,source:spec.source,code:/^[A-Z0-9_-]{3,40}$/.test(result.reason?.message??'')?result.reason.message:'REQUEST_FAILED'});});
   let calendar=null;if(fredKey){try{calendar=await fetchCalendar(fetch,fredKey,now);}catch(error){errors.push({id:'CALENDAR',source:'FRED',code:/^[A-Z0-9_-]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'});}}
   return {fetchedAt:now,ecosAccess:ecosKey?'key':'sample',calendarAccess:fredKey?'key':'none',series,calendar,errors};
@@ -106,4 +123,4 @@ class MacroStore {
     return {asOf:iso(new Date(snap.fetchedAt)),indicators:snap.series.map(s=>({name:s.name,market:s.market,value:s.value,unit:s.unit,date:s.date,change:s.change,...(s.stale?{stale:true}:{})})),upcoming:(snap.calendar??[]).filter(e=>e.date>=today&&e.date<=until).map(({date,event})=>({date,event})),note:snap.calendar?'Change is versus the previous observation. Release dates come from the FRED calendar.':'Change is versus the previous observation. No release calendar is connected.'};
   }
 }
-module.exports={SERIES,RELEASES,parseFredCsv,parseEcos,summarize,fetchMacro,fetchUsdKrw,calendarRows,MacroStore};
+module.exports={SERIES,RELEASES,parseFredCsv,parseFredJson,parseEcos,summarize,fetchMacro,fetchUsdKrw,calendarRows,MacroStore};

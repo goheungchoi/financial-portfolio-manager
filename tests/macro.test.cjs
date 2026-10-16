@@ -12,8 +12,10 @@ test('year-over-year inflation uses the same month a year earlier',()=>{
   const s=summarize(spec,rows);assert.equal(s.date,'2026-09-01');assert.equal(s.value,3);assert.equal(s.previous,3);assert.equal(s.change,0);assert.equal(s.frequency,'monthly');assert.equal(s.unit,'% y/y');
 });
 function fakeFetch(log){
-  return async url=>{log.push(url);const u=new URL(url);
-    if(u.host==='fred.stlouisfed.org'){const id=u.searchParams.get('id');if(id==='VIXCLS')return {ok:false,status:500};const monthly=['CPIAUCSL','UNRATE'].includes(id);const rows=monthly?['2025-09-01,100','2025-10-01,100','2026-08-01,102','2026-09-01,103']:['2026-10-14,4.10','2026-10-15,4.20'];return {ok:true,text:async()=>'observation_date,'+id+'\n'+rows.join('\n')};}
+  return async(url,options={})=>{log.push(url);if(log.headers)log.headers.push(options.headers?.['user-agent']??null);const u=new URL(url);
+    const fredRows=id=>{if(id==='VIXCLS')return null;const monthly=['CPIAUCSL','UNRATE'].includes(id);return monthly?['2025-09-01,100','2025-10-01,100','2026-08-01,102','2026-09-01,103']:['2026-10-14,4.10','2026-10-15,4.20'];};
+    if(u.host==='fred.stlouisfed.org'){const id=u.searchParams.get('id');const rows=fredRows(id);if(!rows)return {ok:false,status:500};return {ok:true,text:async()=>'observation_date,'+id+'\n'+rows.join('\n')};}
+    if(u.host==='api.stlouisfed.org'&&u.pathname==='/fred/series/observations'){const rows=fredRows(u.searchParams.get('series_id'));if(!rows)return {ok:false,status:500};return {ok:true,json:async()=>({observations:[{date:'2026-10-13',value:'.'},...rows.map(r=>{const [date,value]=r.split(',');return {date,value};})]})};}
     if(u.host==='ecos.bok.or.kr'){const parts=u.pathname.split('/');const [from,to]=[Number(parts[6]),Number(parts[7])];const total=25;const rows=Array.from({length:total},(_,i)=>({TIME:new Date(Date.UTC(2026,8,20+i)).toISOString().slice(0,10).replaceAll('-',''),DATA_VALUE:String(i)})).slice(from-1,to);return {ok:true,json:async()=>({StatisticSearch:{list_total_count:total,row:rows}})};}
     if(u.host==='api.stlouisfed.org')return {ok:true,json:async()=>({release_dates:[{release_name:'Consumer Price Index',date:'2026-10-20'},{release_name:'Consumer Price Index',date:'2026-10-20'},{release_name:'Some Regional Survey',date:'2026-10-21'},{release_name:'FOMC Press Release',date:'2026-10-28'},{release_name:'Employment Situation',date:'2026-10-01'}]})};
     throw new Error('unexpected '+url);};
@@ -39,4 +41,13 @@ test('the store keeps the last good value of a failed series and gives the AI th
   assert.equal(saved.series.map(s=>s.id).join(),SERIES.filter(s=>s.id!=='US_VIX').map(s=>s.id).join(),'series stay in a fixed order');
   const context=store.context();assert.equal(context.asOf,'2026-10-16');assert.deepEqual(context.upcoming,[{date:'2026-10-20',event:'U.S. CPI'},{date:'2026-10-28',event:'FOMC decision'}]);
   assert.deepEqual(new MacroStore(store.db,()=>Date.parse('2026-10-21T03:00:00Z')).context().upcoming,[{date:'2026-10-28',event:'FOMC decision'}],'past releases drop out');assert.ok(context.indicators.find(i=>i.name==='U.S. 10-year Treasury').stale);
+});
+test('with a FRED key, series come from the API; every FRED request identifies the app; failures retry once',async()=>{
+  const log=[];log.headers=[];const result=await fetchMacro(fakeFetch(log),{now:NOW,fredKey:'a'.repeat(32)});
+  assert.ok(!log.some(u=>u.includes('fredgraph.csv')),'no CSV downloads with a key');assert.equal(result.series.find(s=>s.id==='US_10Y').value,4.2,'missing "." values are skipped');
+  assert.equal(log.filter(u=>u.includes('series_id=VIXCLS')).length,2,'a failed series is retried once');assert.deepEqual(result.errors.map(e=>e.id),['US_VIX']);
+  const fredHeaders=log.headers.filter((_,i)=>/stlouisfed/.test(log[i]));assert.ok(fredHeaders.length>0&&fredHeaders.every(ua=>/FinancialPortfolioManager/.test(ua??'')));
+  const rejected=await fetchMacro(async(url,o)=>url.includes('/series/observations')?{ok:false,status:400}:fakeFetch([])(url,o),{now:NOW,fredKey:'a'.repeat(32)});
+  assert.ok(rejected.errors.filter(e=>e.source==='FRED'&&e.id!=='CALENDAR').every(e=>e.code==='FRED_KEY_REJECTED'));
+  const keyless=[];await fetchMacro(fakeFetch(keyless),{now:NOW});assert.equal(keyless.filter(u=>u.includes('id=VIXCLS')).length,2,'keyless CSV also retries once');
 });
