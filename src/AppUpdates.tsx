@@ -11,7 +11,7 @@ export function AppUpdates(){
   const act=async(task:()=>Promise<UpdateReply>)=>{setBusy(true);setNotice('');try{const reply=await task();setState(reply.state);if(!reply.ok)setNotice(ERRORS[reply.error??'']??'The request could not be completed.');}catch{setNotice('Could not reach the engine.');}finally{setBusy(false);}};
   const s=state;const label=s.status==='disabled'?'Development build':s.status==='checking'?'Checking…':s.status==='available'?`Version ${s.available?.version} available`:s.status==='downloading'?`Downloading ${s.progress??0}%`:s.status==='downloaded'?`Version ${s.available?.version} ready to install`:s.status==='up-to-date'?'Up to date':s.status==='error'?'Last check failed':'Not checked yet';
   return <section aria-label="App updates"><div className="section-head"><div><h2>App updates</h2><small>Version {s.current}{s.checkedAt?` · checked ${new Date(s.checkedAt).toLocaleString()}`:''}</small></div><span className="badge">{label.toUpperCase()}</span></div>
-    {s.status==='disabled'?<p className="muted">Updates are available in the installed app. This copy runs from source or a portable folder.</p>:<>
+    {s.status==='disabled'?<p className="muted">Updates work in the installed app only.</p>:<>
       <div className="actions">
         <button disabled={busy||['checking','downloading'].includes(s.status)} onClick={()=>void act(()=>window.portfolio!.checkForUpdates())}>Check for updates</button>
         {s.status==='available'&&<button className="primary" disabled={busy} onClick={()=>void act(()=>window.portfolio!.downloadUpdate())}>Download {s.available?.version}</button>}
@@ -20,7 +20,7 @@ export function AppUpdates(){
       {s.status==='downloaded'&&s.blockedReason&&<p className="notice">{BLOCKED[s.blockedReason]??'Installing is blocked right now.'}</p>}
       {s.status==='error'&&s.error&&<p className="notice error">{ERRORS[s.error]??ERRORS.UPDATE_FAILED}</p>}
       {s.available?.notes&&<details className="inline-help"><summary>Release notes</summary><p>{s.available.notes}</p></details>}
-      <label className="inline-check"><input type="checkbox" aria-label="Check for updates automatically" checked={s.settings.checkAutomatically} onChange={e=>void act(()=>window.portfolio!.saveUpdateSettings({checkAutomatically:e.target.checked}))}/>Check for updates automatically (every 6 hours; downloading and installing always wait for you)</label>
+      <label className="inline-check"><input type="checkbox" aria-label="Check for updates automatically" checked={s.settings.checkAutomatically} onChange={e=>void act(()=>window.portfolio!.saveUpdateSettings({checkAutomatically:e.target.checked}))}/>Check for updates every 6 hours</label>
       <Note summary="Updates are checksum-verified. Installing restarts the app once trading is idle.">Updates come from this app's GitHub Releases and are verified against the published SHA-512 checksum. Installing restarts the app, so it is blocked while auto trading is armed, a broker order is open or a review is running. Your data and settings are kept.</Note>
     </>}
     {notice&&<p role="status" className="notice">{notice}</p>}
