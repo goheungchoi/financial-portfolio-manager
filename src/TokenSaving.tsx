@@ -1,0 +1,20 @@
+import type {RuntimeConfig,RuntimeState} from './RuntimeSettings';
+const usd=(micro:number|null|undefined)=>micro==null?'—':`$${(micro/1e6).toFixed(micro<10000?4:3)}`;
+const k=(n:number)=>n>=1000?`${(n/1000).toFixed(1)}k`:String(n);
+// Engine settings section: skip unchanged reviews, cheaper routine model, budget fallback, and recent per-review cost.
+export function TokenSaving({state,config,busy,edit}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;edit(key:keyof RuntimeConfig,value:string|number|boolean):void}){
+  const t=state.tokenSaving;const today=t?.today??{};const recent=t?.recent??[];
+  return <section aria-label="Token saving"><div className="section-head"><div><h2>Token saving</h2><small>Applies to OpenAI reviews. Emergencies, your own requests and important disclosures always get a full review with your selected model.</small></div></div>
+    <div className="settings-grid">
+      <label className="inline-check"><input type="checkbox" aria-label="Skip unchanged reviews" disabled={busy} checked={config.skipUnchanged} onChange={e=>edit('skipUnchanged',e.target.checked)}/>Skip scheduled reviews when nothing changed</label>
+      <label>Full review at least every (minutes)<input type="number" aria-label="Maximum skip minutes" min="15" max="720" disabled={busy||!config.skipUnchanged} value={config.maxSkipMinutes} onChange={e=>edit('maxSkipMinutes',Number(e.target.value))}/></label>
+      <label>Model choice<select aria-label="Model routing" disabled={busy} value={config.modelRouting} onChange={e=>edit('modelRouting',e.target.value)}><option value="fixed">Always the selected model</option><option value="auto">Cheaper model for routine reviews</option></select></label>
+      <label>Routine model<select aria-label="Routine model" disabled={busy||config.modelRouting!=='auto'&&!config.degradeNearBudget} value={config.routineModel} onChange={e=>edit('routineModel',e.target.value)}><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option></select></label>
+      <label>Routine effort<select aria-label="Routine effort" disabled={busy||config.modelRouting!=='auto'&&!config.degradeNearBudget} value={config.routineEffort} onChange={e=>edit('routineEffort',e.target.value)}>{['none','low','medium','high'].map(v=><option key={v}>{v}</option>)}</select></label>
+      <label className="inline-check"><input type="checkbox" aria-label="Degrade near budget" disabled={busy} checked={config.degradeNearBudget} onChange={e=>edit('degradeNearBudget',e.target.checked)}/>Near the daily budget (80%), use the routine model and double the interval</label>
+    </div>
+    {config.modelRouting==='auto'&&<p className="muted small-print">{config.routineModel===config.openaiModel&&config.routineEffort===config.reasoningEffort?'The routine model and effort match your selected model, so routing changes nothing. Choose a stronger selected model above or a cheaper routine model.':`Routine reviews use the routine model. If it proposes a trade, your selected model (${config.openaiModel}) checks it before any order proposal is made.`}</p>}
+    <div className="saved-summary"><span>Skipped today <b>{today.skipped??0}</b></span><span>Routine <b>{today.routine??0}</b></span><span>Full model <b>{(today.escalated??0)+(today.fixed??0)}</b></span><span>Trade checks <b>{today.confirmation??0}</b></span><span>Average cost per review <b>{usd(t?.averageMicro)}</b></span></div>
+    {recent.length>0&&<details className="inline-help"><summary>Recent reviews · tokens and cost</summary><table aria-label="Recent review cost"><thead><tr><th>Time</th><th>Model</th><th>Calls</th><th>Input (cached)</th><th>Output</th><th>Cost</th></tr></thead><tbody>{recent.map(r=><tr key={r.reviewId}><td>{new Date(r.timestamp).toLocaleString()}</td><td>{r.models.join(' → ')}</td><td>{r.calls}</td><td>{k(r.inputTokens)} ({k(r.cachedTokens)})</td><td>{k(r.outputTokens)}</td><td>{usd(r.micro)}</td></tr>)}</tbody></table><p className="muted small-print">Cost uses reported tokens and published rates; cached input is billed at a tenth of the input rate. Not an invoice.</p></details>}
+  </section>;
+}
