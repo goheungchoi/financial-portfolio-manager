@@ -1,6 +1,8 @@
 const {app,dialog,BrowserWindow}=require('electron');const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('Isolated UI data directory required');
 app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
+// Offline symbol-list fixtures served to the app instead of KIS's download server.
+const masterDir=path.join(process.env.PORTFOLIO_SMOKE_DATA,'master-fixtures');fs.mkdirSync(masterDir,{recursive:true});for(const [name,data] of Object.entries(require('./discovery-fixtures.cjs').masterFiles()))fs.writeFileSync(path.join(masterDir,name),data);process.env.PORTFOLIO_MASTER_DIR=masterDir;
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/ui-regression');fs.mkdirSync(output,{recursive:true});
 const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;
 const domestic={accountKey:'ui-regression-fixture',environment:'mock',source:'kis',cash:10000000,reportedTotal:10000000,holdings:[]};
@@ -12,6 +14,7 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
   if(operation==='refresh')return {...domestic,timestamp:new Date().toISOString()};
   if(operation==='us-context'){if(failUS)throw Object.assign(new Error('US_CASH_SERVER_ERROR'),{httpStatus:503,brokerCode:'FIXTURE503'});return {balance:{...overseas,timestamp:new Date().toISOString()},quotes:[],warnings:[],marketSession:{open:true,status:'open'}};}
   if(operation==='live-context')return {balance:{...domestic,timestamp:new Date().toISOString()},quotes:[],marketSession:{open:false,status:'closed'}};
+  if(operation==='screen')return payload.request.market==='KR'?[{symbol:'005930',name:'raw',price:213500,changePct:1.67,volume:7179383,marketCap:1264e12,per:null,currency:'KRW'},{symbol:'069500',name:'etf',price:40000,changePct:-0.5,volume:100,marketCap:null,per:null,currency:'KRW'},{symbol:'45226K',name:'pref',price:5200,changePct:30,volume:1,marketCap:null,per:null,currency:'KRW'}]:[];
   if(operation==='orders'||operation==='us-orders')return {orders:[]};if(operation==='quotes')return [];
   if(operation==='decision'&&decisionFailure)throw new Error('AI_MODEL_UNAVAILABLE');
   if(operation==='decision'&&payload.context.reviewInterval?.auto&&!payload.options?.continuation)return {provider:'openai',toolCalls:[{name:'set_review_interval',callId:'cadence',args:{minutes:5,reason:'Fixture volatility calls for closer monitoring.'}}],continuation:[],usage:{inputTokens:10,outputTokens:5}};
@@ -125,7 +128,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     });
     await check('Holdings open the selected company; allocation segments show keyboard-accessible detail; replay runs offline',async()=>{
       overseas.holdings=[{symbol:'NASD:TEST',name:'Test holding',quantity:2,price:90,cost:100}];overseas.reportedTotal=180;await run('window.portfolio.refreshPortfolio()');await navigate('Holdings');await until('Boolean(document.querySelector(`[aria-label="View Test holding charts"]`))','Company link missing');await run('document.querySelector(`[aria-label="View Test holding charts"]`).click()');await until('document.querySelector("h1").textContent==="Charts"&&document.querySelector(`[aria-label="Company stock code"]`)?.value==="NASD:TEST"','Chart symbol not selected');await until('Boolean(document.querySelector(".company-stats"))','Company data missing');await run('Array.from(document.querySelectorAll("details")).find(d=>d.querySelector("summary")?.textContent.includes("Paper replay")).open=true');await click('Run offline replay');await until('document.querySelector("main").textContent.includes("Later holdout")','Replay missing');
-      await navigate('Overview');await until('Boolean(document.querySelector(".interactive-ring circle[tabindex]"))','Allocation missing');await run('Array.from(document.querySelectorAll(".interactive-ring circle[tabindex]")).find(e=>e.getAttribute("aria-label").includes("Test holding")).focus()');await until('document.querySelector(`[role="tooltip"]`)?.textContent.includes("NASD:TEST")','Tooltip details missing');await run('document.querySelector(".allocation-explorer").scrollIntoView({block:"center"})');await wait(250);await capture('allocation-detail-tooltip');
+      await navigate('Overview');await until('Boolean(document.querySelector(".interactive-ring circle[tabindex]"))','Allocation missing');await run('(()=>{const segment=Array.from(document.querySelectorAll(".interactive-ring circle[tabindex]")).find(e=>e.getAttribute("aria-label").includes("Test holding"));segment.focus();segment.dispatchEvent(new FocusEvent("focusin",{bubbles:true}));})()');await until('document.querySelector(`[role="tooltip"]`)?.textContent.includes("NASD:TEST")','Tooltip details missing');await run('document.querySelector(".allocation-explorer").scrollIntoView({block:"center"})');await wait(250);await capture('allocation-detail-tooltip');
     });
     await check('Auto review interval persists the AI choice and shows its reason',async()=>{
       await run("window.portfolio.configureRuntime({scope:'paper',enabled:false,autoReviewInterval:true,provider:'openai'})");const reply=await run('window.portfolio.reviewRuntime()');assert.equal(reply.ok,true);assert.equal(reply.state.reviewInterval.minutes,5);assert.equal(reply.state.config.enabled,false);await navigate('Engine settings');await until('document.querySelector("main").textContent.includes("Fixture volatility calls for closer monitoring")','Auto cadence reason missing');await run("window.portfolio.configureRuntime({autoReviewInterval:false})");
@@ -141,6 +144,17 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await click("Preview today's digest");await until('document.querySelector(`[aria-label="Digest preview"]`)?.textContent.includes("Daily digest")','Digest preview missing');
       await run('document.querySelector(`[aria-label="Autopilot guardrails"]`).scrollIntoView({block:"start"})');await wait(200);await capture('autopilot-guardrails');
       await run("window.portfolio.configureRuntime({lossAction:'review',maxAutoOrdersPerDay:0})");
+    });
+    await check('Discover searches the symbol list, screens rankings and maintains the watchlist',async()=>{
+      await navigate('Discover');await until('(async()=>(await window.portfolio.getDiscovery()).state.master.total>0)()','Symbol list fixture not loaded');
+      await run('(()=>{const el=document.querySelector(`[aria-label="Search securities"]`);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,"삼성");el.dispatchEvent(new Event("input",{bubbles:true}));})()');
+      await click('Search');await until('document.querySelector(`[aria-label="Search results"]`)?.textContent.includes("005930")','Search results missing');
+      await run('document.querySelector(`[aria-label="Search results"] tbody tr button:not(.link-button)`).click()');await until('document.querySelector(`[aria-label="Watchlist entries"]`)?.textContent.includes("삼성전자")','Watchlist add failed');
+      await click('Run screen');await until('document.querySelector(`[aria-label="Screener results"]`)?.textContent.includes("삼성전자")','Screener results missing');
+      const screened=await run('Array.from(document.querySelectorAll(`[aria-label="Screener results"] tbody tr`)).map(r=>r.cells[0].textContent)');assert.deepEqual(screened,['005930'],'stocks only; ETFs and lettered codes are excluded');
+      const reply=await run("window.portfolio.updateWatchlist('add','999999','')");assert.equal(reply.ok,false);assert.equal(reply.error,'UNKNOWN_SYMBOL');
+      await run('document.querySelector(`[aria-label="Watchlist"]`).scrollIntoView({block:"start"})');await wait(200);await capture('discover-watchlist');
+      await run('document.querySelector(`[aria-label="Remove 005930"]`).click()');await until('!document.querySelector(`[aria-label="Watchlist entries"]`)','Watchlist remove failed');
     });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
