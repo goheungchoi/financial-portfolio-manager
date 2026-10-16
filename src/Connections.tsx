@@ -1,3 +1,4 @@
+import {Note} from './Note';
 import {useEffect,useState} from 'react';
 import type {ReactNode} from 'react';
 import type {KisState} from './KisAccount';
@@ -60,7 +61,7 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
             <tr><td>Total deposit balance</td><td>{money(data.cash)}</td></tr>
             <tr><td>Still settling (deposit − settled cash)</td><td className={Math.abs(unsettled)>0?'warning-text':''}>{money(unsettled)}</td></tr>
           </tbody></table>
-          <p className="muted">Both KIS and Overview value Korean cash at settled (D+2) cash, which already removes money for purchases that have not settled and adds proceeds of unsettled sales. Overview can still differ from the KIS total because it prices holdings with streamed quotes, and in “All markets” it adds the U.S. account converted at the displayed exchange rate. A non-zero “still settling” amount means recent trades have not settled yet.</p>
+          <Note summary="Why this can differ from the KIS total">Both KIS and Overview value Korean cash at settled (D+2) cash, which already removes money for purchases that have not settled and adds proceeds of unsettled sales. Overview can still differ from the KIS total because it prices holdings with streamed quotes, and in “All markets” it adds the U.S. account converted at the displayed exchange rate. A non-zero “still settling” amount means recent trades have not settled yet.</Note>
         </details>
       </>:<details className="inline-help" open={!kisFile?.remembered}><summary>Credential file format</summary><pre>{JSON.stringify({environment:'mock',appKey:'YOUR_APP_KEY',appSecret:'YOUR_APP_SECRET',accountNumber:'12345678',accountProductCode:'01'},null,2)}</pre><p className="muted">Use mock or live credentials matching the selected environment. Keep the original file outside this workspace; importing does not remove or protect it.</p></details>}
       <p className="muted small-print">Read only. Keys and access tokens stay in the broker process. Balances refresh every two minutes; connecting alone does not enable trading.</p>
@@ -83,7 +84,7 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
         <span className="action-spacer"/>
         <button className="danger" disabled={busy||!providerFile?.remembered||providerFile.status==='connecting'} onClick={()=>void fileAction('providers','forget')}>Forget &amp; disconnect</button>
       </div>
-      <details className="inline-help"><summary>Provider JSON format</summary><pre>{JSON.stringify({openaiApiKey:'OPTIONAL_OPENAI_API_KEY',dartApiKey:'OPTIONAL_OPEN_DART_KEY',ecosApiKey:'OPTIONAL_ECOS_KEY',fredApiKey:'OPTIONAL_FRED_KEY',pushWebhookURL:'https://YOUR_PRIVATE_WEBHOOK'},null,2)}</pre><p className="muted">Importing an OpenAI key selects and saves the OpenAI decision provider automatically. Choose the model and budget in Engine settings. Macro data works without keys (FRED downloads and ECOS sample access); an ECOS key removes the sample row limit and a FRED key adds the U.S. release calendar. Both keys are free from ecos.bok.or.kr and fred.stlouisfed.org.</p></details>
+      <details className="inline-help"><summary>Provider JSON format</summary><pre>{JSON.stringify({openaiApiKey:'OPTIONAL_OPENAI_API_KEY',dartApiKey:'OPTIONAL_OPEN_DART_KEY',ecosApiKey:'OPTIONAL_ECOS_KEY',fredApiKey:'OPTIONAL_FRED_KEY',pushWebhookURL:'https://YOUR_PRIVATE_WEBHOOK'},null,2)}</pre><Note summary="An OpenAI key turns the AI on. Macro keys are optional.">Importing an OpenAI key selects and saves the OpenAI decision provider automatically. Choose the model and budget in Engine settings. Macro data works without keys (FRED downloads and ECOS sample access); an ECOS key removes the sample row limit and a FRED key adds the U.S. release calendar. Both keys are free from ecos.bok.or.kr and fred.stlouisfed.org.</Note></details>
     </section>
 
     <section className="connection-card" aria-label="External agent bridge">

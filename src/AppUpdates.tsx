@@ -1,3 +1,4 @@
+import {Note} from './Note';
 import {useEffect,useState} from 'react';
 export type UpdateState={status:'disabled'|'idle'|'checking'|'available'|'up-to-date'|'downloading'|'downloaded'|'error';current:string;available:{version:string;releaseDate:string|null;notes:string|null}|null;progress:number|null;error:string|null;checkedAt:number|null;settings:{checkAutomatically:boolean};blockedReason:string|null};
 export type UpdateReply={ok:boolean;error?:string;state:UpdateState};
@@ -20,7 +21,7 @@ export function AppUpdates(){
       {s.status==='error'&&s.error&&<p className="notice error">{ERRORS[s.error]??ERRORS.UPDATE_FAILED}</p>}
       {s.available?.notes&&<details className="inline-help"><summary>Release notes</summary><p>{s.available.notes}</p></details>}
       <label className="inline-check"><input type="checkbox" aria-label="Check for updates automatically" checked={s.settings.checkAutomatically} onChange={e=>void act(()=>window.portfolio!.saveUpdateSettings({checkAutomatically:e.target.checked}))}/>Check for updates automatically (every 6 hours; downloading and installing always wait for you)</label>
-      <p className="muted small-print">Updates come from this app's GitHub Releases and are verified against the published SHA-512 checksum. Installing restarts the app, so it is blocked while auto trading is armed, a broker order is open or a review is running. Your data and settings are kept.</p>
+      <Note summary="Updates are checksum-verified. Installing restarts the app once trading is idle.">Updates come from this app's GitHub Releases and are verified against the published SHA-512 checksum. Installing restarts the app, so it is blocked while auto trading is armed, a broker order is open or a review is running. Your data and settings are kept.</Note>
     </>}
     {notice&&<p role="status" className="notice">{notice}</p>}
   </section>;
