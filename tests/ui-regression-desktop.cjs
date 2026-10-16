@@ -184,6 +184,23 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       assert.ok(await run('document.querySelector(`[aria-label="Learning scoreboard"]`).textContent.includes("holds not scored")'));
       await run('document.querySelector(`[aria-label="Learning scoreboard"]`).scrollIntoView({block:"start"})');await until(`Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="Refresh prices")`,"Refresh did not finish");await wait(200);await capture("learning-scoreboard");
     });
+    await check('Charts shows U.S. candles in New York time with cents and pops out into its own window',async()=>{
+      await navigate('Charts');await until('Boolean(document.querySelector(`[aria-label="Company stock code"]`))','Company lookup missing');
+      await run('(()=>{const el=document.querySelector(`[aria-label="Company stock code"]`);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,"NASD:TEST");el.dispatchEvent(new Event("input",{bubbles:true}));})()');
+      await click('View company');const slow=async(code,message)=>{for(let i=0;i<200;i++){if(await run(code))return;await wait(50);}throw new Error(message);};
+      await slow('document.querySelector("main").textContent.includes("New York time · USD")&&document.querySelectorAll("svg.candles rect").length>10','U.S. candles missing');
+      const summary=await run('document.querySelector(".candle-summary").textContent');assert.match(summary,/C 121\.00/,'cents are shown: '+summary);
+      await click('Open in new window');for(let i=0;i<100&&BrowserWindow.getAllWindows().length<2;i++)await wait(50);
+      const popup=BrowserWindow.getAllWindows().find(item=>item!==win);assert.ok(popup,'chart window opened');
+      const inPopup=code=>popup.webContents.executeJavaScript(code);let ready=false;
+      for(let i=0;i<200&&!ready;i++){try{ready=await inPopup('Boolean(document.querySelector(`[aria-label="Chart window"] svg.candles`))&&!document.querySelector("aside")&&["Test holding","NASD:TEST"].includes(document.querySelector("h2").textContent)');}catch{}if(!ready)await wait(50);}
+      assert.ok(ready,'chart window renders only the chart for the symbol');assert.equal(await inPopup('document.title'),'NASD:TEST · Chart');
+      assert.equal(await inPopup('document.documentElement.dataset.theme'),await run('document.documentElement.dataset.theme'),'chart window follows the app theme');
+      await click('Open in new window');await wait(300);assert.equal(BrowserWindow.getAllWindows().length,2,'the same symbol reuses its window');
+      // A window that was never shown has no painted surface to capture.
+      popup.showInactive();await wait(400);for(let attempt=0;attempt<3;attempt++){try{fs.writeFileSync(path.join(output,'chart-pop-out.png'),(await popup.webContents.capturePage()).toPNG());report.screenshots.push('chart-pop-out.png');break;}catch(error){if(attempt===2)throw error;await wait(300);}}
+      popup.close();for(let i=0;i<40&&!popup.isDestroyed();i++)await wait(50);assert.equal(BrowserWindow.getAllWindows().length,1);
+    });
     console.log(`UI regression passed: ${report.checks.length} groups, all tabs × 2 themes × 2 sizes, zero/positive/negative deltas, refresh recovery and read-only AI reviews.`);finish(0);
   }catch(error){report.errors.push(error.stack??String(error));try{await capture('failure');}catch{}console.error(error);finish(1);}
 });});require('../electron/main.cjs');

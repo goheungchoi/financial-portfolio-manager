@@ -18,7 +18,7 @@ Status: **Done**, **Partial** or **Planned**. Items marked *changed* differ from
 
 ### Portfolio view
 5. **Partial** — Allocation charts by company, sector, region, market and currency. Planned: automatic sector/region classification from the security master (item 12).
-6. **Partial** — Candle and price-history charts. Planned: U.S. candles, and a Charts window that can be popped out into its own window (original requirement, not yet built).
+6. **Done** — Candle and price-history charts for Korean and U.S. stocks (about 200 adjusted daily bars, or today's minute bars), labeled in the exchange's own time zone with USD cents, and an **Open in new window** pop-out (one chart window per symbol, follows the theme, refreshes every minute, closes with the app). Follow-ups: longer intraday history and drawing tools.
 7. **Done** — Current total money and earnings per period: daily account-value history, recorded deposits/withdrawals, time-weighted returns and KOSPI / S&P 500 benchmarks. Follow-ups: automatic transfer detection, money-weighted return.
 8. **Partial** — Clear trading history. Planned: import of trades placed outside the app so history and learning cover the whole account.
 
@@ -50,7 +50,7 @@ Each step is planned, implemented, tested and committed on its own before the ne
 | 3 | ~~Event-driven news and disclosures (item 13)~~ Done | Relevant disclosures now start a review within minutes. |
 | 4 | ~~Performance and settled cash (items 4, 7)~~ Done | Returns are now measured against KOSPI / S&P 500 with deposits excluded. |
 | 5 | ~~Learning scoreboard (item 15)~~ Done | Decisions and lessons are now scored against the benchmark. |
-| 6 | Charts: U.S. candles and pop-out window (item 6) | User-facing completeness. |
+| 6 | ~~Charts: U.S. candles and pop-out window (item 6)~~ Done | U.S. candles in New York time and a pop-out chart window. |
 | 7 | Macro inputs (item 14) | Useful context once discovery and events work. |
 | 7b | Accurate fees and taxes (item 21) | Requested as a side item; uses broker-reported fees and taxes per execution. |
 | 8 | Token saving (item 20) | Best done once the context and tools are stable, so savings are measured against the final workload. |

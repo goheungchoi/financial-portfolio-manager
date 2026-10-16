@@ -12,18 +12,30 @@ async function fetchEvidence(client,{symbol,dataset},includeCandles=false){
     return {...meta,metrics:company(body.output,Boolean(us))};
   }
   const daily=dataset==='daily_technicals';let candles;
-  if(!us)candles=await (daily?client.getDailyHistory(symbol):client.getMinuteHistory(symbol));
+  // Charts get two pages of daily bars (about 200); AI evidence keeps one.
+  const pages=daily&&includeCandles?2:1;
+  if(!us)candles=await (daily?client.getDailyHistory(symbol,pages):client.getMinuteHistory(symbol));
   else {
-    const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/'+(daily?'dailyprice':'inquire-time-itemchartprice'),daily?'HHDFS76240000':'HHDFS76950200',{...params,...(daily?{GUBN:'0',BYMD:'',MODP:'1'}:{NMIN:'1',PINC:'0',NEXT:'',NREC:'120',FILL:'',KEYB:''})});
-    if(!Array.isArray(body.output2))throw new Error('INVALID_RESPONSE');
-    candles=body.output2.slice(0,120).map(row=>{
+    const rows=[];let bymd='';
+    for(let page=0;page<pages;page++){
+      const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/'+(daily?'dailyprice':'inquire-time-itemchartprice'),daily?'HHDFS76240000':'HHDFS76950200',{...params,...(daily?{GUBN:'0',BYMD:bymd,MODP:'1'}:{NMIN:'1',PINC:'0',NEXT:'',NREC:'120',FILL:'',KEYB:''})});
+      if(!Array.isArray(body.output2))throw new Error('INVALID_RESPONSE');
+      const batch=body.output2.slice(0,120);rows.push(...batch);
+      // Daily rows are newest first; continue from the day before the oldest one.
+      const oldest=batch.map(row=>row.xymd).filter(d=>/^\d{8}$/.test(d??'')).sort()[0];
+      if(!daily||batch.length<90||!oldest)break;const before=new Date(Date.parse(oldest.slice(0,4)+'-'+oldest.slice(4,6)+'-'+oldest.slice(6,8)+'T00:00:00Z')-86400000);bymd=before.toISOString().slice(0,10).replaceAll('-','');
+    }
+    const seen=new Set();
+    candles=rows.filter(row=>{const key=daily?row.xymd:row.kymd+row.khms;if(seen.has(key))return false;seen.add(key);return true;}).map(row=>{
       const date=daily?row.xymd:row.kymd;
-      const timestamp=exchangeTimestamp(date,daily?'000000':row.khms);
+      // Daily rows carry the U.S. trading date; noon UTC is that same date in New York and Seoul.
+      // Minute rows carry Korean date and time (kymd/khms).
+      const timestamp=daily?Date.parse(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T12:00:00Z`):exchangeTimestamp(date,row.khms);
       const numeric=value=>value==null||String(value).trim()===''?NaN:Number(value);
       return {timestamp,...(daily?{date:`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}`} :{}),open:numeric(row.open),high:numeric(row.high),low:numeric(row.low),close:numeric(daily?row.clos:row.last),volume:numeric(daily?row.tvol:row.evol)};
     });
   }
   const data=technicals(candles,daily?'1d':'1m',dataset,Date.now(),market);
-  return {...meta,status:data.bars?'available':'unavailable',data,...(includeCandles?{candles:candles.filter(c=>['timestamp','open','high','low','close','volume'].every(k=>Number.isFinite(c[k]))&&c.low>0).sort((a,b)=>a.timestamp-b.timestamp).slice(-120)}:{})};
+  return {...meta,status:data.bars?'available':'unavailable',data,...(includeCandles?{candles:candles.filter(c=>['timestamp','open','high','low','close','volume'].every(k=>Number.isFinite(c[k]))&&c.low>0).sort((a,b)=>a.timestamp-b.timestamp).slice(daily?-100*pages:-120)}:{})};
 }
 module.exports={fetchEvidence};

@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   usAction:(name,...args)=>['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'].includes(name)?ipcRenderer.invoke('us:'+name,...args):Promise.reject(new Error('INVALID_REQUEST')),
   liveAction: (name,...args) => ['get','configure','stop','auto','auto-off','propose','submit','reconcile','link'].includes(name)?ipcRenderer.invoke('live:'+name,...args):Promise.reject(new Error('INVALID_REQUEST')),
   getCompany:symbol=>ipcRenderer.invoke('company:get',symbol),
+  openChartWindow:symbol=>ipcRenderer.invoke('chart:pop-out',symbol),
   startAutoTrading:token=>ipcRenderer.invoke('runtime:start',token),
   stopAutoTrading:()=>ipcRenderer.invoke('runtime:stop'),
   getRuntime: () => ipcRenderer.invoke('runtime:get'),

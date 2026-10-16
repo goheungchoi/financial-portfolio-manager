@@ -92,7 +92,7 @@ Known failures such as closed sessions, authentication, rate limits and broker r
 ## Views and data
 
 - Overview/Holdings: current equity, unrealized P&L, allocations, company returns, and signed changes between displayed equity updates. Tooltips explain calculation details. Small equity traces show samples observed during the open view, not historical investment returns.
-- Charts: interactive candles/price line, volume, 20-bar average, visible ranges and inspection slider. KIS history is bounded to returned adjusted daily or intraday bars. Synthetic history is explicitly labeled.
+- Charts: interactive candles/price line, volume, 20-bar average, visible ranges and inspection slider for Korean and U.S. stocks (about 200 adjusted daily bars or the latest minute bars, in Seoul or New York time). **Open in new window** pops the chart into its own window that refreshes every minute. Synthetic history is explicitly labeled.
 - Activity/Performance: cumulative order executions and broker-reported realized results. Gross cash flow is not profit; missing fields remain unavailable. Realized-profit endpoint is unavailable for mock accounts.
 - News: configured public HTTPS RSS/Atom feed and optional DART latest 100 disclosures for today, refreshed every 30 minutes. No licensed consensus dataset or complete real-time news coverage.
 - Journal/console: supplied context, decisions, risk/tool results and approved lessons. Private model reasoning is not shown. Lessons do not retrain model weights or rewrite policy. Local JSON export is available.
