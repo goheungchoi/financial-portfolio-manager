@@ -118,7 +118,10 @@ function createWindow() {
   const win = new BrowserWindow({ show:!verificationDirectory, width: 1360, height: 880, minWidth: 760, minHeight: 600, backgroundColor: store?.getTheme() === 'light' ? '#f3f6fa' : '#181818', title: 'Financial Portfolio Manager', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Overview'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[4].config.enabled)throw 0;console.log('Portable build verified: renderer, private IPC, SQLite, paused paper engine and disabled broker automation.');app.quit();}catch{console.error('Portable build verification failed.');app.exit(1);}});
+  if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Overview'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[4].config.enabled)throw 0;
+    // The provider worker is forked from inside the app archive; an empty rate request proves it starts without network use.
+    const rates=await providerService.request('fx-rates',{days:[]});if(!Array.isArray(rates))throw 0;
+    console.log('Portable build verified: renderer, private IPC, SQLite, paused paper engine, disabled broker automation and private worker process.');app.quit();}catch{console.error('Portable build verification failed.');app.exit(1);}});
   win.loadFile(page, { hash: 'overview' });
   // Pop-out chart windows belong to the main window and close with it.
   mainWindow=win;win.on('closed',()=>{if(mainWindow===win)mainWindow=null;for(const chart of chartWindows.values())if(!chart.isDestroyed())chart.close();});
@@ -239,6 +242,18 @@ app.whenReady().then(async () => {
   const refreshMacro=()=>{if(macroTask)return macroTask;macroTask=(async()=>{const result=macroSeed?{...JSON.parse(macroSeed),fetchedAt:Date.now()}:process.env.PORTFOLIO_SMOKE_DATA?null:await providerService.request('macro');if(result){macro.save(result);costs.saveRates(result.series.find(s=>s.id==='KR_USDKRW')?.history,'ECOS USD/KRW reference rate');}macroAt=Date.now();macroError=null;})().catch(error=>{macroError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'MACRO_FAILED';}).finally(()=>{macroTask=null;});return macroTask;};
   setTimeout(()=>{void refreshMacro();},macroSeed?0:30000).unref?.();setInterval(()=>{if(Date.now()-macroAt>6*3600000)void refreshMacro();},600000).unref();
   const macroState=()=>({snapshot:macro.get(),refreshing:Boolean(macroTask),error:macroError,ecosConnected:Boolean(automation.providerStatus.ecosConnected),fredConnected:Boolean(automation.providerStatus.fredConnected)});
+  // App updates from GitHub Releases, for installed builds only (PORTFOLIO_UPDATE_TEST names an update config file for local tests).
+  const updateTest=Boolean(process.env.PORTFOLIO_UPDATE_TEST);
+  const updates=new (require('./app-updates.cjs').AppUpdates)({updater:(app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA)||updateTest?(()=>{const {autoUpdater}=require('electron-updater');if(updateTest){autoUpdater.forceDevUpdateConfig=true;autoUpdater.updateConfigPath=process.env.PORTFOLIO_UPDATE_TEST;}return autoUpdater;})():null,enabled:(app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA)||updateTest,version:app.getVersion(),db:store.db,
+    canInstall:()=>{if(automation.config.enabled&&automation.sessionArmed)return 'AUTO_TRADING_ARMED';if(automation.busy)return 'REVIEW_RUNNING';for(const engine of [live,usLive]){try{if(engine.orders().some(o=>['Submitting','Uncertain','Accepted','Partially filled'].includes(o.status)))return 'ORDERS_OPEN';}catch{}}return null;},
+    onChange:state=>{for(const win of BrowserWindow.getAllWindows())win.webContents.send('update:changed',state);}});
+  setTimeout(()=>updates.tick(),30000).unref?.();setInterval(()=>updates.tick(),600000).unref();
+  const updateAction=action=>async(event,...args)=>{authorize(event);try{return {ok:true,state:await action(...args)};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'UPDATE_FAILED',state:updates.view()};}};
+  ipcMain.handle('update:get',updateAction(()=>updates.view()));
+  ipcMain.handle('update:check',updateAction(()=>updates.check()));
+  ipcMain.handle('update:download',updateAction(()=>updates.download()));
+  ipcMain.handle('update:install',updateAction(()=>updates.install()));
+  ipcMain.handle('update:settings',updateAction(value=>updates.saveSettings(value)));
   // Broker-reported fees and taxes for executed orders, and reference exchange rates for the overseas tax ledger, every 15 minutes.
   let chargesTask=null,chargesAt=0,chargesError=null;
   const refreshCharges=()=>{if(chargesTask)return chargesTask;chargesTask=(async()=>{
