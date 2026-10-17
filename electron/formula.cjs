@@ -10,7 +10,7 @@ const FUNCS={
   std:['sn',2,'standard deviation of daily % returns over n days'],high:['sn',2,'highest close over n days'],low:['sn',2,'lowest close over n days'],
   rsi:['sn',1,'relative strength index over n days (default 14)'],zscore:['sn',2,'(price − average) / standard deviation of closes over n days'],
   ratio_z:['ssn',3,'z-score of the price ratio of two symbols against its n-day history'],corr:['ssn',3,'correlation of daily returns of two symbols over n days'],
-  avgvalue:['sn',2,'average daily traded value over n days (KRW for Korean listings)'],
+  avgvalue:['sn',2,'average daily traded value over n days (KRW for Korean listings)'],atr:['sn',1,'average true range over n days (default 14), in price units'],adx:['sn',1,'trend strength over n days (default 14); above about 25 is a strong trend'],macd:['s',1,'MACD histogram (12, 26, 9); above zero means upward momentum'],
   abs:['n',1],min:['n*',2],max:['n*',2],round:['nn',1],log:['n',1],sqrt:['n',1]};
 function tokenize(text){
   if(typeof text!=='string'||!text.trim())throw new FormulaError('EMPTY_FORMULA');if(text.length>LIMITS.length)throw new FormulaError('FORMULA_TOO_LONG');
@@ -80,6 +80,7 @@ function evaluate(ast,data){
       case 'corr':{const k=w(2);const b=new Map(series(s(1)).map(r=>[r.date,r.close]));const a=series(s(0)).filter(r=>b.has(r.date)).slice(-(k+1));if(a.length<Math.min(k,20)+1)throw new FormulaError('NOT_ENOUGH_HISTORY');
         const x=a.slice(1).map((r,i)=>r.close/a[i].close-1),y=a.slice(1).map((r,i)=>b.get(r.date)/b.get(a[i].date)-1);const mx=mean(x),my=mean(y);let c=0,vx=0,vy=0;x.forEach((v,i)=>{c+=(v-mx)*(y[i]-my);vx+=(v-mx)**2;vy+=(y[i]-my)**2;});if(!vx||!vy)throw new FormulaError('NOT_ENOUGH_HISTORY');return c/Math.sqrt(vx*vy);}
       case 'avgvalue':{const v=last(s(0),w(1)).map(r=>r.value).filter(Number.isFinite);if(!v.length)throw new FormulaError('NO_DATA',s(0));return mean(v);}
+      case 'atr':case 'adx':case 'macd':{const ind=require('./indicators.cjs');const c=series(s(0));const v=node.fn==='atr'?ind.atr(c,w(1,14)):node.fn==='adx'?ind.adx(c,w(1,14))?.adx:ind.macd(c.map(x=>x.close))?.histogram;if(v==null)throw new FormulaError('NOT_ENOUGH_HISTORY',s(0));return v;}
       case 'abs':return Math.abs(n(0));case 'min':return Math.min(...args.map((_,i)=>n(i)));case 'max':return Math.max(...args.map((_,i)=>n(i)));
       case 'round':{const d=Math.max(0,Math.min(8,w(1,0)));return Math.round(n(0)*10**d)/10**d;}
       case 'log':{const v=n(0);if(v<=0)throw new FormulaError('NOT_A_NUMBER');return Math.log(v);}

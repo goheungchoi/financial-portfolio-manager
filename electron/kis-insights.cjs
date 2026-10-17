@@ -73,7 +73,9 @@ function programTrading(rows){
 }
 // Daily closes, oldest first.
 function closes(rows,key='stck_clpr',value='acml_tr_pbmn'){
-  const seen=new Set();return (Array.isArray(rows)?rows:[]).map(r=>({date:isoDay(r.stck_bsop_date),close:positive(r[key]),value:num(r[value])})).filter(r=>r.date&&r.close&&!seen.has(r.date)&&seen.add(r.date)).sort((a,b)=>a.date.localeCompare(b.date));
+  // Daily candles: open, high and low when present (index rows use their own field names), close, volume and traded value.
+  const k=key==='bstp_nmix_prpr'?['bstp_nmix_oprc','bstp_nmix_hgpr','bstp_nmix_lwpr']:['stck_oprc','stck_hgpr','stck_lwpr'];
+  const seen=new Set();return (Array.isArray(rows)?rows:[]).map(r=>({date:isoDay(r.stck_bsop_date),open:positive(r[k[0]]),high:positive(r[k[1]]),low:positive(r[k[2]]),close:positive(r[key]),volume:num(r.acml_vol),value:num(r[value])})).filter(r=>r.date&&r.close&&!seen.has(r.date)&&seen.add(r.date)).sort((a,b)=>a.date.localeCompare(b.date));
 }
 const logReturns=series=>series.slice(1).map((r,i)=>({date:r.date,ret:Math.log(r.close/series[i].close)}));
 const stdev=v=>{if(v.length<2)return null;const m=v.reduce((a,b)=>a+b,0)/v.length;return Math.sqrt(v.reduce((a,b)=>a+(b-m)**2,0)/(v.length-1));};
@@ -168,14 +170,14 @@ async function fetchSection(client,symbol,section,today){
   const us=US.exec(symbol);
   if(us){
     if(section==='overview'){const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/price-detail','HHDFS76200200',{AUTH:'',EXCD:{NASD:'NAS',NYSE:'NYS',AMEX:'AMS'}[us[1]],SYMB:us[2]});return usOverview(body.output);}
-    if(section==='daily'){const e=await require('./kis-evidence.cjs').fetchEvidence(client,{symbol,dataset:'daily_technicals'},true);return {closes:(e.candles??[]).map(c=>({date:c.date??new Date(c.timestamp).toISOString().slice(0,10),close:c.close,value:Number.isFinite(c.volume)?c.close*c.volume:null})).filter(c=>c.close>0)};}
+    if(section==='daily'){const e=await require('./kis-evidence.cjs').fetchEvidence(client,{symbol,dataset:'daily_technicals'},true);return {closes:(e.candles??[]).map(c=>({date:c.date??new Date(c.timestamp).toISOString().slice(0,10),open:c.open,high:c.high,low:c.low,close:c.close,volume:Number.isFinite(c.volume)?c.volume:null,value:Number.isFinite(c.volume)?c.close*c.volume:null})).filter(c=>c.close>0)};}
     throw new Error('KOREAN_LISTINGS_ONLY');
   }
   if(section==='index-daily'&&symbol==='SPX')return {closes:(await require('./kis-index.cjs').indexHistory(client,{index:'SPX',start:shift(today,160),end:today})).map(r=>({date:r.day,close:r.close})).filter(r=>r.close>0)};
   // Index history in two windows (KIS returns at most 50 days per call), keyed by a 4-digit index code.
   if(section==='index-daily'){if(!/^\d{4}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');const rows=[];
     for(const [from,to] of [[150,72],[72,0]]){const body=await q('inquire-daily-indexchartprice','FHKUP03500100',{FID_COND_MRKT_DIV_CODE:'U',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,from)),FID_INPUT_DATE_2:compact(shift(today,to)),FID_PERIOD_DIV_CODE:'D'});rows.push(...(body.output2??[]));}
-    return {closes:closes(rows,'bstp_nmix_prpr').map(({date,close})=>({date,close}))};}
+    return {closes:closes(rows,'bstp_nmix_prpr').map(({date,close,high,low})=>({date,close,high,low}))};}
   if(!/^\d{6}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');
   if(section==='daily'){const body=await q('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(today,160)),FID_INPUT_DATE_2:compact(today),FID_PERIOD_DIV_CODE:'D',FID_ORG_ADJ_PRC:'0'});return {closes:closes(body.output2)};}
   if(section==='flows'){
