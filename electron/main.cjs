@@ -237,6 +237,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
   // Holdings for exposure and sizing; sector names come from cached quotes.
   automation.portfolioHoldings=()=>{try{const st=portfolioState();const fx=st.fx?.usdKRW??null;return {holdings:st.rows.filter(r=>r.valueKRW>0).map(r=>({symbol:r.symbol,name:r.name,market:r.market,valueKRW:r.valueKRW})),cashKRW:(st.cash.KRW??0)+(fx?(st.cash.USD??0)*fx:0),equityKRW:st.totals.equityKRW??st.totals.KRW};}catch{return null;}};
+  automation.loggedEvents=()=>events;
+  ipcMain.handle('replay:list',event=>{authorize(event);return {runs:automation.replays.runs(),busy:Boolean(automation.replaying)};});
+  ipcMain.handle('replay:run',async(event,options)=>{authorize(event);try{const run=await automation.replay(options&&typeof options==='object'?options:{});return {ok:true,run};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED'};}});
   automation.calendarSource=symbol=>({name:master.get(symbol)?.name??null,earnings:research.cached(symbol,'dart')?.value?.earnings??null,dividends:research.cached(symbol,'dividends')?.value??null,meetings:research.cached(symbol,'meetings')?.value?.meetings??[]});
   automation.sectorOf=symbol=>research.cached(symbol,'overview')?.value?.sectorName??null;
   // Daily history for holdings and watchlist stocks is kept warm (every six hours) for exposure, sizing, triggers and formulas.

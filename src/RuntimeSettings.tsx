@@ -1,4 +1,5 @@
 import {AgentDesk} from './AgentDesk';
+import {ReplayPanel} from './ReplayPanel';
 import {JournalView} from './JournalView';
 import {NewsView} from './NewsView';
 import {TradeOutcomes,type TradeOutcome} from './TradeOutcomes';
@@ -35,6 +36,7 @@ export function RuntimeSettings({mode,onNavigate}:{mode:'settings'|'news'|'journ
   const discard=()=>{dirty.current=false;changed.current.clear();setConfig(state.config);setMessage('Draft discarded.');};
   return <>{mode==='settings'&&dirty.current&&<div className="settings-draft-bar" role="region" aria-label="Unsaved engine settings"><span><b>Unsaved changes</b><small>The saved settings stay active until you save</small></span><div className="actions"><button disabled={busy} onClick={discard}>Discard</button><button className="primary" disabled={busy} onClick={()=>void action('save')}>Save changes</button></div></div>}{message&&<div role="status" className="notice">{message}</div>}{mode==='settings'&&<EngineSettings state={state} config={config} busy={busy} dirty={settingsDirty} edit={edit} onReview={()=>void action('review')} onState={setState} setModel={model=>{dirty.current=true;changed.current.add('openaiModel');changed.current.add('reasoningEffort');setConfig({...config,openaiModel:model,reasoningEffort:model==='gpt-6-astra'&&config.reasoningEffort==='none'?'low':config.reasoningEffort});}}/>}
   {mode==='news'&&<NewsView state={state} url={config.newsURL} trigger={config.newsTrigger} onTrigger={value=>edit('newsTrigger',value)} busy={busy} onURL={value=>edit('newsURL',value)} onSave={()=>void action('save')} onRefresh={()=>void action('news')}/>}
+  {mode==='journal'&&<ReplayPanel/>}
   {mode==='journal'&&state.desk&&<AgentDesk desk={state.desk} conditionalOn={state.config.conditionalOrders} onChange={desk=>setState(v=>v?{...v,desk}:v)}/>}
   {mode==='journal'&&<JournalView state={state} busy={busy} onNavigate={onNavigate} onLesson={(id,approved)=>void action('lesson',id,approved)}/>}
   </>;

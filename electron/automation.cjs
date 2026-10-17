@@ -18,7 +18,7 @@ class Automation {
     this.outcomes=new (require('./outcome-ledger.cjs').OutcomeLedger)(db);this.memory=new (require('./learning-memory.cjs').LearningMemory)(db);
     this.trials=new (require('./lesson-trials.cjs').LessonTrials)(db,this.memory);
     this.reflections=new (require('./reflection.cjs').ReflectionQueue)(db,this.memory);
-    this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db);this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);this.desk=new (require('./agent-desk.cjs').AgentDesk)(db);this.narratives=new (require('./narrative.cjs').NarrativeStore)(db);this.episodes=new (require('./episodes.cjs').EpisodeLibrary)(db);db.exec('CREATE TABLE IF NOT EXISTS narrative_slots(id INTEGER PRIMARY KEY CHECK(id=1),slot TEXT NOT NULL)');
+    this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db);this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);this.desk=new (require('./agent-desk.cjs').AgentDesk)(db);this.narratives=new (require('./narrative.cjs').NarrativeStore)(db);this.replays=new (require('./replay.cjs').ReplayStore)(db);this.episodes=new (require('./episodes.cjs').EpisodeLibrary)(db);db.exec('CREATE TABLE IF NOT EXISTS narrative_slots(id INTEGER PRIMARY KEY CHECK(id=1),slot TEXT NOT NULL)');
     const row=db.prepare('SELECT payload FROM automation_settings WHERE id=1').get();this.config={...DEFAULTS,...(row?JSON.parse(row.payload):{})};this.sessionArmed=false;this.lastError=null;this.lastSuccess=0;this.savedAt=null;if(!row)this.saveConfig();
   }
   watchScope(){if(this.config.scope==='paper')return 'paper';try{return this.config.scope+':'+(this.live??this.usLive).identity();}catch{return this.config.scope+':disconnected';}}
@@ -136,7 +136,7 @@ class Automation {
         stage='AI research and decision';
         const today=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0};
         let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today)});
-        let providerContext=saver.compact(context);
+        let providerContext=saver.compact(context);this.replays.saveContext(id,providerContext);
         if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`);
         const research=()=>require('./research-review.cjs').researchReview({context,evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config);},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');}):null,log:(kind,title,body)=>this.log(id,kind,title,body),request:async options=>{
           if(this.disposed||watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
@@ -283,6 +283,32 @@ class Automation {
     const kospi=closes.KOSPI??[];const sma50=kospi.length>=50?kospi.slice(-50).reduce((a,b)=>a+b.close,0)/50:null;const oil=series('US_WTI');const hy=series('US_HY_SPREAD');
     const oilHist=oil?.history??[];
     return pr.regime({vix:closes.VIX?.at(-1)?.close??series('US_VIX')?.value??null,vix5dChangePct:ch(closes.VIX,5),hySpread:hy?.value??null,hySpreadChange:hy?.change??null,advanceRatioPct:market?.breadth?.find(b=>b.index==='KOSPI')?.advanceRatioPct??null,kospiVs50dPct:sma50?(kospi.at(-1).close/sma50-1)*100:null,sox20dPct:ch(closes.SOX,20),oil20dPct:oilHist.length>=2?(oilHist.at(-1).value/oilHist[0].value-1)*100:null});
+  }
+  // Replays saved reviews with a change next to an unchanged baseline; no tools, no orders. Each call is metered.
+  async replay(options={}){
+    if(this.replaying)throw new Error('REPLAY_BUSY');const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');
+    const R=require('./replay.cjs');const instructions=typeof options.instructions==='string'?options.instructions.trim().slice(0,R.LIMITS.instructions):'';
+    const variant={instructions,withoutNarrative:options.withoutNarrative===true,withoutEpisodes:options.withoutEpisodes===true,withoutRegime:options.withoutRegime===true};
+    if(!variant.instructions&&!variant.withoutNarrative&&!variant.withoutEpisodes&&!variant.withoutRegime)throw new Error('REPLAY_NO_CHANGE');
+    const limit=Math.max(1,Math.min(R.LIMITS.reviews,Number(options.limit)||6));const day=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v:null;
+    const reviews=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload));
+    const picks=R.candidates({reviews,store:this.replays,events:this.loggedEvents?.()??[],from:day(options.from),to:day(options.to),limit});if(!picks.length)throw new Error('REPLAY_NOTHING');
+    this.replaying=true;const id=R.newId();const modelConfig={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');
+    const decide=async context=>{const reserve=models.reservation(modelConfig,context,{});const d=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(d)??{calls:0,reservedMicro:0};if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
+      const callId=require('node:crypto').randomUUID();this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('INSERT INTO ai_usage VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(d,usage.calls+1,usage.reservedMicro+reserve);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,d,JSON.stringify({reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}
+      try{const r=await this.provider.request('decision',{context,options:{...modelConfig,research:false}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,r,'completed');return r.decision;}catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');throw error;}};
+    this.log(id,'Program','Replay',`Replaying ${picks.length} saved review${picks.length===1?'':'s'} with a change: ${[instructions&&'extra instructions',variant.withoutNarrative&&'without the narrative',variant.withoutEpisodes&&'without episodes',variant.withoutRegime&&'without the regime gauge and sizing'].filter(Boolean).join(', ')}. No orders are placed.`);
+    try{
+      const closes=this.indexCloses?.()??{};const rows=[];
+      for(const pick of picks){
+        const baseline=await decide(pick.context);const changed=await decide(R.applyVariant(pick.context,variant));
+        for(const d of [baseline,changed])if(d?.symbol)await this.warmSeries([d.symbol]);
+        const score=d=>R.outcome(d,pick.day,d?.symbol?this.series?.closes(d.symbol):null,/:/.test(d?.symbol??'')?closes.SPX:closes.KOSPI);
+        rows.push({reviewId:pick.review.id,day:pick.day,approximate:pick.approximate,original:R.brief(pick.review.decision),baseline:{decision:R.brief(baseline),explanation:baseline?.explanation?.slice(0,400)??null,outcome:score(baseline)},variant:{decision:R.brief(changed),explanation:changed?.explanation?.slice(0,400)??null,outcome:score(changed)},changed:JSON.stringify(R.brief(baseline))!==JSON.stringify(R.brief(changed))});
+      }
+      const run=this.replays.saveRun({id,timestamp:Date.now(),variant,rows,summary:R.summarize(rows)});this.log(id,'System','Replay finished',JSON.stringify(run.summary));return run;
+    }catch(error){this.log(id,'System','Replay failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED');throw error;}
+    finally{this.replaying=false;}
   }
   // Market narrative and similar past episodes, as the agents read them.
   storyContext(){const n=require('./narrative.cjs');const latest=this.narratives.latest();const view=n.agentView(latest);if(!view)return {};const vix=this.indexCloses?.()?.VIX?.at(-1)?.close??null;return {marketNarrative:view,similarEpisodes:this.episodes.similar(latest,{vix})};}

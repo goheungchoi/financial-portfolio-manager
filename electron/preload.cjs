@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('portfolio', {
   getWatchQuotes: () => ipcRenderer.invoke('discovery:quotes'),
   getSuggestedFeeds: () => ipcRenderer.invoke('news:suggested'),
   refreshNarrative: () => ipcRenderer.invoke('narrative:refresh'),
+  listReplays: () => ipcRenderer.invoke('replay:list'),
+  runReplay: options => ipcRenderer.invoke('replay:run',options),
   hideNarrativeDriver: (id,hidden) => ipcRenderer.invoke('narrative:hide',id,hidden),
   cancelTrigger: id => ipcRenderer.invoke('desk:cancel-trigger',id),
   deleteNote: symbol => ipcRenderer.invoke('desk:delete-note',symbol),
