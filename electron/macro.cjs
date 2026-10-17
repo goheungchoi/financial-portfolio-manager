@@ -12,7 +12,11 @@ const SERIES=[
   {id:'US_10Y',market:'US',source:'FRED',name:'U.S. 10-year Treasury',unit:'%',series:'DGS10'},
   {id:'US_CPI',market:'US',source:'FRED',name:'U.S. CPI inflation',unit:'% y/y',series:'CPIAUCSL',yoy:true,monthly:true},
   {id:'US_UNRATE',market:'US',source:'FRED',name:'U.S. unemployment rate',unit:'%',series:'UNRATE',monthly:true},
-  {id:'US_VIX',market:'US',source:'FRED',name:'VIX volatility index',unit:'',series:'VIXCLS'}
+  {id:'US_VIX',market:'US',source:'FRED',name:'VIX volatility index',unit:'',series:'VIXCLS'},
+  {id:'US_WTI',market:'US',source:'FRED',name:'WTI crude oil',unit:'USD/bbl',series:'DCOILWTICO'},
+  {id:'US_BRENT',market:'US',source:'FRED',name:'Brent crude oil',unit:'USD/bbl',series:'DCOILBRENTEU'},
+  {id:'US_DOLLAR',market:'US',source:'FRED',name:'Broad dollar index',unit:'',series:'DTWEXBGS'},
+  {id:'US_HY_SPREAD',market:'US',source:'FRED',name:'High-yield credit spread',unit:'%',series:'BAMLH0A0HYM2'}
 ];
 // FRED release names kept in the calendar (matched case-insensitively against release_name).
 const RELEASES=[['Consumer Price Index','U.S. CPI'],['Employment Situation','U.S. jobs report'],['Gross Domestic Product','U.S. GDP'],['FOMC Press Release','FOMC decision'],['Producer Price Index','U.S. PPI'],['Personal Income and Outlays','U.S. PCE inflation'],['Advance Monthly Sales for Retail','U.S. retail sales'],['Job Openings and Labor Turnover','U.S. job openings (JOLTS)']];

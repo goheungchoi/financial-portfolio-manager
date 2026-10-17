@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   refreshScoreboard: () => ipcRenderer.invoke('scoreboard:refresh'),
   getDiscovery: () => ipcRenderer.invoke('discovery:get'),
   getWatchQuotes: () => ipcRenderer.invoke('discovery:quotes'),
+  getSuggestedFeeds: () => ipcRenderer.invoke('news:suggested'),
   cancelTrigger: id => ipcRenderer.invoke('desk:cancel-trigger',id),
   deleteNote: symbol => ipcRenderer.invoke('desk:delete-note',symbol),
   cancelConditionalOrder: id => ipcRenderer.invoke('desk:cancel-order',id),

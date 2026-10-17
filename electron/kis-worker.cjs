@@ -60,6 +60,10 @@ process.parentPort.on('message',async ({data})=>{
     if(operation==='index-history') {
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-index.cjs').indexHistory(client,data.request)});return;
     }
+    if(operation==='news') {
+      const body=await client.quotation('news-title','FHKST01011800',{FID_NEWS_OFER_ENTP_CODE:'',FID_COND_MRKT_CLS_CODE:'',FID_INPUT_ISCD:typeof data.symbol==='string'&&/^\d{6}$/.test(data.symbol)?data.symbol:'',FID_TITL_CNTT:'',FID_INPUT_DATE_1:'',FID_INPUT_HOUR_1:'',FID_RANK_SORT_CLS_CODE:'',FID_INPUT_SRNO:''});
+      process.parentPort.postMessage({id,ok:true,snapshot:require('./news.cjs').kisNews(body.output)});return;
+    }
     if(operation==='research-section') {
       if(typeof data.symbol!=='string'||typeof data.section!=='string')throw 0;
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-insights.cjs').fetchSection(client,data.symbol,data.section,require('./kis-activity.cjs').seoulDate(),data.context??{})});return;
