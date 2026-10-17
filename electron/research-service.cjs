@@ -3,8 +3,8 @@
 // and, for U.S. stocks, SEC EDGAR (annual financials, dividends, filings).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
-const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers','fund','holdings'];
-const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['analysts','estimates','financials','events','valuation','peers']),FUND_DEFAULT=['overview','fund','holdings','risk'];
+const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers','fund','holdings','factors','fairvalue'];
+const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['analysts','estimates','financials','events','valuation','peers','factors','fairvalue']),FUND_DEFAULT=['overview','fund','holdings','risk'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
 const US_SECTIONS=['overview','risk','financials','dividends','events'],US_DEFAULT=['overview','financials','risk'];
 const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
@@ -12,7 +12,7 @@ const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
   dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},market:{ttl:10*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
-const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings']};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
 const FAILURE_TTL=10*60000;
 const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
 // Null, empty and "not applicable" values are dropped so the agents only read what exists.
@@ -85,7 +85,7 @@ class ResearchService {
       const market=await this.source(code,'index-daily',refresh);const sector=id.sector&&id.sector!==code?await this.source(id.sector,'index-daily',refresh):null;
       const metrics=require('./kis-insights.cjs').riskMetrics(main.data.closes,market.status==='ok'?market.data.closes:[],sector?.status==='ok'?sector.data.closes:[]);
       if(!metrics)return {status:'unavailable',reason:'INSUFFICIENT_HISTORY'};
-      return {status:'ok',retrievedAt:main.retrievedAt,data:{...metrics,marketIndex:label,sectorIndex:sector?.status==='ok'?id.sector:null,closes:main.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
+      return {status:'ok',retrievedAt:main.retrievedAt,data:{...metrics,marketIndex:label,sectorIndex:sector?.status==='ok'?id.sector:null,technicals:require('./indicators.cjs').technicals(main.data.closes),closes:main.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
     }
     if(name==='valuation'){
       if(main.status!=='ok')return main;const o=ok('overview');const current={price:o?.price??null,per:o?.per??null,pbr:o?.pbr??null};
@@ -100,6 +100,8 @@ class ResearchService {
       const prem=(key,m)=>self[key]!=null&&m?Math.round((self[key]/m-1)*1000)/10:null;const perMedian=median('per'),pbrMedian=median('pbr');
       return {status:'ok',retrievedAt:main.status==='ok'?main.retrievedAt:this.clock(),data:{sector:id.sector,sectorName:main.status==='ok'?main.data.sectorName:null,rows,peerMedianPer:perMedian,peerMedianPbr:pbrMedian,perVsPeersPct:prem('per',perMedian),pbrVsPeersPct:prem('pbr',pbrMedian),note:'Peers are the largest listed stocks in the same KRX index sector.'}};
     }
+    if(name==='factors')return this.factors(symbol,refresh);
+    if(name==='fairvalue')return this.fairValue(symbol,parts,refresh);
     if((name==='analysts'||name==='estimates')&&main.status==='ok'){const trend=this.consensusTrend(symbol);return {status:'ok',retrievedAt:main.retrievedAt,data:{...main.data,...(trend?{consensusTrend:trend}:{})},...(main.stale?{stale:true}:{})};}
     return main.status==='ok'?{status:'ok',retrievedAt:main.retrievedAt,data:main.data,...(main.stale?{stale:true}:{})}:main;
   }
@@ -110,7 +112,7 @@ class ResearchService {
     if(name==='risk'){
       const daily=await this.source(symbol,'daily',refresh);if(daily.status!=='ok')return daily;const market=await this.source('SPX','index-daily',refresh);
       const metrics=require('./kis-insights.cjs').riskMetrics(daily.data.closes,market.status==='ok'?market.data.closes:[],[]);if(!metrics)return {status:'unavailable',reason:'INSUFFICIENT_HISTORY'};
-      return {status:'ok',retrievedAt:daily.retrievedAt,data:{...metrics,marketIndex:'S&P 500',sectorIndex:null,currency:'USD',closes:daily.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
+      return {status:'ok',retrievedAt:daily.retrievedAt,data:{...metrics,marketIndex:'S&P 500',sectorIndex:null,currency:'USD',technicals:require('./indicators.cjs').technicals(daily.data.closes),closes:daily.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
     }
     const sec=await this.source(symbol,'sec',refresh);if(sec.status!=='ok')return sec;const d=sec.data;
     if(name==='financials')return {status:'ok',retrievedAt:sec.retrievedAt,data:{currency:'USD',source:'SEC 10-K filings',periods:d.annual.map(r=>({...r,period:'FY'+r.fiscalYearEnd.slice(0,4)+(r.fiscalYearEnd.slice(5,7)!=='12'?` (to ${r.fiscalYearEnd.slice(0,7)})`:'')}))}};
@@ -123,6 +125,41 @@ class ResearchService {
   }
   // Korean market overview: breadth, sector moves and the day's largest foreign and institutional buying.
   async market(refresh=false){return this.source('MARKET','market',refresh);}
+  // Factor ranks within the largest same-sector stocks: value, momentum, quality, growth and low volatility, as percentiles.
+  async factors(symbol,refresh){
+    const id=this.identity(symbol);const peers=this.master?.peers?.(symbol,8)??[];if(!peers.length)return {status:'unavailable',reason:'NO_PEERS'};
+    const group=[];
+    for(const p of [{symbol,name:id.name},...peers]){
+      const [o,d,e]=[await this.source(p.symbol,'overview',refresh),await this.source(p.symbol,'daily',refresh),await this.source(p.symbol,'estimates',refresh)];
+      const ov=o.status==='ok'?o.data:{},closes=d.status==='ok'?d.data.closes??[]:[],est=e.status==='ok'?e.data:{};
+      const ret=k=>closes.length>k?(closes.at(-1).close/closes.at(-1-k).close-1)*100:null;
+      const lr=closes.slice(1).map((c,i)=>Math.log(c.close/closes[i].close));const mean=lr.reduce((a,b)=>a+b,0)/(lr.length||1);const vol=lr.length>20?Math.sqrt(lr.reduce((a,b)=>a+(b-mean)**2,0)/(lr.length-1))*Math.sqrt(252)*100:null;
+      const years=est.years??[],actual=years.map((y,i)=>[y,i]).filter(([y])=>!/E$/.test(y)).map(([,i])=>i).at(-1),next=years.findIndex(y=>/E$/.test(y));
+      const at=(k,i)=>i!=null&&i>=0?est[k]?.[i]??null:null;
+      group.push({symbol:p.symbol,name:p.name,self:p.symbol===symbol,metrics:{earningsYieldPct:ov.per>0?100/ov.per:null,bookYieldPct:ov.pbr>0?100/ov.pbr:null,return3mPct:ret(63),return1mPct:ret(21),roePct:at('roePct',actual),operatingMarginPct:at('revenue',actual)?at('operatingProfit',actual)/at('revenue',actual)*100:null,epsGrowthNextPct:at('epsGrowthPct',next),revenueGrowthNextPct:at('revenueGrowthPct',next),volatilityPct:vol}});
+    }
+    // Percentile of each metric among stocks that have it (higher is better; volatility is inverted), averaged per factor.
+    const FACTORS={value:['earningsYieldPct','bookYieldPct'],momentum:['return3mPct','return1mPct'],quality:['roePct','operatingMarginPct'],growth:['epsGrowthNextPct','revenueGrowthNextPct'],lowVolatility:['volatilityPct']};
+    const pctile=(key,row)=>{const v=row.metrics[key];const others=group.filter(g=>g!==row&&g.metrics[key]!=null);if(v==null||!others.length)return null;const better=key==='volatilityPct'?others.filter(g=>g.metrics[key]>v).length:others.filter(g=>g.metrics[key]<v).length;const ties=others.filter(g=>g.metrics[key]===v).length;return (better+ties/2)/others.length*100;};
+    const score=row=>Object.fromEntries(Object.entries(FACTORS).map(([f,keys])=>{const v=keys.map(k=>pctile(k,row)).filter(x=>x!=null);return [f,v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):null];}));
+    const round=v=>v==null?null:Math.round(v*10)/10;
+    const rows=group.map(g=>({symbol:g.symbol,name:g.name,self:g.self||undefined,scores:score(g),metrics:Object.fromEntries(Object.entries(g.metrics).map(([k,v])=>[k,round(v)]))}));
+    return {status:'ok',retrievedAt:this.clock(),data:{sector:id.sector,peers:rows.length-1,self:rows[0].scores,rows,note:'Scores are percentiles (0–100, higher is better) against the largest stocks in the same KRX sector: value from earnings and book yield, momentum from 1- and 3-month returns, quality from ROE and operating margin, growth from next-year EPS and revenue growth estimates, low volatility from daily price swings.'}};
+  }
+  // Fair value range from several simple methods; their spread is the uncertainty.
+  async fairValue(symbol,parts,refresh){
+    const ok=s=>parts[s]?.status==='ok'?parts[s].data:null;const o=ok('overview'),a=ok('analysts'),e=ok('estimates'),v=ok('valuation');if(!o?.price)return {status:'unavailable',reason:parts.overview?.reason??'NO_PRICE'};
+    const next=e?.years?.findIndex(y=>/E$/.test(y))??-1;const eps=next>=0?e.eps?.[next]:null;const bps=o.bps>0?o.bps:null;
+    const peers=await this.section(symbol,'peers',refresh);const pm=peers.status==='ok'?peers.data:{};
+    const methods=[['Analyst median target',a?.medianTarget,a?`${a.brokerages} brokerages`:null],['Peer median PER × next-year EPS',pm.peerMedianPer&&eps>0?pm.peerMedianPer*eps:null,pm.peerMedianPer?`PER ${pm.peerMedianPer} × EPS ${eps}`:null],
+      ['Own median PER × next-year EPS',v?.perRange?.median&&eps>0?v.perRange.median*eps:null,v?.perRange?`PER ${v.perRange.median} over ${v.perRange.years} years`:null],['Peer median PBR × book value',pm.peerMedianPbr&&bps?pm.peerMedianPbr*bps:null,pm.peerMedianPbr?`PBR ${pm.peerMedianPbr}`:null],
+      ['Own median PBR × book value',v?.pbrRange?.median&&bps?v.pbrRange.median*bps:null,v?.pbrRange?`PBR ${v.pbrRange.median} over ${v.pbrRange.years} years`:null]]
+      .filter(([,val])=>Number.isFinite(val)&&val>0).map(([method,val,basis])=>({method,value:Math.round(val),upsidePct:Math.round((val/o.price-1)*1000)/10,basis}));
+    if(methods.length<2)return {status:'unavailable',reason:'NOT_ENOUGH_INPUTS'};
+    const vals=methods.map(m=>m.value).sort((x,y)=>x-y);const mid=vals.length%2?vals[(vals.length-1)/2]:(vals[vals.length/2-1]+vals[vals.length/2])/2;const spread=(vals.at(-1)-vals[0])/mid;
+    return {status:'ok',retrievedAt:this.clock(),data:{price:o.price,fairValue:Math.round(mid),upsidePct:Math.round((mid/o.price-1)*1000)/10,low:vals[0],high:vals.at(-1),uncertainty:spread<0.3?'low':spread<0.6?'medium':'high',spreadPct:Math.round(spread*1000)/10,methods,
+      note:'The middle of simple valuation methods, not a forecast. A wide spread between methods means high uncertainty; analyst targets tend to run optimistic.'}};
+  }
   // Daily consensus snapshots, so target and estimate revisions can be measured over weeks.
   snapshot(symbol,source,value){
     let fields=null;
@@ -166,7 +203,8 @@ function digest(name,d){
   if(name==='valuation')return {...d,monthly:undefined};
   if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};
   if(name==='flows')return {...d,investors:d.investors?{...d.investors,daily:undefined}:undefined,note:'Net buying in KRW; positive streak days mean consecutive net buying, negative mean selling. Short share is the percent of daily volume sold short; margin rate is loans outstanding as a percent of listed shares.'};
-  if(name==='risk')return {...d,closes:undefined};
+  if(name==='risk')return {...d,closes:undefined,technicals:d.technicals?{...d.technicals,note:undefined}:undefined};
+  if(name==='factors')return {self:d.self,peers:d.peers,rows:d.rows?.map(({symbol,name,self,scores})=>({symbol,name,self,scores})),note:d.note};
   if(name==='fund')return {...d,premiumHistory:undefined};
   if(name==='holdings')return {...d,holdings:d.holdings?.slice(0,15).map(({symbol,name,weightPct})=>({symbol,name,weightPct}))};
   return d;

@@ -5,8 +5,8 @@ export type ResearchProfile={symbol:string;name:string|null;market?:string;type?
 // The same research the agents read, one tab per section; each tab loads when first opened.
 const US_TABS=new Set(['overview','financials','dividends','events','risk']);
 const FUND_TABS=new Set(['overview','fund','holdings','dividends','flows','risk']);
-const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk'],['valuation','Valuation'],['peers','Peers'],['fund','Fund'],['holdings','Holdings']];
-const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',NO_PEERS:'No sector peers for this listing.',NOT_FOR_FUNDS:'Not available for ETFs and ETNs.',FUNDS_ONLY:'Only for ETFs and ETNs.',NOT_AN_ETF:'Only for ETFs and ETNs.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.',SEC_CONTACT_MISSING:'Add secContactEmail to your providers file to load SEC data. SEC asks every app for a contact email.',NOT_IN_SEC:'SEC has no filings for this ticker.',SEC_RATE_LIMITED:'SEC refused the request. Try again later.'};
+const TABS:[string,string][]=[['overview','Overview'],['analysts','Analysts'],['estimates','Estimates'],['financials','Financials'],['dividends','Dividends'],['events','Events'],['flows','Flows'],['risk','Risk'],['valuation','Valuation'],['peers','Peers'],['fund','Fund'],['holdings','Holdings'],['factors','Factors'],['fairvalue','Fair value']];
+const REASONS:Record<string,string>={KIS_NOT_CONNECTED:'Connect your KIS account to load research.',DART_KEY_MISSING:'Add an OpenDART key to your providers file.',KOREAN_LISTINGS_ONLY:'Available for Korean stocks.',INSUFFICIENT_HISTORY:'Not enough price history yet.',NO_PEERS:'No sector peers for this listing.',NOT_FOR_FUNDS:'Not available for ETFs and ETNs.',NOT_ENOUGH_INPUTS:'Not enough data for a fair value range.',FUNDS_ONLY:'Only for ETFs and ETNs.',NOT_AN_ETF:'Only for ETFs and ETNs.',RATE_LIMITED:'KIS is rate limiting. Try again shortly.',NOT_IN_DART:'This listing has no DART filings.',DART_RATE_LIMITED:'OpenDART is rate limiting. Try again later.',SEC_CONTACT_MISSING:'Add secContactEmail to your providers file to load SEC data. SEC asks every app for a contact email.',NOT_IN_SEC:'SEC has no filings for this ticker.',SEC_RATE_LIMITED:'SEC refused the request. Try again later.'};
 const reason=(code?:string)=>REASONS[code??'']??'Not available right now.';
 const n=(v:unknown,digits=0)=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString(undefined,{maximumFractionDigits:digits}):'—';
 const pct=(v:unknown,digits=1,sign=false)=>typeof v==='number'&&Number.isFinite(v)?`${sign&&v>0?'+':''}${v.toFixed(digits)}%`:'—';
@@ -111,6 +111,32 @@ function Risk({d,us}:{d:any;us:boolean}){
     <Spark closes={d.closes}/>
     <Stats items={[['Volatility (annualized)',pct(d.annualizedVolatilityPct)],[`Beta to ${d.marketIndex}`,n(d.market?.beta,2)],['Correlation',n(d.market?.correlation,2)],['1-month return',pct(d.return1mPct,1,true)],['3-month return',pct(d.return3mPct,1,true)],[`1 month vs ${d.marketIndex}`,pct(d.vsMarket1mPct,1,true)],...(us?[]:[['1 month vs sector',pct(d.vsSector1mPct,1,true)]] as [string,string][]),['Max drawdown',pct(d.maxDrawdownPct)],['From high',pct(d.fromHighPct)],['vs 20-day average',pct(d.priceVsSma20Pct,1,true)],['vs 60-day average',pct(d.priceVsSma60Pct,1,true)],['Avg daily value (20 days)',money(d.avgDailyValue20dKRW,us)]]}/>
     <p className="muted research-note">From {d.days} daily closes through {d.asOf}; drawdown and high cover that window.</p>
+    {d.technicals&&<Technicals t={d.technicals} us={us}/>}
+  </>;
+}
+function Technicals({t,us}:{t:any;us:boolean}){
+  const m=t.macd;
+  return <><h3 className="research-sub">Technical indicators · daily</h3>
+    <Stats items={[['RSI (14)',n(t.rsi14,1)],['Stochastic RSI (14)',n(t.stochRsi14,1)],['MACD histogram',m?`${n(m.histogram,us?2:0)} ${m.histogramRising?'↑':'↓'}`:'—'],['ATR (14)',t.atr14!=null?`${n(t.atr14,us?2:0)} (${pct(t.atrPct,1)})`:'—'],['ADX (14)',t.adx14!=null?`${n(t.adx14,1)} · ${t.plusDI>t.minusDI?'up':'down'} trend`:'—'],['CCI (14)',n(t.cci14,0)],['Ultimate oscillator',n(t.ultimate,1)],['20-day range position',pct(t.range20?.positionPct,0)]]}/>
+    <p className="muted research-note">Values, not buy or sell calls. RSI above 70 or below 30 is stretched; ADX above about 25 is a strong trend; ATR is the typical daily move, useful for stop distances.</p></>;
+}
+const FACTOR_LABEL:[string,string][]=[['value','Value'],['momentum','Momentum'],['quality','Quality'],['growth','Growth'],['lowVolatility','Low volatility']];
+function Factors({d}:{d:any}){
+  const label=(v:number|null)=>v==null?'—':v>=80?`Top ${100-v||1}%`:v<=20?`Bottom ${v||1}%`:`${v}th percentile`;
+  return <>
+    <div className="research-weights" aria-label="Factor scores">{FACTOR_LABEL.map(([k,l])=>{const v=d.self?.[k];return <div key={k}><span>{l}</span><i style={{width:`${Math.max(2,v??0)}%`,opacity:v==null?.2:1}}/><b>{label(v)}</b></div>;})}</div>
+    <table className="compact-table research-table" aria-label="Factor peers"><thead><tr><th>Company</th>{FACTOR_LABEL.map(([k,l])=><th key={k}>{l}</th>)}</tr></thead><tbody>{d.rows.map((r:any)=><tr key={r.symbol} className={r.self?'research-self':''}><td>{r.name??r.symbol}</td>{FACTOR_LABEL.map(([k])=><td key={k}>{r.scores[k]??'—'}</td>)}</tr>)}</tbody></table>
+    <p className="muted research-note">{d.note}</p>
+  </>;
+}
+function FairValue({d}:{d:any}){
+  const lo=Math.min(d.low,d.price),hi=Math.max(d.high,d.price),x=(v:number)=>`${((v-lo)/((hi-lo)||1))*100}%`;
+  return <>
+    <Stats items={[['Fair value (middle)',n(d.fairValue)],['vs price',pct(d.upsidePct,1,true)],['Range',`${n(d.low)} – ${n(d.high)}`],['Uncertainty',`${d.uncertainty} (${d.spreadPct}% spread)`]]}/>
+    <div className="fair-bar" aria-label="Fair value range"><span className="fair-range" style={{left:x(d.low),width:`calc(${x(d.high)} - ${x(d.low)})`}}/><span className="fair-mark price" style={{left:x(d.price)}} title={`Price ${n(d.price)}`}/><span className="fair-mark mid" style={{left:x(d.fairValue)}} title={`Fair value ${n(d.fairValue)}`}/></div>
+    <p className="muted research-note"><i className="fair-key price"/> price · <i className="fair-key mid"/> middle of the methods</p>
+    <table className="compact-table research-table" aria-label="Fair value methods"><thead><tr><th>Method</th><th>Value</th><th>vs price</th><th>Basis</th></tr></thead><tbody>{d.methods.map((m:any)=><tr key={m.method}><td>{m.method}</td><td>{n(m.value)}</td><td>{pct(m.upsidePct,1,true)}</td><td>{m.basis??'—'}</td></tr>)}</tbody></table>
+    <p className="muted research-note">{d.note}</p>
   </>;
 }
 const KIND_LABEL:Record<string,string>={standard:'Tracks its index 1:1',leveraged:'Leveraged',inverse:'Inverse'};
@@ -134,7 +160,7 @@ function Holdings({d}:{d:any}){
     <p className="muted research-note">{d.note}</p>
   </>;
 }
-const VIEWS:Record<string,(p:{d:any;us:boolean})=>ReactNode>={fund:Fund,holdings:Holdings,overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk,valuation:Valuation,peers:Peers};
+const VIEWS:Record<string,(p:{d:any;us:boolean})=>ReactNode>={factors:Factors,fairvalue:FairValue,fund:Fund,holdings:Holdings,overview:Overview,analysts:Analysts,estimates:Estimates,financials:Financials,dividends:Dividends,events:Events,flows:Flows,risk:Risk,valuation:Valuation,peers:Peers};
 export function ResearchPanel({symbol}:{symbol:string}){
   const [tab,setTab]=useState('overview');const [data,setData]=useState<Record<string,ResearchSection>>({});const [loading,setLoading]=useState('');const [isFund,setIsFund]=useState(false);const current=useRef(symbol);
   const load=async(section:string,refresh=false)=>{setLoading(section);try{const p=await window.portfolio!.getResearch(symbol,[section],refresh);if(current.current===symbol){setIsFund(p.type==='etf'||p.type==='etn');setData(d=>({...d,[section]:p.sections[section]??{status:'unavailable',reason:'UNKNOWN_SECTION'}}));}}catch{if(current.current===symbol)setData(d=>({...d,[section]:{status:'unavailable'}}));}finally{if(current.current===symbol)setLoading('');}};
