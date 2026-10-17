@@ -131,7 +131,7 @@ class ResearchService {
     const group=[];
     for(const p of [{symbol,name:id.name},...peers]){
       const [o,d,e]=[await this.source(p.symbol,'overview',refresh),await this.source(p.symbol,'daily',refresh),await this.source(p.symbol,'estimates',refresh)];
-      const ov=o.status==='ok'?o.data:{},closes=d.status==='ok'?d.data.closes??[]:[],est=e.status==='ok'?e.data:{};
+      const ov=(o.status==='ok'?o.data:null)??{},closes=(d.status==='ok'?d.data?.closes:null)??[],est=(e.status==='ok'?e.data:null)??{};
       const ret=k=>closes.length>k?(closes.at(-1).close/closes.at(-1-k).close-1)*100:null;
       const lr=closes.slice(1).map((c,i)=>Math.log(c.close/closes[i].close));const mean=lr.reduce((a,b)=>a+b,0)/(lr.length||1);const vol=lr.length>20?Math.sqrt(lr.reduce((a,b)=>a+(b-mean)**2,0)/(lr.length-1))*Math.sqrt(252)*100:null;
       const years=est.years??[],actual=years.map((y,i)=>[y,i]).filter(([y])=>!/E$/.test(y)).map(([,i])=>i).at(-1),next=years.findIndex(y=>/E$/.test(y));

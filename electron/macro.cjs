@@ -18,8 +18,9 @@ const SERIES=[
   {id:'US_DOLLAR',market:'US',source:'FRED',name:'Broad dollar index',unit:'',series:'DTWEXBGS'},
   {id:'US_HY_SPREAD',market:'US',source:'FRED',name:'High-yield credit spread',unit:'%',series:'BAMLH0A0HYM2'}
 ];
-// FRED release names kept in the calendar (matched case-insensitively against release_name).
-const RELEASES=[['Consumer Price Index','U.S. CPI'],['Employment Situation','U.S. jobs report'],['Gross Domestic Product','U.S. GDP'],['FOMC Press Release','FOMC decision'],['Producer Price Index','U.S. PPI'],['Personal Income and Outlays','U.S. PCE inflation'],['Advance Monthly Sales for Retail','U.S. retail sales'],['Job Openings and Labor Turnover','U.S. job openings (JOLTS)']];
+// FRED release names kept in the calendar (matched case-insensitively against release_name). FOMC meetings come from the
+// Federal Reserve schedule in event-calendar.cjs: FRED's "FOMC Press Release" updates daily with the target range.
+const RELEASES=[['Consumer Price Index','U.S. CPI'],['Employment Situation','U.S. jobs report'],['Gross Domestic Product','U.S. GDP'],['Producer Price Index','U.S. PPI'],['Personal Income and Outlays','U.S. PCE inflation'],['Advance Monthly Sales for Retail','U.S. retail sales'],['Job Openings and Labor Turnover','U.S. job openings (JOLTS)']];
 const iso=date=>date.toISOString().slice(0,10);
 const shiftDays=(date,days)=>new Date(date.getTime()+days*86400000);
 const isDay=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -91,9 +92,12 @@ async function fetchCalendar(fetch,key,now){
   const response=await fetch('https://api.stlouisfed.org/fred/releases/dates?'+params,{redirect:'error',headers:FRED_HEADERS,signal:AbortSignal.timeout(20000)});if(!response.ok)throw new Error(response.status===400||response.status===403?'FRED_KEY_REJECTED':'REQUEST_FAILED');
   return calendarRows((await response.json()).release_dates,iso(start));
 }
+// FOMC decision days (second day of each meeting) from the Federal Reserve's published 2026 schedule; extend each year.
+const FOMC=['2026-01-28','2026-03-18','2026-04-29','2026-06-17','2026-07-29','2026-09-16','2026-10-28','2026-12-09'];
+const fomcRows=(today,days=45)=>{const end=iso(shiftDays(new Date(today+'T00:00:00Z'),days));return FOMC.filter(d=>d>=today&&d<=end).map(date=>({date,market:'US',event:'FOMC decision',source:'Federal Reserve schedule'}));};
 function calendarRows(rows,today){
   if(!Array.isArray(rows))throw new Error('INVALID_RESPONSE');const seen=new Set();
-  return rows.flatMap(row=>{const match=RELEASES.find(([name])=>String(row.release_name??'').toLowerCase().includes(name.toLowerCase()));if(!match||!isDay(row.date)||row.date<today)return [];const key=match[1]+row.date;if(seen.has(key))return [];seen.add(key);return [{date:row.date,market:'US',event:match[1],source:'FRED release calendar'}];}).sort((a,b)=>a.date.localeCompare(b.date)).slice(0,30);
+  return [...fomcRows(today),...rows.flatMap(row=>{const match=RELEASES.find(([name])=>String(row.release_name??'').toLowerCase().includes(name.toLowerCase()));if(!match||!isDay(row.date)||row.date<today)return [];const key=match[1]+row.date;if(seen.has(key))return [];seen.add(key);return [{date:row.date,market:'US',event:match[1],source:'FRED release calendar'}];})].sort((a,b)=>a.date.localeCompare(b.date)).slice(0,30);
 }
 // Fetches every series independently so one failing source does not hide the others.
 async function fetchMacro(fetch,{ecosKey=null,fredKey=null,now=Date.now()}={}){
@@ -102,7 +106,7 @@ async function fetchMacro(fetch,{ecosKey=null,fredKey=null,now=Date.now()}={}){
   let chain=Promise.resolve();const ecos=spec=>{const run=chain.then(()=>fetchEcos(fetch,ecosKey||ECOS_SAMPLE,spec,now));chain=run.catch(()=>{});return run;};
   const settled=await Promise.allSettled(SERIES.map(spec=>spec.source==='ECOS'?ecos(spec):fetchFred(fetch,spec,now,fredKey)));
   settled.forEach((result,i)=>{const spec=SERIES[i];if(result.status==='fulfilled')series.push(summarize(spec,result.value));else errors.push({id:spec.id,source:spec.source,code:/^[A-Z0-9_-]{3,40}$/.test(result.reason?.message??'')?result.reason.message:'REQUEST_FAILED'});});
-  let calendar=null;if(fredKey){try{calendar=await fetchCalendar(fetch,fredKey,now);}catch(error){errors.push({id:'CALENDAR',source:'FRED',code:/^[A-Z0-9_-]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'});}}
+  let calendar=fomcRows(iso(new Date(now)));if(fredKey){try{calendar=await fetchCalendar(fetch,fredKey,now);}catch(error){errors.push({id:'CALENDAR',source:'FRED',code:/^[A-Z0-9_-]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'});}}
   return {fetchedAt:now,ecosAccess:ecosKey?'key':'sample',calendarAccess:fredKey?'key':'none',series,calendar,errors};
 }
 // USD/KRW reference rates (ECOS 매매기준율) for the week up to each requested day, for settlement-date tax conversion.
@@ -127,4 +131,4 @@ class MacroStore {
     return {asOf:iso(new Date(snap.fetchedAt)),indicators:snap.series.map(s=>({name:s.name,market:s.market,value:s.value,unit:s.unit,date:s.date,change:s.change,...(s.stale?{stale:true}:{})})),upcoming:(snap.calendar??[]).filter(e=>e.date>=today&&e.date<=until).map(({date,event})=>({date,event})),note:snap.calendar?'Change is versus the previous observation. Release dates come from the FRED calendar.':'Change is versus the previous observation. No release calendar is connected.'};
   }
 }
-module.exports={SERIES,RELEASES,parseFredCsv,parseFredJson,parseEcos,summarize,fetchMacro,fetchUsdKrw,calendarRows,MacroStore};
+module.exports={FOMC,SERIES,RELEASES,parseFredCsv,parseFredJson,parseEcos,summarize,fetchMacro,fetchUsdKrw,calendarRows,MacroStore};
