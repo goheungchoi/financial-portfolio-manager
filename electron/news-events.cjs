@@ -24,8 +24,8 @@ function matcher(securities){
   const known=new Set(rules.map(rule=>rule.symbol));
   return item=>{
     if(item.source==='DART')return item.symbol&&known.has(item.symbol)?[item.symbol]:[];
-    const text=String(item.title??''),upper=text.toUpperCase();
-    return rules.filter(rule=>rule.tests.some(test=>test(text,upper))).map(rule=>rule.symbol);
+    const text=String(item.title??''),upper=text.toUpperCase();const tagged=(item.symbols??[]).filter(s=>known.has(s));
+    return [...new Set([...tagged,...rules.filter(rule=>rule.tests.some(test=>test(text,upper))).map(rule=>rule.symbol)])];
   };
 }
 const receiptOf=url=>/rcpNo=(\d{14})/.exec(url??'')?.[1]??null;

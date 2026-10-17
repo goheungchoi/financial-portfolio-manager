@@ -63,12 +63,16 @@ function interaction(runId,kind,title,body) {
 async function refreshNews() {
   if(newsBusy)return;newsBusy=true;
   try {
-    const requests=[];
-    if(automation.config.newsURL)requests.push(require('./news.cjs').fetchFeed(automation.config.newsURL));
-    if(automation.providerStatus.dartConnected)requests.push(providerService.request('disclosures',{seen:automation.newsEvents.receipts()}));
-    const results=await Promise.allSettled(requests);const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
-    const failed=results.some(r=>r.status==='rejected');
-    if(!failed||items.length){automation.news=[...new Map(items.map(item=>[item.url,item])).values()].sort((a,b)=>(Date.parse(b.published)||0)-(Date.parse(a.published)||0)).slice(0,100);automation.newsUpdatedAt=Date.now();automation.newsEvents.ingest(items,automation.relevantSecurities());}
+    // Sources: your feeds, per-ticker headlines for U.S. names you hold or watch, KIS market headlines and DART filings.
+    const news=require('./news.cjs');const cfg=automation.config;const sources=[];
+    const feeds=[...new Set([...(cfg.newsFeeds??[]).map(f=>f.url),...(cfg.newsURL?[cfg.newsURL]:[])])];for(const url of feeds)sources.push([url,news.fetchFeed(url)]);
+    if(cfg.usTickerNews){const us=[...new Set([...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('US')??[])])].slice(0,5);for(const symbol of us){const url=news.yahooFeed(symbol);if(url)sources.push([symbol,news.fetchFeed(url).then(items=>items.map(i=>({...i,symbols:[symbol]})))]);}}
+    if(cfg.kisNews&&kisState.snapshot&&!kisService.isBusy)sources.push(['KIS news',kisService.request('news',{})]);
+    if(automation.providerStatus.dartConnected)sources.push(['DART',providerService.request('disclosures',{seen:automation.newsEvents.receipts()})]);
+    const results=await Promise.allSettled(sources.map(([,task])=>task));const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
+    automation.newsSourceErrors=results.map((r,i)=>r.status==='rejected'?sources[i][0]:null).filter(Boolean);
+    const failed=sources.length>0&&results.every(r=>r.status==='rejected');
+    if(!failed){automation.news=[...new Map(items.map(item=>[item.url,item])).values()].sort((a,b)=>(Date.parse(b.published)||0)-(Date.parse(a.published)||0)).slice(0,200);automation.newsUpdatedAt=Date.now();automation.newsEvents.ingest(items,automation.relevantSecurities());}
     automation.newsError=failed?'NEWS_REFRESH_FAILED':null;
   }catch{automation.newsError='NEWS_REFRESH_FAILED';}finally{newsBusy=false;lastNews=Date.now();}
 }
@@ -153,7 +157,7 @@ app.whenReady().then(async () => {
     automation?.tick();if(notifier){notifier.observe([...paper.orders(),...live.orders(),...(usLive?.orders()??[])]);void notifier.tick();}
     if(kisState.snapshot && !kisService.isBusy && !live.busy && Date.now()-lastReconcile>30000){lastReconcile=Date.now();void live.reconcile().catch(()=>{});if(usSnapshot)void usLive.reconcile().catch(()=>{});}
     if(kisState.snapshot&&!kisService.isBusy&&!usRefreshing&&Date.now()>(kisService.cooldownUntil??0)&&Date.now()-lastUSRefresh>60000){lastUSRefresh=Date.now();usRefreshing=true;void automation.refreshUS().catch(error=>{usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}).finally(()=>{usRefreshing=false;});}
-    if(automation && Date.now()-lastNews>(automation.config.enabled&&automation.config.newsTrigger!=='off'?300000:1800000) && (automation.config.newsURL||automation.providerStatus.dartConnected))void refreshNews();
+    if(automation && Date.now()-lastNews>(automation.config.enabled&&automation.config.newsTrigger!=='off'?300000:1800000) && (automation.config.newsURL||automation.config.newsFeeds?.length||automation.config.kisNews||automation.providerStatus.dartConnected))void refreshNews();
     const state = marketState();
     for (const win of BrowserWindow.getAllWindows()) win.webContents.send('market:changed',state);
   };
@@ -244,7 +248,7 @@ app.whenReady().then(async () => {
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
   setInterval(recordValue,60000).unref();
   const refreshBenchmarks=()=>{if(benchmarkTask||!kisState.snapshot)return benchmarkTask;const generation=kisGeneration;benchmarkTask=(async()=>{const today=require('./kis-activity.cjs').seoulDate();const first=performance.history(kisState.snapshot.accountKey)[0]?.day;
-      for(const index of ['KOSPI','SPX']){const latest=performance.closes(index).at(-1)?.day;const start=latest??new Date(Date.parse((first??today)+'T00:00:00Z')-10*86400000).toISOString().slice(0,10);const rows=await kisService.request('index-history',{request:{index,start,end:today}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');performance.saveCloses(index,rows);}
+      for(const index of Object.keys(require('./performance.cjs').INDEXES)){const latest=performance.closes(index).at(-1)?.day;const start=latest??new Date(Date.parse((first??today)+'T00:00:00Z')-10*86400000).toISOString().slice(0,10);const rows=await kisService.request('index-history',{request:{index,start,end:today}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');performance.saveCloses(index,rows);}
       benchmarkAt=Date.now();benchmarkError=null;})().catch(error=>{benchmarkError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'BENCHMARK_FAILED';}).finally(()=>{benchmarkTask=null;});return benchmarkTask;};
   setInterval(()=>{if(Date.now()-benchmarkAt>6*3600000)void refreshBenchmarks();},600000).unref();
   const performanceState=()=>{const account=kisState.snapshot?.accountKey;if(!account)return {connected:false,flows:[],summaries:{},benchmarks:{}};
@@ -358,6 +362,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:lesson-trial',(event,action,id,value)=>{authorize(event);try{automation.syncLearning();if(automation.learningError)throw Error('LOCAL_EVALUATION_FAILED');if(action==='start')automation.trials.start(id,value);else if(action==='stop')automation.trials.stop(id);else throw Error('INVALID_TRIAL');return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:['LESSON_CHANGED','INVALID_TRIAL','TRIAL_ACTIVE','TRIAL_NOT_FOUND'].includes(error.message)?error.message:'LOCAL_EVALUATION_FAILED'};}});
   ipcMain.handle('runtime:review-lesson',(event,id,value)=>{authorize(event);try{automation.syncLearning();if(automation.learningError)throw new Error('LESSON_REVIEW_FAILED');automation.memory.review(id,value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:['LESSON_CHANGED','OUTCOME_NOT_FINAL','INVALID_LESSON_REVIEW','LESSON_NOT_FOUND'].includes(error.message)?error.message:'LESSON_REVIEW_FAILED',state:runtimeState()};}});
   ipcMain.handle('runtime:lesson',(event,id,approved)=>{authorize(event);try{automation.approveLesson(id,approved);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:'INVALID_REQUEST'};}});
+  ipcMain.handle('news:suggested',event=>{authorize(event);return require('./news.cjs').SUGGESTED_FEEDS;});
   ipcMain.handle('runtime:open-news',(event,url)=>{authorize(event);if(typeof url==='string'&&(automation.news.some(item=>item.url===url)||automation.newsEvents.list(300).some(item=>item.url===url)))void shell.openExternal(url);});
   const paperAction=action=>event=>{authorize(event);try{return {ok:true,data:action()};}catch{return {ok:false,error:'PAPER_REQUEST_FAILED'};}};
   ipcMain.handle('paper:get',paperAction(()=>paper.getState()));

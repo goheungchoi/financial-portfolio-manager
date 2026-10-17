@@ -1,7 +1,7 @@
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');
 // Daily account value history, user-recorded deposits/withdrawals and benchmark closes.
 // Returns are time-weighted: flows are applied at the start of their day, so deposits do not count as gains.
-const INDEXES={KOSPI:{market:'KR',label:'KOSPI'},SPX:{market:'US',label:'S&P 500'}};
+const INDEXES={KOSPI:{market:'KR',label:'KOSPI'},KOSDAQ:{market:'KR',label:'KOSDAQ'},KOSPI200:{market:'KR',label:'KOSPI 200'},SPX:{market:'US',label:'S&P 500'},COMP:{market:'US',label:'Nasdaq Composite'},NDX:{market:'US',label:'Nasdaq 100'},DJI:{market:'US',label:'Dow Jones'},SOX:{market:'US',label:'Philadelphia Semiconductor'},VIX:{market:'US',label:'VIX'}};
 const PERIODS=[['1W',7],['1M',30],['3M',91],['YTD','ytd'],['1Y',365],['All',null]];
 const isDay=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(value+'T00:00:00Z'));
 const shift=(day,days)=>new Date(Date.parse(day+'T00:00:00Z')-days*86400000).toISOString().slice(0,10);
