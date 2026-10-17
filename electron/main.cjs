@@ -64,9 +64,9 @@ async function refreshNews() {
   if(newsBusy)return;newsBusy=true;
   try {
     // Sources: your feeds, per-ticker headlines for U.S. names you hold or watch, KIS market headlines and DART filings.
-    const news=require('./news.cjs');const cfg=automation.config;const sources=[];
-    const feeds=[...new Set([...(cfg.newsFeeds??[]).map(f=>f.url),...(cfg.newsURL?[cfg.newsURL]:[])])];for(const url of feeds)sources.push([url,news.fetchFeed(url)]);
-    if(cfg.usTickerNews){const us=[...new Set([...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('US')??[])])].slice(0,5);for(const symbol of us){const url=news.yahooFeed(symbol);if(url)sources.push([symbol,news.fetchFeed(url).then(items=>items.map(i=>({...i,symbols:[symbol]})))]);}}
+    const news=require('./news.cjs');const cfg=automation.config;const sources=[];const offline=Boolean(process.env.PORTFOLIO_SMOKE_DATA);
+    const feeds=[...new Set([...(cfg.newsFeeds??[]).map(f=>f.url),...(cfg.newsURL?[cfg.newsURL]:[])])];if(!offline)for(const url of feeds)sources.push([url,news.fetchFeed(url)]);
+    if(cfg.usTickerNews&&!offline){const us=[...new Set([...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('US')??[])])].slice(0,5);for(const symbol of us){const url=news.yahooFeed(symbol);if(url)sources.push([symbol,news.fetchFeed(url).then(items=>items.map(i=>({...i,symbols:[symbol]})))]);}}
     if(cfg.kisNews&&kisState.snapshot&&!kisService.isBusy)sources.push(['KIS news',kisService.request('news',{})]);
     if(automation.providerStatus.dartConnected)sources.push(['DART',providerService.request('disclosures',{seen:automation.newsEvents.receipts()})]);
     const results=await Promise.allSettled(sources.map(([,task])=>task));const items=results.flatMap(r=>r.status==='fulfilled'?r.value:[]);
@@ -229,6 +229,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('research:market',async(event,refresh)=>{authorize(event);return research.market(refresh===true);});
   automation.discovery.research=args=>research.agent(args);
   // Daily closes for the agents' formulas, triggers and conditional orders, from the research cache.
+  // Index closes and the cached market overview feed the market narrative and the episode library.
+  // The performance store is created further down; until then there are no closes.
+  automation.indexCloses=()=>{try{return Object.fromEntries(Object.keys(require('./performance.cjs').INDEXES).map(index=>[index,performance.closes(index).slice(-90)]));}catch{return {};}};
+  automation.marketOverviewCache=()=>research.cached('MARKET','market')?.value??null;
+  ipcMain.handle('narrative:refresh',async event=>{authorize(event);try{await automation.buildNarrative();return {ok:true,state:automation.narrativeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED',state:automation.narrativeState()};}});
+  ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
   automation.series={closes:symbol=>research.cached(symbol,'daily')?.value?.closes??null,ensure:symbol=>research.source(symbol,'daily')};
   const deskAction=action=>(event,...args)=>{authorize(event);const scope=automation.watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');action(scope,...args);return automation.deskState();};
   ipcMain.handle('desk:cancel-trigger',deskAction((scope,id)=>automation.desk.cancelTrigger(scope,String(id))));
@@ -249,7 +255,7 @@ app.whenReady().then(async () => {
   setInterval(recordValue,60000).unref();
   const refreshBenchmarks=()=>{if(benchmarkTask||!kisState.snapshot)return benchmarkTask;const generation=kisGeneration;benchmarkTask=(async()=>{const today=require('./kis-activity.cjs').seoulDate();const first=performance.history(kisState.snapshot.accountKey)[0]?.day;
       for(const index of Object.keys(require('./performance.cjs').INDEXES)){const latest=performance.closes(index).at(-1)?.day;const start=latest??new Date(Date.parse((first??today)+'T00:00:00Z')-10*86400000).toISOString().slice(0,10);const rows=await kisService.request('index-history',{request:{index,start,end:today}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');performance.saveCloses(index,rows);}
-      benchmarkAt=Date.now();benchmarkError=null;})().catch(error=>{benchmarkError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'BENCHMARK_FAILED';}).finally(()=>{benchmarkTask=null;});return benchmarkTask;};
+      benchmarkAt=Date.now();benchmarkError=null;automation.detectEpisodes();})().catch(error=>{benchmarkError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'BENCHMARK_FAILED';}).finally(()=>{benchmarkTask=null;});return benchmarkTask;};
   setInterval(()=>{if(Date.now()-benchmarkAt>6*3600000)void refreshBenchmarks();},600000).unref();
   const performanceState=()=>{const account=kisState.snapshot?.accountKey;if(!account)return {connected:false,flows:[],summaries:{},benchmarks:{}};
     const summaries=Object.fromEntries(['COMBINED','KRW','USD'].map(kind=>[kind,performance.summary(account,kind,kind==='COMBINED'?'KOSPI':benchmarkFor(kind))]));
