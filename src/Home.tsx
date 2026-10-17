@@ -43,6 +43,16 @@ export function HomeTrend({onOpen}:{onOpen():void}){
     <div className="metric-foot"><span>Latest day {last.pnl==null?'—':`${last.pnl>=0?'+':''}${krw(last.pnl)}`}{last.dailyReturn!=null?` (${pct(last.dailyReturn*100)})`:''}</span>{m&&<span>1 month {m.twrPct==null?'—':pct(m.twrPct)} · {m.currentDrawdownPct?`${m.currentDrawdownPct.toFixed(1)}% below peak`:'at its peak'}</span>}</div>
   </section>;
 }
+// Known events in the next three weeks for your stocks and the market.
+const KIND_LABEL:Record<string,string>={earnings:'Earnings',dividend:'Dividend',meeting:'Meeting',macro:'Macro',expiry:'Expiry'};
+export function HomeCalendar(){
+  const [events,setEvents]=useState<{date:string;kind:string;title:string;symbol?:string;estimated?:boolean}[]>([]);
+  useEffect(()=>{let alive=true;const load=async()=>{try{const s:any=await window.portfolio?.getRuntime();if(alive)setEvents(s?.calendar??[]);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
+  if(!events.length)return null;
+  return <section className="metric-card home-calendar" aria-label="Coming up"><div className="home-trend-head"><small>Coming up · next 3 weeks</small></div>
+    <ul className="research-events">{events.slice(0,10).map(e=><li key={e.date+e.title}><span className="research-date">{e.date}</span><span className="role-tag">{KIND_LABEL[e.kind]??e.kind}</span>{e.title}</li>)}</ul>
+  </section>;
+}
 // Largest positions first, one line each; the full table lives on Holdings.
 export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:PortfolioState;onCompany(symbol:string):void;onAll():void;onRefresh():void;busy:boolean}){
   const fx=state.fx?.usdKRW??null;const cash=(state.cash.KRW??0)+(state.cash.USD??0)*(fx??0);
