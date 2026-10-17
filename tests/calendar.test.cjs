@@ -8,6 +8,7 @@ test('the calendar merges macro releases with earnings, record dates and meeting
   const events=cal.build({today:'2026-10-18',days:21,macroCalendar:[{date:'2026-10-20',market:'US',event:'U.S. CPI'},{date:'2026-12-01',event:'Too far'}],symbols:[{symbol:'105560',name:'KB금융'},{symbol:'005930'}],
     sources:s=>s==='105560'?{name:'KB금융',earnings:{nextExpected:'2026-10-23'},dividends:{upcoming:[{recordDate:'2026-10-31',perShare:null},{recordDate:'2026-09-30'}]},meetings:[{date:'2026-11-20'}]}:{}});
   assert.deepEqual(events.map(e=>[e.date,e.kind]),[['2026-10-20','macro'],['2026-10-23','earnings'],['2026-10-31','dividend']]);assert.ok(events[1].estimated);
+  const {calendarRows}=require('../electron/macro.cjs');assert.deepEqual(calendarRows([{release_name:'FOMC Press Release',date:'2026-10-19'},{release_name:'Consumer Price Index',date:'2026-10-20'}],'2026-10-18').map(r=>r.date+' '+r.event),['2026-10-20 U.S. CPI','2026-10-28 FOMC decision'],'FRED FOMC Press Release dates are not meetings; the Fed schedule is');
 });
 test('the scoreboard groups scored decisions by the confidence the agent gave',()=>{
   const {Scoreboard}=require('../electron/scoreboard.cjs');const db=new DatabaseSync(':memory:');const board=new Scoreboard(db,()=>Date.parse('2026-10-18T00:00:00Z'));

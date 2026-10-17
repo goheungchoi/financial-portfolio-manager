@@ -22,7 +22,7 @@ function fakeFetch(log){
 }
 test('fetching works without keys, reads the newest ECOS sample rows and isolates failures',async()=>{
   const log=[];const result=await fetchMacro(fakeFetch(log),{now:NOW});
-  assert.equal(result.ecosAccess,'sample');assert.equal(result.calendar,null);assert.ok(!log.some(u=>u.includes('api.stlouisfed.org')),'no calendar call without a key');
+  assert.equal(result.ecosAccess,'sample');assert.deepEqual(result.calendar.map(e=>e.date+' '+e.event),['2026-10-28 FOMC decision'],'the Fed schedule needs no key');assert.ok(!log.some(u=>u.includes('api.stlouisfed.org')),'no calendar call without a key');
   const ecos=log.filter(u=>u.includes('ecos.bok.or.kr'));assert.ok(ecos.every(u=>u.includes('/sample/')));assert.ok(ecos.some(u=>u.includes('/json/kr/16/25/')),'the second sample request reads the last 10 rows');
   const fx=result.series.find(s=>s.id==='KR_USDKRW');assert.equal(fx.value,24);assert.equal(fx.change,1);
   assert.deepEqual(result.errors.map(e=>e.id),['US_VIX']);assert.ok(result.series.find(s=>s.id==='US_10Y').value===4.2);
@@ -31,7 +31,7 @@ test('a FRED key adds the filtered release calendar; an ECOS key reads up to 100
   const log=[];const result=await fetchMacro(fakeFetch(log),{now:NOW,ecosKey:'MYECOSKEY123',fredKey:'a'.repeat(32)});
   assert.ok(log.filter(u=>u.includes('ecos.bok.or.kr')).every(u=>u.includes('/MYECOSKEY123/json/kr/1/100/')));
   assert.deepEqual(result.calendar.map(e=>e.date+' '+e.event),['2026-10-20 U.S. CPI','2026-10-28 FOMC decision'],'deduplicated, past and untracked releases removed');
-  assert.deepEqual(calendarRows([{release_name:'Gross Domestic Product',date:'2026-10-29'}],'2026-10-16')[0].event,'U.S. GDP');
+  assert.deepEqual(calendarRows([{release_name:'Gross Domestic Product',date:'2026-10-29'}],'2026-10-16').map(e=>e.event),['FOMC decision','U.S. GDP']);
 });
 test('the store keeps the last good value of a failed series and gives the AI the next two weeks of releases',async()=>{
   const store=new MacroStore(new DatabaseSync(':memory:'),()=>NOW);
