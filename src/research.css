@@ -86,3 +86,5 @@ tr.flash-up td{animation:flash-up 1.4s ease-out}tr.flash-down td{animation:flash
 .regime-gauge{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 8px}.gauge-part{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}.gauge-part.neg{color:#d96c6c;border-color:rgba(217,108,108,.4)}.gauge-part.pos{color:var(--accent)}
 .exposure-panel{margin-bottom:16px}
 .home-calendar{margin-top:14px}.home-calendar .research-events{margin-top:8px}
+.replay-options{display:flex;flex-wrap:wrap;gap:8px 18px;margin:8px 0}
+.replay-panel textarea{width:100%}
