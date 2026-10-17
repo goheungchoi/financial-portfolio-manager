@@ -235,6 +235,11 @@ app.whenReady().then(async () => {
   automation.marketOverviewCache=()=>research.cached('MARKET','market')?.value??null;
   ipcMain.handle('narrative:refresh',async event=>{authorize(event);try{await automation.buildNarrative();return {ok:true,state:automation.narrativeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED',state:automation.narrativeState()};}});
   ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
+  // Holdings for exposure and sizing; sector names come from cached quotes.
+  automation.portfolioHoldings=()=>{try{const st=portfolioState();const fx=st.fx?.usdKRW??null;return {holdings:st.rows.filter(r=>r.valueKRW>0).map(r=>({symbol:r.symbol,name:r.name,market:r.market,valueKRW:r.valueKRW})),cashKRW:(st.cash.KRW??0)+(fx?(st.cash.USD??0)*fx:0),equityKRW:st.totals.equityKRW??st.totals.KRW};}catch{return null;}};
+  automation.sectorOf=symbol=>research.cached(symbol,'overview')?.value?.sectorName??null;
+  // Daily history for holdings and watchlist stocks is kept warm (every six hours) for exposure, sizing, triggers and formulas.
+  let warmAt=0;setInterval(()=>{if(!kisState.snapshot||Date.now()-warmAt<6*3600000)return;warmAt=Date.now();void (async()=>{const symbols=[...new Set([...kisState.snapshot.holdings.map(h=>h.symbol),...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('KR')??[])])].slice(0,25);for(const symbol of symbols){try{await research.source(symbol,'daily');await research.source(symbol,'overview');}catch{}}})();},120000).unref();
   automation.series={closes:symbol=>research.cached(symbol,'daily')?.value?.closes??null,ensure:symbol=>research.source(symbol,'daily')};
   const deskAction=action=>(event,...args)=>{authorize(event);const scope=automation.watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');action(scope,...args);return automation.deskState();};
   ipcMain.handle('desk:cancel-trigger',deskAction((scope,id)=>automation.desk.cancelTrigger(scope,String(id))));

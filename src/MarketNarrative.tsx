@@ -15,14 +15,15 @@ function EpisodeRow({e}:{e:Episode}){
     <small>After 1 / 5 / 20 trading days: {['KOSPI','SPX','SOX'].map(line).filter(Boolean).join(' · ')||'not enough days yet'}</small></div></li>;
 }
 export function MarketNarrative(){
-  const [state,setState]=useState<NarrativeState|null>(null);const [note,setNote]=useState('');
-  useEffect(()=>{let alive=true;const load=async()=>{try{const s=await window.portfolio?.getRuntime();if(alive&&s?.narrative)setState(s.narrative as NarrativeState);}catch{}};void load();const t=setInterval(load,10000);return()=>{alive=false;clearInterval(t);};},[]);
+  const [state,setState]=useState<NarrativeState|null>(null);const [note,setNote]=useState('');const [gauge,setGauge]=useState<{regime:string;score:number;components:{name:string;value:number;reading:string;score:number}[]}|null>(null);
+  useEffect(()=>{let alive=true;const load=async()=>{try{const s=await window.portfolio?.getRuntime();if(alive&&s?.narrative)setState(s.narrative as NarrativeState);if(alive)setGauge((s as any)?.regime??null);}catch{}};void load();const t=setInterval(load,10000);return()=>{alive=false;clearInterval(t);};},[]);
   if(!window.portfolio||!state)return null;
   const refresh=async()=>{setNote('');setState({...state,busy:true});const r=await window.portfolio!.refreshNarrative();setState(r.state);if(!r.ok)setNote(r.error==='AI_BUDGET_EXHAUSTED'?'Daily AI budget reached.':r.state.blocked??'The narrative could not be updated. See Console.');};
   const hide=async(id:string,hidden:boolean)=>setState(await window.portfolio!.hideNarrativeDriver(id,hidden));
   const n=state.latest;const drivers=n?.drivers??[];
   return <section className="market-narrative" aria-label="Market narrative" aria-busy={state.busy}>
     <div className="section-head"><div><h2>What's driving the market</h2><small className="muted">{state.busy?'Reading headlines…':n?`Updated ${ago(n.timestamp)} · weekdays 08:30 and 16:30`:state.blocked??'Not built yet'}</small></div><button disabled={state.busy||Boolean(state.blocked)} onClick={()=>void refresh()}>{state.busy?'Updating…':'Update now'}</button></div>
+    {gauge&&<div className="regime-gauge" aria-label="Regime gauge"><span className={`regime regime-${gauge.regime}`}>Gauge: {REGIME[gauge.regime]}</span>{gauge.components.map(c=><span key={c.name} className={`gauge-part ${c.score<0?'neg':c.score>0?'pos':''}`} title={`${c.name}: ${c.value}`}>{c.name.replace(/ %$/,'')} · {c.reading}</span>)}</div>}
     {note&&<p className="warning-text">{note}</p>}
     {n&&<><p className="research-line"><span className={`regime regime-${n.regime}`}>{REGIME[n.regime]??n.regime}</span> {n.summary}</p>
       <ul className="desk-list narrative-drivers" aria-label="Market drivers">{drivers.map(d=><li key={d.id} className={d.hidden||!d.confirmed?'muted-row':''}>

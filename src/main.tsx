@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { holdings } from './domain.mjs';
 import {CompanyView} from './CompanyView';
+import {ExposurePanel} from './Exposure';
 import {ChartWindow} from './ChartWindow';
 import {MacroView,type MacroState} from './MacroView';
 import {AiConsole} from './AiConsole';
@@ -130,7 +131,7 @@ function App() {
   const account=tab==='Paper trading'?'Paper · KRW':isKis||kis.snapshot?`KIS ${kis.snapshot?.environment==='live'?'live':'mock'}`:'Not connected';
   return <div className="app"><TopBar tab={tab} canBack={place.index>0} canForward={place.index<place.last} onBack={back} onForward={forward} onNavigate={go} market={market} isKis={isKis} account={account} theme={theme} onTheme={()=>void toggleTheme()}/><aside><nav aria-label="Workspace">{workspaceGroups.map(group=><div className="nav-group" key={group.label}>{group.label&&<div className="nav-label">{group.label}</div>}{group.tabs.map(name=>{const badge=name==='Journal'?attention?.counts.lessons:name==='News'?attention?.counts.news:attention?.counts.approvals[name];return <div className="nav-row" key={name}><button data-tab={name} title={tabGuides[name].description} aria-current={tab===name?'page':undefined} className={tab===name?'nav active':'nav'} onClick={()=>show(name)}>{navLabels[name]??name}</button>{badge?<span className={`nav-badge ${attention?.counts.approvals[name]?'urgent':''}`} title={name==='Journal'?'Lessons to review':name==='News'?'Important disclosures today':'Orders waiting for approval'}>{badge}</span>:null}</div>;})}</div>)}</nav></aside><main><EmergencyBanner/>{tab===HOME&&isKis&&portfolio&&<HomeMetrics state={portfolio}/>}{tab===HOME&&isKis&&<HomeTrend onOpen={()=>go('Performance')}/>}{tab===HOME&&<div className="dashboard-row"><AttentionPanel attention={attention} onNavigate={go}/><AiActivity onNavigate={go}/></div>}{tab===HOME&&isKis&&portfolio&&<HomeHoldings state={portfolio} busy={portfolioBusy} onCompany={openCompany} onAll={()=>go('Holdings')} onRefresh={()=>void refreshPortfolio()}/>}{error && <div role="alert" className="notice error">{error}</div>}
   {[HOME,'Holdings','Charts'].includes(tab)&&!isKis&&<section className="connection-empty"><h2>{kis.status==='connecting'?'Connecting your portfolio…':'Connect your portfolio'}</h2><p>{kis.status==='connecting'?'Restoring your saved KIS connection.':'Connect a KIS account to see holdings, company information and prices.'}</p>{kis.status!=='connecting'&&<button className="primary" onClick={()=>go('Connections')}>Connect account</button>}<button onClick={()=>show('Paper trading')}>Open paper trading</button></section>}
-  {tab === 'Holdings' && isKis && <UnifiedPortfolio mode="holdings" onCompany={openCompany}/>}
+  {tab === 'Holdings' && isKis && <ExposurePanel/>}{tab === 'Holdings' && isKis && <UnifiedPortfolio mode="holdings" onCompany={openCompany}/>}
   {tab === 'Charts' && isKis && <CompanyView initialSymbol={chartSymbol}/>}
   {tab === 'Discover' && <Discover onOpenChart={openCompany} onNavigate={go}/>}
   {tab === 'Macro' && <MacroView/>}
