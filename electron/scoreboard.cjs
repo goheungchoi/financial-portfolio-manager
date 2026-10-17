@@ -45,7 +45,7 @@ class Scoreboard {
         return {days,status:benchmark==null?'no-benchmark':'scored',endDay:target.day,stockReturn:stock,benchmarkReturn:benchmark,signedReturn:sign*stock,excess:benchmark==null?null:sign*(stock-benchmark)};
       });
       const ids=Array.isArray(review.contextEvidence?.lessonIds)?review.contextEvidence.lessonIds:null;
-      return {id:review.id,timestamp:review.timestamp,day,symbol,action,quantity:review.decision.quantity??0,provider:review.provider,model:review.model??null,executed:Boolean(review.orderId),benchmark:benchmarkOf(symbol),decisionPrice:Number.isFinite(quote)?quote:null,baseClose:base?.close??null,baseDay:base?.day??null,horizons,lessonIds:ids,lessonTexts:review.contextEvidence?.reviewedLessons??[]};
+      return {id:review.id,timestamp:review.timestamp,day,symbol,action,confidence:review.decision.plan?.confidence??null,quantity:review.decision.quantity??0,provider:review.provider,model:review.model??null,executed:Boolean(review.orderId),benchmark:benchmarkOf(symbol),decisionPrice:Number.isFinite(quote)?quote:null,baseClose:base?.close??null,baseDay:base?.day??null,horizons,lessonIds:ids,lessonTexts:review.contextEvidence?.reviewedLessons??[]};
     });
   }
   summary(decisions,filter=()=>true){return Object.fromEntries(HORIZONS.map(days=>[days,stats(decisions.filter(filter).map(d=>d.horizons.find(h=>h.days===days)).filter(h=>h?.status==='scored').map(h=>h.excess))]));}
@@ -92,11 +92,11 @@ class Scoreboard {
     const decisions=this.decisions(),reviews=this.reviews();
     const groups=[...new Set(decisions.map(d=>d.model??d.provider))].map(key=>({key,summary:this.summary(decisions,d=>(d.model??d.provider)===key)}));
     return {horizons:HORIZONS,primary:PRIMARY,minSample:MIN_SAMPLE,generatedAt:this.clock(),counts:{reviews:reviews.length,holds:reviews.filter(r=>r.decision?.action==='Hold').length,paper:reviews.filter(r=>r.contextEvidence?.environment==='local-paper'&&r.decision?.action!=='Hold').length,scoredDecisions:decisions.length},
-      summary:this.summary(decisions),byAction:{Buy:this.summary(decisions,d=>d.action==='Buy'),Sell:this.summary(decisions,d=>d.action==='Sell')},withLessons:this.summary(decisions,d=>(d.lessonIds?.length??d.lessonTexts.length)>0),withoutLessons:this.summary(decisions,d=>(d.lessonIds?.length??d.lessonTexts.length)===0),groups,
+      summary:this.summary(decisions),byConfidence:Object.fromEntries(['low','medium','high'].map(c=>[c,this.summary(decisions,d=>d.confidence===c)])),byAction:{Buy:this.summary(decisions,d=>d.action==='Buy'),Sell:this.summary(decisions,d=>d.action==='Sell')},withLessons:this.summary(decisions,d=>(d.lessonIds?.length??d.lessonTexts.length)>0),withoutLessons:this.summary(decisions,d=>(d.lessonIds?.length??d.lessonTexts.length)===0),groups,
       decisions:decisions.slice(-100).reverse(),lessons:this.lessonImpact(decisions),conflicts:this.conflicts(),realized:this.realized().slice(0,50)};
   }
   // Compact form for the AI review context.
-  context(){const board=this.build(),s=board.summary[PRIMARY];if(!s.count&&!board.conflicts.length)return null;return {horizonTradingDays:PRIMARY,scoredDecisions:s.count,hitRateVsBenchmark:s.hitRate,meanExcessReturn:s.meanExcess,note:'Excess return of past Buy/Sell recommendations versus KOSPI or S&P 500 from the decision-day close. Small samples are noisy.'};}
+  context(){const board=this.build(),s=board.summary[PRIMARY];if(!s.count&&!board.conflicts.length)return null;const conf=Object.fromEntries(Object.entries(board.byConfidence).filter(([,v])=>v[PRIMARY].count).map(([k,v])=>[k,{scored:v[PRIMARY].count,hitRate:v[PRIMARY].hitRate,meanExcess:v[PRIMARY].meanExcess}]));return {horizonTradingDays:PRIMARY,scoredDecisions:s.count,hitRateVsBenchmark:s.hitRate,meanExcessReturn:s.meanExcess,...(Object.keys(conf).length?{byConfidence:conf}:{}),note:'Excess return of past Buy/Sell recommendations versus KOSPI or S&P 500 from the decision-day close. Small samples are noisy.'};}
 }
 // Daily closes for a symbol from the KIS chart evidence response.
 function closesFromCandles(symbol,candles){return (candles??[]).map(c=>({day:c.date??(isUS(symbol)?nyDate(c.timestamp):seoulDate(c.timestamp)),close:c.close})).filter(r=>Number.isFinite(r.close)&&r.close>0);}

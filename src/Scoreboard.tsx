@@ -5,7 +5,7 @@ type Decision={id:string;timestamp:number;day:string;symbol:string;action:'Buy'|
 type LessonImpact={id:string;symbol:string|null;status:string;approvedAt:number|null;note:string;applicability:string;horizon:number;withLesson:Stats;without:Stats;difference:number|null;verdict:string;trials:{completed:number;meanRuleMinusHold:number|null}};
 type Conflict={a:string;b:string;symbol:string;stances:string[];reason:string};
 type Realized={id:string;symbol:string;soldAt:number;holdingDays:number|null;netReturn:number;benchmark:string;benchmarkReturn:number|null;excess:number|null};
-export type ScoreboardState={horizons:number[];primary:number;minSample:number;counts:{reviews:number;holds:number;paper:number;scoredDecisions:number};summary:Record<string,Stats>;byAction:Record<'Buy'|'Sell',Record<string,Stats>>;withLessons:Record<string,Stats>;withoutLessons:Record<string,Stats>;groups:{key:string;summary:Record<string,Stats>}[];decisions:Decision[];lessons:LessonImpact[];conflicts:Conflict[];realized:Realized[];pricesUpdatedAt:number|null;pricesError:string|null;refreshing:boolean;benchmarkUpdatedAt:number|null};
+export type ScoreboardState={horizons:number[];primary:number;minSample:number;counts:{reviews:number;holds:number;paper:number;scoredDecisions:number};summary:Record<string,Stats>;byConfidence?:Record<'low'|'medium'|'high',Record<string,Stats>>;byAction:Record<'Buy'|'Sell',Record<string,Stats>>;withLessons:Record<string,Stats>;withoutLessons:Record<string,Stats>;groups:{key:string;summary:Record<string,Stats>}[];decisions:Decision[];lessons:LessonImpact[];conflicts:Conflict[];realized:Realized[];pricesUpdatedAt:number|null;pricesError:string|null;refreshing:boolean;benchmarkUpdatedAt:number|null};
 export type ScoreboardReply={ok:boolean;error?:string;state?:ScoreboardState};
 const BENCH:Record<string,string>={KOSPI:'KOSPI',SPX:'S&P 500'};
 const pct=(value:number|null|undefined,digits=2)=>value==null?'—':`${value>0?'+':''}${(value*100).toFixed(digits)}%`;
@@ -53,7 +53,7 @@ export function Scoreboard(){
     {main&&main.count>0&&main.count<state.minSample&&<p className="notice">Fewer than {state.minSample} scored decisions. Treat these numbers as anecdotes, not evidence.</p>}
     <ExcessBars decisions={state.decisions} days={state.primary}/>
     <table aria-label="Decision scores by horizon"><thead><tr><th>Recommendations</th>{state.horizons.map(h=><th key={h}>{h} day{h>1?'s':''}</th>)}</tr></thead><tbody>
-      <StatsRow label="All" stats={state.summary}/><StatsRow label="Buy" stats={state.byAction.Buy}/><StatsRow label="Sell" stats={state.byAction.Sell}/>
+      <StatsRow label="All" stats={state.summary}/><StatsRow label="Buy" stats={state.byAction.Buy}/><StatsRow label="Sell" stats={state.byAction.Sell}/>{state.byConfidence&&(["high","medium","low"] as const).filter(c=>state.byConfidence![c]&&Object.values(state.byConfidence![c]).some((x:any)=>x.count)).map(c=><StatsRow key={c} label={`${c[0].toUpperCase()+c.slice(1)} confidence`} stats={state.byConfidence![c]}/>)}
       <StatsRow label="With approved lessons" stats={state.withLessons}/><StatsRow label="Without lessons" stats={state.withoutLessons}/>
       {state.groups.length>1&&state.groups.map(g=><StatsRow key={g.key} label={g.key==='local'?'Local rules':g.key==='external'?'External agent':g.key} stats={g.summary}/>)}
     </tbody></table>
