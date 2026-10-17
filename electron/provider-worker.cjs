@@ -16,6 +16,7 @@ process.parentPort.on('message',async({data})=>{
     } else if(data.operation==='decision') {if(!ai)throw 0;result=await ai.decide(data.context,data.options);}
     else if(data.operation==='reflection') {if(!ai)throw 0;result=await ai.reflect(data.context,data.options);}
     else if(data.operation==='scout') {if(!ai)throw 0;result=await ai.scout(data.context,data.options);}
+    else if(data.operation==='narrative') {if(!ai)throw 0;result=await ai.narrative(data.context,data.options);}
     else if(data.operation==='push') {
       if(!pushURL)throw 0;
       const response=await fetch(pushURL,{method:'POST',redirect:'error',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/json'},body:JSON.stringify({content:data.message.slice(0,1500),text:data.message.slice(0,1500)})});
@@ -39,5 +40,5 @@ process.parentPort.on('message',async({data})=>{
       result=rows.slice(0,500).filter(row=>/^\d{14}$/.test(row.rcept_no)).map(row=>({title:(String(row.corp_name??'').trim()+' · '+String(row.report_nm??'').trim()).slice(0,500),symbol:row.stock_code??'',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row.rcept_no,published:row.rcept_dt,source:'DART'}));
     } else throw 0;
     process.parentPort.postMessage({id:data.id,ok:true,snapshot:result});
-  }catch(error){process.parentPort.postMessage({id:data.id,ok:false,usage:['decision','reflection','scout'].includes(data.operation)?error.usage??null:null,model:['decision','reflection','scout'].includes(data.operation)?error.model??null:null,detail:data.operation==='scout'&&typeof error.detail==='string'?error.detail.slice(0,200):null,code:['decision','scout'].includes(data.operation)?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):['dart-company','sec-company'].includes(data.operation)&&/^(DART|SEC)_[A-Z_]{3,30}$/.test(error?.message??'')?error.message:'PROVIDER_REQUEST_FAILED'});}
+  }catch(error){process.parentPort.postMessage({id:data.id,ok:false,usage:['decision','reflection','scout','narrative'].includes(data.operation)?error.usage??null:null,model:['decision','reflection','scout','narrative'].includes(data.operation)?error.model??null:null,detail:data.operation==='scout'&&typeof error.detail==='string'?error.detail.slice(0,200):null,code:['decision','scout','narrative'].includes(data.operation)?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):['dart-company','sec-company'].includes(data.operation)&&/^(DART|SEC)_[A-Z_]{3,30}$/.test(error?.message??'')?error.message:'PROVIDER_REQUEST_FAILED'});}
 });

@@ -3,6 +3,7 @@ import {useDraftState} from './useDraftState';
 import {ScoutPanel} from './ScoutPanel';
 import {MarketPulse} from './MarketPulse';
 import {QuickLook} from './QuickLook';
+import {MarketNarrative} from './MarketNarrative';
 export type Security={symbol:string;name:string;englishName:string;market:string;type:string};
 export type WatchEntry={symbol:string;name:string;market:string;type:string;source:'user'|'ai';reason:string;pinned:boolean;addedAt:number};
 export type ScreenRow={symbol:string;name:string;englishName?:string;market:string;type:string;price:number|null;changePct:number|null;volume:number|null;marketCap:number|null;per:number|null;currency:string;orderable?:boolean|null};
@@ -50,6 +51,7 @@ export function Discover({onOpenChart,onNavigate}:{onOpenChart(symbol:string):vo
   return <>
     {peek&&<QuickLook symbol={peek.symbol} name={peek.name} watching={listed.has(peek.symbol)} onClose={()=>setPeek(null)} onOpen={()=>onOpenChart(peek.symbol)} onWatch={()=>void run(()=>window.portfolio!.updateWatchlist('add',peek.symbol,''))}/>}
     <MarketPulse onOpenChart={onOpenChart}/>
+    <MarketNarrative/>
     <section aria-label="Find a listing"><div className="section-head"><h2>Find a listing</h2></div>
       <div className="search-row"><input aria-label="Search securities" placeholder="Company name, Korean code or U.S. ticker" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void run(()=>window.portfolio!.searchSecurities(query,queryMarket||null),data=>setResults(data as Security[]));}}/><select aria-label="Search market" value={queryMarket} onChange={e=>setQueryMarket(e.target.value)}><option value="">All markets</option><option value="KR">Korea</option><option value="US">U.S.</option></select><button className="primary" disabled={busy||!query.trim()} onClick={()=>void run(()=>window.portfolio!.searchSecurities(query,queryMarket||null),data=>setResults(data as Security[]))}>Search</button></div>
       {results&&(results.length?<table aria-label="Search results"><thead><tr><th>Symbol</th><th>Name</th><th>Market</th><th>Type</th><th/></tr></thead><tbody>{results.map(row=><tr key={row.symbol}><td><button className="link-button" onClick={()=>onOpenChart(row.symbol)}>{row.symbol}</button></td><td><button className="link-button" onClick={()=>setPeek({symbol:row.symbol,name:row.name})}>{row.name}</button>{row.englishName&&row.englishName!==row.name?<small> · {row.englishName}</small>:null}</td><td>{row.market}</td><td>{typeLabel[row.type]??row.type}</td><td>{addButton(row.symbol)}</td></tr>)}</tbody></table>:<p>No matching listings.</p>)}
