@@ -138,3 +138,9 @@ main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-wi
 .perf-legend{gap:18px;color:var(--muted);margin-top:2px}
 .perf-period-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.perf-period-row .perf-periods{margin:10px 0}
 .perf-mark.down circle{stroke:#d96c6c}
+/* Price history readout */
+.candle-summary{display:flex;align-items:center;flex-wrap:wrap;gap:10px 22px;font-family:inherit;font-size:13px;padding:10px 14px;margin:4px 0 6px;border:1px solid var(--border);border-radius:10px;background:var(--control);font-variant-numeric:tabular-nums;min-height:0}
+.candle-head{display:flex;align-items:center;gap:8px}.candle-date{color:var(--muted);font-size:12px}.candle-tag{font-size:10px;letter-spacing:.6px;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.candle-close{display:flex;align-items:baseline;gap:8px}.candle-close b{font-size:17px;font-weight:650;color:var(--text)}.candle-close span{font-size:12px;font-weight:600}
+.candle-ohlc{display:flex;flex-wrap:wrap;gap:6px 16px;margin:0 0 0 auto}.candle-ohlc div{display:flex;align-items:baseline;gap:5px}.candle-ohlc dt{font-size:10.5px;color:var(--muted);letter-spacing:.4px}.candle-ohlc dd{margin:0;color:var(--body);font-weight:500}
+@media(max-width:900px){.candle-ohlc{margin-left:0}}
