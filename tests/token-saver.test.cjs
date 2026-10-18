@@ -25,12 +25,16 @@ test('auto routing: routine reviews use the cheap model and a proposed trade is 
 });
 const base=()=>({environment:'kis',market:'KR',universe:[{symbol:'005930',price:70000}],quotes:[{symbol:'005930',price:70000,retrievedAt:1}],positions:{'005930':{quantity:10,costTotal:650000}},cash:1000000,news:[{title:'A',published:'20261016',symbols:[],importance:'normal'}],reviewedLessons:[],marketSession:{open:true},emergency:{active:false},performance:{currentEquity:1700000},timestamp:'x'});
 const skip=(next,config={...DEFAULTS},now=60*60000,trigger='Scheduled review')=>shouldSkip({trigger,config,fingerprint:fingerprint(next),last:{...fingerprint(base()),completedAt:0},now});
-test('unchanged state is skipped despite timestamps and small moves; holdings, news, sessions and larger moves are not',()=>{
+test('unchanged state is skipped despite timestamps, small moves and routine headlines; holdings, important news, sessions and larger moves are not',()=>{
   const moved=base();moved.quotes[0].price=70300;moved.universe[0].price=70300;moved.quotes[0].retrievedAt=999;moved.performance.currentEquity=1;moved.timestamp='y';moved.cash=1005000;
   assert.equal(skip(moved),true,'0.4% price and 0.5% cash moves are within half the 3% tolerance');
   const big=base();big.quotes[0].price=71400;assert.equal(skip(big),false,'a 2% move exceeds 1.5%');
   const sold=base();sold.positions['005930'].quantity=5;assert.equal(skip(sold),false);
-  const news=base();news.news.push({title:'B'});assert.equal(skip(news),false);
+  const news=base();news.news.push({title:'B',symbols:['005930'],importance:'normal'});assert.equal(skip(news),true,'routine headlines, even about held stocks, do not block a skip');
+  const important=base();important.news.push({title:'C',symbols:['005930'],importance:'high'});assert.equal(skip(important),false);
+  const background=base();background.marketNarrative={drivers:[1]};background.eventCalendar=[{date:'2026-10-20'}];background.marketRegime={regime:'neutral',score:0.1};const later=base();later.marketRegime={regime:'neutral',score:0.3};
+  assert.equal(shouldSkip({trigger:'Scheduled review',config:{...DEFAULTS},fingerprint:fingerprint(later),last:{...fingerprint(background),completedAt:0},now:60*60000}),true,'background and regime score changes do not block a skip');
+  const riskOff=base();riskOff.marketRegime={regime:'risk-off'};assert.equal(shouldSkip({trigger:'Scheduled review',config:{...DEFAULTS},fingerprint:fingerprint(riskOff),last:{...fingerprint(later),completedAt:0},now:60*60000}),false,'a regime change does');
   const closed=base();closed.marketSession.open=false;assert.equal(skip(closed),false);
 });
 test('only scheduled reviews are skipped, within the maximum skip age',()=>{

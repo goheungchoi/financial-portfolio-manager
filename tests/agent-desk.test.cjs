@@ -86,7 +86,7 @@ test('a review uses compute, notes and a trigger in one round; the context carri
 test('a met trigger starts a review with the values that met it',async()=>{
   const {automation,supplied,events}=harness();automation.configure({enabled:true});automation.sessionArmed=true;automation.lastRun=0;
   automation.desk.setTrigger(automation.watchScope(),{action:'add',id:'',name:'Dip',conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',expiresInHours:4,reason:'Add on dips'},{universe:['005930']});
-  automation.schedulerStatus=()=>({label:'Monitoring'});automation.tick();await new Promise(r=>setTimeout(r,30));
+  automation.schedulerStatus=()=>({label:'Monitoring'});automation.marketHours=()=>({open:true,markets:[],preOpen:null,next:null});automation.tick();await new Promise(r=>setTimeout(r,30));
   const review=supplied.find(([op])=>op==='decision');assert.ok(review,'a review ran');assert.equal(review[1].context.triggerEvidence.kind,'agent-trigger');assert.equal(review[1].context.triggerEvidence.results[0].actual,217000);
   assert.ok(events.some(e=>e.title==='Agent trigger met'));assert.equal(automation.desk.triggers(automation.watchScope()).length,0);
 });
