@@ -11,6 +11,8 @@ function buildDigest(a,now=Date.now()){
   if(a.config.scope==='paper')add('Paper','KRW',a.paper.getState().loss);
   if(['kis','both'].includes(a.config.scope))add('Korea','KRW',a.live?.getState().loss);
   if(['us','both'].includes(a.config.scope))add('U.S.','USD',a.usLive?.getState().loss);
+  // Without an active trading session there is no loss baseline; fall back to recorded daily account values.
+  if(!markets.length&&a.config.scope!=='paper')for(const row of a.accountValues?.(day)??[])if((row.market==='KR'&&a.config.scope!=='us')||(row.market==='US'&&a.config.scope!=='kis'))add(row.label,row.currency,{baseline:row.baseline,equity:row.equity});
   const orders=[...a.paper.orders(),...(a.live?.orders()??[]),...(a.usLive?.orders()??[])].filter(row=>row.status!=='Ready'&&onDay(row.createdAt));
   const count=statuses=>orders.filter(row=>statuses.includes(row.status)).length;
   const summary={total:orders.length,filled:count(['Filled']),partial:count(['Partially filled']),rejected:count(['Rejected','Risk stopped']),uncertain:count(['Uncertain','Cancellation uncertain']),open:count(['Pending','Accepted','Submitting'])};
