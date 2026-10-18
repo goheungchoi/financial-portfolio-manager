@@ -19,7 +19,8 @@ process.parentPort.on('message',async({data})=>{
     else if(data.operation==='narrative') {if(!ai)throw 0;result=await ai.narrative(data.context,data.options);}
     else if(data.operation==='push') {
       if(!pushURL)throw 0;
-      const response=await fetch(pushURL,{method:'POST',redirect:'error',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/json'},body:JSON.stringify({content:data.message.slice(0,1500),text:data.message.slice(0,1500)})});
+      const {body,headers}=require('./phone-snapshot.cjs').pushRequest(pushURL,data);
+      const response=await fetch(pushURL,{method:'POST',redirect:'error',signal:AbortSignal.timeout(20000),...(headers?{headers}:{}),body});
       if(!response.ok)throw 0;result={delivered:true};
     } else if(data.operation==='macro') {
       // Works without keys (FRED downloads, ECOS sample access); keys add full ECOS access and the FRED release calendar.

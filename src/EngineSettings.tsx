@@ -8,7 +8,8 @@ const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
 const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-conditional','Conditional orders'],['eng-alerts','Alerts']];
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
 export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,onState}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void}){
-  const [preview,setPreview]=useState<string|null>(null);
+  const [preview,setPreview]=useState<string|null>(null);const [phoneNote,setPhoneNote]=useState('');
+  const testPhone=async()=>{setPhoneNote('');try{const r=await window.portfolio?.testPhoneSnapshot();setPhoneNote(r?.ok?'Test snapshot queued. It should reach your phone within a few seconds.':r?.error==='NO_WEBHOOK'?'Add a webhook in Connections first.':'Turn on phone alerts and save first.');}catch{setPhoneNote('Could not reach the engine.');}};
   const loadPreview=async()=>{try{const digest=await window.portfolio?.previewDigest();setPreview(digest?.text??'Preview unavailable.');}catch{setPreview('Preview unavailable.');}};
   const jump=(id:string)=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});
   const efforts=config.openaiModel==='gpt-6-astra'?['low','medium','high']:['none','low','medium','high'];
@@ -73,10 +74,14 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
     <Card id="eng-alerts" title="Alerts">
       <Row title="Desktop alerts" hint="When orders fill, cancel or stop"><Switch label="Desktop alerts" disabled={busy} checked={config.desktopAlerts} onChange={v=>edit('desktopAlerts',v)}/></Row>
       <Row title="Phone alerts" hint={state.providerStatus.pushConnected?'Sent to your webhook':'Needs a webhook in Connections'}><Switch label="Phone alerts" disabled={busy} checked={config.mobileAlerts} onChange={v=>edit('mobileAlerts',v)}/></Row>
+      {config.mobileAlerts&&<Row title="Snapshot after each run" hint="Portfolio chart and the agent's decision after every review and scout run"><Switch label="Snapshot after each run" disabled={busy} checked={config.phoneSnapshots} onChange={v=>edit('phoneSnapshots',v)}/></Row>}
+      {config.mobileAlerts&&config.phoneSnapshots&&<Row title="Show amounts" hint={config.phoneAmounts?'Won amounts and percentages':'Percentages only'}><Switch label="Show amounts in snapshots" disabled={busy} checked={config.phoneAmounts} onChange={v=>edit('phoneAmounts',v)}/></Row>}
       <Row title="Daily digest" hint="A summary of the day's reviews and orders"><Switch label="Send a daily digest" disabled={busy} checked={config.digestEnabled} onChange={v=>edit('digestEnabled',v)}/></Row>
       {config.digestEnabled&&<Row title="Digest time"><select aria-label="Daily digest time" disabled={busy} value={config.digestHour} onChange={e=>edit('digestHour',Number(e.target.value))}>{Array.from({length:24},(_,h)=><option key={h} value={h}>{hourLabel(h)}</option>)}</select></Row>}
       <div className="card-actions"><button disabled={busy} onClick={()=>void loadPreview()}>Preview today's digest</button></div>
       {preview&&<pre aria-label="Digest preview" className="digest-preview">{preview}</pre>}
+      {config.mobileAlerts&&state.providerStatus.pushConnected&&<div className="card-actions"><button disabled={busy||dirty} onClick={()=>void testPhone()}>Send a test snapshot</button></div>}
+      {phoneNote&&<p className="muted">{phoneNote}</p>}
       {config.mobileAlerts&&!state.providerStatus.pushConnected&&<div className="notice error">Phone alerts are on, but no webhook is set. Alerts are queued, not sent.</div>}
       {state.notifications.length>0&&<details className="inline-help"><summary>Phone alert outbox · {state.notifications.length}</summary>{state.notifications.map(item=><p key={item.id}>{item.delivered?'Delivered':item.attempts>=5?'Failed':'Queued'} · {item.message}</p>)}</details>}
     </Card>
