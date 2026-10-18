@@ -1,3 +1,4 @@
+import {toast} from './Toast';
 import {Note} from './Note';
 import {Card,Row,NumberField} from './SettingsUI';
 import {useEffect,useState} from 'react';
@@ -11,7 +12,7 @@ export function TradingCosts(){
   useEffect(()=>{void window.portfolio?.getCosts().then(next=>{if(!dirty.current)setValue(next);});},[]);
   if(!value)return <section>Loading fee settings…</section>;
   const edit=(key:keyof CostSettings,next:unknown)=>{dirty.current=true;setValue({...value,[key]:next});};
-  const save=async()=>{setBusy(true);try{setValue(await window.portfolio!.saveCosts(value));dirty.current=false;setMessage('Costs saved. New proposals and reviews use these values.');}catch{setMessage('Check the fee rates, tax year, exchange rate and acquisition costs.');}finally{setBusy(false);}};
+  const save=async()=>{setBusy(true);try{setValue(await window.portfolio!.saveCosts(value));dirty.current=false;setMessage('Costs saved. New proposals and reviews use these values.');toast('Fees & taxes saved');}catch{setMessage('Check the fee rates, tax year, exchange rate and acquisition costs.');toast('Not saved: check the highlighted values','error');}finally{setBusy(false);}};
   const link=(href:string,label:string)=><a href={href} onClick={e=>{e.preventDefault();void window.portfolio?.openNews(e.currentTarget.href);}}>{label} ↗</a>;
   const optional=(key:'annualRealizedKRW'|'usdKRW',label:string,step:number,unit:string)=><span className="number-field"><input type="number" aria-label={label} step={step} placeholder="Unknown" value={value[key]??''} onChange={e=>edit(key,e.target.value===''?null:Number(e.target.value))}/><span className="unit">{unit}</span></span>;
   return <div className="engine-settings">

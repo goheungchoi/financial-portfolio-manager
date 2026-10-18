@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import {Toaster} from './Toast';
 import { holdings } from './domain.mjs';
 import {CompanyView} from './CompanyView';
 import {ExposurePanel} from './Exposure';
@@ -146,7 +147,7 @@ function App() {
   {tab === 'KIS trading' && <LiveTrading key={market?.connectionId??'disconnected'} draftKey={`kis:${market?.connectionId??'disconnected'}`}/>}
   {['Journal','News','Engine settings'].includes(tab) && <RuntimeSettings key={tab} mode={tab==='News'?'news':tab==='Journal'?'journal':'settings'} onNavigate={go}/>}
   {tab === 'AI console' && <AiConsole events={events}/>}
-  </main></div>;
+  <Toaster/></main></div>;
 }
 // A '#chart:SYMBOL' page is a pop-out chart window rather than the full workspace.
 const chartWindow=location.hash.startsWith('#chart:')?decodeURIComponent(location.hash.slice(7)):null;

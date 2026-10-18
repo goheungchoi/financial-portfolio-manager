@@ -1,3 +1,4 @@
+import {toast} from './Toast';
 import {Note} from './Note';
 import {Card,Row,Switch,NumberField} from './SettingsUI';
 import {useEffect,useState} from 'react';
@@ -48,7 +49,7 @@ export function ShortLeverage(){
   const [state,setState]=useState<ExposureState|null>(null);const [busy,setBusy]=useState(false);const [notice,setNotice]=useState('');const [symbol,setSymbol]=useState('');const [factor,setFactor]=useState('');
   useEffect(()=>{void window.portfolio?.getExposure().then(reply=>setState(reply.state)).catch(()=>{});},[]);
   if(!window.portfolio)return null;if(!state)return <section><p className="muted">Loading…</p></section>;
-  const act=async(task:()=>Promise<ExposureReply>,done?:()=>void)=>{setBusy(true);setNotice('');try{const reply=await task();setState(reply.state);if(reply.ok){setNotice('Saved.');done?.();}else setNotice(ERRORS[reply.error??'']??'The change could not be saved.');}catch{setNotice('Could not reach the engine.');}finally{setBusy(false);}};
+  const act=async(task:()=>Promise<ExposureReply>,done?:()=>void)=>{setBusy(true);setNotice('');try{const reply=await task();setState(reply.state);if(reply.ok){setNotice('Saved.');toast('Short & leverage settings saved');done?.();}else{setNotice(ERRORS[reply.error??'']??'The change could not be saved.');toast('Not saved: '+(ERRORS[reply.error??'']??'the change could not be saved'),'error');}}catch{setNotice('Could not reach the engine.');toast('Not saved: could not reach the engine','error');}finally{setBusy(false);}};
   return <div className="engine-settings">
     <Note summary="Off by default. The AI proposes within your caps; closing is always allowed.">These settings let the AI propose leveraged or short exposure within your caps. It never changes them. Each type is off by default and, unless you turn on automatic submission, every such order waits for your approval. Closing positions (selling, repaying a loan, covering a short) is always allowed. KIS may require investor education, a credit agreement or a minimum deposit before your account can use them.</Note>
     {notice&&<p role="status" className="notice">{notice}</p>}
