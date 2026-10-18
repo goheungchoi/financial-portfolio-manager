@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import './research.css';
 export type ResearchSection={status:'ok'|'unavailable';retrievedAt?:number;data?:any;reason?:string;stale?:boolean};
-export type ResearchProfile={symbol:string;name:string|null;market?:string;type?:string;sector?:string|null;sectorName?:string|null;asOf:string;sections:Record<string,ResearchSection>};
+export type ResearchProfile={symbol:string;name:string|null;market?:string;type?:string;sector?:string|null;marketCapKRW?:number|null;sectorName?:string|null;asOf:string;sections:Record<string,ResearchSection>};
 // The same research the agents read, one tab per section; each tab loads when first opened.
 const US_TABS=new Set(['overview','financials','dividends','events','risk']);
 const FUND_TABS=new Set(['overview','fund','holdings','dividends','flows','risk']);
