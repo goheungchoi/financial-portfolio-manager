@@ -57,3 +57,16 @@ test('Discord webhooks get an embed with the chart attached; other webhooks get 
   const slack=P.pushRequest('https://hooks.slack.com/services/x',{message:'hi',embed:{title:'T'}});assert.equal(slack.discord,false);assert.deepEqual(JSON.parse(slack.body),{content:'hi',text:'hi'});
   assert.equal(P.pushRequest('https://discord.com.evil.test/api/webhooks/1/a',{message:'x',embed:{}}).discord,false);
 });
+test('alerts still queued after 12 hours expire unsent',async()=>{
+  const db=new DatabaseSync(':memory:');const sent=[];const n=new Notifications(db,{request:async(op,p)=>{sent.push(p.message);return {};}},()=>({mobileAlerts:true,desktopAlerts:false,pushConnected:true}),()=>{});
+  n.notify('digest:old','Old digest');db.prepare('UPDATE notification_outbox SET createdAt=?,nextAt=? WHERE id=?').run(Date.now()-13*3600000,Date.now()-13*3600000,'digest:old');
+  n.notify('digest:new','New digest');await n.tick();await n.tick();
+  assert.deepEqual(sent,['New digest']);assert.equal(n.status().find(r=>r.id==='digest:old').attempts,99);
+});
+test('the digest falls back to recorded account values when no trading session is on',()=>{
+  const {buildDigest}=require('../electron/daily-digest.cjs');const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE reviews(id TEXT,payload TEXT);CREATE TABLE ai_usage(day TEXT,calls INTEGER,reservedMicro INTEGER)');
+  const a={db,config:{scope:'kis'},paper:{orders:()=>[]},live:{getState:()=>({loss:null}),orders:()=>[]},usLive:null,guardrails:{eventsOn:()=>[],failuresOn:()=>0},
+    accountValues:()=>[{market:'KR',currency:'KRW',label:'Korea',equity:10288754,baseline:10291800},{market:'US',currency:'USD',label:'U.S.',equity:100,baseline:100}]};
+  const d=buildDigest(a);assert.equal(d.markets.length,1,'U.S. is outside the Korea scope');assert.match(d.text,/Korea ₩10,288,754 \(-₩3,046, -0\.03% today\)/);
+  assert.match(buildDigest({...a,accountValues:()=>[]}).text,/No account valuation/);
+});

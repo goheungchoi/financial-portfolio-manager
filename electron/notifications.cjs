@@ -1,8 +1,9 @@
+const EXPIRE_MS=12*3600000;
 class Notifications {
   constructor(db,provider,getConfig,desktop) {
     this.db=db;this.provider=provider;this.getConfig=getConfig;this.desktop=desktop;this.busy=false;
     db.exec('CREATE TABLE IF NOT EXISTS notification_outbox(id TEXT PRIMARY KEY,message TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,nextAt INTEGER NOT NULL,delivered INTEGER NOT NULL DEFAULT 0);');
-    try{db.exec('ALTER TABLE notification_outbox ADD COLUMN payload TEXT');}catch{}
+    try{db.exec('ALTER TABLE notification_outbox ADD COLUMN payload TEXT');}catch{}try{db.exec('ALTER TABLE notification_outbox ADD COLUMN createdAt INTEGER');}catch{}
     this.seen=new Map();this.startedAt=Date.now();this.render=null;
   }
   observe(orders) {
@@ -13,23 +14,25 @@ class Notifications {
       if(config.desktopAlerts)this.desktop(message);
       // A completed fill becomes a phone snapshot instead of a one-line alert when snapshots are on; partial fills stay one-line alerts.
       if(config.mobileAlerts&&order.status==='Filled'){let posted=false;try{posted=this.onFill?.(order)===true;}catch{}if(posted)continue;}
-      if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt) VALUES(?,?,?)').run(order.id+':'+order.status,message,Date.now());
+      if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt,createdAt) VALUES(?,?,?,?)').run(order.id+':'+order.status,message,Date.now(),Date.now());
     }
   }
   // Engine-originated alerts (guardrails, digests) use the same desktop and webhook preferences as order alerts.
   notify(id,message) {
     const config=this.getConfig();
     if(config.desktopAlerts)this.desktop(message);
-    if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt) VALUES(?,?,?)').run(id,message,Date.now());
+    if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt,createdAt) VALUES(?,?,?,?)').run(id,message,Date.now(),Date.now());
   }
   // Phone snapshots go only to the webhook, never to desktop alerts; the chart is drawn when the post is sent.
   post(snapshot) {
     if(!this.getConfig().mobileAlerts)return false;
-    this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt,payload) VALUES(?,?,?,?)').run(snapshot.id,snapshot.text,Date.now(),JSON.stringify(snapshot));return true;
+    this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt,payload,createdAt) VALUES(?,?,?,?,?)').run(snapshot.id,snapshot.text,Date.now(),JSON.stringify(snapshot),Date.now());return true;
   }
   async tick() {
     if(this.busy || !this.getConfig().mobileAlerts || this.getConfig().pushConnected===false)return;this.busy=true;
     try {
+      // Alerts still queued after 12 hours (for example while no webhook was set) expire unsent; they would arrive out of date.
+      this.db.prepare('UPDATE notification_outbox SET attempts=99 WHERE delivered=0 AND attempts<5 AND COALESCE(createdAt,CASE WHEN attempts=0 THEN nextAt END)<?').run(Date.now()-EXPIRE_MS);
       const row=this.db.prepare('SELECT * FROM notification_outbox WHERE delivered=0 AND attempts<5 AND nextAt<=? ORDER BY nextAt LIMIT 1').get(Date.now());if(!row)return;
       // Snapshots older than 30 minutes are sent as text only; the chart would no longer be current.
       const snapshot=row.payload?JSON.parse(row.payload):null;let image=null;

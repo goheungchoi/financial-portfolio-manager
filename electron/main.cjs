@@ -262,6 +262,8 @@ app.whenReady().then(async () => {
   if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
   setInterval(recordValue,60000).unref();
+  // Daily digest fallback: today's recorded value against the previous recorded day, per market.
+  automation.accountValues=day=>{const account=kisState.snapshot?.accountKey;if(!account)return [];return [['KR','KRW','Korea'],['US','USD','U.S.']].flatMap(([market,currency,label])=>{const points=performance.series(account,currency);const today=points.find(p=>p.day===day),prior=points.filter(p=>p.day<day).at(-1);return today&&prior?[{market,currency,label,equity:today.value,baseline:prior.value+(today.flow??0)}]:[];});};
   // Phone snapshots when a buy or sell fills (only when phone alerts and snapshots are on).
   const phone=require('./phone-snapshot.cjs');const intraday=new phone.IntradayValues(store.db);
   setInterval(()=>{try{const s=portfolioState();if(kisState.snapshot?.accountKey)intraday.record(kisState.snapshot.accountKey,s.totals.equityKRW??s.totals.KRW);}catch{}},60000).unref();

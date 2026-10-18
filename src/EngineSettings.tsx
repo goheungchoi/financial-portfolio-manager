@@ -83,7 +83,7 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       {config.mobileAlerts&&state.providerStatus.pushConnected&&<div className="card-actions"><button disabled={busy||dirty} onClick={()=>void testPhone()}>Send a test snapshot</button></div>}
       {phoneNote&&<p className="muted">{phoneNote}</p>}
       {config.mobileAlerts&&!state.providerStatus.pushConnected&&<div className="notice error">Phone alerts are on, but no webhook is set. Alerts are queued, not sent.</div>}
-      {state.notifications.length>0&&<details className="inline-help"><summary>Phone alert outbox · {state.notifications.length}</summary>{state.notifications.map(item=><p key={item.id}>{item.delivered?'Delivered':item.attempts>=5?'Failed':'Queued'} · {item.message}</p>)}</details>}
+      {state.notifications.length>0&&<details className="inline-help"><summary>Phone alert outbox · {state.notifications.length}</summary>{state.notifications.map(item=><p key={item.id}>{item.delivered?'Delivered':item.attempts>=99?'Expired':item.attempts>=5?'Failed':'Queued'} · {item.message}</p>)}</details>}
     </Card>
 
     <Card title="AI review alerts" hint="Price levels and moves the AI asked to be woken up for." aside={<button onClick={async()=>{const value=await window.portfolio?.resetReviewWatches();if(value)onState(value);}}>Reset to default alerts</button>}>
