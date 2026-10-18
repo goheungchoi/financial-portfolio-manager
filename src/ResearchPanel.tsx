@@ -173,7 +173,7 @@ export function ResearchPanel({symbol}:{symbol:string}){
   return <section className="research-panel" aria-label="Company research" aria-busy={busy}>
     <div className="section-head"><div><h2>Research</h2><small className="muted">{busy?'Loading…':section?.retrievedAt?`Updated ${ago(section.retrievedAt)}${section.stale?' · showing saved data':''}`:''}</small></div><button disabled={busy} onClick={()=>void load(tab,true)}>Refresh</button></div>
     <div className="segmented research-tabs" role="tablist" aria-label="Research sections">{tabs.map(([key,label])=><button key={key} role="tab" aria-selected={tab===key} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</div>
-    <div className="research-body" role="tabpanel">{!section?<p className="muted">{busy?'Loading…':''}</p>:section.status!=='ok'?<p className="muted">{reason(section.reason)}</p>:<View d={section.data} us={us}/>}</div>
+    <div className="research-body" role="tabpanel">{!section?(busy?<div className="skeleton-table" role="status" aria-label="Loading research"><span className="muted"><span className="spinner"/> Loading {tab} research…</span>{[0,1,2].map(i=><div key={i} className="skeleton-row"/>)}</div>:null):section.status!=='ok'?<p className="muted">{reason(section.reason)}</p>:<View d={section.data} us={us}/>}</div>
     <p className="muted research-note">{us?'KIS and SEC EDGAR data.':'KIS and OpenDART data.'} The AI agents read the same research.</p>
   </section>;
 }

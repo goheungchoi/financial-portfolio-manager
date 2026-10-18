@@ -124,3 +124,17 @@ main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-wi
 .perf-contrib{margin-top:10px}
 .perf-sub{display:block;font-size:11px;color:var(--muted);margin-top:3px;font-weight:400}
 .perf-more{margin:2px 0 8px}
+/* Performance charts drawn at real width */
+.perf-chart svg{width:100%;height:auto;overflow:visible}.perf-chart{margin:14px 0 6px}
+.perf-grid{opacity:.45}.perf-axis{font-size:11px;font-variant-numeric:tabular-nums}
+.perf-ref{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 4;opacity:.7}
+.perf-line{stroke-width:2}.perf-band{opacity:.1}
+.perf-label{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums}.perf-label.positive{fill:var(--accent)}.perf-label.negative{fill:#d96c6c}
+.perf-mark circle{fill:var(--panel);stroke:var(--perf-portfolio);stroke-width:2}.perf-mark text,.perf-mark-text{font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.perf-bar.up{fill:var(--accent)}.perf-bar.down{fill:#d96c6c}.perf-bar{transition:opacity .12s}.perf-bar.dim{opacity:.45}
+.swatch.up{background:var(--accent)}.swatch.down{background:#d96c6c}
+.perf-drawdown{fill:#d96c6c;opacity:.16;stroke:none}.perf-drawdown-line{fill:none;stroke:#d96c6c;stroke-width:2;stroke-linejoin:round}.perf-dot.drawdown{fill:#d96c6c}
+.perf-tooltip{top:10px;gap:3px;padding:8px 11px;box-shadow:0 6px 18px #0004;font-variant-numeric:tabular-nums}.perf-tooltip b{font-size:12px}.perf-tooltip span{display:flex;align-items:center}
+.perf-legend{gap:18px;color:var(--muted);margin-top:2px}
+.perf-period-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.perf-period-row .perf-periods{margin:10px 0}
+.perf-mark.down circle{stroke:#d96c6c}
