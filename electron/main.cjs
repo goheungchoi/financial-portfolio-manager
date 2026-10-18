@@ -262,20 +262,18 @@ app.whenReady().then(async () => {
   if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
   setInterval(recordValue,60000).unref();
-  // Phone snapshots after each review and scout run (only when phone alerts and snapshots are on).
-  const phone=require('./phone-snapshot.cjs');const intraday=new phone.IntradayValues(store.db);const postedStatus=new Map();
+  // Phone snapshots when a buy or sell fills (only when phone alerts and snapshots are on).
+  const phone=require('./phone-snapshot.cjs');const intraday=new phone.IntradayValues(store.db);
   setInterval(()=>{try{const s=portfolioState();if(kisState.snapshot?.accountKey)intraday.record(kisState.snapshot.accountKey,s.totals.equityKRW??s.totals.KRW);}catch{}},60000).unref();
   notifier.render=spec=>require('./chart-image.cjs').renderChart(spec);
   const figures=()=>{const account=kisState.snapshot?.accountKey;const combined=account?performance.series(account,'COMBINED'):[];const daily=combined.length?combined:account?performance.series(account,'KRW'):[];
     return phone.portfolioFigures({portfolio:portfolioState(),daily,intraday:account?intraday.day(account):[],previousClose:symbol=>kisQuotes.get(symbol)?.previousClose??null,amounts:automation.config.phoneAmounts});};
   const phoneReady=()=>automation.config.mobileAlerts&&automation.config.phoneSnapshots;
-  automation.onReviewed=review=>{if(!phoneReady())return;
-    // Orders that are new or changed status since the previous snapshot.
-    const all=[...paper.orders(),...live.orders(),...(usLive?.orders()??[])].filter(o=>o.status!=='Ready');const changed=all.filter(o=>postedStatus.has(o.id)?postedStatus.get(o.id)!==o.status:o.createdAt>(notifier.startedAt??0));for(const o of all)postedStatus.set(o.id,o.status);
-    const nameOf=symbol=>master.get(symbol)?.name||symbol;
-    notifier.post(phone.reviewSnapshot({review,figures:figures(),orders:changed.map(o=>({...o,name:nameOf(o.symbol)})),regime:automation.regimeState()?.regime??null,conditional:automation.desk.orders(automation.watchScope()).length,nameOf}));};
+  // The review that proposed an order (broker order ids are proposal ids; paper orders carry proposalId).
+  const reviewFor=order=>{for(const row of store.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 300').all()){const r=JSON.parse(row.payload);if(r.orderId===order.id||r.proposalId===order.id||order.proposalId&&r.proposalId===order.proposalId)return r;}return null;};
+  notifier.onFill=order=>{if(!phoneReady())return false;
+    return notifier.post(phone.tradeSnapshot({order,review:reviewFor(order),figures:figures(),regime:automation.regimeState()?.regime??null,conditional:automation.desk.orders(automation.watchScope()).length,name:master.get(order.symbol)?.name||order.symbol}));};
   ipcMain.handle('phone:test',event=>{authorize(event);if(!automation.config.mobileAlerts)return {ok:false,error:'PHONE_ALERTS_OFF'};if(!automation.providerStatus.pushConnected)return {ok:false,error:'NO_WEBHOOK'};notifier.post(phone.testSnapshot({figures:figures()}));return {ok:true};});
-  automation.onScouted=(plan,runId)=>{if(phoneReady())notifier.post(phone.scoutSnapshot({plan,figures:figures(),runId}));};
   const refreshBenchmarks=()=>{if(benchmarkTask||!kisState.snapshot)return benchmarkTask;const generation=kisGeneration;benchmarkTask=(async()=>{const today=require('./kis-activity.cjs').seoulDate();const first=performance.history(kisState.snapshot.accountKey)[0]?.day;
       for(const index of Object.keys(require('./performance.cjs').INDEXES)){const latest=performance.closes(index).at(-1)?.day;const start=latest??new Date(Math.min(Date.parse((first??today)+'T00:00:00Z')-10*86400000,Date.parse(today+'T00:00:00Z')-200*86400000)).toISOString().slice(0,10);const rows=await kisService.request('index-history',{request:{index,start,end:today}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');performance.saveCloses(index,rows);}
       benchmarkAt=Date.now();benchmarkError=null;automation.detectEpisodes();})().catch(error=>{benchmarkError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'BENCHMARK_FAILED';}).finally(()=>{benchmarkTask=null;});return benchmarkTask;};

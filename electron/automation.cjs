@@ -195,7 +195,6 @@ class Automation {
       }
       const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,timestamp:Date.now(),trigger,provider:result.provider,emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,routing};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
-      try{this.onReviewed?.(review);}catch{}
       this.lastFingerprint={...hash,scope:watchScope,completedAt:Date.now()};
       this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');return review;
     }catch(error){this.lastRun=Date.now();this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error);if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
@@ -415,7 +414,7 @@ class Automation {
       const result=await require('./scout.cjs').runScout({request,tools,log:(kind,title,body)=>this.log(id,kind,title,body)});
       if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');
       const answered=this.briefs.answer(scope,result.plan.briefAnswers);
-      const saved=this.scoutStore.save(scope,result.plan,{runId:id,trigger,model:result.model??modelConfig.openaiModel,usage:result.usage,rounds:result.rounds,answered});this.scoutScorecard.record(scope,result.plan,saved.timestamp);try{this.onScouted?.(result.plan,id);}catch{}
+      const saved=this.scoutStore.save(scope,result.plan,{runId:id,trigger,model:result.model??modelConfig.openaiModel,usage:result.usage,rounds:result.rounds,answered});this.scoutScorecard.record(scope,result.plan,saved.timestamp);
       this.log(id,'Agent','Scout plan',JSON.stringify(result.plan,null,2));this.log(id,'System','Review completed',JSON.stringify(result.usage));
       this.scoutError=null;return saved;
     }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));throw error;}

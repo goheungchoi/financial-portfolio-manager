@@ -1,4 +1,4 @@
-// Phone snapshots: after each trading review and scout run, a short post with the portfolio chart goes to the phone webhook.
+// Phone snapshots: when a buy or sell fills, a short post with the portfolio chart goes to the phone webhook.
 // Discord gets an embed with a chart image; other webhooks get the same text. With amounts hidden, only percentages are sent.
 const {seoulDate}=require('./kis-activity.cjs');
 const UP=0x66d9c0,DOWN=0xd96c6c,FLAT=0x8a94a6;
@@ -33,26 +33,21 @@ function portfolioFigures({portfolio,daily=[],intraday=[],previousClose=()=>null
   const chart={amounts,label:amounts?'KRW':'% change',headline:todayPct==null?null:(amounts&&equity!=null?won(equity)+'  ':'')+pct(todayPct),today:{t:todayRows.map(r=>r.at),v:scale(todayRows,'equity')},days:{t:days.map(p=>p.day),v:scale(days,'value')},up:todayPct==null||todayPct>=0};
   return {equity,todayPct,fields,chart};
 }
-const describeOrder=o=>{const price=o.fillPrice??o.limitPrice;return `${o.status} ${o.side} ${o.filled??0}/${o.quantity} ${o.name||o.symbol}${price?` @ ${/^\d{6}$/.test(o.symbol)?won(price):'$'+price}`:''}`;};
-// review: the saved review row; orders: order updates since the last post; extra: regime label and armed conditional orders.
-function reviewSnapshot({review,figures,orders=[],regime=null,conditional=0,nameOf=s=>s,now=Date.now()}){
-  const d=review.decision??{};const trade=d.action&&d.action!=='Hold';
-  const title=clip(trade?`${d.action} ${d.quantity} ${nameOf(d.symbol)}`:'Hold',120);
-  const lines=[clip(d.explanation,380)];if(review.executionNote)lines.push('⚠ '+clip(review.executionNote,200));if(d.withheld)lines.push(`Buy held back: ${clip(d.withheld.reason,150)}`);
+const orderPrice=o=>{const price=o.fillPrice??o.limitPrice;return price?(/^\d{6}$/.test(o.symbol)?won(price):'$'+price):null;};
+// order: the filled (or partly filled) order; review: the review that proposed it, when one did.
+function tradeSnapshot({order,review=null,figures,regime=null,conditional=0,name=order.symbol,now=Date.now()}){
+  const bought=order.side==='Buy',partial=order.status!=='Filled',price=orderPrice(order);
+  const title=clip(`${bought?'Bought':'Sold'} ${order.filled??0}${partial?`/${order.quantity}`:''} ${name}${price?` @ ${price}`:''}`,200);
+  const d=review?.decision??{};const lines=[clip(d.explanation||order.reason,380)];if(partial)lines.push('Partly filled so far.');
   const fields=[...figures.fields];
-  if(d.plan&&trade)fields.push({name:'Trade plan',value:clip(`Stop ${d.plan.stopPrice??'n/a'} · target ${d.plan.targetPrice??'n/a'} · ${d.plan.horizonDays??'?'} days · confidence ${d.plan.confidence??'n/a'}\n${d.plan.invalidation??''}`,400),inline:false});
-  if(orders.length)fields.push({name:'Orders since last post',value:orders.slice(0,6).map(describeOrder).join('\n'),inline:false});
-  const facts=[regime&&`Regime ${regime}`,conditional?`${conditional} conditional order${conditional>1?'s':''} armed`:null,review.trigger&&`Trigger: ${clip(review.trigger,60)}`].filter(Boolean);
+  if(d.plan&&bought)fields.push({name:'Trade plan',value:clip(`Stop ${d.plan.stopPrice??'n/a'} · target ${d.plan.targetPrice??'n/a'} · ${d.plan.horizonDays??'?'} days · confidence ${d.plan.confidence??'n/a'}\n${d.plan.invalidation??''}`,400),inline:false});
+  const account=order.source==='kis'?String(order.environment??'').toUpperCase():'PAPER';
+  const facts=[account&&`${account} account`,regime&&`Regime ${regime}`,conditional?`${conditional} conditional order${conditional>1?'s':''} armed`:null,review?.trigger&&`Trigger: ${clip(review.trigger,60)}`].filter(Boolean);
   if(facts.length)fields.push({name:'Agent',value:facts.join(' · '),inline:false});
-  return finish({kind:'review',id:'review:'+review.id,title:'Review · '+title,description:lines.filter(Boolean).join('\n'),color:d.action==='Buy'?UP:d.action==='Sell'?DOWN:FLAT,fields,chart:figures.chart,now});
-}
-function scoutSnapshot({plan,figures,now=Date.now(),runId}){
-  const targets=(plan.targets??[]).slice(0,6).map(t=>`${clip(t.name||t.symbol,24)} · ${t.role}${t.targetWeightPct!=null?` · ${t.targetWeightPct}%`:''}`);
-  const fields=[figures.fields[0]];if(targets.length)fields.push({name:'Shortlist',value:targets.join('\n'),inline:false});if(plan.cashTargetPct!=null)fields.push({name:'Cash target',value:plan.cashTargetPct+'%',inline:true});
-  return finish({kind:'scout',id:'scout:'+runId,title:'Scout · '+clip(plan.focus||'plan updated',100),description:clip(plan.summary,500),color:FLAT,fields,chart:null,now});
+  return finish({kind:'trade',id:`fill:${order.id}:${order.status}:${order.filled??0}`,title,description:lines.filter(Boolean).join('\n'),color:bought?UP:DOWN,fields,chart:figures.chart,now});
 }
 // A post on request from settings, to check the webhook and how the chart looks on the phone.
-function testSnapshot({figures,now=Date.now()}){return finish({kind:'test',id:'test:'+now,title:'Test snapshot',description:'Snapshots will look like this after each review.',color:FLAT,fields:figures.fields,chart:figures.chart,now});}
+function testSnapshot({figures,now=Date.now()}){return finish({kind:'test',id:'test:'+now,title:'Test snapshot',description:'Snapshots will look like this after each buy or sell.',color:FLAT,fields:figures.fields,chart:figures.chart,now});}
 function finish(s){
   const time=seoulTime(s.now);
   const text=[`${s.title} (${time} KST)`,s.description,...s.fields.map(f=>`${f.name}: ${f.value.replace(/\n/g,' | ')}`)].filter(Boolean).join('\n');
@@ -72,4 +67,4 @@ function pushRequest(url,data){
   }
   return {discord,body:JSON.stringify(discord?{content:text,allowed_mentions:{parse:[]}}:{content:text,text}),headers:{'content-type':'application/json'}};
 }
-module.exports={pushRequest,IntradayValues,portfolioFigures,reviewSnapshot,scoutSnapshot,testSnapshot,discordEmbed};
+module.exports={pushRequest,IntradayValues,portfolioFigures,tradeSnapshot,testSnapshot,discordEmbed};
