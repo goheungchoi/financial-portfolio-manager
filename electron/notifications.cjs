@@ -11,6 +11,8 @@ class Notifications {
       if(previous===order.status || previous===undefined&&order.createdAt<this.startedAt || !['Accepted','Partially filled','Filled','Risk stopped','Canceled','Uncertain','Rejected'].includes(order.status))continue;
       const config=this.getConfig();const message=`${order.source==='kis'?order.environment.toUpperCase():'PAPER'} ${order.status}: ${order.side} ${order.symbol}, ${order.filled}/${order.quantity} shares. ${order.reason??(order.source==='kis'?'Broker order update.':'Simulated execution.')}`;
       if(config.desktopAlerts)this.desktop(message);
+      // A completed fill becomes a phone snapshot instead of a one-line alert when snapshots are on; partial fills stay one-line alerts.
+      if(config.mobileAlerts&&order.status==='Filled'){let posted=false;try{posted=this.onFill?.(order)===true;}catch{}if(posted)continue;}
       if(config.mobileAlerts)this.db.prepare('INSERT OR IGNORE INTO notification_outbox(id,message,nextAt) VALUES(?,?,?)').run(order.id+':'+order.status,message,Date.now());
     }
   }

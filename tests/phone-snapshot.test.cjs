@@ -15,20 +15,24 @@ test('figures show amounts or only percentages, with today against the previous 
   const hidden=P.portfolioFigures({portfolio,daily,intraday,previousClose:s=>prev[s],amounts:false,today:'2026-10-19'});
   assert.ok(!hidden.fields.some(f=>/₩/.test(f.value)),'no won amounts');assert.equal(hidden.chart.days.v[0],0);assert.ok(Math.abs(hidden.chart.days.v[1]-2)<1e-9);assert.equal(hidden.chart.label,'% change');
 });
-test('a review snapshot carries the decision, plan, order updates and agent state',()=>{
+test('a trade snapshot names the fill and carries the reason, plan and agent state',()=>{
   const figures=P.portfolioFigures({portfolio,daily,intraday,amounts:true,today:'2026-10-19'});
-  const review={id:'r1',trigger:'Scheduled review',decision:{action:'Buy',symbol:'005930',quantity:3,explanation:'Memory prices are recovering.',plan:{stopPrice:65000,targetPrice:80000,horizonDays:20,confidence:0.6,invalidation:'HBM orders slip.'}},executionNote:null};
-  const s=P.reviewSnapshot({review,figures,orders:[{status:'Filled',side:'Buy',filled:3,quantity:3,symbol:'005930',name:'Samsung Electronics',fillPrice:70000}],regime:'neutral',conditional:2,nameOf:()=>'Samsung Electronics'});
-  assert.equal(s.id,'review:r1');assert.equal(s.title,'Review · Buy 3 Samsung Electronics');
-  const names=s.fields.map(f=>f.name);assert.deepEqual(names,['Portfolio','Cash','Holdings','Trade plan','Orders since last post','Agent']);
-  assert.match(s.fields[4].value,/Filled Buy 3\/3 Samsung Electronics @ ₩70,000/);assert.match(s.fields[5].value,/Regime neutral · 2 conditional orders armed/);
-  assert.match(s.text,/^Review · Buy 3 Samsung Electronics \(\d\d:\d\d KST\)\nMemory prices/);assert.ok(s.text.length<=1500);
-  const e=P.discordEmbed(s);assert.equal(e.fields.length,6);assert.ok(e.footer.text.includes('KST'));assert.equal(e.color,0x66d9c0);
+  const review={id:'r1',proposalId:'o1',trigger:'Scheduled review',decision:{action:'Buy',symbol:'005930',quantity:3,explanation:'Memory prices are recovering.',plan:{stopPrice:65000,targetPrice:80000,horizonDays:20,confidence:0.6,invalidation:'HBM orders slip.'}}};
+  const order={id:'o1',source:'kis',environment:'mock',status:'Filled',side:'Buy',filled:3,quantity:3,symbol:'005930',fillPrice:70000};
+  const s=P.tradeSnapshot({order,review,figures,regime:'neutral',conditional:2,name:'Samsung Electronics'});
+  assert.equal(s.id,'fill:o1:Filled:3');assert.equal(s.title,'Bought 3 Samsung Electronics @ ₩70,000');
+  assert.deepEqual(s.fields.map(f=>f.name),['Portfolio','Cash','Holdings','Trade plan','Agent']);assert.match(s.fields[4].value,/MOCK account · Regime neutral · 2 conditional orders armed/);
+  assert.match(s.text,/^Bought 3 Samsung Electronics @ ₩70,000 \(\d\d:\d\d KST\)\nMemory prices/);assert.ok(s.text.length<=1500);
+  const e=P.discordEmbed(s);assert.equal(e.fields.length,5);assert.ok(e.footer.text.includes('KST'));assert.equal(e.color,0x66d9c0);
+  const sold=P.tradeSnapshot({order:{...order,id:'o2',side:'Sell',status:'Partially filled',filled:1,reason:'Stop-loss conditional order.'},figures,name:'Samsung Electronics'});
+  assert.equal(sold.title,'Sold 1/3 Samsung Electronics @ ₩70,000');assert.match(sold.description,/^Stop-loss conditional order\.\nPartly filled so far\./);assert.equal(sold.color,0xd96c6c);assert.ok(!sold.fields.some(f=>f.name==='Trade plan'));
 });
-test('a scout snapshot lists the shortlist without a chart',()=>{
-  const figures=P.portfolioFigures({portfolio,daily,intraday,amounts:false});
-  const s=P.scoutSnapshot({plan:{summary:'Add defensives.',focus:'Banks and utilities',cashTargetPct:15,targets:[{symbol:'105560',name:'KB Financial',role:'core',targetWeightPct:10}]},figures,runId:'s1'});
-  assert.equal(s.chart,null);assert.equal(s.title,'Scout · Banks and utilities');assert.match(s.fields[1].value,/KB Financial · core · 10%/);
+test('completed fills become snapshots in place of one-line phone alerts; partial fills and other updates stay alerts',async()=>{
+  const db=new DatabaseSync(':memory:');let config={mobileAlerts:true,desktopAlerts:false,pushConnected:true};const n=new Notifications(db,{request:async()=>({})},()=>config,()=>{});
+  const fills=[];n.onFill=o=>{fills.push(o.status);return true;};const at=Date.now()+1000;const o={id:'o1',source:'paper',createdAt:at,side:'Buy',symbol:'A',filled:0,quantity:2};
+  n.observe([{...o,status:'Accepted'}]);n.observe([{...o,status:'Partially filled',filled:1}]);n.observe([{...o,status:'Filled',filled:2}]);n.observe([{...o,id:'o2',status:'Rejected'}]);
+  assert.deepEqual(fills,['Filled']);assert.deepEqual(n.status().map(r=>r.id).sort(),['o1:Accepted','o1:Partially filled','o2:Rejected']);
+  n.onFill=()=>false;n.observe([{...o,id:'o3',status:'Filled',filled:2}]);assert.ok(n.status().some(r=>r.id==='o3:Filled'),'falls back to a one-line alert when snapshots are off');
 });
 test('snapshots go only to the webhook, with the chart drawn at send time and text only when stale',async()=>{
   const db=new DatabaseSync(':memory:');const sent=[],desktop=[];let config={mobileAlerts:true,desktopAlerts:true,pushConnected:true};
@@ -40,11 +44,10 @@ test('snapshots go only to the webhook, with the chart drawn at send time and te
   n.render=async()=>{throw new Error('no window');};n.post(P.testSnapshot({figures,now:Date.now()+1}));await n.tick();assert.equal(sent[2][1].image,undefined,'a failed drawing still sends the post');
   config={...config,mobileAlerts:false};assert.equal(n.post(P.testSnapshot({figures,now:Date.now()+2})),false);
 });
-test('the engine accepts the snapshot settings and calls the review hook',async()=>{
+test('the engine accepts the snapshot settings',()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');
   const db=new DatabaseSync(':memory:');const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),{request:async()=>{throw new Error('no AI');}},()=>{});
   a.configure({phoneSnapshots:false,phoneAmounts:false});assert.equal(a.config.phoneSnapshots,false);assert.throws(()=>a.configure({phoneAmounts:'yes'}),/INVALID_SETTINGS/);
-  const seen=[];a.onReviewed=r=>seen.push(r);await a.review();assert.equal(seen.length,1);assert.ok(seen[0].decision);
 });
 test('Discord webhooks get an embed with the chart attached; other webhooks get text; mentions are off',async()=>{
   const hook='https://discord.com/api/webhooks/1/abc';const r=P.pushRequest(hook,{message:'hi @everyone',embed:{title:'T'},image:Buffer.from('png').toString('base64')});
