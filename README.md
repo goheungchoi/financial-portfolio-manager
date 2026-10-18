@@ -114,6 +114,8 @@ Drafts survive tab navigation in memory. Save, activation and submission are exp
 
 Desktop alerts and HTTPS webhook delivery are opt-in; the webhook receives JSON `content` and `text`. A persisted outbox retries failures up to five times and pauses if no webhook is loaded. Actual delivery requires a compatible configured service.
 
+**Phone snapshots.** With phone alerts on, every trading review and scout run also posts a snapshot: the decision and its trade plan, order updates since the previous post, the portfolio value and today's change, cash, the biggest movers, the regime and armed conditional orders. A Discord webhook (`https://discord.com/api/webhooks/…`) gets it as an embed with a chart image (today's value, then the last 30 days), drawn locally in a hidden window that loads nothing. Other webhooks get the same text. **Show amounts** off sends percentages only. Skipped reviews (nothing changed) are not posted, and snapshots older than 30 minutes go out as text only. Account numbers and keys are never included, and Discord mentions are disabled. **Engine settings → Alerts → Send a test snapshot** checks the webhook.
+
 ## Storage and validation
 
 SQLite uses the shared Electron user-data directory, normally `%APPDATA%/Financial Portfolio Manager`. It stores saved file paths, preferences/guidelines, optional policies, paper accounting, KIS intents, reviews, lessons and notifications. Latest 600 interaction events and 100 synthetic snapshots are retained. Explicitly shared KIS review context, order records, paths and journal exports are sensitive local data; keep them private. Back up the database while closed.
