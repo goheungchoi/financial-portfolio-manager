@@ -5,7 +5,7 @@ import {PortfolioProfit} from './PortfolioProfit';
 import {AllocationChart} from './AllocationChart';
 import {TickDelta,LiveValue} from './LiveValue';
 import {useDraftState} from './useDraftState';
-import {Spark} from './ResearchPanel';
+import {ValueChart,shortDay} from './PerfCharts';
 const krw=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const native=(n:number,currency:string)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 const compact=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',notation:'compact',maximumFractionDigits:1}).format(n);
@@ -32,15 +32,29 @@ export function HomeMetrics({state}:{state:PortfolioState}){
       {us.length>0&&<div className="metric-foot" aria-label="U.S. unrealized"><span>U.S.</span><PortfolioProfit rows={us} currency="USD" loaded={state.totals.USD!=null}/></div>}</section>
   </div>;
 }
-// Account trend from the daily history: the last month of values, today's P/L and how far below the peak the account is.
+// Account value over a chosen period: the change in money and percent, the benchmark over the same days, and a chart with hover.
+const TREND_PERIODS=['1W','1M','3M','YTD','1Y','All'];
 export function HomeTrend({onOpen}:{onOpen():void}){
-  const [summary,setSummary]=useState<any>(null);
+  const [summary,setSummary]=useState<any>(null);const [period,setPeriod]=useDraftState('home:trendPeriod','1M');
   useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();const s=reply?.state?.summaries;if(alive&&s)setSummary(s.COMBINED?.points?.length?s.COMBINED:s.KRW);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
-  const points=(summary?.points??[]) as {day:string;value:number;pnl?:number|null;dailyReturn:number|null}[];if(points.length<2)return null;
-  const m=summary.analytics?.['1M']??summary.analytics?.All;const last=points.at(-1)!;const recent=points.slice(-31);
-  return <section className="metric-card home-trend" aria-label="Account trend"><div className="home-trend-head"><small>Account value · last {recent.length} recorded days</small><button className="link-button" onClick={onOpen}>Performance →</button></div>
-    <Spark closes={recent.map(p=>({date:p.day,close:p.value}))}/>
-    <div className="metric-foot"><span>Latest day {last.pnl==null?'—':`${last.pnl>=0?'+':''}${krw(last.pnl)}`}{last.dailyReturn!=null?` (${pct(last.dailyReturn*100)})`:''}</span>{m&&<span>1 month {m.twrPct==null?'—':pct(m.twrPct)} · {m.currentDrawdownPct?`${m.currentDrawdownPct.toFixed(1)}% below peak`:'at its peak'}</span>}</div>
+  const points=(summary?.points??[]) as {day:string;value:number;high?:number;low?:number;pnl?:number|null;dailyReturn:number|null}[];
+  if(points.length<2)return <section className="metric-card home-trend" aria-label="Account trend"><div className="home-trend-head"><small>Account value</small><button className="link-button" onClick={onOpen}>Performance →</button></div><p className="muted">The chart starts after values are recorded on two days.</p></section>;
+  // Only periods the recorded history covers; "All" always.
+  const periods=(summary.periods??[]).filter((p:any)=>TREND_PERIODS.includes(p.label)&&(!p.partial||p.label==='All')).filter((p:any,_:number,list:any[])=>p.label==='All'||!list.some(q=>q.label==='All'&&q.start===p.start));
+  const active=periods.some((p:any)=>p.label===period)?period:'All';const sel=periods.find((p:any)=>p.label===active);const a=summary.analytics?.[active];
+  const rows=points.filter(p=>p.day>=(sel?.start??points[0].day));const last=points.at(-1)!;const bench=summary.benchmark==='SPX'?'S&P 500':'KOSPI';
+  const change=sel?.gain??null,ret=sel?.twr==null?null:sel.twr*100,vs=sel?.benchmark==null?null:sel.benchmark*100;
+  const tone=(v:number|null)=>v==null||Math.abs(v)<1e-9?'':v>0?'positive':'negative';const sign=(v:number)=>(v>0?'+':v<0?'−':'')+krw(Math.abs(v)).replace('-','');
+  return <section className="metric-card home-trend" aria-label="Account trend">
+    <div className="home-trend-head"><small>Account value</small><div className="home-trend-tools"><div className="segmented compact" role="tablist" aria-label="Account trend period">{periods.map((p:any)=><button key={p.label} role="tab" aria-selected={active===p.label} aria-pressed={active===p.label} onClick={()=>setPeriod(p.label)}>{p.label}</button>)}</div><button className="link-button" onClick={onOpen}>Performance →</button></div></div>
+    <div className="home-trend-figures"><strong>{krw(last.value)}</strong>{change!=null&&<span className={tone(change)}>{sign(change)}{ret!=null?` (${pct(ret)})`:''}</span>}<small className="muted">{active==='All'?`since ${shortDay(rows[0].day,true)}`:`over ${active}`}{vs!=null?` · ${bench} ${pct(vs)}`:''}</small></div>
+    {rows.length>=2?<ValueChart rows={rows.map(p=>({day:p.day,value:p.value,high:p.high??p.value,low:p.low??p.value}))} fmt={krw} height={170} marks={false}/>:<p className="muted">One recorded day in this period.</p>}
+    <div className="home-trend-stats">
+      <span><small>Latest day</small><b className={tone(last.pnl??null)}>{last.pnl==null?'—':sign(last.pnl)}</b>{last.dailyReturn!=null&&<em>{pct(last.dailyReturn*100)}</em>}</span>
+      {a&&<span><small>Period high</small><b>{krw(a.peak.value)}</b><em>{shortDay(a.peak.day)}</em></span>}
+      {a&&<span><small>From return peak</small><b className={a.currentDrawdownPct<-0.05?'negative':''}>{a.currentDrawdownPct<-0.05?`${a.currentDrawdownPct.toFixed(1)}%`:'At peak'}</b>{a.maxDrawdownPct<-0.05&&<em>worst {a.maxDrawdownPct.toFixed(1)}%</em>}</span>}
+      {a?.bestDay&&<span><small>Best / worst day</small><b><span className="positive">{pct(a.bestDay.returnPct)}</span> / <span className="negative">{pct(a.worstDay.returnPct)}</span></b></span>}
+    </div>
   </section>;
 }
 // Known events in the next three weeks for your stocks and the market.
