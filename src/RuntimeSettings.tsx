@@ -1,3 +1,4 @@
+import {toast} from './Toast';
 import {AgentDesk} from './AgentDesk';
 import {ReplayPanel} from './ReplayPanel';
 import {JournalView} from './JournalView';
@@ -27,8 +28,8 @@ export function RuntimeSettings({mode,onNavigate}:{mode:'settings'|'news'|'journ
     const api=window.portfolio;if(!api)return;setBusy(true);setMessage('');
     try{if(kind==='news'){setState(await api.refreshNews());return;}
       const reply=await(kind==='save'?api.configureRuntime(mode==='news'?{newsURL:config!.newsURL,newsTrigger:config!.newsTrigger}:{...Object.fromEntries([...changed.current].map(key=>[key,config![key]])),enabled:config!.enabled}):kind==='review'?api.reviewRuntime():kind==='import'?api.importProviders():api.approveLesson(id!,approved!));
-      if(reply.state){setState(reply.state);if(kind==='save'&&reply.ok){dirty.current=false;changed.current.clear();setConfig(reply.state.config);}else if(kind==='import'&&reply.ok&&reply.state.providerStatus.aiConnected){setConfig(current=>({...current??reply.state!.config,provider:reply.state!.config.provider}));}}setMessage(reply.ok?(kind==='save'?'Settings saved.':'Completed.'):reply.message??reply.error??'Request failed.');
-    }catch{setMessage('Request failed.');}finally{setBusy(false);}
+      if(reply.state){setState(reply.state);if(kind==='save'&&reply.ok){dirty.current=false;changed.current.clear();setConfig(reply.state.config);}else if(kind==='import'&&reply.ok&&reply.state.providerStatus.aiConnected){setConfig(current=>({...current??reply.state!.config,provider:reply.state!.config.provider}));}}setMessage(reply.ok?(kind==='save'?'Settings saved.':'Completed.'):reply.message??reply.error??'Request failed.');if(kind==='save')toast(reply.ok?(mode==='news'?'News settings saved':'Settings saved'):'Not saved: '+(reply.message??reply.error??'request failed'),reply.ok?'ok':'error');
+    }catch{setMessage('Request failed.');if(kind==='save')toast('Not saved: could not reach the engine','error');}finally{setBusy(false);}
   }
   if(!state||!config)return <section><p>{window.portfolio?'Loading…':'Use the desktop app for runtime controls.'}</p></section>;
   const edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>(dirty.current=true,changed.current.add(key),setConfig({...config,[key]:value}));

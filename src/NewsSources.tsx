@@ -1,3 +1,4 @@
+import {toast} from './Toast';
 import {useEffect,useState} from 'react';
 import type {RuntimeConfig} from './RuntimeSettings';
 import {Switch} from './SettingsUI';
@@ -6,7 +7,7 @@ export function NewsSources({config}:{config:RuntimeConfig}){
   const [feeds,setFeeds]=useState(config.newsFeeds??[]);const [suggested,setSuggested]=useState<{label:string;url:string}[]>([]);const [url,setUrl]=useState('');const [note,setNote]=useState('');
   const [kis,setKis]=useState(config.kisNews);const [us,setUs]=useState(config.usTickerNews);
   useEffect(()=>{void window.portfolio?.getSuggestedFeeds().then(setSuggested).catch(()=>{});},[]);
-  const save=async(patch:Partial<RuntimeConfig>)=>{setNote('');try{const reply:any=await window.portfolio?.configureRuntime(patch);if(reply&&reply.ok===false)setNote('Could not save. Check the address.');}catch{setNote('Could not save.');}};
+  const save=async(patch:Partial<RuntimeConfig>,done='News sources saved')=>{setNote('');try{const reply:any=await window.portfolio?.configureRuntime(patch);if(reply&&reply.ok===false){setNote('Could not save. Check the address.');toast('Not saved: check the feed address','error');}else toast(done);}catch{setNote('Could not save.');toast('Not saved: could not reach the engine','error');}};
   const setList=(next:{url:string;label?:string}[])=>{setFeeds(next);void save({newsFeeds:next});};
   const add=(feed:{url:string;label?:string})=>{if(feeds.some(f=>f.url===feed.url)||feeds.length>=10)return;setList([...feeds,feed]);};
   const missing=suggested.filter(s=>!feeds.some(f=>f.url===s.url));

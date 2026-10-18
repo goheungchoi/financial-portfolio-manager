@@ -1,3 +1,4 @@
+import {toast} from './Toast';
 import {Note} from './Note';
 import {PaperCaps} from './PaperCaps';
 import {useEffect,useRef,useState} from 'react';
@@ -71,7 +72,7 @@ export function PaperTrading() {
       <div className="section-head"><h3>Daily loss tolerance</h3><span className="badge">{s.loss.breached?'EMERGENCY MODE':'NORMAL MODE'}</span></div>
       <Note summary="Hitting this starts emergency reviews; orders stay allowed.">Reaching this daily loss starts emergency reviews (when scheduled reviews are on in Engine settings). Orders stay allowed within your other limits. Resets each Seoul calendar day.</Note>
       <div className="settings-grid"><label>Limit unit<select value={(lossDraft??s.loss.policy).mode} onChange={e=>setLossDraft({mode:e.target.value,value:e.target.value==='off'?0:e.target.value==='percent'?5:500000})}><option value="off">Not set</option><option value="amount">KRW amount</option><option value="percent">Percentage</option></select></label><label>Maximum daily loss<input aria-label="Paper maximum daily loss" type="number" min={(lossDraft??s.loss.policy).mode==='percent'?0.01:1} step={(lossDraft??s.loss.policy).mode==='percent'?0.01:1} value={(lossDraft??s.loss.policy).value} onChange={e=>setLossDraft({...(lossDraft??s.loss.policy),value:Number(e.target.value)})}/></label></div>
-      <button disabled={busy} onClick={async()=>{setBusy(true);try{const reply=await window.portfolio?.configurePaperLoss(lossDraft??s.loss.policy);if(reply?.ok&&reply.state){setState(reply.state);setLossDraft(null);setMessage({tone:'ok',text:'Loss tolerance saved.'});}else setMessage({tone:'error',text:'Enter a positive KRW amount or a percentage up to 100.'});}catch{setMessage({tone:'error',text:'Could not save loss tolerance.'});}finally{setBusy(false);}}}>Save loss tolerance</button>
+      <button disabled={busy} onClick={async()=>{setBusy(true);try{const reply=await window.portfolio?.configurePaperLoss(lossDraft??s.loss.policy);if(reply?.ok&&reply.state){setState(reply.state);setLossDraft(null);setMessage({tone:'ok',text:'Loss tolerance saved.'});toast('Loss tolerance saved');}else{setMessage({tone:'error',text:'Enter a positive KRW amount or a percentage up to 100.'});toast('Not saved: check the loss tolerance','error');}}catch{setMessage({tone:'error',text:'Could not save loss tolerance.'});toast('Not saved: could not reach the engine','error');}finally{setBusy(false);}}}>Save loss tolerance</button>
       <p className="muted small-print">Today's start {money(s.loss.baseline)} · current loss {money(s.loss.loss)} ({(s.loss.lossPct??0).toFixed(2)}%) · emergency at {s.loss.limitKRW==null?'not set':money(s.loss.limitKRW)}</p></details></section>
   </>;
 }
