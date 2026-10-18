@@ -3,7 +3,16 @@ const {createHash}=require('node:crypto');
 // and route routine reviews to a cheaper model while escalating important ones.
 const VOLATILE=/^(timestamp|retrievedAt|updatedAt|fetchedAt|generatedAt|heartbeat|savedAt|at|asOfTimestamp)$|At$/;
 const IGNORED=new Set(['performance','decisionScoreboard','triggerEvidence','reviewInterval','reviewWatches','paperVersion']);
-const MONEY=/price|last|close|value|equity|cash|amount|total|marketValue|pnl|gain|profit|cost|notional|evaluation/i;
+const MONEY=/price|last|close|value|equity|cash|amount|total|marketValue|pnl|gain|profit|cost|notional|evaluation|usdKRW|rate/i;
+// Background the agents read but that moves every day without changing what to do; it never blocks a skip on its own.
+const BACKGROUND=['marketNarrative','similarEpisodes','positionSizing','risk','portfolioExposure','eventCalendar','macro','research','opportunitySet','tradingNotes','agentDesk','scoutBrief','scoutPlan'];
+// What a skip compares: holdings, cash and prices (within tolerance), sessions, lessons, the regime label, and only
+// headlines marked important. Other headlines, even about your symbols, arrive hourly; important ones also start
+// their own review through the news trigger.
+function decisionView(context){const view={...context};for(const k of BACKGROUND)delete view[k];
+  if(view.marketRegime)view.marketRegime=view.marketRegime.regime??null;
+  if(Array.isArray(view.news))view.news=view.news.filter(n=>n?.importance==='high').map(n=>n.title);
+  return view;}
 // Money-like numbers are kept as {money:value} so comparison can allow a tolerance; everything else must match exactly.
 function canonical(value,key=''){
   if(Array.isArray(value))return value.map(item=>canonical(item));
@@ -14,7 +23,7 @@ function canonical(value,key=''){
 // Decision-relevant state: holdings, prices and cash (compared within a tolerance), news, lessons, macro date, emergency, sessions.
 // `exact` hashes everything except money values, so a structural change (new news item, sold shares) is detected cheaply.
 function fingerprint(context){
-  const state=canonical(context);const strip=v=>Array.isArray(v)?v.map(strip):v&&typeof v==='object'?('money' in v&&Object.keys(v).length===1?'#':Object.fromEntries(Object.entries(v).map(([k,x])=>[k,strip(x)]))):v;
+  const state=canonical(decisionView(context));const strip=v=>Array.isArray(v)?v.map(strip):v&&typeof v==='object'?('money' in v&&Object.keys(v).length===1?'#':Object.fromEntries(Object.entries(v).map(([k,x])=>[k,strip(x)]))):v;
   return {exact:createHash('sha256').update(JSON.stringify(strip(state))).digest('hex'),state};
 }
 function within(a,b,pct){
@@ -60,4 +69,4 @@ function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBu
 }
 // The daily budget is "near" at 80% of the USD allowance or of the call count.
 function nearBudget(config,usage){return (!config.unlimitedBudget&&usage.reservedMicro>=config.maxUSDPerDay*1e6*0.8)||(!config.unlimitedCalls&&usage.calls>=Math.floor(config.maxCallsPerDay*0.8));}
-module.exports={fingerprint,shouldSkip,compact,route,nearBudget,canonical,within};
+module.exports={decisionView,fingerprint,shouldSkip,compact,route,nearBudget,canonical,within};
