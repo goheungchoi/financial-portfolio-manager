@@ -39,7 +39,7 @@ test('news triggers batch relevant disclosures into one review per ten minutes a
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'삼성전자',price:100}],()=>[]);paper.saveAccount({...paper.account(),paused:false});const contexts=[];const triggers=[];
   const automation=new Automation(db,paper,{request:async(_op,{context})=>{contexts.push(context);return {provider:'openai',decision:{action:'Hold',symbol:'',quantity:0,explanation:'Fixture.'}};}},()=>{});
   const review=automation.review.bind(automation);automation.review=trigger=>{triggers.push(trigger);return review(trigger);};
-  automation.providerStatus.aiConnected=true;automation.configure({enabled:true,provider:'openai',intervalMinutes:60});
+  automation.providerStatus.aiConnected=true;automation.configure({enabled:true,provider:'openai',intervalMinutes:60,narrativeEnabled:false});
   assert.equal(automation.config.newsTrigger,'disclosures');assert.throws(()=>automation.configure({newsTrigger:'everything'}),/INVALID_SETTINGS/);
   const settle=async()=>{while(automation.busy)await new Promise(resolve=>setImmediate(resolve));};
   automation.newsEvents.ingest([dart('005930','삼성전자 · 주요사항보고서(자기주식취득결정)','20261016000020'),dart('005930','삼성전자 · 단일판매ㆍ공급계약체결','20261016000021'),headline('삼성전자 신제품 공개')],automation.relevantSecurities());

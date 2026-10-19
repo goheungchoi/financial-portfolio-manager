@@ -17,6 +17,7 @@ process.parentPort.on('message',async({data})=>{
     else if(data.operation==='reflection') {if(!ai)throw 0;result=await ai.reflect(data.context,data.options);}
     else if(data.operation==='scout') {if(!ai)throw 0;result=await ai.scout(data.context,data.options);}
     else if(data.operation==='narrative') {if(!ai)throw 0;result=await ai.narrative(data.context,data.options);}
+    else if(data.operation==='compact') {if(!ai)throw 0;result=await ai.compact(data.payload,data.options);}
     else if(data.operation==='push') {
       if(!pushURL)throw 0;
       const {body,headers}=require('./phone-snapshot.cjs').pushRequest(pushURL,data);
