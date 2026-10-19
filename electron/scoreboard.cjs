@@ -19,12 +19,13 @@ function stances(text){
   return [...found];
 }
 class Scoreboard {
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS symbol_closes(symbol TEXT NOT NULL,day TEXT NOT NULL,close REAL NOT NULL,PRIMARY KEY(symbol,day));CREATE TABLE IF NOT EXISTS symbol_close_fetches(symbol TEXT PRIMARY KEY,at INTEGER NOT NULL)');}
+  constructor(db,clock=Date.now,account=()=>null){this.db=db;this.clock=clock;this.account=account;db.exec('CREATE TABLE IF NOT EXISTS symbol_closes(symbol TEXT NOT NULL,day TEXT NOT NULL,close REAL NOT NULL,PRIMARY KEY(symbol,day));CREATE TABLE IF NOT EXISTS symbol_close_fetches(symbol TEXT PRIMARY KEY,at INTEGER NOT NULL)');}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
   saveCloses(symbol,rows){const insert=this.db.prepare('INSERT INTO symbol_closes VALUES(?,?,?) ON CONFLICT(symbol,day) DO UPDATE SET close=excluded.close');for(const row of rows)if(/^\d{4}-\d{2}-\d{2}$/.test(row.day)&&Number.isFinite(row.close)&&row.close>0)insert.run(symbol,row.day,row.close);this.db.prepare('INSERT INTO symbol_close_fetches VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET at=excluded.at').run(symbol,this.clock());}
   closes(symbol){return this.db.prepare('SELECT day,close FROM symbol_closes WHERE symbol=? ORDER BY day').all(symbol).map(r=>({day:r.day,close:r.close}));}
   benchmark(index){return this.table('benchmark_closes')?this.db.prepare('SELECT day,close FROM benchmark_closes WHERE idx=? ORDER BY day').all(index).map(r=>({day:r.day,close:r.close})):[];}
-  reviews(){return this.table('reviews')?this.db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(r=>JSON.parse(r.payload)):[];}
+  // Scores cover the connected account only; reviews saved before accounts were recorded are left out once one is connected.
+  reviews(){if(!this.table('reviews'))return [];const key=this.account();const rows=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(r=>JSON.parse(r.payload));return key?rows.filter(r=>r.account?.key===key):rows;}
   // Broker-account Buy/Sell recommendations; paper decisions use synthetic prices and are not scored.
   candidates(){return this.reviews().filter(r=>['Buy','Sell'].includes(r.decision?.action)&&typeof r.decision.symbol==='string'&&r.contextEvidence?.environment&&r.contextEvidence.environment!=='local-paper');}
   // Symbols whose horizons are not complete yet, least recently fetched first.

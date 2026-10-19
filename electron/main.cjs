@@ -69,7 +69,8 @@ function interaction(runId,kind,title,body) {
   if(closing)return;
   // A console entry must never fail the review that writes it: over-long text is shortened and storage errors are ignored.
   const fit=(text,limit)=>typeof text==='string'&&text.length>limit?text.slice(0,limit-60)+`… [shortened from ${text.length.toLocaleString('en-US')} characters]`:text;
-  try{store.appendEvent({id:require('node:crypto').randomUUID(),runId,timestamp:new Date().toISOString(),kind,title:fit(title,500),body:fit(body,32000)});}catch{return;}events=store.getEvents();
+  let tag=null;try{tag=automation?.accountTag?.()??null;}catch{}
+  try{store.appendEvent({id:require('node:crypto').randomUUID(),runId,timestamp:new Date().toISOString(),kind,title:fit(title,500),body:fit(body,32000),...(tag?{account:tag.key,accountLabel:tag.label}:{})});}catch{return;}events=store.getEvents();
   for(const win of BrowserWindow.getAllWindows())win.webContents.send('events:changed',events);
 }
 async function refreshNews() {
