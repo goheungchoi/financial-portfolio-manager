@@ -73,7 +73,8 @@ class LiveEngine {
       // capped at a smaller share of equity. Nothing has been sent to KIS yet, so the order simply stays Ready.
       if(prepared.session&&!prepared.session.regular){
         if(prepared.session.approval&&this.submittingAutomatically)throw new Error('EXTENDED_APPROVAL_REQUIRED');
-        const pct=this.extendedMaxOrderPct?.()??5;if(order.notional>prepared.balance.reportedTotal*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
+        // The base includes KRW that funds U.S. buys through integrated margin (the U.S. account alone may hold nothing).
+        const pct=this.extendedMaxOrderPct?.()??5;const base=prepared.balance.reportedTotal+(this.market==='US'&&this.buyingPower?this.buyingPower(prepared.balance).fromKRWUSD:0);if(order.notional>base*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
         order={...order,session:prepared.session.id};}
       this.observeBalance(prepared.balance);
       policy=this.policy();
