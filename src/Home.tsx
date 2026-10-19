@@ -9,7 +9,8 @@ import {ValueChart,shortDay} from './PerfCharts';
 const krw=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const native=(n:number,currency:string)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 const compact=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',notation:'compact',maximumFractionDigits:1}).format(n);
-const pct=(n:number)=>new Intl.NumberFormat('en-US',{maximumFractionDigits:1,minimumFractionDigits:1,signDisplay:'exceptZero'}).format(n)+'%';
+// Small moves get two decimals so they do not round to 0.0%.
+const pct=(n:number)=>{const d=Math.abs(n)<1?2:1;return new Intl.NumberFormat('en-US',{maximumFractionDigits:d,minimumFractionDigits:d,signDisplay:'exceptZero'}).format(n)+'%';};
 export function usePortfolio(active=true){
   const [state,setState]=useState<PortfolioState|null>(null);
   useEffect(()=>{if(!active)return;let alive=true,pending=false;const load=async()=>{if(pending)return;pending=true;try{const value=await window.portfolio?.getPortfolio();if(alive&&value)setState(value);}catch{}finally{pending=false;}};void load();const timer=setInterval(load,1000);return()=>{alive=false;clearInterval(timer);};},[active]);
