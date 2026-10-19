@@ -4,7 +4,7 @@ class KisService {
   constructor(workerScript='kis-worker.cjs') {this.workerScript=workerScript;this.pending=new Map();this.counter=0;this.queue=Promise.resolve();this.generation=0;}
   ensureWorker() {
     if(this.worker)return;
-    const worker=utilityProcess.fork(path.join(__dirname,this.workerScript),[],{stdio:'pipe',serviceName:this.workerScript==='kis-worker.cjs'?'KIS broker':'Private provider broker'});
+    const worker=utilityProcess.fork(path.join(__dirname,this.workerScript),[],{stdio:'pipe',serviceName:({'kis-worker.cjs':'KIS broker','calendar-worker.cjs':'KIS market calendar'})[this.workerScript]??'Private provider broker'});
     this.worker=worker;
     // Discard worker stdout/stderr; raw broker data/errors never enter console logs.
     worker.stdout?.resume();worker.stderr?.resume();

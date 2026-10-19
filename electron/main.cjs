@@ -10,7 +10,7 @@ const {LiveEngine}=require('./live-engine.cjs');
 const {TradingCosts}=require('./trading-costs.cjs');
 const {PortfolioView,combinePortfolio}=require('./portfolio-view.cjs');let usLive,costs,usSnapshot=null;let lastUSRefresh=0,usRefreshing=false;
 const {Automation}=require('./automation.cjs');const {Notifications}=require('./notifications.cjs');
-const providerService=new KisService('provider-worker.cjs');
+const providerService=new KisService('provider-worker.cjs');const calendarService=new KisService('calendar-worker.cjs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const kisService = new KisService();
@@ -46,6 +46,18 @@ async function connectProviderFile(file,selectProvider=true){
   remembered.progress.providers='connecting';remembered.errors.providers=null;
   try{providerService.disconnect();const flags=await providerService.request('import',file);if(closing)return;automation.providerStatus=flags;if(flags.aiConnected&&selectProvider)automation.configure({provider:'openai'});remembered.remember('providers',file);remembered.progress.providers='connected';}
   catch{if(closing)return;providerService.disconnect();automation.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};remembered.progress.providers='error';remembered.errors.providers='Could not reopen provider JSON. Reimport it if moved, deleted or invalid.';throw new Error('PROVIDER_IMPORT_FAILED');}
+}
+// Official Korean market calendar from a live key (read-only, calendar worker only); refreshed every 6 hours.
+let calendarAt=0,calendarError=null;
+async function refreshKrCalendar(){if(remembered?.progress.calendar!=='connected')return;try{const db=store.db;db.exec('CREATE TABLE IF NOT EXISTS kr_calendar(day TEXT PRIMARY KEY,open INTEGER NOT NULL,fetchedAt INTEGER NOT NULL)');
+    const today=require('./kis-activity.cjs').seoulDate();const put=db.prepare('INSERT INTO kr_calendar VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET open=excluded.open,fetchedAt=excluded.fetchedAt');
+    for(const start of [today,new Date(Date.parse(today+'T00:00:00Z')+24*86400000).toISOString().slice(0,10)]){const rows=await calendarService.request('kr-calendar',{day:start.replaceAll('-','')});for(const r of rows)put.run(r.day,r.open?1:0,Date.now());}
+    calendarAt=Date.now();calendarError=null;}catch(error){calendarError=/^[A-Z_]{3,40}$/.test(error?.message??'')?error.message:'CALENDAR_FAILED';}}
+const officialKrCalendar=()=>{try{const today=require('./kis-activity.cjs').seoulDate();return store.db.prepare('SELECT day,open FROM kr_calendar WHERE day>=? ORDER BY day').all(today);}catch{return [];}};
+async function connectCalendarFile(file){
+  remembered.progress.calendar='connecting';remembered.errors.calendar=null;
+  try{calendarService.disconnect();await calendarService.request('import',file);if(closing)return;remembered.remember('calendar',file);remembered.progress.calendar='connected';await refreshKrCalendar();}
+  catch(error){if(closing)return;calendarService.disconnect();remembered.progress.calendar='error';remembered.errors.calendar=error?.message==='CALENDAR_NEEDS_LIVE_KEY'?'This is a mock key. KIS offers the market calendar only to live keys.':'Could not open the calendar key. Reimport it if moved or invalid.';throw new Error('CALENDAR_IMPORT_FAILED');}
 }
 async function connectKisFile(file){
   kisBusy=true;live.stop();usLive?.stop();usSnapshot=null;const generation=++kisGeneration;remembered.progress.kis='connecting';remembered.errors.kis=null;streamState={status:'connecting',subscribed:0};nextQuoteAttempt=0;kisQuotes.clear();kisHistory.clear();kisService.disconnect();kisState={status:'connecting',snapshot:null,error:null};broadcastMarket();
@@ -266,6 +278,8 @@ app.whenReady().then(async () => {
   if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
   setInterval(recordValue,60000).unref();
+  setInterval(()=>{if(Date.now()-calendarAt>6*3600000)void refreshKrCalendar();},600000).unref();
+  automation.officialClosedDays=()=>officialKrCalendar().filter(r=>!r.open).map(r=>r.day);
   // Daily digest fallback: today's recorded value against the previous recorded day, per market.
   automation.accountValues=day=>{const account=kisState.snapshot?.accountKey;if(!account)return [];return [['KR','KRW','Korea'],['US','USD','U.S.']].flatMap(([market,currency,label])=>{const points=performance.series(account,currency);const today=points.find(p=>p.day===day),prior=points.filter(p=>p.day<day).at(-1);return today&&prior?[{market,currency,label,equity:today.value,baseline:prior.value+(today.flow??0)}]:[];});};
   // Phone snapshots when a buy or sell fills (only when phone alerts and snapshots are on).
@@ -363,8 +377,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('discovery:watch',discoveryAction((action,symbol,value)=>{if(action==='add')setTimeout(()=>void pollKisQuotes(),0);const scope=watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');if(action==='add')return watchlist.add(scope,symbol,{source:'user',reason:typeof value==='string'?value.slice(0,300):''}).entry;if(action==='remove')return watchlist.remove(scope,symbol);if(action==='pin')return watchlist.pin(scope,symbol,value===true);throw new Error('INVALID_REQUEST');}));
   ipcMain.handle('discovery:refresh-master',discoveryAction(()=>masterFetch?master.refresh(true):master.status()));
   const runtimeState=()=>({...automation.getState(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()});
-  ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='providers'){providerService.disconnect();automation.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();usSnapshot=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
-  ipcMain.handle('connections:reconnect',async(event,kind)=>{authorize(event);if(!['kis','providers'].includes(kind))throw new Error('INVALID_REQUEST');const file=remembered.get(kind);if(file&&remembered.progress[kind]!=='connecting'){try{await(kind==='kis'?connectKisFile(file):connectProviderFile(file));}catch{}}return runtimeState();});
+  ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='calendar'){calendarService.disconnect();return runtimeState();}if(kind==='providers'){providerService.disconnect();automation.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();usSnapshot=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
+  ipcMain.handle('connections:reconnect',async(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');const file=remembered.get(kind);if(file&&remembered.progress[kind]!=='connecting'){try{await(kind==='kis'?connectKisFile(file):kind==='calendar'?connectCalendarFile(file):connectProviderFile(file));}catch{}}return runtimeState();});
+  ipcMain.handle('calendar:import',async event=>{authorize(event);if(remembered.progress.calendar==='connecting')return {ok:false,error:'BUSY',state:runtimeState()};
+    const selected=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'Import a live KIS key for the market calendar',filters:[{name:'Credential JSON',extensions:['json']}],properties:['openFile']});if(selected.canceled)return {ok:true,state:runtimeState()};
+    try{remembered.forget('calendar');await connectCalendarFile(selected.filePaths[0]);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:remembered.errors.calendar,state:runtimeState()};}});
+  // Session status for both markets: every session today, what is open, what is next, and which ones this account can trade.
+  ipcMain.handle('market:status',event=>{authorize(event);const {marketStatus}=require('./market-sessions.cjs');const official=officialKrCalendar();const closedDays=new Set([...official.filter(r=>!r.open).map(r=>r.day),...(automation.closedDays??[])]);const environment=kisState.snapshot?.environment??'mock';
+    return {at:Date.now(),environment,KR:marketStatus('KR',Date.now(),{closedDays,environment}),US:marketStatus('US',Date.now(),{environment}),calendar:{KR:official.length?{source:'KIS official calendar',days:official.length,updatedAt:calendarAt||null,error:calendarError}:{source:remembered.progress.calendar==='connected'?'KIS official calendar (loading)':'Weekdays only; add a live key in Connections for official holidays',days:0,updatedAt:null,error:calendarError},US:{source:'NYSE holiday and early-close rules (checked against nyse.com for 2026–2027)'}}};});
   const liveAction=action=>async(event,...args)=>{authorize(event);try{const data=await action(...args);return {ok:true,data,state:live.getState()};}catch(error){const allowed=['NO_FUNDED_BALANCE','INVALID_LOSS_LIMIT','ACTIVATION_REQUIRED','INVALID_LIMITS','APPROVAL_REQUIRED','KIS_NOT_CONNECTED','KIS_TRADING_DISABLED','INVALID_ORDER','INSTRUMENT_NOT_ALLOWED','ORDER_SIZE_LIMIT','KIS_ORDER_BUSY','UNKNOWN_ORDER','DISABLED_OR_EXPIRED','RECONCILIATION_REQUIRED','DAILY_TURNOVER_LIMIT','DAILY_LOSS_LIMIT','CONCENTRATION_LIMIT','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','FEATURE_UNAVAILABLE','LEVERAGED_NOT_ENABLED','LEVERAGED_EXPOSURE_LIMIT','MARGIN_NOT_ENABLED','MARGIN_LIMIT','SHORT_NOT_ENABLED','SHORT_LIMIT','LIMIT_CHANGED','CREDIT_ACCOUNT_REQUIRED','DAILY_SESSION_SETUP_REQUIRED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:'KIS_ORDER_FAILED',state:live.getState()};}};
   ipcMain.handle('live:get',liveAction(()=>live.getState()));
   ipcMain.handle('live:configure',liveAction((value,phrase)=>live.configure(value,phrase)));
@@ -489,7 +509,7 @@ app.whenReady().then(async () => {
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'File',submenu:[{role:'quit'}]},{role:'editMenu'},{label:'View',submenu:[{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'},{type:'separator'},{role:'togglefullscreen'}]},{role:'windowMenu'}]));
   createWindow();
-  if(!verificationDirectory)void remembered.restore({kis:connectKisFile,providers:file=>connectProviderFile(file,false)});
+  if(!verificationDirectory)void remembered.restore({kis:connectKisFile,providers:file=>connectProviderFile(file,false),calendar:file=>connectCalendarFile(file).catch(()=>{})});
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 }).catch(() => { dialog.showErrorBox('Startup failed', 'The local portfolio database could not be opened. The app will close without submitting any orders.'); app.exit(1); });
 app.on('will-quit', () => {

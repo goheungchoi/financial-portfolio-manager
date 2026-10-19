@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('portfolio', {
   resetReviewWatches: () => ipcRenderer.invoke('runtime:reset-watches'),
   previewDigest: () => ipcRenderer.invoke('runtime:digest-preview'),
   testPhoneSnapshot: () => ipcRenderer.invoke('phone:test'),
+  importCalendarKey: () => ipcRenderer.invoke('calendar:import'),
+  getMarketStatus: () => ipcRenderer.invoke('market:status'),
   getPerformance: () => ipcRenderer.invoke('performance:get'),
   addCashFlow: value => ipcRenderer.invoke('performance:add-flow', value),
   removeCashFlow: id => ipcRenderer.invoke('performance:remove-flow', id),

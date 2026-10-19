@@ -16,7 +16,7 @@ function StatusPill({tone,children}:{tone:'ok'|'warn'|'off'|'error';children:Rea
 export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavigate}:{kis:KisState;kisBusy:boolean;onImport():void;onRefresh():void;onDisconnect():void;onNavigate(tab:string):void}){
   const [runtime,setRuntime]=useState<RuntimeState|null>(null);const [busy,setBusy]=useState(false);const [message,setMessage]=useState('');
   useEffect(()=>{let alive=true,pending=false;const load=async()=>{if(pending)return;pending=true;try{const next=await window.portfolio?.getRuntime();if(alive&&next)setRuntime(next);}catch{if(alive)setMessage('Could not load connection status.');}finally{pending=false;}};void load();const timer=setInterval(load,2000);return()=>{alive=false;clearInterval(timer);};},[]);
-  const fileAction=async(kind:'kis'|'providers',action:'forget'|'reconnect')=>{const api=window.portfolio;if(!api)return;setBusy(true);setMessage('');try{const next=action==='reconnect'?await api.reconnectConnection(kind):await api.forgetConnection(kind);setRuntime(next);setMessage(action==='reconnect'?'Reconnecting…':'Connection forgotten. It will not reopen at the next launch.');}catch{setMessage(action==='reconnect'?'Could not reconnect.':'Could not forget this connection.');}finally{setBusy(false);}};
+  const fileAction=async(kind:'kis'|'providers'|'calendar',action:'forget'|'reconnect')=>{const api=window.portfolio;if(!api)return;setBusy(true);setMessage('');try{const next=action==='reconnect'?await api.reconnectConnection(kind):await api.forgetConnection(kind);setRuntime(next);setMessage(action==='reconnect'?'Reconnecting…':'Connection forgotten. It will not reopen at the next launch.');}catch{setMessage(action==='reconnect'?'Could not reconnect.':'Could not forget this connection.');}finally{setBusy(false);}};
   const importProviders=async()=>{const api=window.portfolio;if(!api)return;setBusy(true);setMessage('');try{const reply:RuntimeReply=await api.importProviders();if(reply.state)setRuntime(reply.state);setMessage(reply.ok?'Provider keys imported.':reply.message??reply.error??'Import failed.');}catch{setMessage('Import failed.');}finally{setBusy(false);}};
 
   const data=kis.snapshot;const kisFile=runtime?.connections.kis;const providerFile=runtime?.connections.providers;const providers=runtime?.providerStatus;
@@ -52,6 +52,7 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
         </details>:<details className="inline-help" open={!kisFile?.remembered}><summary>Credential file format</summary><pre>{JSON.stringify({environment:'mock',appKey:'YOUR_APP_KEY',appSecret:'YOUR_APP_SECRET',accountNumber:'12345678',accountProductCode:'01'},null,2)}</pre><p className="muted">Use mock or live credentials matching the selected environment. Keep the original file outside this workspace; importing does not remove or protect it.</p></details>}
       </div>
     </section>
+    <CalendarKeyCard file={runtime?.connections.calendar} busy={busy} onImport={async()=>{const api=window.portfolio;if(!api)return;setBusy(true);setMessage('');try{const r=await api.importCalendarKey();if(r.state)setRuntime(r.state);if(!r.ok&&r.error)setMessage(r.error);}catch{setMessage('Could not import the calendar key.');}finally{setBusy(false);}}} onAction={action=>void fileAction('calendar',action)}/>
 
     <section className="settings-card connection-card" aria-label="Provider keys">
       <div className="card-head"><div><h2>AI, news and alert keys</h2><small>Optional · one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
@@ -74,4 +75,17 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
 
     <Note summary="How automatic reconnection works">Successful imports remember the file location in your app data, shared across builds. On startup the private brokers reopen those files. Keys are not copied into the database. Trading and scheduled reviews still start paused.</Note>
   </div>;
+}
+
+// A live KIS key used only for the official Korean market calendar (holidays); it never reads balances or places orders.
+function CalendarKeyCard({file,busy,onImport,onAction}:{file?:{remembered:boolean;name:string|null;status:string;error:string|null};busy:boolean;onImport():void;onAction(action:'forget'|'reconnect'):void}){
+  const connected=file?.status==='connected';
+  return <section className="settings-card connection-card" aria-label="Market calendar key">
+    <div className="card-head"><div><h2>Market calendar</h2><small>Optional · official KRX holidays</small></div><StatusPill tone={connected?'ok':file?.status==='error'?'error':'off'}>{file?.status==='connecting'?'Loading…':connected?'Official calendar':'Weekdays only'}</StatusPill></div>
+    <div className="setting-rows">
+      {file?.error&&<div role="alert" className="notice error">{file.error}</div>}
+      <Row block title="Live key for the calendar" hint={`${file?.name??'None imported'}${file?.remembered?' · reconnects at launch':''}`}><span className="control-pair"><button className={connected?'':'primary'} disabled={busy} onClick={onImport}>Import live key</button><button disabled={busy||!file?.remembered||file.status==='connecting'} onClick={()=>onAction('reconnect')}>Reconnect</button><button className="danger" disabled={busy||!file?.remembered||file.status==='connecting'} onClick={()=>onAction('forget')}>Forget</button></span></Row>
+      <Note summary="Used only to read the KRX holiday calendar.">KIS offers its market calendar (국내휴장일조회) only to live keys, so mock accounts otherwise assume every weekday is a trading day. The key runs in its own process that can do one thing: read the calendar once every six hours. It never reads balances, quotes or orders, and trading still uses your connected account.</Note>
+    </div>
+  </section>;
 }

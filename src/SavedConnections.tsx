@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react';
-export type ConnectionFiles=Record<'kis'|'providers',{remembered:boolean;name:string|null;status:string;error:string|null}>;
+export type ConnectionFiles=Record<'kis'|'providers'|'calendar',{remembered:boolean;name:string|null;status:string;error:string|null}>;
 export function SavedConnections(){
   const [files,setFiles]=useState<ConnectionFiles|null>(null);const [busy,setBusy]=useState(false);const [error,setError]=useState('');
   useEffect(()=>{let alive=true;const load=async()=>{try{const state=await window.portfolio?.getRuntime();if(alive&&state)setFiles(state.connections);}catch{if(alive)setError('Could not load saved connections.');}};void load();const timer=setInterval(load,2000);return()=>{alive=false;clearInterval(timer);};},[]);
