@@ -3,6 +3,7 @@ import {Scoreboard} from './Scoreboard';
 import {TradeOutcomes} from './TradeOutcomes';
 import type {RuntimeState} from './RuntimeSettings';
 import {setDraft,useDraftState} from './useDraftState';
+import {AccountScope,accountName,type HistoryScope} from './AccountScope';
 type Review=RuntimeState['reviews'][number];
 const PROVIDER:Record<string,string>={local:'Local rules',openai:'OpenAI',external:'External agent'};
 const day=(t:number)=>new Date(t).toLocaleDateString('en-CA');
@@ -24,16 +25,17 @@ function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state
   </article>;
 }
 export function JournalView({state,onNavigate}:{state:RuntimeState;busy:boolean;onLesson(id:string,approved:boolean):void;onNavigate?(tab:string):void}) {
-  const [view,setView]=useDraftState('journal:view','Decisions');const [filter,setFilter]=useDraftState('journal:filter','All');const [selected,setSelected]=useDraftState<string|null>('journal:selected',null);
-  const reviews=state.reviews.filter(r=>filter==='All'||r.decision.action===filter);const current=reviews.find(r=>r.id===selected)??reviews[0]??null;
+  const [view,setView]=useDraftState('journal:view','Decisions');const [filter,setFilter]=useDraftState('journal:filter','All');const [selected,setSelected]=useDraftState<string|null>('journal:selected',null);const [scope,setScope]=useDraftState<HistoryScope>('history:accounts','account');
+  const all=scope==='all'||!state.account;const source=all?state.allReviews??state.reviews:state.reviews;
+  const reviews=source.filter(r=>filter==='All'||r.decision.action===filter);const current=reviews.find(r=>r.id===selected)??reviews[0]??null;
   const pending=state.lessons.filter(l=>!l.lifecycle||['pending','needs-review'].includes(l.lifecycle.status)).length;
   return <div aria-label="Portfolio journal" className="journal-page">
-    <div className="journal-tabs segmented" aria-label="Journal views">{[['Decisions',state.reviews.length],['Trades',state.outcomes?.length??0],['Reviewed lessons',pending],['Scoreboard',0]].map(([name,count])=><button key={name} aria-pressed={view===name} data-count={Number(count)>0?count:undefined} onClick={()=>setView(String(name))}>{name}</button>)}</div>
-    {view==='Decisions'&&(!state.reviews.length?<section className="empty">No decisions yet<br/><small>Run a review from Home.</small></section>:
+    <div className="journal-tabs segmented" aria-label="Journal views">{[['Decisions',source.length],['Trades',state.outcomes?.length??0],['Reviewed lessons',pending],['Scoreboard',0]].map(([name,count])=><button key={name} aria-pressed={view===name} data-count={Number(count)>0?count:undefined} onClick={()=>setView(String(name))}>{name}</button>)}</div>
+    {view==='Decisions'&&(!source.length&&!(state.allReviews??[]).length?<section className="empty">No decisions yet<br/><small>Run a review from Home.</small></section>:
       <section className="ai-console journal-decisions" aria-label="Decisions"><div className="console-layout">
-        <nav className="run-list" aria-label="Decision list"><select aria-label="Decision action" value={filter} onChange={e=>setFilter(e.target.value)}>{['All','Buy','Sell','Hold'].map(v=><option key={v}>{v}</option>)}</select>
-          {reviews.map(r=><button key={r.id} data-id={r.id} aria-current={r.id===current?.id?'true':undefined} className={`run-item tone-${r.decision.action.toLowerCase()}`} onClick={()=>setSelected(r.id)}><span className={`run-dot tone-${r.decision.action.toLowerCase()}`} aria-hidden="true"/><span className="run-main"><b>{r.decision.action} · {title(r)}</b><small>{r.emergency?'Emergency review':r.trigger}</small></span><span className="run-side"><time>{clock(r.timestamp)}</time><small>{day(r.timestamp)===day(Date.now())?'today':day(r.timestamp).slice(5)}</small></span></button>)}
-          {!reviews.length&&<p className="muted">No decisions match.</p>}</nav>
+        <nav className="run-list" aria-label="Decision list"><select aria-label="Decision action" value={filter} onChange={e=>setFilter(e.target.value)}>{['All','Buy','Sell','Hold'].map(v=><option key={v}>{v}</option>)}</select><AccountScope account={state.account} scope={scope} onChange={setScope}/>
+          {reviews.map(r=><button key={r.id} data-id={r.id} aria-current={r.id===current?.id?'true':undefined} className={`run-item tone-${r.decision.action.toLowerCase()}`} onClick={()=>setSelected(r.id)}><span className={`run-dot tone-${r.decision.action.toLowerCase()}`} aria-hidden="true"/><span className="run-main"><b>{r.decision.action} · {title(r)}</b><small>{r.emergency?'Emergency review':r.trigger}{all&&state.account?` · ${accountName(r.account?.label)}`:''}</small></span><span className="run-side"><time>{clock(r.timestamp)}</time><small>{day(r.timestamp)===day(Date.now())?'today':day(r.timestamp).slice(5)}</small></span></button>)}
+          {!reviews.length&&<p className="muted">{!all&&!source.length?`No decisions on ${state.account?.label} yet. Choose All accounts to see earlier ones.`:'No decisions match.'}</p>}</nav>
         {current&&<DecisionDetail review={current} state={state} onNavigate={onNavigate} onLessons={()=>setView('Reviewed lessons')}/>}
       </div></section>)}
     {view==='Trades'&&<TradeOutcomes outcomes={state.outcomes??[]}/>}

@@ -4,8 +4,9 @@ const seoulHour=now=>Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seou
 const money=(value,currency)=>currency==='USD'?(value<0?'-':'')+'$'+Math.abs(value).toFixed(2):(value<0?'-':'')+'₩'+Math.round(Math.abs(value)).toLocaleString('en-US');
 const signed=(value,currency)=>(value>0?'+':'')+money(value,currency);
 function buildDigest(a,now=Date.now()){
-  const day=seoulDate(now),onDay=timestamp=>Number.isFinite(timestamp)&&seoulDate(timestamp)===day;
-  const reviews=a.db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(row=>JSON.parse(row.payload)).filter(row=>onDay(row.timestamp));
+  // Reviews of the connected account only.
+  const account=a.accountTag?.()?.key??null;const day=seoulDate(now),onDay=timestamp=>Number.isFinite(timestamp)&&seoulDate(timestamp)===day;
+  const reviews=a.db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(row=>JSON.parse(row.payload)).filter(row=>onDay(row.timestamp)&&(!account||row.account?.key===account));
   const decisions={Buy:0,Sell:0,Hold:0};for(const row of reviews){const action=row.decision?.action;if(Object.hasOwn(decisions,action))decisions[action]++;}
   const markets=[];const add=(label,currency,loss)=>{if(loss&&Number.isFinite(loss.baseline)&&Number.isFinite(loss.equity)&&loss.baseline>0)markets.push({label,currency,baseline:loss.baseline,equity:loss.equity,change:loss.equity-loss.baseline,changePct:(loss.equity-loss.baseline)/loss.baseline*100});};
   if(a.config.scope==='paper')add('Paper','KRW',a.paper.getState().loss);

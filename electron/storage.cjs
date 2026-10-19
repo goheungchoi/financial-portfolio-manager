@@ -21,6 +21,8 @@ class PortfolioStore {
       if (typeof event[key] !== 'string' || event[key].length > 32000) throw new Error('Invalid interaction');
       clean[key] = event[key];
     }
+    // Optional: the account the entry belongs to (hashed key and a short label).
+    for (const key of ['account', 'accountLabel']) if (typeof event[key] === 'string' && event[key].length <= 200) clean[key] = event[key];
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare('INSERT OR IGNORE INTO events(id,payload) VALUES (?,?)').run(clean.id, JSON.stringify(clean));
