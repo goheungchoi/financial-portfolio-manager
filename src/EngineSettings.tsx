@@ -1,11 +1,12 @@
 import {useState} from 'react';
 import type {RuntimeConfig,RuntimeState} from './RuntimeSettings';
 import {Card,Row,Switch,NumberField,Limit} from './SettingsUI';
+import {Note} from './Note';
 import {Guardrails} from './Guardrails';
 import {TokenSaving} from './TokenSaving';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
-const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-conditional','Conditional orders'],['eng-alerts','Alerts']];
+const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-extended','Extended hours'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-conditional','Conditional orders'],['eng-alerts','Alerts']];
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
 export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,onState}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void}){
   const [preview,setPreview]=useState<string|null>(null);const [phoneNote,setPhoneNote]=useState('');
@@ -31,6 +32,7 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       <Row title="Share KIS data with OpenAI" hint="Holdings and values; required for AI reviews of KIS accounts"><Switch label="Share KIS data with OpenAI" disabled={busy} checked={config.shareKisWithAI} onChange={v=>edit('shareKisWithAI',v)}/></Row>
     </Card>
 
+    <ExtendedSessions config={config} busy={busy} edit={edit} live={state.accountEnvironment==='live'}/>
     <Card id="eng-model" title="AI model" hint={state.providerStatus.aiConnected?undefined:'No OpenAI key loaded. Add one in Connections.'}>
       <Row title="Model"><select aria-label="OpenAI model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></select></Row>
       <Row title="Reasoning effort" hint="Higher is slower and costs more"><select aria-label="Reasoning effort" disabled={busy} value={config.reasoningEffort} onChange={e=>edit('reasoningEffort',e.target.value)}>{efforts.map(v=><option key={v} value={v}>{v[0].toUpperCase()+v.slice(1)}</option>)}</select></Row>
@@ -91,4 +93,20 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       {state.watches?.length?<ul className="watch-list">{state.watches.map(w=><li key={w.symbol}><b>{w.symbol}</b><span>{w.percent??state.config.eventTolerancePct}% move{w.price!=null?` · ${w.direction} ${w.price.toLocaleString()} ${/^\d{6}$/.test(w.symbol)?'KRW':'USD'}${w.priceFired?' (triggered)':''}`:''}</span><small>{w.reason}</small></li>)}</ul>:<p className="muted">Default movement threshold: {state.config.eventTolerancePct}%</p>}
     </Card>
   </div>;
+}
+
+// Extended-hours trading, one switch per session. Live accounts only (KIS offers none of these sessions on mock accounts).
+function ExtendedSessions({config,busy,edit,live}:{config:RuntimeConfig;busy:boolean;edit:Edit;live:boolean}){
+  const row=(key:'sessionKrNxt'|'sessionKrxSingle'|'sessionUsPre'|'sessionUsAfter'|'sessionUsDaytime',title:string,hint:string)=><Row title={title} hint={hint}><Switch label={title} disabled={busy} checked={config[key]} onChange={v=>edit(key,v)}/></Row>;
+  const any=config.sessionKrNxt||config.sessionKrxSingle||config.sessionUsPre||config.sessionUsAfter||config.sessionUsDaytime;
+  return <Card id="eng-extended" title="Extended hours" hint="Trade outside regular sessions. Each session has its own switch; all start off." aside={<span className="badge">{any?'On':'Off'}</span>}>
+    {!live&&<div className="notice">The connected account is a mock account, which accepts no extended-session orders. These switches take effect on a live account.</div>}
+    {row('sessionKrNxt','Korea · Nextrade (NXT)','Pre-market 08:00–08:50 and after-market 15:30–20:00 KST, limit orders on NXT')}
+    {row('sessionKrxSingle','Korea · KRX after-hours single price','16:00–18:00 KST, matched every 10 minutes within ±10% of the close')}
+    {row('sessionUsDaytime','U.S. · KIS daytime session','During Korean daytime (09:00–17:00 KST in summer), limit orders only')}
+    {row('sessionUsPre','U.S. · Pre-market','04:00–09:30 New York time; every order waits for your approval')}
+    {row('sessionUsAfter','U.S. · After-market','16:00–20:00 New York time; needs KIS after-market extension on your account; every order waits for your approval')}
+    <Row title="Largest extended-session order" hint="Share of the market's equity per order"><NumberField label="Largest extended-session order" min={0.5} max={50} step={0.5} unit="%" disabled={busy} value={config.extendedMaxOrderPct} onChange={v=>edit('extendedMaxOrderPct',v)}/></Row>
+    <Note summary="How extended orders work">Orders go out only while a session you switched on is open, and stop 5 minutes before it ends. Korean NXT orders are sent to Nextrade with NXT prices; the KRX single-price auction uses order type 07. U.S. daytime orders use KIS's daytime endpoint. KIS's documentation does not confirm how U.S. pre- and after-market orders are handled, so those always wait for your approval. KRX closing-price windows (08:30–08:40, 15:40–16:00) are not traded. Credit (margin and short) orders are regular-session only.</Note>
+  </Card>;
 }

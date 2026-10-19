@@ -107,9 +107,10 @@ class KisReadOnlyClient {
       return candle;
     }).sort((a,b)=>a.timestamp-b.timestamp).slice(-30);
   }
-  async getQuote(symbol) {
+  // market: J = KRX, NX = Nextrade (its pre- and after-market prices).
+  async getQuote(symbol,market='J') {
     if(typeof symbol!=='string' || !/^[A-Z0-9]{6}$/.test(symbol))throw new KisError('INVALID_INSTRUMENT');
-    const body=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol});
+    const body=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:['J','NX'].includes(market)?market:'J',FID_INPUT_ISCD:symbol});
     const price=amount(body.output?.stck_prpr);
     if(price<=0)throw new KisError('INVALID_RESPONSE');
     const o=body.output??{};const n=v=>{const x=Number(v);return v!=null&&String(v).trim()!==''&&Number.isFinite(x)?x:null;};
@@ -215,10 +216,11 @@ class KisReadOnlyClient {
     if(result.body.rt_cd!=='0'){const error=new KisError('BROKER_REJECTED');if(/^[A-Z0-9_-]{1,24}$/.test(result.body.msg_cd??''))error.brokerCode=result.body.msg_cd;throw error;}return result;
   }
   overseasIdentity(){return {environment:this.#credentials.environment,accountKey:require('node:crypto').createHmac('sha256',this.#credentials.appSecret).update(this.#credentials.environment+this.#credentials.accountNumber+this.#credentials.accountProductCode).digest('hex')+':US'};}
-  async checkSession() {
+  // session: an extended session from market-sessions.tradableNow (its hours were checked there); it still needs a trading day.
+  async checkSession(session=null) {
     const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
     const local=new Date(Date.now()+9*3600000);const minutes=local.getUTCHours()*60+local.getUTCMinutes();
-    if(minutes<9*60 || minutes>=15*60+20)throw new KisError('SESSION_CLOSED');
+    if(!(session&&!session.regular)&&(minutes<9*60 || minutes>=15*60+20))throw new KisError('SESSION_CLOSED');
     // The mock server has no holiday calendar (CTCA0903R returns EGW02006), so mock accounts use weekdays and hours; the broker still rejects holiday orders.
     if(this.#credentials.environment!=='live'){if([0,6].includes(local.getUTCDay()))throw new KisError('SESSION_CLOSED');return {open:true,basis:'trading hours (holiday calendar unavailable on mock accounts)'};}
     if(!this.holidayDay || this.holidayDay!==today) {
@@ -228,14 +230,15 @@ class KisReadOnlyClient {
     }
     return {open:true,basis:'KRX holiday calendar and trading hours'};
   }
-  async prepareOrder(command) {
+  async prepareOrder(command,session=null) {
+    if(session&&!session.regular&&command?.credit!=null)throw new KisError('FEATURE_UNAVAILABLE');
     if(!command||!/^\d{6}$/.test(command.symbol)||!['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!Number.isSafeInteger(command.limitPrice)||command.limitPrice<=0)throw new KisError('INVALID_ORDER');
     if(command.credit!=null){
       const spec=CREDIT_KINDS[command.credit?.kind];if(!spec||spec.side!==command.side||!spec.types.includes(command.credit.type)||spec.repay&&!/^\d{4}-\d{2}-\d{2}$/.test(command.credit.loanDate??''))throw new KisError('INVALID_ORDER');
       if(this.#credentials.environment!=='live')throw new KisError('FEATURE_UNAVAILABLE');
     }
-    await this.checkSession();const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
-    const quoteBody=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:command.symbol});const output=quoteBody.output;
+    await this.checkSession(session);const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
+    const quoteBody=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:session?.route?.quote==='NX'?'NX':'J',FID_INPUT_ISCD:command.symbol});const output=quoteBody.output;
     const price=amount(output?.stck_prpr),unit=amount(output?.aspr_unit);
     if(price<=0||unit<=0||command.limitPrice%unit!==0||output.temp_stop_yn!=='N')throw new KisError('INVALID_ORDER');
     if(Math.abs(command.limitPrice/price-1)>.02)throw new KisError('PRICE_MOVED');
@@ -269,10 +272,11 @@ class KisReadOnlyClient {
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
     }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
   }
-  async placeOrder(command) {
+  // session.route picks the exchange (KRX or NXT) and order type (00 limit, 07 after-hours single price).
+  async placeOrder(command,session=null) {
     if(command.credit)return this.placeCreditOrder(command);
     await this.authenticate();await this.wait(550);
-    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice),EXCG_ID_DVSN_CD:'KRX',SLL_TYPE:command.side==='Sell'?'01':'',CNDT_PRIC:''};
+    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,ORD_DVSN:['00','07'].includes(session?.route?.ordDvsn)?session.route.ordDvsn:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice),EXCG_ID_DVSN_CD:['KRX','NXT'].includes(session?.route?.exchange)?session.route.exchange:'KRX',SLL_TYPE:command.side==='Sell'?'01':'',CNDT_PRIC:''};
     try {
       const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-cash',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:(this.#credentials.environment==='live'?'T':'V')+(command.side==='Buy'?'TTC0012U':'TTC0011U'),custtype:'P'},body:JSON.stringify(params)});
       if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');

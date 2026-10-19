@@ -28,7 +28,7 @@ class LiveEngine {
   async context(supplied=null) {
     const executionEnabled=this.enabled;const configured=this.policy();
     const extra=this.market==='KR'?[...new Set((await this.extraSymbols?.())??[])].filter(symbol=>/^\d{6}$/.test(symbol)&&!(configured?.symbols??[]).includes(symbol)).slice(0,20):[];
-    const value=supplied??await this.broker.request('live-context',{symbols:configured?.symbols??[],...(extra.length?{extra}:{})});
+    const value=supplied??await this.broker.request('live-context',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),symbols:configured?.symbols??[],...(extra.length?{extra}:{})});
     if(value.balance.accountKey!==this.identity())throw new Error('ACCOUNT_CHANGED');
     this.observeBalance(value.balance);
     return {...(this.market==='US'&&this.buyingPower?{buyingPower:this.buyingPower(value.balance)}:{}),environment:'kis',executionEnabled:executionEnabled&&this.enabled,automaticExecutionEnabled:this.autoEnabled,market:this.market,currency:this.market==='US'?'USD':'KRW',marketSession:value.marketSession??{open:false,status:'unverified'},equity:value.balance.reportedTotal,cash:Number.isFinite(value.balance.settledCash)?value.balance.settledCash:value.balance.cash,depositCash:value.balance.cash,positions:Object.fromEntries(value.balance.holdings.map(row=>[row.symbol,{quantity:row.quantity,costTotal:row.cost*row.quantity}])),universe:value.quotes.map(quote=>({symbol:quote.symbol,name:value.balance.holdings.find(row=>row.symbol===quote.symbol)?.name??this.nameOf?.(quote.symbol)??quote.symbol,price:quote.price})),quotes:value.quotes.map(quote=>({...quote,timestamp:quote.retrievedAt,stale:value.marketSession?.open!==true})),orders:this.orders().filter(row=>['Accepted','Uncertain','Submitting','Partially filled'].includes(row.status)).map(({symbol,side,quantity,filled,status})=>({symbol,side,quantity,filled,status})),risk:this.policy()??{symbols:[],anyStock:true,maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,baseline:value.balance.reportedTotal,dayPeakEquity:value.balance.reportedTotal,lossLimit:{mode:'off',value:0},readOnly:true},...this.productRisk(value)};
@@ -67,8 +67,14 @@ class LiveEngine {
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
       const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
-      const prepared=await this.broker.request('prepare-order',{command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})}});
+      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})}});
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
+      // Extended sessions: U.S. pre- and after-market orders always wait for your approval, and every extended-session order is
+      // capped at a smaller share of equity. Nothing has been sent to KIS yet, so the order simply stays Ready.
+      if(prepared.session&&!prepared.session.regular){
+        if(prepared.session.approval&&this.submittingAutomatically)throw new Error('EXTENDED_APPROVAL_REQUIRED');
+        const pct=this.extendedMaxOrderPct?.()??5;if(order.notional>prepared.balance.reportedTotal*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
+        order={...order,session:prepared.session.id};}
       this.observeBalance(prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
@@ -83,7 +89,8 @@ class LiveEngine {
       if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
-      catch(error){order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
+      // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, so the order was not placed.
+      catch(error){if(error.message==='SESSION_CLOSED'){order={...order,status:'Rejected',reason:'SESSION_CLOSED'};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
       this.save(order);return order;
     }finally{this.busy=false;}
   }
@@ -132,7 +139,7 @@ class LiveEngine {
     return updated;
   }
   // Proposals that need approval stay Ready for the user instead of being submitted automatically.
-  async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};return this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}
+  async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');
     const report=await this.broker.request('orders',{startDate:order.day,endDate:order.day});const match=report.orders.find(row=>row.orderId===brokerOrderId);
