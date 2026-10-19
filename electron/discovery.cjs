@@ -49,14 +49,23 @@ function applyAiUpdate(watchlist,scope,args){
   return {status:'ok',results,ignored:Math.max(0,args.entries.length-3)};
 }
 // With no allowlist, watchlist or Korean holdings, the largest listed Korean companies seed the review universe.
+// With no allowlist, watchlist or holdings in a market, its largest listed companies give the AI something to review.
+// Korea uses the KIS market-cap ranking; the U.S. merges the NASDAQ and NYSE rankings by market value.
 class StarterCandidates {
-  constructor(screener,clock=Date.now){this.screener=screener;this.clock=clock;this.state={scope:null,at:0,symbols:[]};this.active=[];}
+  constructor(screener,clock=Date.now,market='KR'){this.screener=screener;this.clock=clock;this.market=market;this.state={scope:null,at:0,symbols:[]};this.active=[];}
+  async rank(){
+    if(this.market==='KR'){const result=await this.screener.screen({market:'KR',kind:'market-cap',type:'any',limit:20});return result.rows.filter(row=>krSymbol(row.symbol)&&row.type!=='etf').map(row=>row.symbol).slice(0,10);}
+    const lists=await Promise.allSettled(['NASD','NYSE'].map(exchange=>this.screener.screen({market:'US',kind:'market-cap',exchange,type:'any',limit:20})));
+    const rows=lists.filter(r=>r.status==='fulfilled').flatMap(r=>r.value.rows).filter(row=>usSymbol(row.symbol)&&row.type!=='etf');
+    if(!rows.length&&lists.every(r=>r.status==='rejected'))throw lists[0].reason;
+    return [...new Set(rows.sort((a,b)=>(b.marketCap??0)-(a.marketCap??0)).map(row=>row.symbol))].slice(0,10);
+  }
   async symbols({scope,watched=[],allowed=[],holdings=[]}){
-    this.active=[];
-    if(!scope||watched.length||allowed.length||holdings.some(krSymbol))return watched;
+    this.active=[];const own=this.market==='KR'?krSymbol:usSymbol;
+    if(!scope||watched.length||allowed.length||holdings.some(own))return watched;
     const age=this.clock()-this.state.at;
     if(this.state.scope!==scope||age>(this.state.symbols.length?6*3600000:15*60000)){
-      let symbols=[];try{const result=await this.screener.screen({market:'KR',kind:'market-cap',type:'any',limit:20});symbols=result.rows.filter(row=>krSymbol(row.symbol)&&row.type!=='etf').map(row=>row.symbol).slice(0,10);}catch{}
+      let symbols=[];try{symbols=await this.rank();}catch{}
       this.state={scope,at:this.clock(),symbols};
     }
     this.active=this.state.symbols;return this.active;
