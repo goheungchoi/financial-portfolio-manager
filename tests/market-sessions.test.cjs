@@ -5,7 +5,8 @@ test('Korean evening: the NXT after-market is open, not tradable on mock, and th
   const s=marketStatus('KR',kst('2026-10-19T19:45'),{environment:'mock'});
   assert.deepEqual(s.open,['nxt-after']);assert.equal(s.appTrading,false);assert.equal(s.next.id,'nxt-pre');assert.equal(at(s.next.at),'08:00');
   assert.equal(s.sessions.find(x=>x.id==='krx-regular').tradable,'app');assert.equal(s.sessions.find(x=>x.id==='nxt-after').tradable,'Not offered on mock accounts');
-  assert.equal(marketStatus('KR',kst('2026-10-19T19:45'),{environment:'live'}).sessions.find(x=>x.id==='nxt-after').tradable,'Not supported by the app yet');
+  assert.equal(marketStatus('KR',kst('2026-10-19T19:45'),{environment:'live'}).sessions.find(x=>x.id==='nxt-after').tradable,'Off in settings');
+  assert.equal(marketStatus('KR',kst('2026-10-19T19:45'),{environment:'live',enabled:{krNxt:true}}).sessions.find(x=>x.id==='nxt-after').tradable,'app');assert.equal(marketStatus('KR',kst('2026-10-19T19:45'),{environment:'live',enabled:{krNxt:true}}).sessions.find(x=>x.id==='krx-post').tradable,'Not supported by the app yet');
 });
 test('the app trades the Korean regular session until its 15:20 cutoff; official holidays move to the next day',()=>{
   assert.equal(marketStatus('KR',kst('2026-10-20T15:10')).appTrading,true);assert.equal(marketStatus('KR',kst('2026-10-20T15:25')).appTrading,false);

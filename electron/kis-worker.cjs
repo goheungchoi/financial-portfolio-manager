@@ -24,32 +24,37 @@ process.parentPort.on('message',async ({data})=>{
     if(operation==='company-chart'){const snapshot=await require('./kis-evidence.cjs').fetchEvidence(client,data.request,true);process.parentPort.postMessage({id,ok:true,snapshot});return;}
     if(operation==='market-evidence'){const snapshot=await require('./kis-evidence.cjs').fetchEvidence(client,data.request);process.parentPort.postMessage({id,ok:true,snapshot});return;}
     if(operation.startsWith('us-')) {
-      const us=new (require('./kis-overseas.cjs').OverseasClient)(client);let snapshot;
-      if(operation==='us-context')snapshot=await us.context(data.symbols??[]);
+      const us=new (require('./kis-overseas.cjs').OverseasClient)(client);let snapshot;const sessions=require('./market-sessions.cjs');const sess=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:data.sessions??{}});
+      if(operation==='us-context')snapshot=await us.context(data.symbols??[],sess);
       else if(operation==='us-orders')snapshot=await us.orders(data.startDate);
       else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end);
-      else if(operation==='us-prepare-order'){const check=await us.prepare(data.command);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',expiresAt:Date.now()+15000});snapshot={...check,ticket};}
-      else if(operation==='us-place-order'){const entry=prepared.get(data.ticket);prepared.delete(data.ticket);if(!entry||entry.market!=='US'||entry.expiresAt<Date.now())throw new Error();snapshot=await us.place(entry.command);}
+      else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
+      else if(operation==='us-place-order'){const entry=prepared.get(data.ticket);prepared.delete(data.ticket);if(!entry||entry.market!=='US'||entry.expiresAt<Date.now())throw new Error();if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
       else throw new Error();
       process.parentPort.postMessage({id,ok:true,snapshot});return;
     }
     if(data.operation==='live-context') {
       if(!Array.isArray(data.symbols)||data.symbols.length>20||data.symbols.some(symbol=>typeof symbol!=='string'||!/^\d{6}$/.test(symbol)))throw 0;
       const extra=data.extra??[];if(!Array.isArray(extra)||extra.length>20||extra.some(symbol=>typeof symbol!=='string'||!/^\d{6}$/.test(symbol)))throw 0;
-      let marketSession;try{const session=await client.checkSession();marketSession={open:true,status:'open',...(session?.basis?{basis:session.basis}:{})};}catch(error){marketSession={open:false,status:error.code==='SESSION_CLOSED'?'closed':'unverified'};}
+      // The tradable session now (regular, or an extended one you switched on); quotes come from its market.
+      const sess=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:data.sessions??{}});
+      let marketSession;try{const session=await client.checkSession(sess);marketSession={open:true,status:'open',...(session?.basis?{basis:session.basis}:{}),...(sess?{session:{id:sess.id,label:sess.label,regular:sess.regular,endsAt:sess.endAt}}:{})};}catch(error){marketSession={open:false,status:error.code==='SESSION_CLOSED'?'closed':'unverified'};}
       const balance=await client.getBalance();const quotes=[];
-      for(const symbol of [...new Set([...(data.symbols.length?data.symbols:balance.holdings.map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol))),...extra])].slice(0,20))quotes.push(await client.getQuote(symbol));
+      for(const symbol of [...new Set([...(data.symbols.length?data.symbols:balance.holdings.map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol))),...extra])].slice(0,20)){let q;if(sess?.route?.quote==='NX'&&marketSession.open){try{q={...await client.getQuote(symbol,'NX'),market:'NX'};}catch{}}quotes.push(q??await client.getQuote(symbol));}
       process.parentPort.postMessage({id,ok:true,snapshot:{balance,quotes,marketSession}});return;
     }
     if(data.operation==='prepare-order') {
       for(const [key,entry] of prepared)if(entry.expiresAt<Date.now())prepared.delete(key);
-      const check=await client.prepareOrder(data.command);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,expiresAt:Date.now()+15000});
-      process.parentPort.postMessage({id,ok:true,snapshot:{...check,ticket}});return;
+      const sess=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:data.sessions??{}});
+      const check=await client.prepareOrder(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,session:sess,expiresAt:Date.now()+15000});
+      process.parentPort.postMessage({id,ok:true,snapshot:{...check,ticket,session:sess}});return;
     }
     if(data.operation==='place-order') {
       const entry=prepared.get(data.ticket);prepared.delete(data.ticket);
       if(!entry||entry.market||Date.now()>entry.expiresAt)throw new Error();
-      process.parentPort.postMessage({id,ok:true,snapshot:await client.placeOrder(entry.command)});return;
+      // The session must still be open at placement (the same one the order was prepared for).
+      if(entry.session&&!entry.session.regular){const now=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[require('./market-sessions.cjs').TOGGLES[entry.session.id]]:true}});if(now?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}
+      process.parentPort.postMessage({id,ok:true,snapshot:await client.placeOrder(entry.command,entry.session)});return;
     }
     if(operation==='charges') {
       process.parentPort.postMessage({id,ok:true,snapshot:await client.getOrderCharges(data.day,data.orderId)});return;
