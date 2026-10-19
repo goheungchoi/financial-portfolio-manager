@@ -53,3 +53,10 @@ test('with integrated margin, the extended-session cap counts the KRW that funds
   e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
   const ok=e.propose({symbol:'NASD:AAA',side:'Buy',quantity:3,limitPrice:10});const r=await e.submit(ok.id,'PLACE LIVE ORDER');assert.equal(r.status,'Accepted','$30 within 10% of $350');assert.equal(places,1);
 });
+test('a U.S. account holding nothing counts as funded when integrated margin lends it KRW',()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');const snapshot={accountKey:'acct:US',environment:'live',reportedTotal:0,cash:0,holdings:[]};
+  const make=()=>new LiveEngine(new DatabaseSync(':memory:'),{request:async()=>{}},()=>({status:'connected',snapshot}),{market:'US'});const limits={symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'percent',value:2}};
+  assert.throws(()=>make().configure(limits,'ENABLE LIVE'),/NO_FUNDED_BALANCE/,'no integrated margin');
+  const e=make();e.buyingPower=()=>({usd:350,fromKRWUSD:350,integratedMargin:true});assert.equal(e.funded(snapshot),true);
+  const state=e.configure(limits,'ENABLE LIVE');assert.equal(state.policy.maxDailyLossKRW,7,'2% of the $350 funded through KRW, not $1');
+});

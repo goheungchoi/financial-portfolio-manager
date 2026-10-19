@@ -21,7 +21,7 @@ async function start(a,token){
   try{
     if(['us','both'].includes(a.config.scope))await a.refreshUS();
     if(generation!==(a.launchGeneration??0)||token!==launchState(a).token)throw new Error('Launch canceled because settings or the account changed.');
-    for(const e of selected){const c=e.getConnection();if(!c.snapshot||c.status==='disconnected')throw new Error('Connect the selected KIS account first.');if(!(c.snapshot.reportedTotal>0))throw new Error(`${e.market}: no funded balance available. Choose a funded market in Engine settings.`);if(e.busy)throw new Error('An order is being processed. Try again after it completes.');}
+    for(const e of selected){const c=e.getConnection();if(!c.snapshot||c.status==='disconnected')throw new Error('Connect the selected KIS account first.');if(!(e.funded?e.funded(c.snapshot):c.snapshot.reportedTotal>0))throw new Error(`${e.market}: no funded balance available. Choose a funded market in Engine settings.`);if(e.busy)throw new Error('An order is being processed. Try again after it completes.');}
     for(const e of selected){const saved=e.policy()??{symbols:[],lossLimit:{mode:'off',value:0}};const policy=Object.fromEntries(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','maxDailyLossKRW','lossLimit'].filter(k=>saved[k]!==undefined).map(k=>[k,saved[k]]));const env=e.getState().environment==='live'?'LIVE':'MOCK';e.configure(policy,`ENABLE ${env}`);e.enableAuto(`ENABLE AUTO ${env}`);}
     if(!selected.length)a.paper.setPaused(false);
     a.configure({enabled:true,autoSubmit:true});
