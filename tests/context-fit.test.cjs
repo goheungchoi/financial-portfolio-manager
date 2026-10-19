@@ -14,10 +14,10 @@ test('small continuations are untouched; large ones digest older results and kee
   assert.equal(r.items.at(-1).output,items.at(-1).output,'the latest result is unchanged');assert.match(r.items[2].output,/"digest":true/);
 });
 test('if digests are not enough the cheap model condenses older results; a failed condensation keeps the digests',async()=>{
-  const items=[{role:'user',content:'c'.repeat(120000)},...item('a',research(300)),...item('b',research(300))];const keepFrom=items.length-2;let asked=null;
+  const items=[{role:'user',content:'c'.repeat(124000)},...item('a',research(300)),...item('b',research(300))];const keepFrom=items.length-2;let asked=null;
   const r=await fit(items,{keepFrom,compact:async p=>{asked=p;return {summaries:p.results.map(x=>({callId:x.callId,summary:'PER 33.1, target 300k'}))};}});
-  assert.deepEqual(asked.results.map(x=>x.callId),['a']);assert.equal(r.steps[1].step,'compact');assert.match(r.items[2].output,/compacted/);
-  const failed=await fit(items,{keepFrom,compact:async()=>{throw new Error('AI_TIMEOUT');}});assert.equal(failed.steps[1].error,'AI_TIMEOUT');assert.match(failed.items[2].output,/"digest":true/);
+  assert.deepEqual(asked.results.map(x=>x.callId),['a']);assert.equal(r.steps.at(-1).step,'compact');assert.match(r.items[2].output,/compacted/);
+  const failed=await fit(items,{keepFrom,compact:async()=>{throw new Error('AI_TIMEOUT');}});assert.equal(failed.steps.at(-1).error,'AI_TIMEOUT');assert.match(failed.items[2].output,/"digest":true/);
 });
 test('a research review that would have exceeded the limit now reaches its decision',async()=>{
   const big=research(900);const sent=[];let round=0;const logs=[];
@@ -26,4 +26,21 @@ test('a research review that would have exceeded the limit now reaches its decis
     return {decision:{action:'Hold'},usage:{}};};
   const result=await researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request,log:(k,t)=>logs.push(t),discovery:{get_company_research:async()=>big}});
   assert.equal(result.decision.action,'Hold');assert.ok(sent.every(n=>n<=LIMIT),'every follow-up fits: '+sent.join(','));assert.ok(logs.includes('Research context condensed'));
+});
+test('one round asking for several large lookups is digested too, so the review can continue',async()=>{
+  const items=[{role:'user',content:'c'.repeat(38000)},{type:'function_call',call_id:'a',name:'get_company_research',arguments:'{}'},{type:'function_call',call_id:'b',name:'get_company_research',arguments:'{}'},{type:'function_call',call_id:'c',name:'get_company_research',arguments:'{}'},{type:'function_call',call_id:'d',name:'screen_market',arguments:'{}'},
+    ...['a','b','c','d'].map(id=>({type:'function_call_output',call_id:id,output:JSON.stringify(research(700))}))];
+  assert.ok(size(items)>LIMIT);const r=await fit(items,{keepFrom:1});
+  assert.deepEqual(r.steps.map(s=>s.step),['digest','digest-latest']);assert.ok(size(r.items)<LIMIT*0.9,'fits: '+size(r.items));
+  assert.equal(JSON.parse(r.items.at(-1).output).overview.price,216000,'numbers survive');
+});
+test('a review whose follow-up request is between 70 and 140 KB completes (the budget check uses the same limit)',async()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {DatabaseSync}=require('node:sqlite');
+  const db=new DatabaseSync(':memory:');let round=0;const sizes=[];
+  const provider={request:async(op,{context,options})=>{if(op!=='decision')throw new Error('UNEXPECTED');round++;if(options.continuation)sizes.push(size(options.continuation));
+    if(round===1)return {toolCalls:[{name:'get_market_evidence',callId:'e1',args:{symbol:'005930',dataset:'company'}}],continuation:[{role:'user',content:JSON.stringify(context)},{type:'function_call',call_id:'e1',name:'get_market_evidence',arguments:'{}'}],usage:{inputTokens:1,outputTokens:1},provider:'openai'};
+    return {decision:{action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'Hold.'},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),provider,()=>{});a.providerStatus.aiConnected=true;
+  a.evidence={get:async()=>({status:'available',padding:'x'.repeat(90000)})};a.configure({provider:'openai',openaiModel:'gpt-6-sol',reasoningEffort:'low',unlimitedBudget:true,unlimitedCalls:true});
+  const review=await a.review('User request');assert.equal(review.decision.action,'Hold');assert.ok(sizes[0]>70000&&sizes[0]<140000,'follow-up was '+sizes[0]);
 });

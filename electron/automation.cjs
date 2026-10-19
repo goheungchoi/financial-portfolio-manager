@@ -151,7 +151,7 @@ class Automation {
         const research=()=>require('./research-review.cjs').researchReview({context,evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config);},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');}):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
           if(this.disposed||watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
           const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};options={...options,...modelConfig};
-          const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,options);
+          const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options)});
           const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
           if(require('./ai-models.cjs').budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
           const callId=randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now()};
@@ -219,7 +219,7 @@ class Automation {
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){
     const modelConfig={openaiModel:this.config.routineModel,reasoningEffort:this.config.routineEffort};const models=require('./ai-models.cjs');
-    const reserve=models.reservation(modelConfig,payload,{});const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
+    const reserve=models.reservation(modelConfig,payload,{maxBytes:400000});const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
     if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
     const callId=randomUUID(),record={reviewId,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'compact'};
     this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('INSERT INTO ai_usage VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(day,usage.calls+1,usage.reservedMicro+reserve);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,JSON.stringify(record));this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}
@@ -359,6 +359,7 @@ class Automation {
       const narrative=n.validate(response.narrative,{signalIds:signalList.map(x=>x.id),headlineList,previous});
       const saved=this.narratives.save(narrative,{runId:id,trigger,model:response.model??modelConfig.openaiModel,headlines:headlineList.length,signals:signalList.length});
       this.log(id,'Agent','Market narrative',JSON.stringify({regime:saved.regime,summary:saved.summary,drivers:saved.drivers.map(d=>({kind:d.kind,title:d.title,confirmed:d.confirmed,themes:d.themes}))},null,2));
+      this.log(id,'System','Review completed',JSON.stringify(response.usage??{}));
       this.detectEpisodes();this.narrativeError=null;return saved;
     }catch(error){this.narrativeError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED');this.log(id,'System','Market narrative failed',this.narrativeError);throw error;}
     finally{this.narrating=false;}

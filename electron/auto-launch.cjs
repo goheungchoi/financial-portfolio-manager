@@ -28,6 +28,8 @@ async function start(a,token){
   }catch(error){if(generation===(a.launchGeneration??0))for(const row of prior){row.e.enabled=row.enabled;row.e.autoEnabled=row.autoEnabled;}throw error;}
   finally{a.launching=false;}
   // Keep monitoring enabled after a provider failure; expose that failure separately.
+  // With every market in scope closed, the first review waits for the schedule (the pre-open review), unless set otherwise.
+  const hours=a.marketHours?.();if(hours&&!hours.open&&a.config.closedMarketReviews!=='keep'&&!a.emergencyState?.().active)return 'Auto trading started. Markets are closed, so the first review runs before the next open.';
   try{await a.review('Auto trading started');return 'Auto trading started. First review completed.';}
   catch{return 'Auto trading started, but the first review failed. Open AI console for details.';}
 }
