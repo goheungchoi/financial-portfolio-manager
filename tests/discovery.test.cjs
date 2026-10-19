@@ -120,3 +120,12 @@ test('agent watchlist updates add up to three entries, reject per entry and neve
   assert.throws(()=>applyAiUpdate(list,'acct',{action:'add',symbol:'005930'}),/INVALID_WATCHLIST/);
   assert.equal(normalizeDomestic([{mksc_shrn_iscd:'005930',stck_prpr:'1',stck_avls:''}])[0].marketCap,null,'rankings without market value report null, not zero');
 });
+
+test('U.S. starter candidates merge the NASDAQ and NYSE market-cap rankings and give way to U.S. holdings',async()=>{
+  const seen=[];const screener={screen:async query=>{seen.push([query.market,query.kind,query.exchange]);return query.exchange==='NASD'?{rows:[{symbol:'NASD:NVDA',type:'stock',marketCap:5e12},{symbol:'NASD:QQQ',type:'etf',marketCap:4e11},{symbol:'NASD:AAPL',type:'stock',marketCap:4e12}]}:{rows:[{symbol:'NYSE:BRK.B',type:'stock',marketCap:1e12},{symbol:'NYSE:TSM',type:'stock',marketCap:4.5e12}]};}};
+  const starters=new StarterCandidates(screener,()=>0,'US');
+  assert.deepEqual(await starters.symbols({scope:'acct'}),['NASD:NVDA','NYSE:TSM','NASD:AAPL','NYSE:BRK.B']);assert.deepEqual(seen.map(q=>q[2]).sort(),['NASD','NYSE']);
+  assert.deepEqual(await starters.symbols({scope:'acct',holdings:['005930']}),['NASD:NVDA','NYSE:TSM','NASD:AAPL','NYSE:BRK.B'],'Korean holdings do not count');
+  assert.deepEqual(await starters.symbols({scope:'acct',holdings:['NASD:MSFT']}),[]);
+  const half=new StarterCandidates({screen:async q=>{if(q.exchange==='NYSE')throw new Error('REQUEST_FAILED');return {rows:[{symbol:'NASD:NVDA',type:'stock',marketCap:1}]};}},()=>0,'US');assert.deepEqual(await half.symbols({scope:'acct'}),['NASD:NVDA'],'one exchange failing still gives candidates');
+});
