@@ -53,7 +53,7 @@ class Automation {
     return {label:'Monitoring',detail:'Waiting for the next scheduled review or price-movement trigger.'};
   }
   // Markets in the review scope that accept orders now; Korean holidays come from KIS session checks during reviews.
-  marketHours(now=Date.now()){this.closedDays??=new Set();return require('./market-hours.cjs').marketHours(this.config.scope,now,this.closedDays);}
+  marketHours(now=Date.now()){this.closedDays??=new Set();const closed=new Set([...this.closedDays,...(this.officialClosedDays?.()??[])]);return require('./market-hours.cjs').marketHours(this.config.scope,now,closed);}
   noteSessions(context){const {krOpen,seoulDay}=require('./market-hours.cjs');const kr=context?.environment==='kis-combined'?context.markets?.find(m=>m.market==='KR')?.marketSession:this.config.scope==='kis'?context?.marketSession:null;
     if(kr&&kr.open===false&&kr.status==='closed'&&krOpen(Date.now(),this.closedDays??=new Set()))this.closedDays.add(seoulDay(Date.now()));}
   // When the next scheduled review is due: while markets are closed, the pre-open review or the open itself.

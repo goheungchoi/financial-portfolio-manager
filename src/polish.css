@@ -431,3 +431,13 @@ main>.engine-settings{margin-bottom:18px}
 .chart-skeleton>span{position:relative;display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:8px;background:var(--panel);border:1px solid var(--border);font-size:13px;color:var(--text)}
 .chart-empty{height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:1px dashed var(--border);border-radius:10px;margin-top:8px}
 @media(prefers-reduced-motion:reduce){.load-bar span,.skeleton-stats i,.skeleton-text,.chart-skeleton-bars i{animation:none}}
+/* Market status */
+.market-status{padding:20px 22px}.market-status-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}.market-status-head h2{font-size:15px}
+.market-status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px 28px}.market-col{min-width:0}
+.market-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.market-line b{font-size:14px}.market-state{font-size:13px;font-weight:600}.market-state.open{color:var(--accent)}.market-state.extended{color:#e3b45a}.market-state.closed{color:var(--muted)}
+.market-dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.market-dot.open{background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent)}.market-dot.extended{background:#e3b45a}
+.market-sub{display:block;margin:4px 0 0 16px}
+.market-sessions{margin-top:10px}.market-sessions summary{font-size:12px}.market-sessions ul{list-style:none;margin:8px 0;padding:0;display:grid;gap:4px}
+.market-sessions li{display:grid;grid-template-columns:92px minmax(0,1fr) auto;align-items:center;gap:10px;font-size:12px;padding:4px 8px;border-radius:6px}.market-sessions li.live{background:color-mix(in srgb,var(--accent) 12%,transparent)}.market-sessions li.done{opacity:.5}
+.market-time{font-variant-numeric:tabular-nums;color:var(--muted)}.market-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.market-tag{font-size:10px;padding:2px 6px;border-radius:4px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}.market-tag.tradable{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 50%,transparent)}

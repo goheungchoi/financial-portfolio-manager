@@ -1,3 +1,4 @@
+import {MarketStatus} from './MarketStatus';
 import {toast} from './Toast';
 import {Note} from './Note';
 import {useEffect,useState} from 'react';
@@ -37,6 +38,7 @@ export function LiveTrading({draftKey='kis',market='KR'}:{draftKey?:string;marke
         {<table className="compact-table"><thead><tr><th>Stock</th><th>Shares</th><th>Price</th><th>Value</th></tr></thead><tbody>{state.portfolio.holdings.map(row=><tr key={row.symbol}><td>{row.symbol}</td><td>{row.quantity}</td><td>{(row.price??0).toFixed(2)}</td><td>{(row.marketValue??row.quantity*(row.price??0)).toFixed(2)}</td></tr>)}</tbody></table>}</>:<p className="muted">Connect KIS, then refresh to load U.S. balances.</p>}
       {state.refreshError&&<p role="status" className="error">{usErrorMessage(state.refreshError)}{state.httpStatus?` · HTTP ${state.httpStatus}`:''}{state.brokerCode?` · Broker reference ${state.brokerCode}`:''}</p>}{Boolean(state.warnings?.length)&&<small className="muted">Some quotes are unavailable.</small>}
       <Note summary="NASDAQ, NYSE and AMEX · whole-share limit orders">Home combines Korean and U.S. holdings using the displayed exchange rate. Both sessions can be active together. Regular-session, whole-share limit orders at $1 or above. Prices are broker snapshots and may be delayed by your data entitlement.</Note></section>}
+    <MarketStatus markets={[market]}/>
     <section className="trade-card" aria-label="Trading session"><div className="section-head"><div><h2>Trading session</h2><small>The AI follows your guidelines in Engine settings.</small></div><span className={`state-pill ${state.enabled?'on':''}`}>{statusLabel}</span></div>
       <div className="trade-fields">
         <label>Stocks the AI may trade<input aria-label="Allowed stock codes" placeholder={us?'Blank = holdings · NASD:AAPL, NYSE:IBM':'Blank = holdings · 005930, 000660'} value={symbols} aria-invalid={Boolean(fieldErrors.symbols)} onChange={e=>setSymbols(e.target.value)}/>{error('symbols')}</label>
