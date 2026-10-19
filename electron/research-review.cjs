@@ -1,4 +1,10 @@
-const {validRequest}=require('./market-evidence.cjs');
+const {validRequest,DATASETS}=require('./market-evidence.cjs');
+function refusal(args,symbols){
+  const symbol=typeof args?.symbol==='string'?args.symbol:'';
+  if(!DATASETS.includes(args?.dataset))return `Unknown dataset ${JSON.stringify(args?.dataset??null)}. Use one of: ${DATASETS.join(', ')}.`;
+  if(!symbols.includes(symbol))return `${symbol||'The symbol'} is not in this review's universe, so it has no quotes or price data here. Use get_company_research for company facts, or update_watchlist to add it to the next review's universe.`;
+  return 'Invalid request: pass exactly symbol and dataset.';
+}
 // Up to three research rounds of up to four tool requests each; the fourth request must answer.
 const ROUNDS=4,MAX_CALLS=4;
 async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions,compact}){
@@ -18,7 +24,8 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
       // Desk tools: formulas, triggers, notes and conditional orders. A refused request is answered, not fatal; a changed account still stops the review.
       if(actions?.[call.name]){log('Agent','Desk request · '+call.name,JSON.stringify(call.args));let value;try{value=await actions[call.name](call.args);}catch(error){if(error.message==='STALE_DECISION')throw error;value={status:'rejected',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DESK_REQUEST_FAILED'};}log('Tool','Desk result · '+call.name,JSON.stringify(value));answer(call,value);continue;}
       if(discovery&&['screen_market','search_securities','update_watchlist','get_company_research','get_market_overview'].includes(call.name)&&discovery[call.name]){log('Agent','Discovery request',JSON.stringify(call.args));const key=call.name==='update_watchlist'?null:call.name+JSON.stringify(call.args);let value=key?cache.get(key):undefined;if(!value){try{value=await discovery[call.name](call.args);}catch(error){value={status:'unavailable',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED'};}if(key)cache.set(key,value);}log('Tool','Discovery result',JSON.stringify(value));answer(call,value);continue;}
-      if(call.name!=='get_market_evidence'||!validRequest(call.args,context.universe.map(row=>row.symbol))){const value={status:'rejected',reason:call.name==='get_market_evidence'?'Unknown dataset or a symbol outside the review universe.':'UNKNOWN_TOOL'};log('Tool','Request refused · '+call.name,JSON.stringify(value));answer(call,value);continue;}
+      // A refusal names what was asked and why, so the agent can switch tools and the console shows the cause.
+      if(call.name!=='get_market_evidence'||!validRequest(call.args,context.universe.map(row=>row.symbol))){const value={status:'rejected',request:call.args??null,reason:call.name==='get_market_evidence'?refusal(call.args,context.universe.map(row=>row.symbol)):'UNKNOWN_TOOL'};log('Tool','Request refused · '+call.name,JSON.stringify(value));answer(call,value);continue;}
       log('Agent','Market data request',JSON.stringify(call.args));
       const key=JSON.stringify(call.args);let value=cache.get(key);
       if(!value){value=await evidence.get(call.args,context);cache.set(key,value);}

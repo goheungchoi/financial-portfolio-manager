@@ -26,3 +26,11 @@ test('risk per trade accepts up to 20% and refuses more',()=>{
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:50000}],()=>[{symbol:'005930',price:50000,sequence:1,timestamp:Date.now(),volume:1,stale:false}]),{request:async()=>({})},()=>{});
   a.configure({sizingRiskPct:10});assert.equal(a.config.sizingRiskPct,10);assert.throws(()=>a.configure({sizingRiskPct:25}));
 });
+test('a refused market-data request names the symbol and points to the tools that work',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const logs=[];let round=0;
+  const request=async({continuation})=>{round++;if(round===1)return {toolCalls:[{name:'get_market_evidence',callId:'c1',args:{symbol:'000270',dataset:'daily_technicals'}}],continuation:[]};return {decision:{action:'Hold'},seen:continuation};};
+  const result=await researchReview({context:{universe:[{symbol:'005930'}]},evidence:{get:async()=>({})},request,log:(kind,title,body)=>logs.push({title,body})});
+  const refused=logs.find(l=>l.title==='Request refused · get_market_evidence');assert.ok(refused);const value=JSON.parse(refused.body);
+  assert.deepEqual(value.request,{symbol:'000270',dataset:'daily_technicals'});assert.match(value.reason,/000270 is not in this review's universe.*get_company_research.*update_watchlist/);
+  assert.match(result.seen[0].output,/000270/,'the agent receives the same explanation');
+});
