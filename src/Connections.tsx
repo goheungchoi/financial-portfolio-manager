@@ -68,6 +68,8 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
       </div>
     </section>
 
+    <SecCard/>
+
     <section className="settings-card connection-card" aria-label="External agent bridge">
       <div className="card-head"><div><h2>External agent bridge</h2><small>MCP stdio bridge · paper snapshots and risk-checked proposals only</small></div></div>
       <div className="setting-rows"><details className="inline-help"><summary>Setup command</summary><p className="muted">No KIS credentials, live-account data or live-order tools are exposed. Select “External agent bridge” as the decision provider in Engine settings.</p>{runtime&&<pre>{`node "${runtime.bridgeScript}" "${runtime.bridgePipe}"`}</pre>}</details></div>
@@ -89,3 +91,25 @@ function CalendarKeyCard({file,busy,onImport,onAction}:{file?:{remembered:boolea
     </div>
   </section>;
 }
+
+// SEC EDGAR: U.S. company financials, dividends and filings. SEC asks every client to name a contact email,
+// which is sent only to sec.gov in the request header.
+type SecState={email:string|null;fromFile:boolean;ready:boolean};
+const SEC_ERRORS:Record<string,string>={INVALID_EMAIL:'Enter a valid email address.',SEC_RATE_LIMITED:'SEC refused the request (rate limit or contact). Try again in a few minutes.',SEC_UNAVAILABLE:'SEC EDGAR did not respond. Try again later.',SEC_CONTACT_MISSING:'Save a contact email first.',NOT_IN_SEC:'SEC has no filings for the test company.',BROKER_UNAVAILABLE:'The provider process is not running. Reconnect the provider file and try again.'};
+function SecCard(){
+  const [state,setState]=useState<SecState|null>(null);const [draft,setDraft]=useState('');const [busy,setBusy]=useState(false);const [message,setMessage]=useState<{tone:'ok'|'error';text:string}|null>(null);
+  useEffect(()=>{window.portfolio?.getSecContact().then(v=>{setState(v);setDraft(v.email??'');}).catch(()=>{});},[]);
+  if(!state)return null;
+  const save=async(email:string)=>{setBusy(true);setMessage(null);try{const r=await window.portfolio!.setSecContact(email);setState(r.state);if(r.ok){setDraft(r.state.email??'');setMessage({tone:'ok',text:email?'Saved. U.S. company research now loads SEC filings.':'Cleared.'});}else setMessage({tone:'error',text:SEC_ERRORS[r.error]??r.error});}finally{setBusy(false);}};
+  const test=async()=>{setBusy(true);setMessage(null);try{const r=await window.portfolio!.testSec();setMessage(r.ok?{tone:'ok',text:`Connected: ${r.name}, ${r.filings} recent filings${r.latestFiscalYear?`, financials through ${r.latestFiscalYear}`:''}.`}:{tone:'error',text:SEC_ERRORS[r.error]??r.error});}finally{setBusy(false);}};
+  const source=state.email?'Saved in the app':state.fromFile?'From the provider file':null;
+  return <section className="settings-card connection-card" aria-label="SEC EDGAR">
+    <div className="card-head"><div><h2>SEC EDGAR</h2><small>Optional · U.S. financials, dividends and filings</small></div><StatusPill tone={state.ready?'ok':'off'}>{state.ready?'On':'Not set'}</StatusPill></div>
+    <div className="setting-rows">
+      {message&&<div role={message.tone==='error'?'alert':'status'} className={`notice ${message.tone==='error'?'error':''}`}>{message.text}</div>}
+      <Row block title="Contact email" hint={source??'SEC asks every app to name a contact. No key or account is needed.'}><span className="control-pair"><input type="email" aria-label="SEC contact email" placeholder="you@example.com" value={draft} disabled={busy} onChange={e=>setDraft(e.target.value)}/><button className={state.ready?'':'primary'} disabled={busy||!draft.trim()||draft.trim()===state.email} onClick={()=>void save(draft.trim())}>Save</button><button disabled={busy||!state.ready} onClick={()=>void test()}>Test</button>{state.email&&<button disabled={busy} onClick={()=>void save('')}>Clear</button>}</span></Row>
+      <Note summary="Sent only to sec.gov.">SEC EDGAR is free and public, but SEC asks every client to identify itself with a contact email in each request. The app sends it only in requests to sec.gov, never to OpenAI or anyone else. Requests happen when U.S. company research loads (cached), and when you press Test, which reads Apple’s filings.</Note>
+    </div>
+  </section>;
+}
+
