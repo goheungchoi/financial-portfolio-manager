@@ -1,15 +1,17 @@
 const {validRequest}=require('./market-evidence.cjs');
 // Up to three research rounds of up to four tool requests each; the fourth request must answer.
 const ROUNDS=4,MAX_CALLS=4;
-async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions}){
-  let continuation;const usage={inputTokens:0,outputTokens:0};const cache=new Map();
+async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions,compact}){
+  let continuation,keepFrom=0;const usage={inputTokens:0,outputTokens:0};const cache=new Map();
   const answer=(call,value)=>continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(value)});
   for(let round=0;round<ROUNDS;round++){
+    // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
+    if(round>0){const fitted=await require('./context-fit.cjs').fit(continuation,{keepFrom,compact});if(fitted.steps.length){continuation=fitted.items;log('System','Research context condensed',JSON.stringify(fitted.steps));}}
     const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});
     usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;
     if(!result.toolCalls)return {...result,usage};
     if(!evidence||round===ROUNDS-1||result.toolCalls.length>MAX_CALLS||!Array.isArray(result.continuation))throw new Error('INVALID_AI_RESPONSE');
-    continuation=result.continuation;
+    keepFrom=Array.isArray(continuation)?continuation.length:0;continuation=result.continuation;
     for(const call of result.toolCalls){
       if(call.name==='set_review_interval'&&setInterval){const value=await setInterval(call.args);log('Tool','Review interval updated',JSON.stringify(value));answer(call,value);continue;}
       if(call.name==='set_review_watch'&&setWatch){const value=await setWatch(call.args);log('Tool','Review watch updated',JSON.stringify(value));answer(call,value);continue;}
