@@ -260,7 +260,7 @@ test('scout context names the buyable markets and per-account product permission
   automation.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.scout();
   assert.deepEqual(context.opportunitySet.tradableMarkets,['KR','US']);assert.equal(context.opportunitySet.usStocksBuyable,false,'no USD cash');assert.match(context.opportunitySet.note,/Korean-listed ETFs/);
-  assert.equal(context.accounts[0].products.leveragedOrInverseEtps.allowed,true);assert.match(context.accounts[1].note,/No USD cash/);
+  assert.equal(context.accounts[0].products.leveragedOrInverseEtps.allowed,true);assert.match(context.accounts[1].note,/No U.S. buying power/);
 });
 test('scout and trading reviews are offered the market overview tool',async()=>{
   const {AiClient}=require('../electron/ai-client.cjs');const bodies=[];
