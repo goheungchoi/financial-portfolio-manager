@@ -12,7 +12,9 @@ export function Switch({label,checked,disabled,onChange}:{label:string;checked:b
   return <input type="checkbox" role="switch" className="switch" aria-label={label} checked={checked} disabled={disabled} onChange={e=>onChange(e.target.checked)}/>;
 }
 export function NumberField({label,value,min,max,step,unit,disabled,onChange}:{label:string;value:number;min:number;max:number;step?:number;unit?:string;disabled?:boolean;onChange(value:number):void}){
-  return <span className="number-field"><input type="number" aria-label={label} min={min} max={max} step={step??1} disabled={disabled} value={value} onChange={e=>onChange(Number(e.target.value))}/>{unit&&<span className="unit">{unit}</span>}</span>;
+  // An out-of-range value says the allowed range right away instead of failing on save.
+  const out=Number.isFinite(value)&&(value<min||value>max);
+  return <span className="number-field-wrap"><span className={`number-field ${out?'invalid':''}`}><input type="number" aria-label={label} aria-invalid={out||undefined} min={min} max={max} step={step??1} disabled={disabled} value={value} onChange={e=>onChange(Number(e.target.value))}/>{unit&&<span className="unit">{unit}</span>}</span>{out&&<small className="field-error" role="alert">Allowed {min}–{max}{unit??''}</small>}</span>;
 }
 // A daily limit with a "No limit" switch; the number is hidden while unlimited.
 export function Limit({label,unlimited,value,min,max,step,unit,disabled,onUnlimited,onValue,offLabel='No limit'}:{label:string;unlimited:boolean;value:number;min:number;max:number;step?:number;unit?:string;disabled?:boolean;onUnlimited(value:boolean):void;onValue(value:number):void;offLabel?:string}){
