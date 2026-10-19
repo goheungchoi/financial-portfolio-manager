@@ -8,6 +8,9 @@ class PortfolioStore {
       CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, payload TEXT NOT NULL);
       PRAGMA user_version=1;`);
   }
+  // Plain app settings (not secrets) kept in the settings table.
+  getSetting(key) { return this.db.prepare('SELECT value FROM settings WHERE key=?').get(key)?.value ?? null; }
+  setSetting(key, value) { if (value == null) this.db.prepare('DELETE FROM settings WHERE key=?').run(key); else this.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value)); }
   getTheme() { return this.db.prepare("SELECT value FROM settings WHERE key='theme'").get()?.value === 'light' ? 'light' : 'dark'; }
   setTheme(theme) {
     if (!['dark', 'light'].includes(theme)) throw new Error('Invalid theme');

@@ -34,3 +34,8 @@ test('a refused market-data request names the symbol and points to the tools tha
   assert.deepEqual(value.request,{symbol:'000270',dataset:'daily_technicals'});assert.match(value.reason,/000270 is not in this review's universe.*get_company_research.*update_watchlist/);
   assert.match(result.seen[0].output,/000270/,'the agent receives the same explanation');
 });
+test('app settings store and clear plain values such as the SEC contact',()=>{
+  const {PortfolioStore}=require('../electron/storage.cjs');const store=new PortfolioStore(':memory:');
+  assert.equal(store.getSetting('sec-contact-email'),null);store.setSetting('sec-contact-email','me@example.com');assert.equal(store.getSetting('sec-contact-email'),'me@example.com');
+  store.setSetting('sec-contact-email','other@example.com');assert.equal(store.getSetting('sec-contact-email'),'other@example.com');store.setSetting('sec-contact-email',null);assert.equal(store.getSetting('sec-contact-email'),null);
+});

@@ -243,7 +243,9 @@ app.whenReady().then(async () => {
   automation.discovery.starters=()=>starters.current(watchScope());automation.discovery.usStarters=()=>usStarters.current(watchScope());
   live.nameOf=symbol=>master.get(symbol)?.name||null;
   // Company research for the agents and the Company page: KIS sections plus OpenDART filings, cached per source.
-  const research=new (require('./research-service.cjs').ResearchService)({db:store.db,master,kis:(operation,payload)=>kisService.request(operation,payload),provider:(operation,payload)=>providerService.request(operation,payload),kisReady:()=>Boolean(kisState.snapshot),dartReady:()=>Boolean(automation.providerStatus.dartConnected),secReady:()=>Boolean(automation.providerStatus.secConnected)});
+  // SEC EDGAR contact email saved in the app (Connections). A providers-file secContactEmail still works when none is saved here.
+  const secContact=()=>store.getSetting('sec-contact-email');
+  const research=new (require('./research-service.cjs').ResearchService)({db:store.db,master,kis:(operation,payload)=>kisService.request(operation,payload),provider:(operation,payload)=>providerService.request(operation,operation==='sec-company'?{...payload,contact:secContact()}:payload),kisReady:()=>Boolean(kisState.snapshot),dartReady:()=>Boolean(automation.providerStatus.dartConnected),secReady:()=>Boolean(automation.providerStatus.secConnected||secContact())});
   automation.discovery.marketOverview=async()=>{const m=await research.market();if(m.status!=='ok')return {status:'unavailable',reason:m.reason};const sectors=m.data.kospiSectors??[];return {asOf:new Date(m.retrievedAt).toISOString(),...m.data,kospiSectors:undefined,strongestSectors:sectors.slice(0,8),weakestSectors:sectors.length>8?sectors.slice(-6).reverse():[],foreignTopBuys:m.data.foreignTopBuys?.slice(0,6),institutionTopBuys:m.data.institutionTopBuys?.slice(0,6)};};
   ipcMain.handle('research:market',async(event,refresh)=>{authorize(event);return research.market(refresh===true);});
   automation.discovery.research=args=>research.agent(args);
@@ -388,6 +390,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('calendar:import',async event=>{authorize(event);if(remembered.progress.calendar==='connecting')return {ok:false,error:'BUSY',state:runtimeState()};
     const selected=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'Import a live KIS key for the market calendar',filters:[{name:'Credential JSON',extensions:['json']}],properties:['openFile']});if(selected.canceled)return {ok:true,state:runtimeState()};
     try{remembered.forget('calendar');await connectCalendarFile(selected.filePaths[0]);return {ok:true,state:runtimeState()};}catch{return {ok:false,error:remembered.errors.calendar,state:runtimeState()};}});
+  const SEC_EMAIL=/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
+  const secState=()=>({email:secContact(),fromFile:Boolean(automation.providerStatus.secConnected),ready:Boolean(automation.providerStatus.secConnected||secContact())});
+  ipcMain.handle('sec:get',event=>{authorize(event);return secState();});
+  ipcMain.handle('sec:set',(event,email)=>{authorize(event);const value=typeof email==='string'?email.trim():'';if(value&&!SEC_EMAIL.test(value))return {ok:false,error:'INVALID_EMAIL',state:secState()};store.setSetting('sec-contact-email',value||null);research.failures?.clear?.();return {ok:true,state:secState()};});
+  // A test request for Apple's filings: proves sec.gov accepts the contact. Sends the email to sec.gov only.
+  ipcMain.handle('sec:test',async event=>{authorize(event);if(!secState().ready)return {ok:false,error:'SEC_CONTACT_MISSING'};
+    try{const r=await providerService.request('sec-company',{symbol:'NASD:AAPL',contact:secContact()});if(r?.status==='unavailable')return {ok:false,error:r.reason};return {ok:true,name:r.name,latestFiscalYear:r.annual?.[0]?.fiscalYearEnd??null,filings:r.filings?.length??0};}
+    catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SEC_UNAVAILABLE'};}});
   // Session status for both markets: every session today, what is open, what is next, and which ones this account can trade.
   ipcMain.handle('market:status',event=>{authorize(event);const {marketStatus}=require('./market-sessions.cjs');const official=officialKrCalendar();const closedDays=new Set([...official.filter(r=>!r.open).map(r=>r.day),...(automation.closedDays??[])]);const environment=kisState.snapshot?.environment??'mock';
     const enabled=automation.sessionOptions();return {at:Date.now(),environment,enabled,KR:marketStatus('KR',Date.now(),{closedDays,environment,enabled}),US:marketStatus('US',Date.now(),{environment,enabled}),calendar:{KR:official.length?{source:'KIS official calendar',days:official.length,updatedAt:calendarAt||null,error:calendarError}:{source:remembered.progress.calendar==='connected'?'KIS official calendar (loading)':'Weekdays only; add a live key in Connections for official holidays',days:0,updatedAt:null,error:calendarError},US:{source:'NYSE holiday and early-close rules (checked against nyse.com for 2026–2027)'}}};});

@@ -40,7 +40,7 @@ Use `live` only for a live account. Import optional provider JSON in **Connectio
 {"openaiApiKey":"YOUR_OPENAI_KEY"}
 ```
 
-Optional fields are `dartApiKey`, `ecosApiKey`, `fredApiKey`, `secContactEmail` and `pushWebhookURL`. Omit unused fields. `secContactEmail` is sent only to SEC EDGAR, which asks every client to name a contact in its User-Agent; without it, U.S. company research shows quotes and risk but no SEC financials, dividends or filings. Importing an OpenAI key selects and saves OpenAI as provider; it does not enable trading or automatic submission. Startup reconnection preserves later manual provider choices.
+Optional fields are `dartApiKey`, `ecosApiKey`, `fredApiKey`, `secContactEmail` and `pushWebhookURL`. Omit unused fields. `secContactEmail` is sent only to SEC EDGAR, which asks every client to name a contact in its User-Agent; you can also enter it under Connections → SEC EDGAR (the email saved there wins), with a Test button that reads Apple's filings. Without a contact, U.S. company research shows quotes and risk but no SEC financials, dividends or filings. Importing an OpenAI key selects and saves OpenAI as provider; it does not enable trading or automatic submission. Startup reconnection preserves later manual provider choices.
 
 Successful imports remember only the absolute file paths in the shared app-data database. Private utility processes reopen those files on subsequent launches/builds; keys and file contents stay in broker memory, never enter model context, and are not stored in SQLite. Keep files in a stable location. **Reconnect** retries; **Forget & disconnect** clears the saved reference without deleting the file. Imports from old builds that did not save paths must be repeated once.
 

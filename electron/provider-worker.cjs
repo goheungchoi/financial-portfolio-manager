@@ -1,4 +1,4 @@
-const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};let secContact=null;const secState={};
+const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};let secContact=null;const secState={};const EMAIL=/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
 process.parentPort.on('message',async({data})=>{
   try {
     let result;
@@ -8,7 +8,7 @@ process.parentPort.on('message',async({data})=>{
       const value=JSON.parse(text);if(!value || Object.keys(value).some(key=>!['openaiApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey','secContactEmail'].includes(key)))throw 0;
       if(value.ecosApiKey&&!/^[A-Za-z0-9]{10,100}$/.test(value.ecosApiKey))throw 0;if(value.fredApiKey&&!/^[a-z0-9]{32}$/.test(value.fredApiKey))throw 0;ecosKey=value.ecosApiKey??null;fredKey=value.fredApiKey??null;
       // SEC EDGAR asks every client to identify itself with a contact email; it is sent only to sec.gov.
-      if(value.secContactEmail&&!/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/.test(value.secContactEmail))throw 0;secContact=value.secContactEmail??null;
+      if(value.secContactEmail&&!EMAIL.test(value.secContactEmail))throw 0;secContact=value.secContactEmail??null;
       ai=value.openaiApiKey?new AiClient(value.openaiApiKey):null;
       if(value.dartApiKey && !/^[A-Za-z0-9]{20,100}$/.test(value.dartApiKey))throw 0;dartKey=value.dartApiKey??null;
       if(value.pushWebhookURL){const url=new URL(value.pushWebhookURL);if(url.protocol!=='https:'||url.username||url.password)throw 0;pushURL=url.href;}else pushURL=null;
@@ -29,7 +29,9 @@ process.parentPort.on('message',async({data})=>{
     } else if(data.operation==='fx-rates') {
       if(!Array.isArray(data.days))throw 0;result=await require('./macro.cjs').fetchUsdKrw(fetch,ecosKey,data.days.filter(day=>typeof day==='string'));
     } else if(data.operation==='sec-company') {
-      if(!secContact)throw 0;result=await require('./sec.cjs').secCompany(fetch,secContact,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),secState);
+      // The contact saved in the app wins over the providers file; either way it is sent only to sec.gov.
+      const contact=typeof data.contact==='string'&&EMAIL.test(data.contact)?data.contact:secContact;
+      if(!contact)throw 0;result=await require('./sec.cjs').secCompany(fetch,contact,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),secState);
     } else if(data.operation==='dart-company') {
       if(!dartKey)throw 0;result=await require('./dart.cjs').companyFilings(fetch,dartKey,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),dartState);
     } else if(data.operation==='disclosures') {
