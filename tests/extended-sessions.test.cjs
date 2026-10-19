@@ -45,3 +45,11 @@ test('the engine holds U.S. pre/after-market orders for approval and caps extend
   assert.equal(e.orders().find(o=>o.id===p.id).status,'Ready','still waiting for approval');
   session={id:'us-daytime',regular:false};const big=e.propose({symbol:'NASD:AAA',side:'Buy',quantity:60,limitPrice:100});await assert.rejects(e.submit(big.id,'PLACE LIVE ORDER'),/EXTENDED_SIZE_LIMIT/,'6% of equity over a 5% cap');assert.equal(places,0);
 });
+test('with integrated margin, the extended-session cap counts the KRW that funds U.S. buys',async()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(':memory:');let places=0;
+  const snapshot={accountKey:'acct:US',environment:'live',reportedTotal:0,cash:0,holdings:[]};
+  const broker={request:async op=>{if(op==='prepare-order')return {balance:snapshot,price:10,ticket:'t',session:{id:'us-daytime',regular:false}};if(op==='place-order'){places++;return {brokerOrderId:'1'};}throw new Error(op);}};
+  const e=new LiveEngine(db,broker,()=>({status:'connected',snapshot:{...snapshot,reportedTotal:1}}),{market:'US'});e.extendedMaxOrderPct=()=>10;e.buyingPower=()=>({usd:350,fromKRWUSD:350,integratedMargin:true});
+  e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
+  const ok=e.propose({symbol:'NASD:AAA',side:'Buy',quantity:3,limitPrice:10});const r=await e.submit(ok.id,'PLACE LIVE ORDER');assert.equal(r.status,'Accepted','$30 within 10% of $350');assert.equal(places,1);
+});
