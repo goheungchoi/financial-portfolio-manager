@@ -21,3 +21,8 @@ test('the review list and console entries carry the account; the list filters by
   const store=new Storage(':memory:');store.appendEvent({id:'e1',runId:'r',timestamp:'t',kind:'Agent',title:'x',body:'y',account:'live',accountLabel:'KIS live'});store.appendEvent({id:'e2',runId:'r',timestamp:'t',kind:'Agent',title:'x',body:'y'});
   assert.deepEqual(store.getEvents().map(e=>e.account??null),['live',null]);
 });
+test('risk per trade accepts up to 20% and refuses more',()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:50000}],()=>[{symbol:'005930',price:50000,sequence:1,timestamp:Date.now(),volume:1,stale:false}]),{request:async()=>({})},()=>{});
+  a.configure({sizingRiskPct:10});assert.equal(a.config.sizingRiskPct,10);assert.throws(()=>a.configure({sizingRiskPct:25}));
+});
