@@ -1,6 +1,9 @@
 // Standard text-token rates checked against official model pages, 2026-10-16 KST.
 const MODELS={'gpt-6-luna':{input:0.1,output:0.5},'gpt-6-sol':{input:2,output:10},'gpt-6-astra':{input:10,output:50}};
 function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort=config.reasoningEffort??'none';if(!Object.hasOwn(MODELS,model)||!['none','low','medium','high'].includes(effort)||model==='gpt-6-astra'&&effort==='none')throw new Error('INVALID_MODEL_SETTINGS');return {model,effort,maxOutput:effort==='none'?1200:8192};}
+// Request size limits for a portfolio review: the first request, and follow-up rounds that carry research results.
+// The budget reservation and the AI client both use this, so they always agree.
+const reviewByteLimit=options=>options?.continuation?140000:70000;
 function reservation(config,context={},options={}){const selected=settings(config);const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>(options.maxBytes??70000))throw new Error('CONTEXT_TOO_LARGE');const rate=MODELS[selected.model];return Math.max(10000,Math.ceil(((bytes+20000)*rate.input+selected.maxOutput*rate.output)*1.2));}
 function normalizeUsage(body){
  const u=body?.usage;if(!u)return null;
@@ -19,4 +22,4 @@ function costDetails(model,usage){
 }
 function usageEstimate(model,usage){return costDetails(model,usage)?.micro??null;}
 function budgetExceeded(config,usage,reserve,reflection=false){const calls=reflection?'reflectionCallsPerDay':'maxCallsPerDay',usd=reflection?'reflectionUSDPerDay':'maxUSDPerDay',prefix=reflection?'reflectionUnlimited':'unlimited';return (!config[prefix+'Calls']&&usage.calls>=config[calls])||(!config[prefix+'Budget']&&usage.reservedMicro+reserve>config[usd]*1e6);}
-module.exports={MODELS,settings,reservation,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
+module.exports={reviewByteLimit,MODELS,settings,reservation,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
