@@ -85,9 +85,9 @@ test('shadow evaluation: same frozen inputs, shared evidence, full transcripts, 
 test('the routing simulation keeps its own baseline, streak and previous decision',()=>{
   const {simulate}=require('../electron/routing-sim.cjs');const t0=Date.parse('2026-10-24T10:00:00+09:00');const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[{symbol:'005930',price:100}],scoutPlan:{asOf:'p',targets:[{symbol:'005930',role:'candidate'}]}};
   const dec=v=>({action:'Hold',symbol:null,quantity:0,planVerdicts:[{symbol:'005930',verdict:v}]});
-  const rec=(i,trigger='Scheduled review',luna=dec('waiting'))=>({reviewId:'r'+i,timestamp:t0+i*30*60000,account:'a',trigger,triage:'same',live:{model:'gpt-6-sol',decision:dec('waiting'),usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:luna,usage:{micro:2400}}});
+  const rec=(i,trigger='Scheduled review',luna=dec('waiting'))=>({reviewId:'r'+i,timestamp:t0+i*30*60000,account:'a',calendar:{scope:'kis',markets:['KR'],closedDays:[]},trigger,triage:'same',live:{model:'gpt-6-sol',decision:dec('waiting'),usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:luna,usage:{micro:2400}}});
   const records=[rec(0,'Auto trading started'),rec(1),rec(2),rec(3),rec(4),rec(5,'Scheduled review',dec('passed'))];
-  const sim=simulate(records,{contextOf:()=>ctx,threshold:40,maxRuns:2,spotCheckPct:0,markets:['KR']});
+  const sim=simulate(records,{contextOf:()=>ctx,threshold:40,maxRuns:2,spotCheckPct:0});
   assert.deepEqual(sim.rows.map(r=>r.decided),['main','cheaper','cheaper','main','cheaper','main']);assert.match(sim.rows[3].reason,/2 reviews in a row/);assert.equal(sim.rows[5].escalated,'verdict change');
   assert.equal(sim.summary.savingsPct,Math.round((1-(80000*2+2400*3+82400)/(80000*6))*1000)/10);
 });
@@ -116,15 +116,15 @@ test('review fixes: a failed cheaper model falls back to the main model live',as
 });
 test('review fixes: the simulation applies sampled spot checks to history, keeps failures and counts missing contexts',()=>{
   const t0=Date.parse('2026-10-24T10:00:00+09:00');const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
-  const rec=(i,extra={})=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'a',trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}},...extra});
-  const all=sim.simulate([0,1,2,3,4,5].map(i=>rec(i)),{contextOf:()=>ctx,maxRuns:99,spotCheckPct:100,markets:['KR']});assert.equal(all.summary.cheaper,0,'100% spot checks leave nothing to the cheaper model');assert.ok(all.rows.slice(1).every(r=>r.escalated==='spot check'));
-  const failed=sim.simulate([rec(0),rec(1,{shadow:{model:'gpt-6-luna',decision:null,error:'AI_TIMEOUT',usage:{micro:1000}}}),rec(2)],{contextOf:id=>id==='r2'?null:ctx,maxRuns:99,spotCheckPct:0,markets:['KR']});
+  const rec=(i,extra={})=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'a',calendar:{scope:'kis',markets:['KR'],closedDays:[]},trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}},...extra});
+  const all=sim.simulate([0,1,2,3,4,5].map(i=>rec(i)),{contextOf:()=>ctx,maxRuns:99,spotCheckPct:100});assert.equal(all.summary.cheaper,0,'100% spot checks leave nothing to the cheaper model');assert.ok(all.rows.slice(1).every(r=>r.escalated==='spot check'));
+  const failed=sim.simulate([rec(0),rec(1,{shadow:{model:'gpt-6-luna',decision:null,error:'AI_TIMEOUT',usage:{micro:1000}}}),rec(2)],{contextOf:id=>id==='r2'?null:ctx,maxRuns:99,spotCheckPct:0});
   assert.equal(failed.rows[1].escalated,'cheaper model failed');assert.equal(failed.rows[1].costMicro,81000);assert.equal(failed.summary.failedShadows,1);assert.equal(failed.summary.missingContexts,1);
 });
 test('review fixes: the report counts only prospective live records after the freeze, and only fully adjudicated situations',()=>{
   const {report}=require('../scripts/routing-report.cjs');const t0=Date.parse('2026-10-24T10:00:00+09:00');const b=sim.binding({...require('../electron/automation.cjs').DEFAULTS,spotCheckPct:0});
   const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
-  const rec=(i,extra={})=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',environment:'kis-combined',provenance:{broker:'live',connection:'live'},binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}},...extra});
+  const rec=(i,extra={})=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',calendar:{scope:'kis',markets:['KR'],closedDays:[]},environment:'kis-combined',provenance:{broker:'live',connection:'live'},binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}},...extra});
   assert.equal(report({records:[rec(0)],contextOf:()=>ctx}).verdict,'inconclusive','no freeze, no pass');
   const freeze={evaluationStart:new Date(t0).toISOString(),binding:b};
   const paperOnly=[0,1,2,3].map(i=>rec(i,{account:'paper',environment:'local-paper',provenance:{broker:'paper',connection:'paper'}}));const p=report({records:paperOnly,contextOf:()=>ctx,freeze,currentBinding:b});
@@ -144,7 +144,7 @@ test('third review: a pass needs every named check; blank adjudications stay pen
   assert.equal(validAdjudication({...judgedOk('r1'),outcome:'sol-better',category:'missed-action',severity:'high'}),false,'high severity needs the user');
   assert.equal(validAdjudication({...judgedOk('r1'),outcome:'sol-better',category:'missed-action',severity:'high',confirmedByUser:true}),true);
   const t0=Date.parse('2026-10-24T10:00:00+09:00');const b=sim.binding({...require('../electron/automation.cjs').DEFAULTS,spotCheckPct:0});const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
-  const rec=(i,prov)=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',provenance:prov,binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
+  const rec=(i,prov)=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',calendar:{scope:'kis',markets:['KR'],closedDays:[]},provenance:prov,binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
   const freeze={evaluationStart:new Date(t0).toISOString(),binding:b};
   const blank=report({records:[0,1,2].map(i=>rec(i,{broker:'live',connection:'live'})),contextOf:()=>ctx,freeze,currentBinding:b,adjudications:['r1','r2'].map(id=>({reviewId:id}))});
   assert.match(blank.checks.highSeverity.detail,/in 0 fully adjudicated/,'blank records are not judgments');assert.match(blank.checks.adjudicationComplete.detail,/2 incomplete records ignored/);
@@ -152,9 +152,29 @@ test('third review: a pass needs every named check; blank adjudications stay pen
 });
 test('third review: the simulation runs the live routing function, escalations included, and validated routing has no budget fallback',()=>{
   const t0=Date.parse('2026-10-24T10:00:00+09:00');const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
-  const rec=(i,routeInputs={},trigger='Scheduled review')=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'a',trigger:i?trigger:'Auto trading started',routeInputs,triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
-  const out=sim.simulate([rec(0),rec(1,{emergencyActive:true}),rec(2,{},'User request'),rec(3,{triggerEvidence:{kind:'news',events:[{importance:'high'}]}}),rec(4,{nearBudget:true})],{contextOf:()=>ctx,maxRuns:99,spotCheckPct:0,markets:['KR']}).rows;
+  const rec=(i,routeInputs={},trigger='Scheduled review')=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'a',calendar:{scope:'kis',markets:['KR'],closedDays:[]},trigger:i?trigger:'Auto trading started',routeInputs,triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
+  const out=sim.simulate([rec(0),rec(1,{emergencyActive:true}),rec(2,{},'User request'),rec(3,{triggerEvidence:{kind:'news',events:[{importance:'high'}]}}),rec(4,{nearBudget:true})],{contextOf:()=>ctx,maxRuns:99,spotCheckPct:0}).rows;
   assert.deepEqual(out.map(r=>r.reason),['first review after starting','emergency','user request','important disclosure','complexity 0 < 40']);
   const live={...cfg,modelRouting:'complexity'};assert.equal(route(live,{trigger:'Scheduled review',complexity:{score:90},nearBudget:true,eligible:true}).openaiModel,'gpt-6-sol','near the budget a high score still uses the main model');
   assert.equal(route({...cfg,modelRouting:'fixed'},{trigger:'Scheduled review',nearBudget:true}).openaiModel,'gpt-6-luna','the budget fallback remains for the other modes');
+});
+test('fourth review: the consequence gate works on Korea-only and U.S.-only contexts',()=>{
+  const kr={market:'KR',currency:'KRW',equity:1e6,executionEnabled:true,marketSession:{open:true},positions:{'005930':{quantity:5,costTotal:500000}},quotes:[{symbol:'005930',price:100000}]};
+  assert.deepEqual(consequence(kr).reasons,['005930 is 50% of equity']);assert.equal(consequence({...kr,marketSession:{open:false}}).gate,false);
+  const us={market:'US',currency:'USD',equity:1000,executionEnabled:true,marketSession:{open:true},positions:{'NASD:A':{quantity:5,costTotal:500}},quotes:[{symbol:'NASD:A',price:100}],macro:{indicators:[{name:'USD/KRW',value:1300}]}};
+  const u=consequence(us);assert.equal(u.equityKRW,1300000);assert.deepEqual(u.reasons,['NASD:A is 50% of equity']);
+  assert.ok(assess({...us,eventCalendar:[{date:'2026-10-21',kind:'earnings',symbol:'NASD:A'}],universe:[{symbol:'NASD:A'}]},{now}).features.some(f=>/earnings within a day for holding NASD:A/.test(f.detail)),'single-market tradability feeds the difficulty score too');
+});
+test('fourth review: the simulation applies only the recorded scope and calendar, and scope is part of the binding',()=>{
+  const t0=Date.parse('2026-10-26T08:00:00+09:00');const ctx={market:'US',currency:'USD',equity:1000,executionEnabled:false,marketSession:{open:false},quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
+  const rec=(at,calendar)=>({reviewId:'r'+at,timestamp:at,account:'a',calendar,trigger:at===t0?'Auto trading started':'Scheduled review',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
+  const atKoreaOpen=t0+65*60000;
+  const usOnly=sim.simulate([rec(t0,{scope:'us',markets:['US'],closedDays:[]}),rec(atKoreaOpen,{scope:'us',markets:['US'],closedDays:[]})],{contextOf:()=>ctx,spotCheckPct:0}).rows;
+  assert.equal(usOnly[1].decided,'cheaper','the Korean open does not escalate a U.S.-only review');
+  const both=sim.simulate([rec(t0,{scope:'both',markets:['KR','US'],closedDays:[]}),rec(atKoreaOpen,{scope:'both',markets:['KR','US'],closedDays:[]})],{contextOf:()=>ctx,spotCheckPct:0}).rows;
+  assert.match(both[1].reason,/Korean regular session/);
+  const holiday=sim.simulate([rec(t0,{scope:'kis',markets:['KR'],closedDays:['2026-10-26']}),rec(atKoreaOpen,{scope:'kis',markets:['KR'],closedDays:['2026-10-26']})],{contextOf:()=>ctx,spotCheckPct:0}).rows;
+  assert.equal(holiday[1].decided,'cheaper','a recorded KRX holiday has no session open');
+  assert.equal(sim.simulate([rec(t0,null)],{contextOf:()=>ctx}).summary.missingContexts,1,'a record without its calendar is missing evidence');
+  const base={...require('../electron/automation.cjs').DEFAULTS};assert.notDeepEqual(sim.binding({...base,scope:'us'}),sim.binding({...base,scope:'both'}));
 });

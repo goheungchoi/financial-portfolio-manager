@@ -157,4 +157,7 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
 - 2026-10-20: clarifications after a third code review, before any data: a pass must contain every named check;
   incomplete adjudication records stay pending; only verified live-account records count; the simulation runs the
   live routing function and validated complexity routing has no budget fallback. Thresholds unchanged.
+- 2026-10-20: clarifications after a fourth code review, before any data: the consequence gate and difficulty score read
+  Korea-only and U.S.-only contexts as well as combined ones; each record stores its market scope and the holiday
+  calendar used, the simulation applies only those, and the market scope is part of the binding. Thresholds unchanged.
 - Evaluation period start: not yet set.
