@@ -1,55 +1,63 @@
 const test=require('node:test');const assert=require('node:assert/strict');
-const {score}=require('../electron/complexity.cjs');const {route}=require('../electron/token-saver.cjs');
+const {assess,consequence,triage}=require('../electron/complexity.cjs');const {route}=require('../electron/token-saver.cjs');
 const {Automation}=require('../electron/automation.cjs');const {DatabaseSync}=require('node:sqlite');const {PaperEngine}=require('../electron/paper-engine.cjs');
 const now=Date.parse('2026-10-21T11:00:00+09:00');
-const base=(extra={})=>({markets:[{market:'KR',executionEnabled:true,marketSession:{open:true,status:'open'}}],positionSizing:{rows:[{symbol:'005930',maxShares:1}]},quotes:[{symbol:'005930',price:100,changePct:-1}],scoutPlan:{asOf:'a',targets:[{symbol:'005930'}]},universe:[{symbol:'005930'},{symbol:'NASD:META'}],...extra});
-test('stakes, change since the last main-model review, and ambiguity add up, each capped',()=>{
-  const quiet=score(base(),{now});assert.equal(quiet.score,18);assert.deepEqual(quiet.parts,{stakes:18,change:0,ambiguity:0});
-  const moved=score(base({quotes:[{symbol:'005930',price:104,changePct:4}],marketRegime:{regime:'risk_off',components:[{name:'KOSPI advancers %',value:10},{name:'VIX 5-day change %',value:25}]}}),{previous:base({marketRegime:{regime:'neutral',components:[{name:'KOSPI advancers %',value:50}]}}),now});
-  assert.ok(moved.reasons.some(r=>/005930 moved 4\.0%/.test(r)));assert.ok(moved.reasons.some(r=>/regime changed/.test(r)));assert.ok(moved.reasons.some(r=>/on the day/.test(r)));assert.ok(moved.reasons.some(r=>/VIX/.test(r)));
-  assert.ok(moved.score>=50,`a sharp, changed market scores high (${moved.score})`);
-  const stale=score(base({quotes:[{symbol:'005930',price:100,changePct:-5,stale:true}]}),{now});assert.ok(!stale.reasons.some(r=>/on the day/.test(r)),'stale closing moves do not count');
+const base=(extra={})=>({equity:1000000,markets:[{market:'KR',currency:'KRW',equity:1000000,executionEnabled:true,marketSession:{open:true,status:'open'}}],positionSizing:{rows:[{symbol:'005930',maxShares:1,maxWeightPct:10}]},quotes:[{symbol:'005930',price:100,changePct:-1}],scoutPlan:{asOf:'a',targets:[{symbol:'005930',role:'candidate',targetWeightPct:10}]},universe:[{symbol:'005930'},{symbol:'NASD:META'}],...extra});
+test('one event counts once within its group; distinct groups add; the trigger adds nothing',()=>{
+  assert.equal(assess(base(),{now}).score,0,'quiet');
+  const shock=base({quotes:[{symbol:'005930',price:104,changePct:4}]});const s=assess(shock,{baseline:base(),now});
+  assert.equal(s.groups.price,15,'a 4% move since the baseline and 4% on the day are one event');assert.deepEqual(s.features.filter(f=>f.group==='price').map(f=>f.source).sort(),['baseline','snapshot']);
+  const stressed=assess({...shock,marketRegime:{regime:'risk_off',components:[{name:'KOSPI advancers %',value:10},{name:'VIX 5-day change %',value:25}]}},{baseline:{...base(),marketRegime:{regime:'neutral',components:[{name:'KOSPI advancers %',value:50}]}},now});
+  assert.equal(stressed.groups.market,8,'regime, breadth and VIX are one market picture');assert.equal(stressed.score,23,'price and market corroborate');
+  assert.equal(assess({...shock,triggerEvidence:{kind:'price'}},{baseline:base(),now}).score,s.score);
+  assert.ok(!assess(base({quotes:[{symbol:'005930',price:100,changePct:-5,stale:true}]}),{now}).features.length,'stale closing moves do not count');
 });
-test('earnings within a day count for holdings always and for candidates only when their market can trade',()=>{
-  const cal=[{date:'2026-10-21',kind:'earnings',symbol:'NASD:META'}];
-  assert.ok(!score(base({eventCalendar:cal}),{now}).reasons.some(r=>/earnings/.test(r)),'U.S. not tradable now');
-  const us=base({eventCalendar:cal,markets:[{market:'US',executionEnabled:true,marketSession:{open:true,session:{id:'us-daytime',regular:false}}}]});assert.ok(score(us,{now}).reasons.some(r=>/candidate \(NASD:META\)/.test(r)));
-  const held=base({eventCalendar:[{date:'2026-10-22',kind:'earnings',symbol:'005930'}],positions:{'005930':{quantity:3}}});assert.ok(score(held,{now}).reasons.some(r=>/holding \(005930\)/.test(r)));
+test('the consequence gate uses total equity and needs a market that can trade, never a model proposal',()=>{
+  const held=base({positions:{'005930':{quantity:3000,costTotal:290000,currency:'KRW'}}});
+  assert.deepEqual(consequence(held).reasons,['005930 is 30% of equity']);
+  assert.equal(consequence({...held,markets:[{...held.markets[0],marketSession:{open:false}}]}).gate,false,'nothing can trade now');
+  assert.match(consequence(base({positionSizing:{rows:[{symbol:'005930',maxShares:1,maxWeightPct:42}]}})).reasons[0],/new 005930 position could be 42% of equity/);
+  const us=consequence({markets:[{market:'KR',currency:'KRW',equity:500000,executionEnabled:false,marketSession:{open:false}},{market:'US',currency:'USD',equity:100,executionEnabled:true,marketSession:{open:true}}],macro:{indicators:[{name:'USD/KRW',value:1300}]},positions:{'NASD:A':{quantity:1,currency:'USD'}},quotes:[{symbol:'NASD:A',price:100}]});
+  assert.equal(Math.round(us.largestHeldPct),21,'USD positions converted against total KRW equity');assert.equal(us.gate,true);
 });
-test('the agent rating counts fully from the main model and only upward from the cheaper one',()=>{
-  const ctx=base();const rule=score(ctx,{now}).score;
-  const solLow=score(ctx,{previousReview:{decision:{complexity:{score:0}},routing:{model:'gpt-6-sol'}},strongModel:'gpt-6-sol',now});assert.ok(solLow.score<rule,'the main model can lower it');
-  const lunaLow=score(ctx,{previousReview:{decision:{complexity:{score:0}},routing:{model:'gpt-6-luna'}},strongModel:'gpt-6-sol',now});assert.equal(lunaLow.score,rule,'the cheaper model cannot lower it');
-  const lunaHigh=score(ctx,{previousReview:{decision:{complexity:{score:100}},routing:{model:'gpt-6-luna'}},strongModel:'gpt-6-sol',now});assert.ok(lunaHigh.score>rule,'but can raise it');assert.equal(lunaHigh.agent.counted,'upward only');
+test('the previous rating only raises the score, from either model, and expires after a material change',()=>{
+  const ctx=base({eventCalendar:[{date:'2026-10-21',kind:'macro',title:'FOMC decision'}]});const rule=assess(ctx,{now}).score;
+  for(const model of ['gpt-6-sol','gpt-6-luna'])assert.equal(assess(ctx,{previousReview:{decision:{complexity:{score:0}},routing:{model}},now}).score,rule,`${model} cannot lower it`);
+  const high={decision:{complexity:{score:90,reason:'earnings tomorrow'}},routing:{model:'gpt-6-luna'}};const raised=assess(ctx,{previousReview:high,now});assert.ok(raised.score>rule);assert.equal(raised.agent.reasons,'earnings tomorrow');
+  const moved=assess(base({quotes:[{symbol:'005930',price:104,changePct:-1}]}),{baseline:base(),previousReview:high,now});assert.equal(moved.agent.expired,true);assert.equal(moved.score,moved.rule);
 });
-test('complexity routing: a hard rule or a score at the threshold uses the main model',()=>{
+test('differences are triaged into candidates for adjudication',()=>{
+  const h={action:'Hold',symbol:'',quantity:0,explanation:'a',planVerdicts:[{symbol:'005930',verdict:'waiting'}]};
+  assert.equal(triage(h,h),'same');assert.equal(triage(h,{...h,explanation:'b'}),'wording');assert.equal(triage(h,{...h,planVerdicts:[{symbol:'005930',verdict:'passed'}]}),'verdict');
+  const b={...h,action:'Buy',symbol:'005930',quantity:10};assert.equal(triage(h,b),'action');assert.equal(triage(b,{...b,symbol:'000270'}),'symbol');assert.equal(triage(b,{...b,quantity:7}),'size');assert.equal(triage(b,{...b,quantity:9},{equityKRW:1e6,price:100}),'same');
+});
+test('live complexity routing: a hard rule or a score at the threshold uses the main model',()=>{
   const config={openaiModel:'gpt-6-sol',reasoningEffort:'medium',routineModel:'gpt-6-luna',routineEffort:'none',modelRouting:'complexity',complexityThreshold:40,degradeNearBudget:true};
   assert.equal(route(config,{trigger:'Scheduled review',complexity:{score:39}}).openaiModel,'gpt-6-luna');assert.equal(route(config,{trigger:'Scheduled review',complexity:{score:40}}).openaiModel,'gpt-6-sol');
   assert.equal(route(config,{trigger:'Scheduled review',complexity:{score:5},hardRule:'first review after starting'}).reason,'first review after starting');
-  assert.equal(route(config,{trigger:'User request',complexity:{score:5}}).openaiModel,'gpt-6-sol','user requests stay escalated');
 });
-function engine(decide){
+function engine(decide,settings={}){
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'Fixture',price:50000}],()=>[{symbol:'005930',price:50000,sequence:1,timestamp:Date.now(),volume:10,stale:false}]);paper.saveAccount({...paper.account(),paused:false});
-  const requests=[];const provider={request:async(_op,payload)=>{requests.push(payload);return {provider:'openai',model:payload.options.openaiModel,decision:decide(payload,requests.length),usage:{inputTokens:100,outputTokens:10}};}};
-  const automation=new Automation(db,paper,provider,()=>{});automation.providerStatus.aiConnected=true;
-  automation.configure({provider:'openai',openaiModel:'gpt-6-sol',reasoningEffort:'medium',modelRouting:'complexity',complexityThreshold:90,spotCheckPct:0,lunaMaxRuns:2,skipUnchanged:false});return {automation,requests};
+  const requests=[];const provider={request:async(_op,payload)=>{requests.push(payload);const r=decide(payload,requests.length);return r.toolCalls?r:{provider:'openai',model:payload.options.openaiModel,decision:r,usage:{inputTokens:100,outputTokens:10}};}};
+  const automation=new Automation(db,paper,provider,()=>{});automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
+  automation.configure({provider:'openai',openaiModel:'gpt-6-sol',reasoningEffort:'medium',complexityThreshold:90,spotCheckPct:0,lunaMaxRuns:2,skipUnchanged:false,...settings});return {automation,requests,db};
 }
 const hold=(verdict='waiting',extra={})=>({action:'Hold',symbol:'',quantity:0,explanation:'Hold.',planVerdicts:[{symbol:'005930',verdict,reason:'r'}],complexity:{score:10,reason:'quiet'},...extra});
 const models=requests=>requests.map(r=>r.options.openaiModel);
-test('the main model takes the first review, the cheaper model the quiet ones, and the main model again after the run limit',async()=>{
-  const {automation,requests}=engine(()=>hold());
+test('live complexity routing keeps its hard rules and verdict-change escalation',async()=>{
+  const {automation,requests}=engine(({options})=>options.openaiModel==='gpt-6-luna'?hold('passed'):hold('waiting'),{modelRouting:'complexity'});
   const first=await automation.review('Auto trading started');assert.equal(first.routing.hardRule,'first review after starting');
-  await automation.review('Scheduled review');await automation.review('Scheduled review');const fourth=await automation.review('Scheduled review');
-  assert.deepEqual(models(requests),['gpt-6-sol','gpt-6-luna','gpt-6-luna','gpt-6-sol']);assert.match(fourth.routing.hardRule,/2 reviews in a row on the cheaper model/);
-  assert.equal(typeof first.routing.complexity.score,'number');assert.deepEqual(first.decision.complexity,{score:10,reason:'quiet'});
+  const changed=await automation.review('Scheduled review');assert.deepEqual(models(requests),['gpt-6-sol','gpt-6-luna','gpt-6-sol']);assert.equal(changed.decision.planVerdicts[0].verdict,'waiting');
 });
-test('a cheaper-model verdict change goes to the main model; spot checks use the main model when they disagree',async()=>{
-  const {automation,requests}=engine(({options})=>options.openaiModel==='gpt-6-luna'?hold('passed'):hold('waiting'));
-  await automation.review('Auto trading started');const changed=await automation.review('Scheduled review');
-  assert.deepEqual(models(requests),['gpt-6-sol','gpt-6-luna','gpt-6-sol']);assert.equal(changed.decision.planVerdicts[0].verdict,'waiting','the main model decides');assert.equal(changed.routing.verdictChange.agreed,false);
-  const buy={action:'Buy',symbol:'005930',quantity:1,explanation:'Buy.',plan:{thesis:'t',invalidation:'i',stopPrice:40000,targetPrice:60000,horizonDays:10,confidence:'medium'},planVerdicts:[{symbol:'005930',verdict:'waiting',reason:'r'}],complexity:{score:30,reason:'r'}};
-  const b=engine(({options})=>options.openaiModel==='gpt-6-luna'?hold():buy);
-  b.automation.configure({spotCheckPct:0});await b.automation.review('Auto trading started');b.automation.configure({spotCheckPct:100});b.requests.length=0;
-  const spot=await b.automation.review('Scheduled review');assert.deepEqual(models(b.requests),['gpt-6-luna','gpt-6-sol']);assert.equal(spot.routing.spotCheck.agreed,false);assert.equal(spot.decision.action,'Buy','the main model decision is used');
-  assert.equal(b.automation.getState().tokenSaving.today['spot-check'],1);
+test('shadow evaluation: the cheaper model decides the same frozen inputs, its write tools change nothing, and the pair is stored',async()=>{
+  const {automation,requests,db}=engine(({options})=>{if(options.openaiModel==='gpt-6-luna'&&!options.continuation)return {toolCalls:[{name:'set_review_interval',callId:'c1',args:{minutes:5,reason:'r'}},{name:'update_watchlist',callId:'c2',args:{action:'add',entries:[{symbol:'000270',reason:'r'}]}}],continuation:[{type:'function_call',call_id:'c1'}],usage:{inputTokens:5,outputTokens:1}};
+    return options.openaiModel==='gpt-6-luna'?hold('passed'):hold('waiting');},{shadowEvaluation:true,shadowPct:100});
+  const live=await automation.review('Scheduled review');await automation.shadowTask;
+  assert.deepEqual(models(requests),['gpt-6-sol','gpt-6-luna','gpt-6-luna'],'live on the main model, then the shadow run');
+  assert.deepEqual(requests[1].context,requests[0].context,'identical frozen inputs');assert.ok(!JSON.stringify(requests[1].context).includes('Hold.'),'the shadow never sees the live answer');
+  const answers=requests[2].options.continuation.filter(x=>x.type==='function_call_output').map(x=>JSON.parse(x.output).status);assert.equal(answers[0],'not-applied');assert.ok(answers.every(x=>['not-applied','rejected'].includes(x)),'write tools are stubbed or refused, never applied');
+  assert.equal(live.decision.planVerdicts[0].verdict,'waiting','the live decision is untouched');
+  const row=JSON.parse(db.prepare('SELECT payload FROM routing_eval').get().payload);assert.equal(row.reviewId,live.id);assert.equal(row.triage,'verdict');assert.equal(row.shadow.toolRequests>=0,true);assert.equal(row.shadow.decision.planVerdicts[0].verdict,'passed');
+  assert.ok(['main','cheaper'].includes(row.wouldRoute));assert.ok(Array.isArray(row.assessment.features));assert.equal(row.adjudication,null);
+  assert.equal(automation.getState().tokenSaving.shadow.candidates,1);assert.ok(!automation.reviewHistory(10).some(r=>r.model==='gpt-6-luna'),'no shadow decision enters the review history');
 });

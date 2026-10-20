@@ -57,3 +57,7 @@ test('a Buy with a complete plan saves the plan as a note and arms a stop-loss w
   assert.match(a.desk.notes(scope)[0].note,/Stop 205000, target 250000, horizon 45 days, confidence medium/);
   const stop=a.desk.orders(scope)[0];assert.equal(stop.purpose,'stop_loss');assert.equal(stop.quantity,2);assert.equal(stop.conditions[0].value,205000);assert.ok(events.some(e=>e.title==='Stop-loss armed from the plan'));
 });
+test('sizing never allows more shares than the available cash buys',()=>{
+  const pr=require('../electron/portfolio-risk.cjs');const s=pr.sizing({equityKRW:500001,riskPct:10,atrMultiple:2,rows:[{symbol:'360750',price:25505,atr:100,fx:1,cashKRW:500001},{symbol:'005930',price:209000,atr:12863,fx:1,cashKRW:500001},{symbol:'NASD:A',price:100,atr:1,fx:1300,cashKRW:0}]});
+  assert.deepEqual(s.rows.map(r=>[r.symbol,r.maxShares,r.limitedBy??null]),[['360750',19,'cash'],['005930',1,null],['NASD:A',0,'cash']]);
+});
