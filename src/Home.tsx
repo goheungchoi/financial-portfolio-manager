@@ -60,12 +60,37 @@ export function HomeTrend({onOpen}:{onOpen():void}){
 }
 // Known events in the next three weeks for your stocks and the market.
 const KIND_LABEL:Record<string,string>={earnings:'Earnings',dividend:'Dividend',meeting:'Meeting',macro:'Macro',expiry:'Expiry'};
+type CalendarEvent={date:string;kind:string;title:string;symbol?:string;name?:string;market?:string;estimated?:boolean;time?:string};
+type CalendarItem=CalendarEvent&{label:string;tickers:string[];sub:string|null};
+const dayName=(day:string,offset=0,opts:Intl.DateTimeFormatOptions={weekday:'short'})=>new Date(Date.parse(day+'T00:00:00Z')+offset*86400000).toLocaleDateString('en-US',{timeZone:'UTC',...opts});
+const seoulToday=()=>new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+// Short company names: no parenthetical aliases, and share classes (A/C) folded into one company.
+const baseName=(name:string)=>name.replace(/\s*\(.*?\)\s*/g,' ').replace(/\s+(Class\s+)?[A-C]$/i,'').trim();
+const ticker=(symbol?:string)=>symbol?.includes(':')?symbol.split(':')[1]:null;
+function calendarItems(events:CalendarEvent[]):CalendarItem[]{
+  const out:CalendarItem[]=[];
+  for(const e of events){
+    const company=['earnings','dividend','meeting'].includes(e.kind)&&e.name;const label=company?baseName(e.name!):e.title;const t=ticker(e.symbol);
+    const same=company?out.find(o=>o.date===e.date&&o.kind===e.kind&&o.label===label):null;if(same){if(t)same.tickers.push(t);continue;}
+    const sub=e.kind==='earnings'?(e.time==='after-close'?`After the U.S. close · ${dayName(e.date,1)} morning KST`:e.time==='before-open'?`Before the U.S. open · ${dayName(e.date)} evening KST`:e.estimated?'Estimated date, not announced':null)
+      :e.kind==='dividend'?'Record date':e.kind==='macro'||e.kind==='expiry'?(e.market==='KR'?'Korea':e.market==='US'?'U.S.':null):null;
+    out.push({...e,label,tickers:t?[t]:[],sub});
+  }
+  return out;
+}
 export function HomeCalendar(){
-  const [events,setEvents]=useState<{date:string;kind:string;title:string;symbol?:string;estimated?:boolean}[]>([]);
+  const [events,setEvents]=useState<CalendarEvent[]>([]);
   useEffect(()=>{let alive=true;const load=async()=>{try{const s:any=await window.portfolio?.getRuntime();if(alive)setEvents(s?.calendar??[]);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
   if(!events.length)return null;
+  const items=calendarItems(events).slice(0,10);const days=[...new Set(items.map(i=>i.date))];const today=seoulToday(),tomorrow=new Date(Date.parse(today+'T00:00:00Z')+86400000).toISOString().slice(0,10);
   return <section className="metric-card home-calendar" aria-label="Coming up"><div className="home-trend-head"><small>Coming up · next 3 weeks</small></div>
-    <ul className="research-events">{events.slice(0,10).map(e=><li key={e.date+e.title}><span className="research-date">{e.date}</span><span className="role-tag">{KIND_LABEL[e.kind]??e.kind}</span>{e.title}</li>)}</ul>
+    <div className="cal-list">{days.map(day=><div key={day} className="cal-day">
+      <div className="cal-date"><b>{dayName(day,0,{weekday:'short',month:'short',day:'numeric'})}</b>{day===today?<em>Today</em>:day===tomorrow?<em>Tomorrow</em>:null}</div>
+      <ul>{items.filter(i=>i.date===day).map(i=><li key={i.kind+i.label} className="cal-item">
+        <span className={`cal-kind kind-${i.kind}`}>{KIND_LABEL[i.kind]??i.kind}</span>
+        <span className="cal-text"><span className="cal-title"><b>{i.label}</b>{i.tickers.length>0&&<small className="cal-ticker">{i.tickers.join(' · ')}</small>}</span>{i.sub&&<small className="cal-sub">{i.sub}</small>}</span>
+      </li>)}</ul>
+    </div>)}</div>
   </section>;
 }
 // Largest positions first, one line each; the full table lives on Holdings.
