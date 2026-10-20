@@ -59,11 +59,16 @@ function compact(context){
 }
 // Picks the model for this review. 'auto' sends routine reviews to the cheaper model; emergencies, user requests and
 // important disclosures use the configured model. Near the daily budget, routine reviews always use the cheaper model.
-function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false}){
+// 'complexity' sends a review to the configured model when a hard rule applies or the complexity score reaches the threshold.
+function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false,complexity=null,hardRule=null}){
   const strong={openaiModel:config.openaiModel,reasoningEffort:config.reasoningEffort},routine={openaiModel:config.routineModel,reasoningEffort:config.routineEffort};
   const important=emergencyActive?'emergency':trigger==='User request'?'user request':triggerEvidence?.kind==='news'&&(triggerEvidence.events??[]).some(e=>e.importance==='high')?'important disclosure':null;
   if(important)return {...strong,tier:'escalated',reason:important};
   if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
+  if(config.modelRouting==='complexity'){
+    if(hardRule)return {...strong,tier:'escalated',reason:hardRule};
+    const score=complexity?.score??100;return score>=config.complexityThreshold?{...strong,tier:'escalated',reason:`complexity ${score} ≥ ${config.complexityThreshold}`}:{...routine,tier:'routine',reason:`complexity ${score} < ${config.complexityThreshold}`};
+  }
   if(config.modelRouting==='auto')return {...routine,tier:'routine',reason:'routine review'};
   return {...strong,tier:'fixed',reason:'fixed model'};
 }
