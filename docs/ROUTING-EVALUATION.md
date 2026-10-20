@@ -160,4 +160,8 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
 - 2026-10-20: clarifications after a fourth code review, before any data: the consequence gate and difficulty score read
   Korea-only and U.S.-only contexts as well as combined ones; each record stores its market scope and the holiday
   calendar used, the simulation applies only those, and the market scope is part of the binding. Thresholds unchanged.
-- Evaluation period start: not yet set.
+- Evaluation period start: 2026-10-20 23:36:22 KST (2026-10-20T14:36:22Z), frozen with `scripts/routing-report.cjs
+  --freeze` after the user turned on shadow evaluation (main model only, 100% shadowed, $1/day shadow allowance) and
+  started auto trading on the KIS live account. Binding: protocol 2026-10-20, routing code a7c2695f4ce0179b (app 1.5.20),
+  scope both, main gpt-6-sol medium, cheaper gpt-6-luna none, threshold 40, spot checks 25%, cheaper-model limit
+  4 reviews or 120 minutes, consequence gate 20%. The one pair recorded before the start (23:34:56 KST) does not count.
