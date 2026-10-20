@@ -13,7 +13,7 @@ const PROTOCOL_VERSION='2026-10-20';
 // counting when any of these change.
 function binding(config){
   const code=createHash('sha256');for(const f of ['./complexity.cjs','./routing-sim.cjs','./token-saver.cjs'])code.update(fs.readFileSync(require.resolve(f),'utf8').replace(/\r\n/g,'\n'));
-  return {protocol:PROTOCOL_VERSION,code:code.digest('hex').slice(0,16),mainModel:config.openaiModel,mainEffort:config.reasoningEffort,cheaperModel:config.routineModel,cheaperEffort:config.routineEffort,
+  return {protocol:PROTOCOL_VERSION,code:code.digest('hex').slice(0,16),scope:config.scope??null,mainModel:config.openaiModel,mainEffort:config.reasoningEffort,cheaperModel:config.routineModel,cheaperEffort:config.routineEffort,
     threshold:config.complexityThreshold,spotCheckPct:config.spotCheckPct,maxRuns:config.lunaMaxRuns,maxMinutes:config.lunaMaxMinutes,gatePct:GATE_PCT};
 }
 const sameBinding=(a,b)=>Boolean(a&&b)&&JSON.stringify(a)===JSON.stringify(b);
@@ -54,14 +54,15 @@ function strata(a,ctx){const held=Object.values(ctx.positions??{}).some(p=>(p?.q
   return {held,stress:g.price>0||g.market>0,event:g.events>0,quiet:!Object.values(g).some(v=>v>0)};}
 // Failed cheaper-model runs stay in: when the router would have used the cheaper model and it failed, the policy falls
 // back to the main model at both costs. Records without a saved context are counted as missing evidence.
-function simulate(records,{contextOf,threshold=40,maxRuns=4,maxMinutes=120,spotCheckPct=25,gatePct=20,markets=['KR','US'],closedDays=new Set()}={}){
+function simulate(records,{contextOf,threshold=40,maxRuns=4,maxMinutes=120,spotCheckPct=25,gatePct=20}={}){
   const rows=[...records].sort((a,b)=>a.timestamp-b.timestamp);
   const state=new Map();const out=[];let missing=0;
   for(const r of rows){
-    const ctx=contextOf(r.reviewId);if(!ctx){missing++;continue;}const key=r.account??'default';
+    // Each record carries its own market scope and holiday calendar; a record without them is missing evidence.
+    const ctx=contextOf(r.reviewId);if(!ctx||!r.calendar?.markets){missing++;continue;}const key=r.account??'default';
     const s=state.get(key)??{mainCtx:null,mainAt:null,streak:0,prevDecision:null,prevModel:null,prevCtx:null,prevAt:null,situation:0};
     const a=assess(ctx,{baseline:s.mainCtx,previousReview:s.prevDecision?{decision:s.prevDecision,routing:{model:s.prevModel}}:null,now:r.timestamp,gatePct});
-    const hard=hardRule({trigger:r.trigger,now:r.timestamp,lastMainAt:s.mainAt,streak:s.streak,markets,closedDays,maxRuns,maxMinutes,consequence:a.consequence});
+    const hard=hardRule({trigger:r.trigger,now:r.timestamp,lastMainAt:s.mainAt,streak:s.streak,markets:r.calendar.markets,closedDays:new Set(r.calendar.closedDays??[]),maxRuns,maxMinutes,consequence:a.consequence});
     // The live router's own decision function, with the inputs recorded at review time (escalations included).
     const inputs=r.routeInputs??{};const chosen=route(POLICY(threshold),{trigger:r.trigger,emergencyActive:Boolean(inputs.emergencyActive),triggerEvidence:inputs.triggerEvidence??null,nearBudget:Boolean(inputs.nearBudget),complexity:{score:a.score},hardRule:hard,eligible:true});
     let routed=chosen.openaiModel==='main'?'main':'cheaper',reason=chosen.reason,escalated=null;

@@ -105,9 +105,11 @@ class Automation {
     const assessment=require('./complexity.cjs').assess(context,{baseline:previous,previousReview,now});
     const complexity={score:assessment.score,rule:assessment.rule,parts:assessment.groups,agent:assessment.agent,reasons:assessment.features.map(f=>f.detail),consequence:assessment.consequence};
     // Mandatory escalations come from the same function the routing simulation uses.
-    const markets=this.config.scope==='kis'?['KR']:this.config.scope==='us'?['US']:['KR','US'];
-    const hardRule=require('./routing-sim.cjs').hardRule({trigger,now,lastMainAt:lastStrong?.timestamp??null,streak:streak.length,markets,closedDays:new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]),maxRuns:this.config.lunaMaxRuns,maxMinutes:this.config.lunaMaxMinutes,consequence:assessment.consequence,mainModel:strongModel});
-    return {complexity,hardRule,previousReview,assessment,baselineId:lastStrong?.id??null};
+    const markets=this.config.scope==='kis'?['KR']:this.config.scope==='us'?['US']:['KR','US'];const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
+    // The calendar inputs are recorded with each shadow pair so the simulation applies the same session rules.
+    const near=d=>Math.abs(Date.parse(d+'T00:00:00Z')-now)<=4*86400000;const calendar={scope:this.config.scope,markets,closedDays:[...closed].filter(d=>typeof d==='string'&&near(d)).sort()};
+    const hardRule=require('./routing-sim.cjs').hardRule({trigger,now,lastMainAt:lastStrong?.timestamp??null,streak:streak.length,markets,closedDays:closed,maxRuns:this.config.lunaMaxRuns,maxMinutes:this.config.lunaMaxMinutes,consequence:assessment.consequence,mainModel:strongModel});
+    return {complexity,hardRule,previousReview,assessment,calendar,baselineId:lastStrong?.id??null};
   }
   recordSaving(kind){
     this.db.exec('CREATE TABLE IF NOT EXISTS token_savings(day TEXT PRIMARY KEY,payload TEXT NOT NULL)');const day=seoulDate();const row=this.db.prepare('SELECT payload FROM token_savings WHERE day=?').get(day);const value=row?JSON.parse(row.payload):{};
@@ -301,7 +303,7 @@ class Automation {
     const symbol=review.decision.symbol||shadow.decision?.symbol;const quote=(frozen.quotes??[]).find(q=>q.symbol===symbol);const fx=C.usdKrw(frozen);
     const priceKRW=quote?.price>0?(/:/.test(symbol)?(fx?quote.price*fx:null):quote.price):null;
     const transcript=anchor.export();
-    const row={reviewId:review.id,timestamp:review.timestamp,account:review.account?.key??null,environment:frozen.environment??null,provenance:{broker:{'KIS live':'live','KIS mock':'mock','Paper':'paper'}[review.account?.label]??'unknown',accountLabel:review.account?.label??null,connection:this.config.scope==='paper'?'paper':this.live?.getConnection?.()?.snapshot?.environment??'unknown'},routeInputs:assessed.routeInputs??null,binding:require('./routing-sim.cjs').binding(this.config),trigger:review.trigger,baselineId:assessed.baselineId,
+    const row={reviewId:review.id,timestamp:review.timestamp,account:review.account?.key??null,environment:frozen.environment??null,provenance:{broker:{'KIS live':'live','KIS mock':'mock','Paper':'paper'}[review.account?.label]??'unknown',accountLabel:review.account?.label??null,connection:this.config.scope==='paper'?'paper':this.live?.getConnection?.()?.snapshot?.environment??'unknown'},routeInputs:assessed.routeInputs??null,calendar:assessed.calendar??null,binding:require('./routing-sim.cjs').binding(this.config),trigger:review.trigger,baselineId:assessed.baselineId,
       assessment:{score:a.score,rule:a.rule,groups:a.groups,features:a.features,agent:a.agent,consequence:a.consequence},hardRule:assessed.hardRule,threshold:this.config.complexityThreshold,
       live:{model:review.model??this.config.openaiModel,effort:this.config.reasoningEffort,decision:brief(review.decision),usage:cost('review'),transcript:transcript.live},
       shadow:{model:shadow.model.openaiModel,effort:shadow.model.reasoningEffort,decision:brief(shadow.decision),error:shadow.error,usage:cost('shadow'),transcript:transcript.shadow},
