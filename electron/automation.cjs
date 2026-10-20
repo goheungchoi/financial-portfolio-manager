@@ -89,8 +89,11 @@ class Automation {
   // Daily counts of skipped, routine, escalated and confirmation reviews.
   // Complexity routing is allowed only after an evaluation pass is recorded (docs/ROUTING-EVALUATION.md section 6).
   // Nothing in the interface records one; it is written after the evaluation report is reviewed.
-  routingEligibility(){const row=this.db.prepare('SELECT id,decidedAt FROM routing_pass ORDER BY decidedAt DESC LIMIT 1').get();return row?{eligible:true,passId:row.id,decidedAt:row.decidedAt}:{eligible:false,reason:'no routing evaluation has passed'};}
-  recordRoutingPass(report){if(!report||typeof report!=='object')throw new Error('INVALID_REQUEST');const id=randomUUID();this.db.prepare('INSERT INTO routing_pass VALUES(?,?,?)').run(id,Date.now(),JSON.stringify(report));return id;}
+  // A stored pass counts only while it still validates against the current binding (models, router settings, protocol
+  // and routing code); any change makes routing ineligible again until a new evaluation passes.
+  routingEligibility(){const sim=require('./routing-sim.cjs');const row=this.db.prepare('SELECT id,decidedAt,payload FROM routing_pass ORDER BY decidedAt DESC LIMIT 1').get();if(!row)return {eligible:false,reason:'no routing evaluation has passed'};
+    const problem=sim.validPass(JSON.parse(row.payload),sim.binding(this.config));return problem?{eligible:false,reason:problem}:{eligible:true,passId:row.id,decidedAt:row.decidedAt};}
+  recordRoutingPass(report){const sim=require('./routing-sim.cjs');const problem=sim.validPass(report,sim.binding(this.config));if(problem)throw Object.assign(new Error('INVALID_ROUTING_PASS'),{detail:problem});const id=randomUUID();this.db.prepare('INSERT INTO routing_pass VALUES(?,?,?)').run(id,Date.now(),JSON.stringify(report));return id;}
   // Inputs for complexity routing: the score, and a hard rule when one sends this review to the configured model:
   // the first review after starting, no recent review on that model, the first review of a regular session, or the
   // cheaper model's run limit (count or time since the last review on the configured model).
@@ -194,7 +197,10 @@ class Automation {
           catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
 
         }});
-        result=await research();this.recordSaving(selected.tier);routing={tier:selected.tier,reason:selected.reason,model:selected.openaiModel,effort:selected.reasoningEffort,confirmed:null,...(inputs?{complexity:{score:inputs.complexity.score,parts:inputs.complexity.parts,reasons:inputs.complexity.reasons,agent:inputs.complexity.agent},hardRule:inputs.hardRule}:{})};
+        if(selected.tier==='routine'&&(selected.openaiModel!==this.config.openaiModel||selected.reasoningEffort!==this.config.reasoningEffort)){
+          // A failed cheaper-model run falls back to the main model instead of failing the review.
+          try{result=await research();}catch(error){if(error.message==='STALE_DECISION'||error.message==='AI_BUDGET_EXHAUSTED')throw error;this.log(id,'System','Cheaper model failed',`${selected.openaiModel}: ${/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'}; asking ${this.config.openaiModel} instead.`);selected={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort,tier:'escalated',reason:'cheaper model failed'};result=await research();}
+        }else result=await research();this.recordSaving(selected.tier);routing={tier:selected.tier,reason:selected.reason,model:selected.openaiModel,effort:selected.reasoningEffort,confirmed:null,...(inputs?{complexity:{score:inputs.complexity.score,parts:inputs.complexity.parts,reasons:inputs.complexity.reasons,agent:inputs.complexity.agent},hardRule:inputs.hardRule}:{})};
         // A trade proposed by the cheaper model is confirmed by the configured model before any proposal is created.
         if(selected.tier==='routine'&&result.decision.action!=='Hold'&&(selected.openaiModel!==this.config.openaiModel||selected.reasoningEffort!==this.config.reasoningEffort)){
           const first=result;this.log(id,'System','Trade confirmation',`${first.model} proposed ${first.decision.action} ${first.decision.quantity} ${first.decision.symbol}; asking ${this.config.openaiModel} to confirm.`);
@@ -294,7 +300,7 @@ class Automation {
     const symbol=review.decision.symbol||shadow.decision?.symbol;const quote=(frozen.quotes??[]).find(q=>q.symbol===symbol);const fx=C.usdKrw(frozen);
     const priceKRW=quote?.price>0?(/:/.test(symbol)?(fx?quote.price*fx:null):quote.price):null;
     const transcript=anchor.export();
-    const row={reviewId:review.id,timestamp:review.timestamp,account:review.account?.key??null,trigger:review.trigger,baselineId:assessed.baselineId,
+    const row={reviewId:review.id,timestamp:review.timestamp,account:review.account?.key??null,environment:frozen.environment??null,binding:require('./routing-sim.cjs').binding(this.config),trigger:review.trigger,baselineId:assessed.baselineId,
       assessment:{score:a.score,rule:a.rule,groups:a.groups,features:a.features,agent:a.agent,consequence:a.consequence},hardRule:assessed.hardRule,threshold:this.config.complexityThreshold,
       live:{model:review.model??this.config.openaiModel,effort:this.config.reasoningEffort,decision:brief(review.decision),usage:cost('review'),transcript:transcript.live},
       shadow:{model:shadow.model.openaiModel,effort:shadow.model.reasoningEffort,decision:brief(shadow.decision),error:shadow.error,usage:cost('shadow'),transcript:transcript.shadow},
