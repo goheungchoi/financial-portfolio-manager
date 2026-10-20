@@ -1,5 +1,5 @@
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');
-const DEFAULTS={unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithAI:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionKrxSingle:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',skipUnchanged:true,maxSkipMinutes:120,modelRouting:'fixed',routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutSchedule:'twice',scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,...require('./agent-desk.cjs').COND_DEFAULTS};
+const DEFAULTS={unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithAI:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionKrxSingle:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',skipUnchanged:true,maxSkipMinutes:120,modelRouting:'fixed',routineModel:'gpt-6-luna',routineEffort:'none',complexityThreshold:40,spotCheckPct:25,lunaMaxRuns:4,lunaMaxMinutes:120,degradeNearBudget:true,scoutEnabled:false,scoutSchedule:'twice',scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,...require('./agent-desk.cjs').COND_DEFAULTS};
 const LOG_LIMIT=30000;
 // The console keeps a copy of the supplied context. Large sections are summarized in that copy so it fits the event log; the AI still receives everything.
 function loggableContext(context){
@@ -35,7 +35,7 @@ class Automation {
     if(!['paper','kis','us','both'].includes(next.scope)||typeof next.shareKisWithAI!=='boolean')throw new Error('INVALID_SETTINGS');
     require('./guardrails.cjs').validateGuardrails(next);if(!require('./news-events.cjs').MODES.includes(next.newsTrigger))throw new Error('INVALID_SETTINGS');
     require('./ai-models.cjs').settings(next);require('./ai-models.cjs').settings({openaiModel:next.routineModel,reasoningEffort:next.routineEffort});
-    if(['sessionKrNxt','sessionKrxSingle','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!['fixed','auto'].includes(next.modelRouting)||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
+    if(['sessionKrNxt','sessionKrxSingle','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!['fixed','auto','complexity'].includes(next.modelRouting)||![next.complexityThreshold,next.spotCheckPct,next.lunaMaxRuns,next.lunaMaxMinutes].every(Number.isInteger)||next.complexityThreshold<0||next.complexityThreshold>100||next.spotCheckPct<0||next.spotCheckPct>100||next.lunaMaxRuns<1||next.lunaMaxRuns>20||next.lunaMaxMinutes<30||next.lunaMaxMinutes>720||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
     if(typeof next.scoutAiRequests!=='boolean'||typeof next.scoutEnabled!=='boolean'||!Object.hasOwn(require('./scout.cjs').SCHEDULES,next.scoutSchedule))throw new Error('INVALID_SETTINGS');
     if(!Array.isArray(next.newsFeeds)||next.newsFeeds.length>10||next.newsFeeds.some(f=>!f||typeof f.url!=='string'||!/^https:\/\//.test(f.url)||f.url.length>500||typeof(f.label??'')!=='string'||String(f.label??'').length>60)||typeof next.kisNews!=='boolean'||typeof next.usTickerNews!=='boolean'||typeof next.narrativeEnabled!=='boolean'||!Number.isFinite(next.sizingRiskPct)||next.sizingRiskPct<0.1||next.sizingRiskPct>20||!Number.isFinite(next.sizingAtrMultiple)||next.sizingAtrMultiple<0.5||next.sizingAtrMultiple>5)throw new Error('INVALID_SETTINGS');
     if(typeof next.conditionalOrders!=='boolean'||typeof next.conditionalAutoSubmit!=='boolean'||!Number.isInteger(next.conditionalMaxActive)||next.conditionalMaxActive<1||next.conditionalMaxActive>10||!Number.isFinite(next.conditionalMaxOrderPct)||next.conditionalMaxOrderPct<1||next.conditionalMaxOrderPct>50||!Number.isFinite(next.conditionalMaxSlippagePct)||next.conditionalMaxSlippagePct<.1||next.conditionalMaxSlippagePct>10||!Number.isFinite(next.conditionalMaxHours)||next.conditionalMaxHours<1||next.conditionalMaxHours>336)throw new Error('INVALID_SETTINGS');
@@ -86,6 +86,27 @@ class Automation {
     const event=this.guardrails.record(kind,detail);this.log(event.id,'Risk','Guardrail · '+kind,detail);this.notify?.('guardrail:'+event.id,'Guardrail: '+detail);
   }
   // Daily counts of skipped, routine, escalated and confirmation reviews.
+  // Inputs for complexity routing: the score, and a hard rule when one sends this review to the configured model:
+  // the first review after starting, no recent review on that model, the first review of a regular session, or the
+  // cheaper model's run limit (count or time since the last review on the configured model).
+  routingInputs(context,trigger,now=Date.now()){
+    const history=this.reviewHistory(30);const strongModel=this.config.openaiModel;// A review counts as decided by the configured model when it ran there, or when that model confirmed, spot-checked or took over its decision.
+    const strong=r=>r.provider==='openai'&&(r.routing?(r.routing.model===strongModel&&r.routing.tier!=='routine')||Boolean(r.routing.confirmedBy||r.routing.spotCheck||r.routing.verdictChange):r.model===strongModel);
+    const lastStrong=history.find(strong)??null;const previousReview=history[0]??null;const previous=lastStrong?this.replays.context(lastStrong.id):null;
+    const streak=[];for(const r of history){if(strong(r))break;if(r.routing?.tier==='routine')streak.push(r);}
+    const complexity=require('./complexity.cjs').score(context,{previous,previousReview,strongModel,now});
+    let hardRule=null;
+    if(trigger==='Auto trading started')hardRule='first review after starting';
+    else if(!lastStrong||now-lastStrong.timestamp>12*3600000)hardRule=`no review on ${strongModel} in the last 12 hours`;
+    else{
+      const S=require('./market-sessions.cjs');const markets=this.config.scope==='kis'?['KR']:this.config.scope==='us'?['US']:['KR','US'];
+      for(const m of markets){const tz=m==='KR'?'Asia/Seoul':'America/New_York';const opens=[-1,0].flatMap(i=>S.sessionsOn(m,S.localDay(now+i*86400000,tz),{closedDays:new Set(m==='KR'?[...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]:[])})).filter(x=>x.regular&&x.startAt<=now&&now<x.endAt).map(x=>x.startAt);
+        if(opens.some(at=>at>lastStrong.timestamp)){hardRule=`first review of the ${m==='KR'?'Korean':'U.S.'} regular session`;break;}}
+      if(!hardRule&&streak.length>=this.config.lunaMaxRuns)hardRule=`${streak.length} reviews in a row on the cheaper model`;
+      if(!hardRule&&streak.length&&now-lastStrong.timestamp>=this.config.lunaMaxMinutes*60000)hardRule=`${Math.round((now-lastStrong.timestamp)/60000)} minutes since the last review on ${strongModel}`;
+    }
+    return {complexity,hardRule,previousReview};
+  }
   recordSaving(kind){
     this.db.exec('CREATE TABLE IF NOT EXISTS token_savings(day TEXT PRIMARY KEY,payload TEXT NOT NULL)');const day=seoulDate();const row=this.db.prepare('SELECT payload FROM token_savings WHERE day=?').get(day);const value=row?JSON.parse(row.payload):{};
     value[kind]=(value[kind]??0)+1;this.db.prepare('INSERT INTO token_savings VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day,JSON.stringify(value));
@@ -156,9 +177,10 @@ class Automation {
         if(!this.providerStatus.aiConnected)throw new Error('AI_NOT_CONNECTED');
         stage='AI research and decision';
         const today=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0};
-        let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today)});
+        const inputs=this.config.modelRouting==='complexity'?this.routingInputs(context,trigger):null;
+        let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today),complexity:inputs?.complexity,hardRule:inputs?.hardRule});
         let providerContext=saver.compact(context);this.replays.saveContext(id,providerContext);
-        if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`);
+        if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`+(inputs?` · complexity ${inputs.complexity.score}/100${inputs.complexity.reasons.length?': '+inputs.complexity.reasons.join('; '):''}`:''));
         const research=()=>require('./research-review.cjs').researchReview({context,evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config);},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');}):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
           if(this.disposed||watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
           const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};options={...options,...modelConfig};
@@ -171,7 +193,7 @@ class Automation {
           catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
 
         }});
-        result=await research();this.recordSaving(selected.tier);routing={tier:selected.tier,reason:selected.reason,model:selected.openaiModel,effort:selected.reasoningEffort,confirmed:null};
+        result=await research();this.recordSaving(selected.tier);routing={tier:selected.tier,reason:selected.reason,model:selected.openaiModel,effort:selected.reasoningEffort,confirmed:null,...(inputs?{complexity:{score:inputs.complexity.score,parts:inputs.complexity.parts,reasons:inputs.complexity.reasons,agent:inputs.complexity.agent},hardRule:inputs.hardRule}:{})};
         // A trade proposed by the cheaper model is confirmed by the configured model before any proposal is created.
         if(selected.tier==='routine'&&result.decision.action!=='Hold'&&(selected.openaiModel!==this.config.openaiModel||selected.reasoningEffort!==this.config.reasoningEffort)){
           const first=result;this.log(id,'System','Trade confirmation',`${first.model} proposed ${first.decision.action} ${first.decision.quantity} ${first.decision.symbol}; asking ${this.config.openaiModel} to confirm.`);
@@ -180,10 +202,25 @@ class Automation {
           result={...result,usage:{inputTokens:(first.usage?.inputTokens??0)+(result.usage?.inputTokens??0),outputTokens:(first.usage?.outputTokens??0)+(result.usage?.outputTokens??0)}};
           routing={...routing,confirmed:result.decision.action===first.decision.action&&result.decision.symbol===first.decision.symbol&&result.decision.quantity===first.decision.quantity,confirmedBy:this.config.openaiModel};
         }
+        // Complexity routing: a cheaper-model Hold that changes a scout-target verdict goes to the configured model; other
+        // cheaper-model Holds are spot-checked by it at the set rate, and its decision is used when the two differ.
+        else if(inputs&&selected.tier==='routine'&&(selected.openaiModel!==this.config.openaiModel||selected.reasoningEffort!==this.config.reasoningEffort)){
+          const before=new Map((inputs.previousReview?.decision?.planVerdicts??[]).map(v=>[v.symbol,v.verdict]));const changed=(result.decision.planVerdicts??[]).filter(v=>before.has(v.symbol)&&before.get(v.symbol)!==v.verdict);
+          const spot=!changed.length&&Math.random()*100<this.config.spotCheckPct;
+          if(changed.length||spot){
+            const first=result;selected={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort,tier:'escalated',reason:changed.length?'verdict change':'spot check'};
+            this.log(id,'System',changed.length?'Verdict change':'Spot check',changed.length?`${first.model} changed ${changed.map(v=>`${v.symbol} to ${v.verdict}`).join(', ')}; asking ${this.config.openaiModel} to decide.`:`Checking ${first.model}'s decision with ${this.config.openaiModel} (${this.config.spotCheckPct}% of cheaper-model reviews).`);
+            result=await research();this.recordSaving(changed.length?'verdict-change':'spot-check');
+            const verdicts=d=>JSON.stringify((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict]).sort());const agreed=result.decision.action===first.decision.action&&result.decision.symbol===first.decision.symbol&&result.decision.quantity===first.decision.quantity&&verdicts(result.decision)===verdicts(first.decision);
+            if(spot)this.log(id,'System','Spot check result',agreed?`${this.config.openaiModel} agreed with ${first.model}.`:`${this.config.openaiModel} disagreed (${first.decision.action}${first.decision.symbol?' '+first.decision.symbol:''} → ${result.decision.action}${result.decision.symbol?' '+result.decision.symbol:''}); using ${this.config.openaiModel}'s decision.`);
+            result={...result,usage:{inputTokens:(first.usage?.inputTokens??0)+(result.usage?.inputTokens??0),outputTokens:(first.usage?.outputTokens??0)+(result.usage?.outputTokens??0)}};
+            routing={...routing,[changed.length?'verdictChange':'spotCheck']:{by:this.config.openaiModel,cheaper:{action:first.decision.action,symbol:first.decision.symbol||null,verdicts:first.decision.planVerdicts??[]},agreed}};
+          }
+        }
       } else if(this.config.provider==='external')throw new Error('EXTERNAL_DECISION_REQUIRED');
       else result={decision:this.localDecision(context),provider:'local'};
       if(this.disposed)return;if(watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
-      stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+(routing?.confirmedBy?this.config.reasoningEffort:routing?.effort??this.config.reasoningEffort)+(routing?.confirmedBy?` (confirmed ${routing.confirmed?'unchanged':'with changes'})`:''));
+      stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+(routing?.confirmedBy||routing?.spotCheck||routing?.verdictChange?this.config.reasoningEffort:routing?.effort??this.config.reasoningEffort)+(routing?.confirmedBy?` (confirmed ${routing.confirmed?'unchanged':'with changes'})`:''));
       this.log(id,'Agent','Decision',JSON.stringify(result.decision,null,2));
       if(result.decision.withheld)this.log(id,'System','Buy held back · trade plan',`${result.decision.withheld.quantity} ${result.decision.withheld.symbol}: ${result.decision.withheld.reason}.`);
       // A Buy whose stop is not below the current price is held back too.
