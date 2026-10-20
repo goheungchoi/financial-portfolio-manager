@@ -19,9 +19,9 @@ function build({today,days=21,macroCalendar=[],symbols=[],sources}){
   for(const row of macroCalendar??[])if(row?.date>=today&&row.date<=to)events.push({date:row.date,kind:'macro',market:row.market??'US',title:row.event});
   for(const s of symbols){const r=sources(s.symbol)??{};const name=r.name??s.name??s.symbol;
     // A listed report date (U.S. earnings calendar) shows its timing; an estimate from past filings says so.
-    const next=r.earnings?.nextExpected;if(next&&next>=today&&next<=to)events.push(r.earnings.scheduled?{date:next,kind:'earnings',symbol:s.symbol,title:`${name} earnings${WHEN[r.earnings.time]??''}`,estimated:false,...(r.earnings.time?{time:r.earnings.time}:{}),source:r.earnings.source??null}:{date:next,kind:'earnings',symbol:s.symbol,title:`${name} earnings (estimated)`,estimated:true});
-    for(const p of r.dividends?.upcoming??[])if(p.recordDate>=today&&p.recordDate<=to)events.push({date:p.recordDate,kind:'dividend',symbol:s.symbol,title:`${name} dividend record date${p.perShare?` · ${p.perShare.toLocaleString()} KRW`:''}`});
-    for(const m of r.meetings??[])if(m.date>=today&&m.date<=to)events.push({date:m.date,kind:'meeting',symbol:s.symbol,title:`${name} shareholder meeting`});}
+    const next=r.earnings?.nextExpected;if(next&&next>=today&&next<=to)events.push(r.earnings.scheduled?{date:next,kind:'earnings',symbol:s.symbol,name,title:`${name} earnings${WHEN[r.earnings.time]??''}`,estimated:false,...(r.earnings.time?{time:r.earnings.time}:{}),source:r.earnings.source??null}:{date:next,kind:'earnings',symbol:s.symbol,name,title:`${name} earnings (estimated)`,estimated:true});
+    for(const p of r.dividends?.upcoming??[])if(p.recordDate>=today&&p.recordDate<=to)events.push({date:p.recordDate,kind:'dividend',symbol:s.symbol,name,title:`${name} dividend record date${p.perShare?` · ${p.perShare.toLocaleString()} KRW`:''}`});
+    for(const m of r.meetings??[])if(m.date>=today&&m.date<=to)events.push({date:m.date,kind:'meeting',symbol:s.symbol,name,title:`${name} shareholder meeting`});}
   const seen=new Set();return events.filter(e=>{const k=e.date+e.title;if(seen.has(k))return false;seen.add(k);return true;}).sort((a,b)=>a.date.localeCompare(b.date)||a.kind.localeCompare(b.kind));
 }
 module.exports={nthWeekday,expiries,build};
