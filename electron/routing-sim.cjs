@@ -3,7 +3,9 @@
 // for change), the run of consecutive cheaper-model reviews, and the previous decision the router would have used
 // (the cheaper model's own when it was routed there). Live records came from a main-model-only history, so this is
 // the closest available estimate; it still cannot show how the cheaper model's decisions would have changed holdings.
-const {assess,GATE_PCT}=require('./complexity.cjs');const {createHash}=require('node:crypto');const fs=require('node:fs');
+const {assess,GATE_PCT}=require('./complexity.cjs');const {route}=require('./token-saver.cjs');
+// The routing policy as the live router runs it once validated: complexity routing with its threshold.
+const POLICY=threshold=>({openaiModel:'main',reasoningEffort:'main',routineModel:'cheaper',routineEffort:'cheaper',modelRouting:'complexity',complexityThreshold:threshold,degradeNearBudget:true,shadowEvaluation:false});const {createHash}=require('node:crypto');const fs=require('node:fs');
 const DAY=86400000,HOUR=3600000;
 // The evaluation protocol version (docs/ROUTING-EVALUATION.md); a pass is bound to it.
 const PROTOCOL_VERSION='2026-10-20';
@@ -16,9 +18,13 @@ function binding(config){
 }
 const sameBinding=(a,b)=>Boolean(a&&b)&&JSON.stringify(a)===JSON.stringify(b);
 // A report can unlock routing only if it passed every check on prospective, frozen-period data under the binding now in force.
+// The checks a passing report must contain, each passing (scripts/routing-report.cjs).
+const REQUIRED_CHECKS=['bindingCurrent','evidenceComplete','adjudicationComplete','highSeverity','mediumSeverity','coverage','savings'];
 function validPass(report,current){
-  if(!report||report.verdict!=='pass'||!report.prospective||!report.freeze?.evaluationStart)return 'the report is not a passing prospective evaluation';
-  if(!report.checks||!Object.values(report.checks).every(c=>c&&c.pass===true))return 'not every check passed';
+  if(!report||typeof report!=='object'||report.verdict!=='pass'||report.prospective!==true)return 'the report is not a passing prospective evaluation';
+  if(!report.freeze||typeof report.freeze.evaluationStart!=='string'||!Number.isFinite(Date.parse(report.freeze.evaluationStart)))return 'the report has no frozen evaluation period';
+  if(!report.binding||typeof report.binding!=='object'||!report.checks||typeof report.checks!=='object')return 'the report is incomplete';
+  const missing=REQUIRED_CHECKS.filter(k=>report.checks[k]?.pass!==true);if(missing.length)return `required checks missing or not passed: ${missing.join(', ')}`;
   if(!sameBinding(report.binding,current))return 'the pass does not match the current models, settings, protocol or code';
   return null;
 }
@@ -56,19 +62,21 @@ function simulate(records,{contextOf,threshold=40,maxRuns=4,maxMinutes=120,spotC
     const s=state.get(key)??{mainCtx:null,mainAt:null,streak:0,prevDecision:null,prevModel:null,prevCtx:null,prevAt:null,situation:0};
     const a=assess(ctx,{baseline:s.mainCtx,previousReview:s.prevDecision?{decision:s.prevDecision,routing:{model:s.prevModel}}:null,now:r.timestamp,gatePct});
     const hard=hardRule({trigger:r.trigger,now:r.timestamp,lastMainAt:s.mainAt,streak:s.streak,markets,closedDays,maxRuns,maxMinutes,consequence:a.consequence});
-    let route=hard||a.score>=threshold?'main':'cheaper',reason=hard??`score ${a.score} ${route==='main'?'≥':'<'} ${threshold}`,escalated=null;
-    const live=r.live.usage?.micro??0,cheap=r.shadow?.usage?.micro??0;let cost=live;
+    // The live router's own decision function, with the inputs recorded at review time (escalations included).
+    const inputs=r.routeInputs??{};const chosen=route(POLICY(threshold),{trigger:r.trigger,emergencyActive:Boolean(inputs.emergencyActive),triggerEvidence:inputs.triggerEvidence??null,nearBudget:Boolean(inputs.nearBudget),complexity:{score:a.score},hardRule:hard,eligible:true});
+    let routed=chosen.openaiModel==='main'?'main':'cheaper',reason=chosen.reason,escalated=null;
+    const live=r.live.usage?.micro??0,cheap=r.shadow?.usage?.micro??0;let cost=live;const routeName=routed;
     // Live rules on a cheaper-model decision: a failure falls back to the main model; a trade or a changed scout-target
     // verdict goes to the main model; a sampled spot check has the main model decide. Each costs both runs.
-    if(route==='cheaper'){const d=r.shadow?.decision;
+    if(routed==='cheaper'){const d=r.shadow?.decision;
       if(!d||r.shadow?.error){escalated='cheaper model failed';cost=cheap+live;}
       else{const before=verdictMap(s.prevDecision);const changed=(d.planVerdicts??[]).some(v=>before.has(v.symbol)&&before.get(v.symbol)!==v.verdict);
         if(d.action!=='Hold'||changed){escalated=d.action!=='Hold'?'trade confirmation':'verdict change';cost=cheap+live;}
         else if(sampled(r.reviewId,'spot',spotCheckPct)){escalated='spot check';cost=cheap+live;}
         else cost=cheap;}}
     if(newSituation(ctx,s.prevCtx,s.prevAt,r.timestamp))s.situation++;
-    const decided=route==='main'||escalated?'main':'cheaper';
-    out.push({reviewId:r.reviewId,timestamp:r.timestamp,account:key,situation:`${key}#${s.situation}`,route,reason,escalated,decided,score:a.score,gate:a.consequence.gate,triage:r.triage,strata:strata(a,ctx),costMicro:cost,mainOnlyMicro:live});
+    const decided=routed==='main'||escalated?'main':'cheaper';
+    out.push({reviewId:r.reviewId,timestamp:r.timestamp,account:key,situation:`${key}#${s.situation}`,route:routeName,reason,escalated,decided,score:a.score,gate:a.consequence.gate,triage:r.triage,strata:strata(a,ctx),costMicro:cost,mainOnlyMicro:live});
     if(decided==='main'){s.mainCtx=ctx;s.mainAt=r.timestamp;s.streak=0;}else s.streak++;
     s.prevDecision=decided==='main'?r.live.decision:r.shadow.decision;s.prevModel=decided==='main'?r.live.model:r.shadow.model;s.prevCtx=ctx;s.prevAt=r.timestamp;state.set(key,s);
   }
@@ -79,4 +87,4 @@ function simulate(records,{contextOf,threshold=40,maxRuns=4,maxMinutes=120,spotC
     costMicro:Math.round(sum('costMicro')),mainOnlyMicro:Math.round(sum('mainOnlyMicro')),savingsPct:sum('mainOnlyMicro')?Math.round((1-sum('costMicro')/sum('mainOnlyMicro'))*1000)/10:null,
     cheaperTriage:by,situations:sit.length,cheaperSituations:sit.filter(x=>x.cheaper).length,coverage,missingContexts:missing,failedShadows:rows.filter(r=>r.shadow?.error||!r.shadow?.decision).length}};
 }
-module.exports={hardRule,simulate,newSituation,binding,validPass,sampled,PROTOCOL_VERSION};
+module.exports={hardRule,simulate,newSituation,binding,validPass,sampled,PROTOCOL_VERSION,REQUIRED_CHECKS};
