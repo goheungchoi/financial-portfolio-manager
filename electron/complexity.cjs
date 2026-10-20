@@ -65,13 +65,14 @@ function assess(context,{baseline=null,previousReview=null,now=Date.now(),gatePc
   return {score,rule,groups,features,agent,consequence:consequence(context,gatePct)};
 }
 // Differences between two decisions on the same inputs (docs/ROUTING-EVALUATION.md section 4).
-function triage(a,b,{equityKRW=null,price=null}={}){
+// priceKRW is the trade price in won (U.S. prices converted), so a size difference is measured against equity in won.
+function triage(a,b,{equityKRW=null,priceKRW=null}={}){
   if(!a||!b)return 'missing';const verdicts=d=>JSON.stringify((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict]).sort());
   if(a.action!==b.action)return 'action';if(a.action!=='Hold'&&a.symbol!==b.symbol)return 'symbol';
-  if(a.action!=='Hold'){const qa=a.quantity||0,qb=b.quantity||0;const rel=Math.abs(qa-qb)/Math.max(qa,qb,1);const pct=equityKRW&&price?Math.abs(qa-qb)*price/equityKRW*100:0;if(rel>0.25||pct>=1)return 'size';}
+  if(a.action!=='Hold'){const qa=a.quantity||0,qb=b.quantity||0;const rel=Math.abs(qa-qb)/Math.max(qa,qb,1);const pct=equityKRW&&priceKRW?Math.abs(qa-qb)*priceKRW/equityKRW*100:0;if(rel>0.25||pct>=1)return 'size';}
   if(verdicts(a)!==verdicts(b))return 'verdict';
   return a.explanation===b.explanation?'same':'wording';
 }
 // For live complexity routing (not enabled until the evaluation passes): the difficulty score with its reasons.
 function score(context,{previous=null,previousReview=null,now=Date.now()}={}){const r=assess(context,{baseline:previous,previousReview,now});return {score:r.score,rule:r.rule,parts:r.groups,agent:r.agent,reasons:r.features.map(f=>f.detail),consequence:r.consequence};}
-module.exports={assess,consequence,triage,score,equityKRW,POINTS,GATE_PCT};
+module.exports={assess,consequence,triage,score,equityKRW,usdKrw,POINTS,GATE_PCT};

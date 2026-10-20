@@ -4,8 +4,9 @@ const {randomUUID}=require('node:crypto');
 const LIMITS={reviews:12,instructions:1500,keepContexts:300};
 const HORIZON=5;
 class ReplayStore {
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS review_contexts(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS replay_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');}
-  saveContext(id,context){try{this.db.prepare('INSERT INTO review_contexts VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(id,this.clock(),JSON.stringify(context));this.db.prepare('DELETE FROM review_contexts WHERE id NOT IN (SELECT id FROM review_contexts ORDER BY timestamp DESC LIMIT ?)').run(LIMITS.keepContexts);}catch{}}
+  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS routing_eval(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,account TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS review_contexts(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS replay_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');}
+  saveContext(id,context){try{this.db.prepare('INSERT INTO review_contexts VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(id,this.clock(),JSON.stringify(context));// Contexts behind shadow-evaluation pairs are kept: they are the frozen inputs adjudication needs.
+    this.db.prepare('DELETE FROM review_contexts WHERE id NOT IN (SELECT id FROM review_contexts ORDER BY timestamp DESC LIMIT ?) AND id NOT IN (SELECT id FROM routing_eval)').run(LIMITS.keepContexts);}catch{}}
   context(id){const row=this.db.prepare('SELECT payload FROM review_contexts WHERE id=?').get(id);return row?JSON.parse(row.payload):null;}
   saveRun(run){this.db.prepare('INSERT INTO replay_runs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(run.id,run.timestamp,JSON.stringify(run));this.db.prepare('DELETE FROM replay_runs WHERE id NOT IN (SELECT id FROM replay_runs ORDER BY timestamp DESC LIMIT 20)').run();return run;}
   runs(){return this.db.prepare('SELECT payload FROM replay_runs ORDER BY timestamp DESC').all().map(r=>JSON.parse(r.payload));}

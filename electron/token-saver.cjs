@@ -59,14 +59,20 @@ function compact(context){
 }
 // Picks the model for this review. 'auto' sends routine reviews to the cheaper model; emergencies, user requests and
 // important disclosures use the configured model. Near the daily budget, routine reviews always use the cheaper model.
-// 'complexity' sends a review to the configured model when a hard rule applies or the complexity score reaches the threshold.
-function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false,complexity=null,hardRule=null}){
+// 'complexity' sends a review to the configured model when a hard rule applies or the complexity score reaches the threshold,
+// and only once a routing evaluation has passed (eligible); otherwise the configured model decides.
+// Order: escalations, then shadow evaluation (main model only, so the experiment cannot change live decisions), then the
+// complexity hard rules (before any budget fallback), then the budget fallback, then the routing mode.
+function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false,complexity=null,hardRule=null,eligible=false}){
   const strong={openaiModel:config.openaiModel,reasoningEffort:config.reasoningEffort},routine={openaiModel:config.routineModel,reasoningEffort:config.routineEffort};
   const important=emergencyActive?'emergency':trigger==='User request'?'user request':triggerEvidence?.kind==='news'&&(triggerEvidence.events??[]).some(e=>e.importance==='high')?'important disclosure':null;
   if(important)return {...strong,tier:'escalated',reason:important};
+  if(config.shadowEvaluation)return {...strong,tier:'fixed',reason:'shadow evaluation: main model only'};
+  const complexityOn=config.modelRouting==='complexity'&&eligible;
+  if(complexityOn&&hardRule)return {...strong,tier:'escalated',reason:hardRule};
   if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
-  if(config.modelRouting==='complexity'){
-    if(hardRule)return {...strong,tier:'escalated',reason:hardRule};
+  if(config.modelRouting==='complexity'&&!eligible)return {...strong,tier:'fixed',reason:'complexity routing not validated'};
+  if(complexityOn){
     const score=complexity?.score??100;return score>=config.complexityThreshold?{...strong,tier:'escalated',reason:`complexity ${score} ≥ ${config.complexityThreshold}`}:{...routine,tier:'routine',reason:`complexity ${score} < ${config.complexityThreshold}`};
   }
   if(config.modelRouting==='auto')return {...routine,tier:'routine',reason:'routine review'};
