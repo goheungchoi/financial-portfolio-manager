@@ -49,6 +49,9 @@ adjudication (section 5).
 - The simulation applies spot checks to sampled reviews (deterministically, by a hash of the review id), resetting its
   history as the live router would; keeps failed cheaper-model runs, with their fallback and both costs; and reports
   records missing their saved context, which makes the result inconclusive.
+- The simulation calls the live router's own decision function (`route` in `electron/token-saver.cjs`) with the inputs
+  recorded at review time, so emergencies, user requests and important disclosures escalate exactly as live.
+  Validated complexity routing has no near-budget fallback, so budget behavior does not differ between the two.
 - The routing simulation replays the router in time order with its own last-main-model baseline, cheaper-model streak
   and previous decision (the cheaper model's own when it would have been used). Routing shares, savings and which
   reviews count as cheaper-routed come from this simulation, not from the live history.
@@ -81,7 +84,12 @@ acted, or changed a verdict, and did not?
 
 A routing miss is a `sol-better`, or a `both-wrong` with the cheaper model worse, on a review the simulation would have
 left to the cheaper model. Claude proposes adjudications; the user confirms every high-severity one. They are stored in
-`artifacts/routing-eval/adjudications.jsonl` (review id, outcome, lunaWorse, category, severity, reason, date judged).
+`artifacts/routing-eval/adjudications.jsonl`, one JSON object per line. A record counts only when complete; anything
+else stays pending:
+
+- always: `reviewId`, `outcome`, `reason` (at least a sentence), `judgedAt` (a date), `missedActionChecked: true`;
+- when a side was worse (`sol-better`, `luna-better`, `both-wrong`): `category` and `severity`;
+- `both-wrong`: `lunaWorse` (true or false); `high` severity: `confirmedByUser: true`; a `constraint` error is not `low`.
 
 ## 6. Pass criteria (approved 2026-10-20, frozen)
 
@@ -108,6 +116,9 @@ otherwise `inconclusive`. `scripts/routing-report.cjs` computes the checks.
 
 - Results count distinct situations: on one account, a new situation starts with a price, news or regime change
   against the previous review, a new scout plan, or a gap of more than four hours.
+- Only records from a verified live broker account count: each record stores its provenance (the account label at
+  review time and the connected account's environment), and both must be live. Paper, mock and unknown provenance are
+  supplementary.
 - Before the evaluation period starts, `node scripts/routing-report.cjs --freeze` records the binding (protocol
   version, a hash of the routing code, both models and efforts, threshold, spot-check rate, cheaper-model limits and the
   consequence gate) and the start time in `artifacts/routing-eval/freeze.json`; the date goes in section 10. Only
@@ -143,4 +154,7 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
   validated and invalidated on change; failed runs and sampled spot checks are part of the simulated policy; records
   missing their context make the result inconclusive. These tighten how the approved criteria are applied; the
   thresholds are unchanged.
+- 2026-10-20: clarifications after a third code review, before any data: a pass must contain every named check;
+  incomplete adjudication records stay pending; only verified live-account records count; the simulation runs the
+  live routing function and validated complexity routing has no budget fallback. Thresholds unchanged.
 - Evaluation period start: not yet set.

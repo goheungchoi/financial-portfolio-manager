@@ -61,8 +61,9 @@ function compact(context){
 // important disclosures use the configured model. Near the daily budget, routine reviews always use the cheaper model.
 // 'complexity' sends a review to the configured model when a hard rule applies or the complexity score reaches the threshold,
 // and only once a routing evaluation has passed (eligible); otherwise the configured model decides.
-// Order: escalations, then shadow evaluation (main model only, so the experiment cannot change live decisions), then the
-// complexity hard rules (before any budget fallback), then the budget fallback, then the routing mode.
+// Order: escalations, then shadow evaluation (main model only, so the experiment cannot change live decisions), then
+// complexity routing, then the budget fallback for the other modes. Validated complexity routing has no budget fallback:
+// the routing simulation evaluates this same function, so the evaluated policy is the deployed one.
 function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false,complexity=null,hardRule=null,eligible=false}){
   const strong={openaiModel:config.openaiModel,reasoningEffort:config.reasoningEffort},routine={openaiModel:config.routineModel,reasoningEffort:config.routineEffort};
   const important=emergencyActive?'emergency':trigger==='User request'?'user request':triggerEvidence?.kind==='news'&&(triggerEvidence.events??[]).some(e=>e.importance==='high')?'important disclosure':null;
@@ -70,12 +71,11 @@ function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBu
   if(config.shadowEvaluation)return {...strong,tier:'fixed',reason:'shadow evaluation: main model only'};
   // Complexity routing without a valid evaluation pass keeps the main model, before any budget fallback.
   if(config.modelRouting==='complexity'&&!eligible)return {...strong,tier:'fixed',reason:'complexity routing not validated'};
-  const complexityOn=config.modelRouting==='complexity'&&eligible;
-  if(complexityOn&&hardRule)return {...strong,tier:'escalated',reason:hardRule};
-  if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
-  if(complexityOn){
+  if(config.modelRouting==='complexity'){
+    if(hardRule)return {...strong,tier:'escalated',reason:hardRule};
     const score=complexity?.score??100;return score>=config.complexityThreshold?{...strong,tier:'escalated',reason:`complexity ${score} ≥ ${config.complexityThreshold}`}:{...routine,tier:'routine',reason:`complexity ${score} < ${config.complexityThreshold}`};
   }
+  if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
   if(config.modelRouting==='auto')return {...routine,tier:'routine',reason:'routine review'};
   return {...strong,tier:'fixed',reason:'fixed model'};
 }

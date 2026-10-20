@@ -52,7 +52,8 @@ function engine(decide,settings={}){
 const hold=(verdict='waiting',extra={})=>({action:'Hold',symbol:'',quantity:0,explanation:'Hold.',planVerdicts:[{symbol:'005930',verdict,reason:'r'}],complexity:{score:10,reason:'quiet'},...extra});
 const models=requests=>requests.map(r=>r.options.openaiModel);
 const sim=require('../electron/routing-sim.cjs');
-const validPass=a=>({verdict:'pass',prospective:true,freeze:{evaluationStart:'2026-10-21T00:00:00Z'},checks:{all:{pass:true}},binding:sim.binding(a.config)});
+const validPass=a=>({verdict:'pass',prospective:true,freeze:{evaluationStart:'2026-10-21T00:00:00Z'},checks:Object.fromEntries(sim.REQUIRED_CHECKS.map(k=>[k,{pass:true}])),binding:sim.binding(a.config)});
+const judgedOk=id=>({reviewId:id,outcome:'both-defensible',reason:'Both held for the same stated, evidence-based reasons.',judgedAt:'2026-10-25',missedActionChecked:true});
 test('selecting complexity routing without a recorded pass keeps every review on the main model',async()=>{
   const {automation,requests}=engine(()=>hold(),{modelRouting:'complexity'});
   await automation.review('Auto trading started');const r=await automation.review('Scheduled review');assert.deepEqual(models(requests),['gpt-6-sol','gpt-6-sol']);assert.equal(r.routing.reason,'complexity routing not validated');
@@ -123,13 +124,37 @@ test('review fixes: the simulation applies sampled spot checks to history, keeps
 test('review fixes: the report counts only prospective live records after the freeze, and only fully adjudicated situations',()=>{
   const {report}=require('../scripts/routing-report.cjs');const t0=Date.parse('2026-10-24T10:00:00+09:00');const b=sim.binding({...require('../electron/automation.cjs').DEFAULTS,spotCheckPct:0});
   const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
-  const rec=(i,extra={})=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',environment:'kis-combined',binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}},...extra});
+  const rec=(i,extra={})=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',environment:'kis-combined',provenance:{broker:'live',connection:'live'},binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}},...extra});
   assert.equal(report({records:[rec(0)],contextOf:()=>ctx}).verdict,'inconclusive','no freeze, no pass');
   const freeze={evaluationStart:new Date(t0).toISOString(),binding:b};
-  const paperOnly=[0,1,2,3].map(i=>rec(i,{account:'paper',environment:'local-paper'}));const p=report({records:paperOnly,contextOf:()=>ctx,freeze,currentBinding:b});
-  assert.notEqual(p.verdict,'pass');assert.equal(p.supplementary.paperRecords,4);assert.equal(p.simulation.reviews,0,'paper records never count');
+  const paperOnly=[0,1,2,3].map(i=>rec(i,{account:'paper',environment:'local-paper',provenance:{broker:'paper',connection:'paper'}}));const p=report({records:paperOnly,contextOf:()=>ctx,freeze,currentBinding:b});
+  assert.notEqual(p.verdict,'pass');assert.equal(p.supplementary.records,4);assert.equal(p.simulation.reviews,0,'paper records never count');
   const r=report({records:[rec(-1),rec(0),rec(1),rec(2)],contextOf:()=>ctx,freeze,currentBinding:b});assert.equal(r.simulation.reviews,3,'records before the freeze are excluded');
   assert.equal(r.checks.highSeverity.pass,false,'unjudged cheaper situations do not count as successes');assert.match(r.checks.highSeverity.detail,/in 0 fully adjudicated/);
-  const judged=report({records:[rec(0),rec(1),rec(2)],contextOf:()=>ctx,freeze,currentBinding:b,adjudications:['r1','r2'].map(id=>({reviewId:id,outcome:'both-defensible'}))});assert.match(judged.checks.highSeverity.detail,/in 1 fully adjudicated/);
+  const judged=report({records:[rec(0),rec(1),rec(2)],contextOf:()=>ctx,freeze,currentBinding:b,adjudications:['r1','r2'].map(judgedOk)});assert.match(judged.checks.highSeverity.detail,/in 1 fully adjudicated/);
   assert.equal(report({records:[rec(0)],contextOf:()=>ctx,freeze,currentBinding:{...b,threshold:99}}).checks.bindingCurrent.pass,false);
+});
+test('third review: a pass needs every named check; blank adjudications stay pending; mock accounts never count',()=>{
+  const {automation}=engine(()=>hold(),{modelRouting:'complexity'});const ok=validPass(automation);
+  for(const checks of [{},{bindingCurrent:{pass:true}},{...ok.checks,savings:{pass:false}}])assert.throws(()=>automation.recordRoutingPass({...ok,checks}),/INVALID_ROUTING_PASS/);
+  assert.throws(()=>automation.recordRoutingPass({...ok,freeze:{evaluationStart:'not a date'}}),/INVALID_ROUTING_PASS/);
+  const {report,validAdjudication}=require('../scripts/routing-report.cjs');
+  assert.equal(validAdjudication({reviewId:'r1'}),false);assert.equal(validAdjudication(judgedOk('r1')),true);
+  assert.equal(validAdjudication({...judgedOk('r1'),outcome:'sol-better'}),false,'a worse side needs category and severity');
+  assert.equal(validAdjudication({...judgedOk('r1'),outcome:'sol-better',category:'missed-action',severity:'high'}),false,'high severity needs the user');
+  assert.equal(validAdjudication({...judgedOk('r1'),outcome:'sol-better',category:'missed-action',severity:'high',confirmedByUser:true}),true);
+  const t0=Date.parse('2026-10-24T10:00:00+09:00');const b=sim.binding({...require('../electron/automation.cjs').DEFAULTS,spotCheckPct:0});const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
+  const rec=(i,prov)=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'acct',provenance:prov,binding:b,trigger:i?'Scheduled review':'Auto trading started',triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
+  const freeze={evaluationStart:new Date(t0).toISOString(),binding:b};
+  const blank=report({records:[0,1,2].map(i=>rec(i,{broker:'live',connection:'live'})),contextOf:()=>ctx,freeze,currentBinding:b,adjudications:['r1','r2'].map(id=>({reviewId:id}))});
+  assert.match(blank.checks.highSeverity.detail,/in 0 fully adjudicated/,'blank records are not judgments');assert.match(blank.checks.adjudicationComplete.detail,/2 incomplete records ignored/);
+  for(const prov of [{broker:'mock',connection:'mock'},{broker:'unknown',connection:'unknown'},undefined,{broker:'live',connection:'mock'}]){const r=report({records:[0,1,2].map(i=>rec(i,prov)),contextOf:()=>ctx,freeze,currentBinding:b});assert.equal(r.simulation.reviews,0,JSON.stringify(prov));assert.equal(r.supplementary.records,3);}
+});
+test('third review: the simulation runs the live routing function, escalations included, and validated routing has no budget fallback',()=>{
+  const t0=Date.parse('2026-10-24T10:00:00+09:00');const ctx={markets:[{market:'KR',currency:'KRW',equity:1e6,executionEnabled:false,marketSession:{open:false}}],quotes:[]};const dec={action:'Hold',symbol:null,quantity:0,planVerdicts:[]};
+  const rec=(i,routeInputs={},trigger='Scheduled review')=>({reviewId:'r'+i,timestamp:t0+i*1800000,account:'a',trigger:i?trigger:'Auto trading started',routeInputs,triage:'same',live:{model:'gpt-6-sol',decision:dec,usage:{micro:80000}},shadow:{model:'gpt-6-luna',decision:dec,usage:{micro:2400}}});
+  const out=sim.simulate([rec(0),rec(1,{emergencyActive:true}),rec(2,{},'User request'),rec(3,{triggerEvidence:{kind:'news',events:[{importance:'high'}]}}),rec(4,{nearBudget:true})],{contextOf:()=>ctx,maxRuns:99,spotCheckPct:0,markets:['KR']}).rows;
+  assert.deepEqual(out.map(r=>r.reason),['first review after starting','emergency','user request','important disclosure','complexity 0 < 40']);
+  const live={...cfg,modelRouting:'complexity'};assert.equal(route(live,{trigger:'Scheduled review',complexity:{score:90},nearBudget:true,eligible:true}).openaiModel,'gpt-6-sol','near the budget a high score still uses the main model');
+  assert.equal(route({...cfg,modelRouting:'fixed'},{trigger:'Scheduled review',nearBudget:true}).openaiModel,'gpt-6-luna','the budget fallback remains for the other modes');
 });

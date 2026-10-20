@@ -181,6 +181,7 @@ class Automation {
         const today=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0};
         assessed=this.config.modelRouting==='complexity'||this.config.shadowEvaluation?this.routingInputs(context,trigger):null;const inputs=this.config.modelRouting==='complexity'?assessed:null;
         let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today),complexity:inputs?.complexity,hardRule:inputs?.hardRule,eligible:this.routingEligibility().eligible});
+        if(assessed)assessed.routeInputs={emergencyActive:Boolean(emergency.active),triggerEvidence:context.triggerEvidence?{kind:context.triggerEvidence.kind??null,events:(context.triggerEvidence.events??[]).map(e=>({importance:e.importance??null}))}:null,nearBudget:saver.nearBudget(this.config,today)};
         let providerContext=saver.compact(context);this.replays.saveContext(id,providerContext);
         // Shadow evaluation runs alongside this review, on a copy of the same context and with shared evidence.
         if(assessed&&this.config.shadowEvaluation&&!this.shadowing&&selected.openaiModel===this.config.openaiModel&&selected.reasoningEffort===this.config.reasoningEffort&&Math.random()*100<this.config.shadowPct){anchor=require('./evidence-anchor.cjs').createAnchor();shadowRun=this.shadowRun(id,structuredClone(providerContext),anchor);}
@@ -300,7 +301,7 @@ class Automation {
     const symbol=review.decision.symbol||shadow.decision?.symbol;const quote=(frozen.quotes??[]).find(q=>q.symbol===symbol);const fx=C.usdKrw(frozen);
     const priceKRW=quote?.price>0?(/:/.test(symbol)?(fx?quote.price*fx:null):quote.price):null;
     const transcript=anchor.export();
-    const row={reviewId:review.id,timestamp:review.timestamp,account:review.account?.key??null,environment:frozen.environment??null,binding:require('./routing-sim.cjs').binding(this.config),trigger:review.trigger,baselineId:assessed.baselineId,
+    const row={reviewId:review.id,timestamp:review.timestamp,account:review.account?.key??null,environment:frozen.environment??null,provenance:{broker:{'KIS live':'live','KIS mock':'mock','Paper':'paper'}[review.account?.label]??'unknown',accountLabel:review.account?.label??null,connection:this.config.scope==='paper'?'paper':this.live?.getConnection?.()?.snapshot?.environment??'unknown'},routeInputs:assessed.routeInputs??null,binding:require('./routing-sim.cjs').binding(this.config),trigger:review.trigger,baselineId:assessed.baselineId,
       assessment:{score:a.score,rule:a.rule,groups:a.groups,features:a.features,agent:a.agent,consequence:a.consequence},hardRule:assessed.hardRule,threshold:this.config.complexityThreshold,
       live:{model:review.model??this.config.openaiModel,effort:this.config.reasoningEffort,decision:brief(review.decision),usage:cost('review'),transcript:transcript.live},
       shadow:{model:shadow.model.openaiModel,effort:shadow.model.reasoningEffort,decision:brief(shadow.decision),error:shadow.error,usage:cost('shadow'),transcript:transcript.shadow},

@@ -16,16 +16,27 @@ function upperBound(x,n,alpha=0.05){if(!n)return null;if(x>=n)return 1;let lo=x/
 // Random audit of same/wording pairs on reviews the main model would have decided, fixed in advance: audited when the
 // first byte of SHA-256(review id) is below 26 (about 10%).
 const audited=id=>createHash('sha256').update(String(id)).digest()[0]<26;
-const isPaper=r=>r.account==='paper'||r.environment==='local-paper';
+// Only records from a verified live broker account count; paper, mock and unknown provenance are supplementary.
+const isLive=r=>r.provenance?.broker==='live'&&r.provenance?.connection==='live'&&r.account!=='paper';
+// An adjudication counts only when complete; anything else stays pending.
+const OUTCOMES=['sol-better','luna-better','both-defensible','both-wrong','immaterial'],CATEGORIES=['missed-action','wrong-action','sizing','constraint','factual','evidence-ignored'],SEVERITIES=['low','medium','high'];
+function validAdjudication(a){
+  if(!a||typeof a.reviewId!=='string'||!OUTCOMES.includes(a.outcome)||typeof a.reason!=='string'||a.reason.trim().length<20||!Number.isFinite(Date.parse(a.judgedAt))||a.missedActionChecked!==true)return false;
+  if(['sol-better','luna-better','both-wrong'].includes(a.outcome)&&(!CATEGORIES.includes(a.category)||!SEVERITIES.includes(a.severity)))return false;
+  if(a.outcome==='both-wrong'&&typeof a.lunaWorse!=='boolean')return false;
+  if(a.severity==='high'&&a.confirmedByUser!==true)return false;
+  if(a.category==='constraint'&&a.severity==='low')return false;
+  return true;
+}
 function report({records,contextOf,adjudications=[],freeze=null,currentBinding=null}){
   if(!freeze?.evaluationStart||!freeze?.binding)return {verdict:'inconclusive',reason:'no frozen evaluation period: run with --freeze first',prospective:false};
   const start=Date.parse(freeze.evaluationStart);
-  const inPeriod=records.filter(r=>r.timestamp>=start);const supplementary=inPeriod.filter(isPaper);
-  const offBinding=inPeriod.filter(r=>!isPaper(r)&&JSON.stringify(r.binding)!==JSON.stringify(freeze.binding));
-  const eligible=inPeriod.filter(r=>!isPaper(r)&&JSON.stringify(r.binding)===JSON.stringify(freeze.binding));
+  const inPeriod=records.filter(r=>r.timestamp>=start);const supplementary=inPeriod.filter(r=>!isLive(r));
+  const offBinding=inPeriod.filter(r=>isLive(r)&&JSON.stringify(r.binding)!==JSON.stringify(freeze.binding));
+  const eligible=inPeriod.filter(r=>isLive(r)&&JSON.stringify(r.binding)===JSON.stringify(freeze.binding));
   const b=freeze.binding;
   const sim=simulate(eligible,{contextOf,threshold:b.threshold,maxRuns:b.maxRuns,maxMinutes:b.maxMinutes,spotCheckPct:b.spotCheckPct,gatePct:b.gatePct});
-  const adj=new Map(adjudications.map(a=>[a.reviewId,a]));
+  const invalidAdjudications=adjudications.filter(a=>!validAdjudication(a)).length;const adj=new Map(adjudications.filter(validAdjudication).map(a=>[a.reviewId,a]));
   // Every review the cheaper model would have decided is adjudicated; a situation enters the bound only when all of its
   // cheaper-decided reviews are. Material differences and the random audit cover the main-model side.
   const cheaper=sim.rows.filter(r=>r.decided==='cheaper');
@@ -41,7 +52,7 @@ function report({records,contextOf,adjudications=[],freeze=null,currentBinding=n
   const checks={
     bindingCurrent:{pass:JSON.stringify(currentBinding)===JSON.stringify(freeze.binding),detail:'the app runs the frozen models, settings, protocol and code'},
     evidenceComplete:{pass:sim.summary.missingContexts===0,detail:`${sim.summary.missingContexts} records without their saved context; ${offBinding.length} records made under another binding excluded`},
-    adjudicationComplete:{pass:pending.length===0&&auditCount>=20,detail:`${pending.length} of ${queue.length} queued reviews not yet adjudicated; ${auditCount} audited same/wording pairs (at least 20)`},
+    adjudicationComplete:{pass:pending.length===0&&auditCount>=20,detail:`${pending.length} of ${queue.length} queued reviews not yet validly adjudicated (${invalidAdjudications} incomplete records ignored); ${auditCount} audited same/wording pairs (at least 20)`},
     highSeverity:{pass:high===0&&n>0,detail:`${high} observed in ${n} fully adjudicated cheaper-routed situations (95% upper bound ${highUpper==null?'n/a':(highUpper*100).toFixed(2)+'%'})`},
     mediumSeverity:{pass:mediumUpper!=null&&mediumUpper<=0.02,detail:`${medium} observed in ${n} situations; one-sided 95% Clopper-Pearson upper bound ${mediumUpper==null?'n/a':(mediumUpper*100).toFixed(2)+'%'} (at most 2%)`},
     coverage:{pass:['held','quiet','stress','event'].every(k=>cov[k]>=10),detail:JSON.stringify(cov)},
@@ -49,12 +60,12 @@ function report({records,contextOf,adjudications=[],freeze=null,currentBinding=n
   // fail: a high-severity miss, an observed medium rate above 2%, or savings below 30%; otherwise inconclusive until every check passes.
   const failed=high>0||(n>0&&medium/n>0.02)||(sim.summary.savingsPct!=null&&sim.summary.savingsPct<30);
   const verdict=failed?'fail':Object.values(checks).every(c=>c.pass)?'pass':'inconclusive';
-  const misses=adjudications.filter(a=>miss(a));const by=k=>misses.filter(a=>a.category===k).length;
+  const misses=[...adj.values()].filter(a=>miss(a));const by=k=>misses.filter(a=>a.category===k).length;
   return {verdict,prospective:true,freeze,binding:freeze.binding,checks,
-    errors:{missedActions:by('missed-action'),wrongActions:by('wrong-action'),sizing:by('sizing'),constraint:by('constraint'),factual:by('factual'),evidenceIgnored:by('evidence-ignored'),bothWrong:adjudications.filter(a=>a.outcome==='both-wrong').length},
+    errors:{missedActions:by('missed-action'),wrongActions:by('wrong-action'),sizing:by('sizing'),constraint:by('constraint'),factual:by('factual'),evidenceIgnored:by('evidence-ignored'),bothWrong:[...adj.values()].filter(a=>a.outcome==='both-wrong').length},
     queue:queue.map(r=>({reviewId:r.reviewId,triage:r.triage,decided:r.decided,adjudicated:adj.has(r.reviewId)})),simulation:sim.summary,
     shadowEvaluationCostUSD:Math.round(inPeriod.reduce((x,r)=>x+(r.shadow?.usage?.micro??0),0)/1e4)/100,
-    supplementary:{paperRecords:supplementary.length,note:'Paper-portfolio and replay results are reported separately and never count toward the criteria.'}};
+    supplementary:{records:supplementary.length,byProvenance:supplementary.reduce((x,r)=>{const k=r.provenance?.broker??'unknown';x[k]=(x[k]??0)+1;return x;},{}),note:'Paper, mock and unknown-provenance records, and replay results, are reported separately and never count toward the criteria.'}};
 }
 if(require.main===module){
   const db=new DatabaseSync(arg('db',path.join(process.env.APPDATA,'Financial Portfolio Manager','portfolio.sqlite')),{readOnly:true});
@@ -69,4 +80,4 @@ if(require.main===module){
   const freeze=fs.existsSync(freezeFile)?JSON.parse(fs.readFileSync(freezeFile,'utf8')):null;
   console.log(JSON.stringify(report({records,contextOf:id=>contexts.has(id)?JSON.parse(contexts.get(id)):null,adjudications,freeze,currentBinding:current}),null,2));
 }
-module.exports={report,upperBound,audited};
+module.exports={report,upperBound,audited,validAdjudication};
