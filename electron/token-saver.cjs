@@ -68,10 +68,11 @@ function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBu
   const important=emergencyActive?'emergency':trigger==='User request'?'user request':triggerEvidence?.kind==='news'&&(triggerEvidence.events??[]).some(e=>e.importance==='high')?'important disclosure':null;
   if(important)return {...strong,tier:'escalated',reason:important};
   if(config.shadowEvaluation)return {...strong,tier:'fixed',reason:'shadow evaluation: main model only'};
+  // Complexity routing without a valid evaluation pass keeps the main model, before any budget fallback.
+  if(config.modelRouting==='complexity'&&!eligible)return {...strong,tier:'fixed',reason:'complexity routing not validated'};
   const complexityOn=config.modelRouting==='complexity'&&eligible;
   if(complexityOn&&hardRule)return {...strong,tier:'escalated',reason:hardRule};
   if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
-  if(config.modelRouting==='complexity'&&!eligible)return {...strong,tier:'fixed',reason:'complexity routing not validated'};
   if(complexityOn){
     const score=complexity?.score??100;return score>=config.complexityThreshold?{...strong,tier:'escalated',reason:`complexity ${score} ≥ ${config.complexityThreshold}`}:{...routine,tier:'routine',reason:`complexity ${score} < ${config.complexityThreshold}`};
   }

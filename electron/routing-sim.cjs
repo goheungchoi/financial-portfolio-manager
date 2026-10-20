@@ -3,8 +3,27 @@
 // for change), the run of consecutive cheaper-model reviews, and the previous decision the router would have used
 // (the cheaper model's own when it was routed there). Live records came from a main-model-only history, so this is
 // the closest available estimate; it still cannot show how the cheaper model's decisions would have changed holdings.
-const {assess}=require('./complexity.cjs');
+const {assess,GATE_PCT}=require('./complexity.cjs');const {createHash}=require('node:crypto');const fs=require('node:fs');
 const DAY=86400000,HOUR=3600000;
+// The evaluation protocol version (docs/ROUTING-EVALUATION.md); a pass is bound to it.
+const PROTOCOL_VERSION='2026-10-20';
+// What an evaluation pass is bound to: the protocol, the routing code, the models and the router settings. A pass stops
+// counting when any of these change.
+function binding(config){
+  const code=createHash('sha256');for(const f of ['./complexity.cjs','./routing-sim.cjs','./token-saver.cjs'])code.update(fs.readFileSync(require.resolve(f),'utf8').replace(/\r\n/g,'\n'));
+  return {protocol:PROTOCOL_VERSION,code:code.digest('hex').slice(0,16),mainModel:config.openaiModel,mainEffort:config.reasoningEffort,cheaperModel:config.routineModel,cheaperEffort:config.routineEffort,
+    threshold:config.complexityThreshold,spotCheckPct:config.spotCheckPct,maxRuns:config.lunaMaxRuns,maxMinutes:config.lunaMaxMinutes,gatePct:GATE_PCT};
+}
+const sameBinding=(a,b)=>Boolean(a&&b)&&JSON.stringify(a)===JSON.stringify(b);
+// A report can unlock routing only if it passed every check on prospective, frozen-period data under the binding now in force.
+function validPass(report,current){
+  if(!report||report.verdict!=='pass'||!report.prospective||!report.freeze?.evaluationStart)return 'the report is not a passing prospective evaluation';
+  if(!report.checks||!Object.values(report.checks).every(c=>c&&c.pass===true))return 'not every check passed';
+  if(!sameBinding(report.binding,current))return 'the pass does not match the current models, settings, protocol or code';
+  return null;
+}
+// Deterministic sampling from a review id: the same reviews are sampled every time the simulation runs.
+const sampled=(id,salt,pct)=>createHash('sha256').update(`${salt}:${id}`).digest().readUInt32BE(0)/2**32<pct/100;
 // Mandatory escalations, shared with live routing so the simulation and the live router apply the same rules.
 function hardRule({trigger,now,lastMainAt,streak,markets=['KR','US'],closedDays=new Set(),maxRuns=4,maxMinutes=120,consequence=null,mainModel='the main model'}){
   if(trigger==='Auto trading started')return 'first review after starting';
@@ -27,19 +46,26 @@ function newSituation(ctx,prevCtx,prevAt,now){
 }
 function strata(a,ctx){const held=Object.values(ctx.positions??{}).some(p=>(p?.quantity??0)>0);const g=a.groups;
   return {held,stress:g.price>0||g.market>0,event:g.events>0,quiet:!Object.values(g).some(v=>v>0)};}
+// Failed cheaper-model runs stay in: when the router would have used the cheaper model and it failed, the policy falls
+// back to the main model at both costs. Records without a saved context are counted as missing evidence.
 function simulate(records,{contextOf,threshold=40,maxRuns=4,maxMinutes=120,spotCheckPct=25,gatePct=20,markets=['KR','US'],closedDays=new Set()}={}){
-  const rows=[...records].filter(r=>!r.shadow?.error&&r.shadow?.decision).sort((a,b)=>a.timestamp-b.timestamp);
-  const state=new Map();const out=[];
+  const rows=[...records].sort((a,b)=>a.timestamp-b.timestamp);
+  const state=new Map();const out=[];let missing=0;
   for(const r of rows){
-    const ctx=contextOf(r.reviewId);if(!ctx)continue;const key=r.account??'default';
+    const ctx=contextOf(r.reviewId);if(!ctx){missing++;continue;}const key=r.account??'default';
     const s=state.get(key)??{mainCtx:null,mainAt:null,streak:0,prevDecision:null,prevModel:null,prevCtx:null,prevAt:null,situation:0};
     const a=assess(ctx,{baseline:s.mainCtx,previousReview:s.prevDecision?{decision:s.prevDecision,routing:{model:s.prevModel}}:null,now:r.timestamp,gatePct});
     const hard=hardRule({trigger:r.trigger,now:r.timestamp,lastMainAt:s.mainAt,streak:s.streak,markets,closedDays,maxRuns,maxMinutes,consequence:a.consequence});
     let route=hard||a.score>=threshold?'main':'cheaper',reason=hard??`score ${a.score} ${route==='main'?'≥':'<'} ${threshold}`,escalated=null;
-    const live=r.live.usage?.micro??0,cheap=r.shadow.usage?.micro??0;let cost=route==='main'?live:cheap+live*spotCheckPct/100;
-    // Live rules on a cheaper-model decision: a trade or a changed scout-target verdict goes to the main model.
-    if(route==='cheaper'){const d=r.shadow.decision;const before=verdictMap(s.prevDecision);const changed=(d.planVerdicts??[]).some(v=>before.has(v.symbol)&&before.get(v.symbol)!==v.verdict);
-      if(d.action!=='Hold'||changed){escalated=d.action!=='Hold'?'trade confirmation':'verdict change';cost=cheap+live;}}
+    const live=r.live.usage?.micro??0,cheap=r.shadow?.usage?.micro??0;let cost=live;
+    // Live rules on a cheaper-model decision: a failure falls back to the main model; a trade or a changed scout-target
+    // verdict goes to the main model; a sampled spot check has the main model decide. Each costs both runs.
+    if(route==='cheaper'){const d=r.shadow?.decision;
+      if(!d||r.shadow?.error){escalated='cheaper model failed';cost=cheap+live;}
+      else{const before=verdictMap(s.prevDecision);const changed=(d.planVerdicts??[]).some(v=>before.has(v.symbol)&&before.get(v.symbol)!==v.verdict);
+        if(d.action!=='Hold'||changed){escalated=d.action!=='Hold'?'trade confirmation':'verdict change';cost=cheap+live;}
+        else if(sampled(r.reviewId,'spot',spotCheckPct)){escalated='spot check';cost=cheap+live;}
+        else cost=cheap;}}
     if(newSituation(ctx,s.prevCtx,s.prevAt,r.timestamp))s.situation++;
     const decided=route==='main'||escalated?'main':'cheaper';
     out.push({reviewId:r.reviewId,timestamp:r.timestamp,account:key,situation:`${key}#${s.situation}`,route,reason,escalated,decided,score:a.score,gate:a.consequence.gate,triage:r.triage,strata:strata(a,ctx),costMicro:cost,mainOnlyMicro:live});
@@ -51,6 +77,6 @@ function simulate(records,{contextOf,threshold=40,maxRuns=4,maxMinutes=120,spotC
   const sit=[...situations.values()];const coverage=Object.fromEntries(['held','stress','event','quiet'].map(k=>[k,sit.filter(x=>x[k]).length]));
   return {rows:out,summary:{reviews:out.length,main:out.filter(o=>o.decided==='main').length,cheaper:cheaperRows.length,escalated:out.filter(o=>o.escalated).length,gate:out.filter(o=>o.gate).length,
     costMicro:Math.round(sum('costMicro')),mainOnlyMicro:Math.round(sum('mainOnlyMicro')),savingsPct:sum('mainOnlyMicro')?Math.round((1-sum('costMicro')/sum('mainOnlyMicro'))*1000)/10:null,
-    cheaperTriage:by,situations:sit.length,cheaperSituations:sit.filter(x=>x.cheaper).length,coverage}};
+    cheaperTriage:by,situations:sit.length,cheaperSituations:sit.filter(x=>x.cheaper).length,coverage,missingContexts:missing,failedShadows:rows.filter(r=>r.shadow?.error||!r.shadow?.decision).length}};
 }
-module.exports={hardRule,simulate,newSituation};
+module.exports={hardRule,simulate,newSituation,binding,validPass,sampled,PROTOCOL_VERSION};

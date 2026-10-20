@@ -44,7 +44,11 @@ adjudication (section 5).
   the score and expires after a material change.
 - Mandatory escalations (`electron/routing-sim.cjs` `hardRule`, shared with live routing): first review after starting,
   consequence gate, no main-model review in 12 hours, first review of a regular session, the cheaper-model limit
-  (4 reviews or 120 minutes). A cheaper-model trade or verdict change goes to the main model.
+  (4 reviews or 120 minutes). A cheaper-model trade or verdict change goes to the main model; a failed cheaper-model run
+  falls back to the main model; a sampled spot check has the main model decide.
+- The simulation applies spot checks to sampled reviews (deterministically, by a hash of the review id), resetting its
+  history as the live router would; keeps failed cheaper-model runs, with their fallback and both costs; and reports
+  records missing their saved context, which makes the result inconclusive.
 - The routing simulation replays the router in time order with its own last-main-model baseline, cheaper-model streak
   and previous decision (the cheaper model's own when it would have been used). Routing shares, savings and which
   reviews count as cheaper-routed come from this simulation, not from the live history.
@@ -57,9 +61,12 @@ difference is not a miss.
 
 ## 5. Adjudication
 
-Adjudicated: every material difference, and a predefined random audit of `same` and `wording` pairs: a pair is audited
-when the first byte of SHA-256(review id) is below 26 (about 10%), with at least 20 audited pairs required in the
-evaluation period. Agreement between the models does not establish correctness.
+Adjudicated: every review the simulated router would have left to the cheaper model, whatever its triage; every
+material difference on the other reviews; and a predefined random audit of `same` and `wording` pairs on reviews the
+main model would have decided (audited when the first byte of SHA-256(review id) is below 26, about 10%), with at least
+20 audited pairs required. Agreement between the models does not establish correctness. A situation enters the
+confidence bounds only when every cheaper-routed review in it has been adjudicated, so unjudged cases never count as
+successes.
 
 Each queued pair is judged on the information available at the time (the frozen context and both transcripts), never
 on what prices did afterwards. Missed actions are assessed explicitly in every adjudication: should either model have
@@ -101,9 +108,12 @@ otherwise `inconclusive`. `scripts/routing-report.cjs` computes the checks.
 
 - Results count distinct situations: on one account, a new situation starts with a price, news or regime change
   against the previous review, a new scout plan, or a gap of more than four hours.
-- Before the evaluation period starts, the router (code version and settings) and these criteria are frozen and the
-  start date is recorded in section 10. If the router is tuned using any evaluation-period results, that period no
-  longer counts and a new, untouched evaluation period is required.
+- Before the evaluation period starts, `node scripts/routing-report.cjs --freeze` records the binding (protocol
+  version, a hash of the routing code, both models and efforts, threshold, spot-check rate, cheaper-model limits and the
+  consequence gate) and the start time in `artifacts/routing-eval/freeze.json`; the date goes in section 10. Only
+  records from live accounts made after the start under that binding count; records under another binding are
+  excluded and reported. If the router is tuned using any evaluation-period results, run `--freeze` again: that starts
+  a new, untouched period and the earlier records no longer count.
 - The period's length is set by coverage and sample size (section 6), not a calendar date.
 
 ## 8. Supplementary evidence
@@ -113,9 +123,11 @@ such as held positions. They are reported separately and never counted toward th
 
 ## 9. If it passes
 
-Enabling live routing is a separate decision. If made, it starts with the mandatory escalations, random spot checks on
-frozen inputs across the full score range, and the same triage and adjudication, with an evaluation pass recorded in
-the app (`routing_pass`); without one the engine keeps the main model even if complexity routing is selected.
+Enabling live routing is a separate decision. The engine accepts a pass only from a report with verdict `pass`, every
+check passing, prospective data from a frozen period, and a binding equal to the one now in force; the pass stops
+counting as soon as the models, router settings, protocol version or routing code change. Without a valid pass the
+engine keeps the main model even if complexity routing is selected, before any budget fallback. If enabled, live
+routing keeps the mandatory escalations, random spot checks and the same triage and adjudication.
 
 ## 10. Record of decisions
 
@@ -126,4 +138,9 @@ the app (`routing_pass`); without one the engine keeps the main model even if co
   complete policy with the shadow cost reported separately; router and criteria frozen before the evaluation period,
   with a new untouched period required after any tuning on it; held positions kept, no purchases to satisfy coverage.
   Approval of the criteria does not authorize live routing.
+- 2026-10-20: clarifications after a second code review, applied before any data: every cheaper-routed review is
+  adjudicated and only fully adjudicated situations enter the bounds; the freeze and binding mechanism; passes are
+  validated and invalidated on change; failed runs and sampled spot checks are part of the simulated policy; records
+  missing their context make the result inconclusive. These tighten how the approved criteria are applied; the
+  thresholds are unchanged.
 - Evaluation period start: not yet set.
