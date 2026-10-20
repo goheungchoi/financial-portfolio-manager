@@ -297,7 +297,7 @@ class Automation {
     if(this.config.conditionalOrders&&p.stopPrice){const stop=this.desk.setOrder(scope,{action:'add',id:'',symbol:decision.symbol,side:'Sell',quantity:decision.quantity,limitPrice:null,conditions:[{expr:`price("${decision.symbol}")`,op:'<=',value:p.stopPrice}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Stop from the trade plan of ${day}: ${p.invalidation}`.slice(0,300)},{config:this.config,reviewId});this.log(reviewId,'Tool','Stop-loss armed from the plan',JSON.stringify(stop));}
   }
   // Upcoming events from cached research, the macro calendar and computed options expiries.
-  calendarState(days=21,extra=[]){try{const p=this.portfolioHoldings?.();const symbols=[...new Map([...(p?.holdings??[]).map(h=>[h.symbol,{symbol:h.symbol,name:h.name}]),...(this.discovery?.list?.()??[]).map(w=>[w.symbol,{symbol:w.symbol,name:w.name}]),...extra.map(e=>[e.symbol,e])]).values()].slice(0,40);
+  calendarState(days=21,extra=[]){try{const p=this.portfolioHoldings?.();const symbols=[...new Map([...(p?.holdings??[]).map(h=>[h.symbol,{symbol:h.symbol,name:h.name}]),...(this.discovery?.list?.()??[]).map(w=>[w.symbol,{symbol:w.symbol,name:w.name}]),...(this.calendarSymbols?.()??[]).map(e=>[e.symbol,e]),...extra.map(e=>[e.symbol,e])]).values()].slice(0,60);
     return require('./event-calendar.cjs').build({today:seoulDate(),days,macroCalendar:this.macro?.get?.()?.calendar??[],symbols,sources:sym=>this.calendarSource?.(sym)});}catch{return [];}}
   // Exposure, sizing and regime, computed locally from holdings, cached history and stress signals.
   riskContext(context){

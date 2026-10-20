@@ -245,7 +245,7 @@ app.whenReady().then(async () => {
   // Company research for the agents and the Company page: KIS sections plus OpenDART filings, cached per source.
   // SEC EDGAR contact email saved in the app (Connections). A providers-file secContactEmail still works when none is saved here.
   const secContact=()=>store.getSetting('sec-contact-email');
-  const research=new (require('./research-service.cjs').ResearchService)({db:store.db,master,kis:(operation,payload)=>kisService.request(operation,payload),provider:(operation,payload)=>providerService.request(operation,operation==='sec-company'?{...payload,contact:secContact()}:payload),kisReady:()=>Boolean(kisState.snapshot),dartReady:()=>Boolean(automation.providerStatus.dartConnected),secReady:()=>Boolean(automation.providerStatus.secConnected||secContact())});
+  const research=new (require('./research-service.cjs').ResearchService)({db:store.db,master,kis:(operation,payload)=>kisService.request(operation,payload),provider:(operation,payload)=>providerService.request(operation,['sec-company','sec-filings'].includes(operation)?{...payload,contact:secContact()}:payload),kisReady:()=>Boolean(kisState.snapshot),dartReady:()=>Boolean(automation.providerStatus.dartConnected),secReady:()=>Boolean(automation.providerStatus.secConnected||secContact())});
   automation.discovery.marketOverview=async()=>{const m=await research.market();if(m.status!=='ok')return {status:'unavailable',reason:m.reason};const sectors=m.data.kospiSectors??[];return {asOf:new Date(m.retrievedAt).toISOString(),...m.data,kospiSectors:undefined,strongestSectors:sectors.slice(0,8),weakestSectors:sectors.length>8?sectors.slice(-6).reverse():[],foreignTopBuys:m.data.foreignTopBuys?.slice(0,6),institutionTopBuys:m.data.institutionTopBuys?.slice(0,6)};};
   ipcMain.handle('research:market',async(event,refresh)=>{authorize(event);return research.market(refresh===true);});
   automation.discovery.research=args=>research.agent(args);
@@ -261,7 +261,27 @@ app.whenReady().then(async () => {
   automation.loggedEvents=()=>events;
   ipcMain.handle('replay:list',event=>{authorize(event);return {runs:automation.replays.runs(),busy:Boolean(automation.replaying)};});
   ipcMain.handle('replay:run',async(event,options)=>{authorize(event);try{const run=await automation.replay(options&&typeof options==='object'?options:{});return {ok:true,run};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED'};}});
-  automation.calendarSource=symbol=>({name:master.get(symbol)?.name??null,earnings:research.cached(symbol,'dart')?.value?.earnings??null,dividends:research.cached(symbol,'dividends')?.value??null,meetings:research.cached(symbol,'meetings')?.value?.meetings??[]});
+  // U.S. earnings dates for every listed company (Nasdaq's calendar, refreshed daily), and the 200 largest U.S. companies.
+  const usCalendar=new (require('./us-calendar.cjs').UsCalendar)(store.db);automation.usCalendar=usCalendar;
+  const seoulDay=()=>new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+  let usCalendarBusy=false;const refreshUsCalendar=async()=>{if(usCalendarBusy||closing)return;const last=usCalendar.status().refreshedAt;if(last&&Date.now()-last<20*3600000)return;usCalendarBusy=true;try{await usCalendar.refresh({fetcher:fetch,known:symbol=>Boolean(master.get(symbol)),today:seoulDay()});}catch{}finally{usCalendarBusy=false;}};
+  setTimeout(()=>void refreshUsCalendar(),45000).unref();setInterval(()=>void refreshUsCalendar(),3600000).unref();
+  // U.S. symbols the agents can act on: holdings, the watchlist, scout targets and the review's starter list.
+  const usRelevant=()=>[...new Set([...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('US')??[]),...(()=>{try{return scoutTargets('US');}catch{return [];}})(),...usStarters.current(watchScope())])];
+  // SEC data, daily and independent of what an agent researched: filings for the 200 largest U.S. companies and the
+  // relevant symbols, full company facts for the relevant symbols, and a seventh of the largest each day (weekly).
+  let secWarmDay=null;const warmSec=async()=>{const day=seoulDay();if(secWarmDay===day||closing||!(automation.providerStatus.secConnected||secContact()))return;secWarmDay=day;
+    const relevant=usRelevant();const largest=usCalendar.largest(200);const weekday=new Date(day+'T00:00:00Z').getUTCDay();
+    const pause=()=>new Promise(r=>setTimeout(r,400));
+    for(const symbol of [...new Set([...relevant,...largest])]){if(closing)return;try{await research.source(symbol,'sec-filings');}catch{}await pause();}
+    for(const symbol of [...new Set([...relevant,...largest.filter((_,i)=>i%7===weekday)])]){if(closing)return;try{await research.source(symbol,'sec');}catch{}await pause();}};
+  setTimeout(()=>void warmSec(),120000).unref();setInterval(()=>void warmSec(),3600000).unref();
+  // Calendar entries also cover the review's starter lists and scout targets, not only holdings and the watchlist.
+  automation.calendarSymbols=()=>[...new Set([...usRelevant(),...starters.current(watchScope()),...(()=>{try{return scoutTargets('KR');}catch{return [];}})()])].map(symbol=>({symbol,name:master.get(symbol)?.name??symbol}));
+  // Earnings: a listed U.S. report date first, then the SEC estimate; Korean stocks use OpenDART.
+  research.listedEarnings=symbol=>usCalendar.next(symbol,seoulDay());
+  const usEarnings=symbol=>{const listed=usCalendar.next(symbol,seoulDay());if(listed)return {nextExpected:listed.date,scheduled:true,time:listed.time,source:listed.source};const sec=research.cached(symbol,'sec-filings')?.value?.earnings??research.cached(symbol,'sec')?.value?.earnings??null;return sec?{...sec,estimated:true}:null;};
+  automation.calendarSource=symbol=>({name:master.get(symbol)?.name??null,earnings:/:/.test(symbol)?usEarnings(symbol):research.cached(symbol,'dart')?.value?.earnings??null,dividends:research.cached(symbol,'dividends')?.value??null,meetings:research.cached(symbol,'meetings')?.value?.meetings??[]});
   automation.sectorOf=symbol=>research.cached(symbol,'overview')?.value?.sectorName??null;
   // Daily history for holdings and watchlist stocks is kept warm (every six hours) for exposure, sizing, triggers and formulas.
   let warmAt=0;setInterval(()=>{if(!kisState.snapshot||Date.now()-warmAt<6*3600000)return;warmAt=Date.now();void (async()=>{const symbols=[...new Set([...kisState.snapshot.holdings.map(h=>h.symbol),...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('KR')??[])])].slice(0,25);for(const symbol of symbols){try{await research.source(symbol,'daily');await research.source(symbol,'overview');if(/^\d{6}$/.test(symbol)){await research.source(symbol,'dividends');await research.source(symbol,'meetings');if(automation.providerStatus.dartConnected)await research.source(symbol,'dart');}}catch{}}})();},120000).unref();

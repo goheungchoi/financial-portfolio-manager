@@ -46,16 +46,25 @@ function earningsTiming(items,today){
   while(next<today)next=new Date(Date.parse(next+'T00:00:00Z')+91*86400000).toISOString().slice(0,10);
   return {lastRelease:last,nextExpected:next,basis:'Estimated as one quarter after the last earnings release (8-K item 2.02); not an announced date.'};
 }
-async function secCompany(fetcher,contact,symbol,today,state){
+// Resolves a symbol to its SEC company and returns a JSON getter that names the app and contact, as SEC asks.
+async function secLookup(fetcher,contact,symbol,state){
   const m=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/.exec(symbol);if(!m)throw new Error('INVALID_INSTRUMENT');
   const headers={'user-agent':`FinancialPortfolioManager ${contact}`,accept:'application/json'};
   const get=async url=>{const response=await fetcher(url,{headers,redirect:'error',signal:AbortSignal.timeout(30000)});if(response.status===403||response.status===429)throw new Error('SEC_RATE_LIMITED');if(!response.ok)throw new Error('SEC_UNAVAILABLE');const text=await response.text();if(text.length>40*1024*1024)throw new Error('SEC_UNAVAILABLE');return JSON.parse(text);};
   if(!state.tickers||Date.now()-state.tickersAt>86400000){state.tickers=parseTickers(await get('https://www.sec.gov/files/company_tickers.json'));state.tickersAt=Date.now();}
-  const company=state.tickers.get(m[2]);if(!company)return {status:'unavailable',reason:'NOT_IN_SEC'};
-  const cik=String(company.cik).padStart(10,'0');
+  const company=state.tickers.get(m[2]);return {company,get,cik:company?String(company.cik).padStart(10,'0'):null};
+}
+// Filings only (the submissions file, much smaller than company facts): recent filings and the estimated next earnings.
+async function secFilings(fetcher,contact,symbol,today,state){
+  const {company,get,cik}=await secLookup(fetcher,contact,symbol,state);if(!company)return {status:'unavailable',reason:'NOT_IN_SEC'};
+  const subs=await get(`https://data.sec.gov/submissions/CIK${cik}.json`);const list=filings(subs,company.cik);
+  return {cik:company.cik,name:company.title,fiscalYearEndMonthDay:subs.fiscalYearEnd??null,filings:list,earnings:earningsTiming(list,today)};
+}
+async function secCompany(fetcher,contact,symbol,today,state){
+  const {company,get,cik}=await secLookup(fetcher,contact,symbol,state);if(!company)return {status:'unavailable',reason:'NOT_IN_SEC'};
   const facts=await get(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`);const subs=await get(`https://data.sec.gov/submissions/CIK${cik}.json`);
   const list=filings(subs,company.cik);const annual=annualFacts(facts);
   return {cik:company.cik,name:company.title,fiscalYearEndMonthDay:subs.fiscalYearEnd??null,annual,filings:list,earnings:earningsTiming(list,today),
     dividends:{years:annual.filter(r=>r.dividendsPerShare!=null).map(r=>({year:r.fiscalYearEnd.slice(0,4),fiscalYearEnd:r.fiscalYearEnd,perShare:r.dividendsPerShare,payoutRatioPct:r.payoutRatioPct}))}};
 }
-module.exports={parseTickers,annualFacts,filings,earningsTiming,secCompany};
+module.exports={parseTickers,annualFacts,filings,earningsTiming,secCompany,secFilings};

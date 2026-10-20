@@ -10,7 +10,7 @@ const US_SECTIONS=['overview','risk','financials','dividends','events'],US_DEFAU
 const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},market:{ttl:10*60000,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},market:{ttl:10*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
 const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
 const FAILURE_TTL=10*60000;
@@ -37,7 +37,7 @@ class ResearchService {
       try{
         let value;
         if(spec.from==='dart'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider('dart-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
-        else if(spec.from==='sec'){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider('sec-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
+        else if(spec.from==='sec'||spec.from==='sec-filings'){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider(spec.from==='sec'?'sec-company':'sec-filings',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
         else{if(!this.kisReady())throw new Error('KIS_NOT_CONNECTED');value=await this.kis('research-section',{symbol,section:source});}
         const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);this.snapshot(symbol,source,value);
         return {status:'ok',retrievedAt:at,data:value};
@@ -120,8 +120,10 @@ class ResearchService {
       const overview=await this.source(symbol,'overview');const price=overview.status==='ok'?overview.data.price:null;const latest=d.dividends.years[0];
       return {status:'ok',retrievedAt:sec.retrievedAt,data:{currency:'USD',payments:[],frequency:d.dividends.years.length?'reported':'none',trailing12mPerShare:null,trailingYieldPct:latest&&price?Math.round(latest.perShare/price*10000)/100:null,yieldBasis:latest?'Last fiscal year dividends per share over the current price':null,annualReport:{source:'SEC 10-K',years:d.dividends.years}}};
     }
-    const today=seoulDate(this.clock());
-    return {status:'ok',retrievedAt:sec.retrievedAt,data:{upcoming:d.earnings?.nextExpected&&d.earnings.nextExpected>=today?[{date:d.earnings.nextExpected,kind:'earnings',title:'Quarterly earnings (estimated date)',estimated:true}]:[],earnings:d.earnings,filings:d.filings,meetings:[]}};
+    // A report date listed on the U.S. earnings calendar wins over the estimate from past filings.
+    const today=seoulDate(this.clock());const listed=this.listedEarnings?.(symbol)??null;
+    const upcoming=listed?[{date:listed.date,kind:'earnings',title:`Quarterly earnings (scheduled${listed.time==='after-close'?', after the U.S. close':listed.time==='before-open'?', before the U.S. open':''}; ${listed.source})`,estimated:false,...(listed.epsForecast!=null?{epsForecast:listed.epsForecast}:{})}]:d.earnings?.nextExpected&&d.earnings.nextExpected>=today?[{date:d.earnings.nextExpected,kind:'earnings',title:'Quarterly earnings (estimated date)',estimated:true}]:[];
+    return {status:'ok',retrievedAt:sec.retrievedAt,data:{upcoming,earnings:d.earnings,filings:d.filings,meetings:[]}};
   }
   // Korean market overview: breadth, sector moves and the day's largest foreign and institutional buying.
   async market(refresh=false){return this.source('MARKET','market',refresh);}
