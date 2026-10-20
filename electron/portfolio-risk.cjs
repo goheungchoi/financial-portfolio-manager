@@ -25,8 +25,9 @@ function exposure(holdings,{daily,sector,beta,cashKRW=0}){
 function sizing({equityKRW,riskPct,atrMultiple,rows}){
   if(!(equityKRW>0))return null;const budget=equityKRW*riskPct/100;
   return {riskPerTradePct:riskPct,stopAtrMultiple:atrMultiple,riskBudgetKRW:Math.round(budget),
-    rows:rows.filter(r=>r.atr>0&&r.price>0).map(r=>{const stop=r.atr*atrMultiple,fx=r.fx??1;const shares=Math.floor(budget/(stop*fx));return {symbol:r.symbol,price:r.price,atr:r2(r.atr),stopDistance:r2(stop),suggestedStop:r2(r.price-stop),maxShares:shares,maxValueKRW:Math.round(shares*r.price*fx),maxWeightPct:r1(shares*r.price*fx/equityKRW*100)};}),
-    note:`Largest position whose loss at the stop (${atrMultiple}× ATR below entry) stays within ${riskPct}% of equity. A ceiling, not a target; other limits still apply.`};
+    // A row's cashKRW, when known, also caps the shares: risk at the stop alone can allow more than the cash buys.
+    rows:rows.filter(r=>r.atr>0&&r.price>0).map(r=>{const stop=r.atr*atrMultiple,fx=r.fx??1;const byRisk=Math.floor(budget/(stop*fx));const byCash=Number.isFinite(r.cashKRW)?Math.max(0,Math.floor(r.cashKRW/(r.price*fx))):Infinity;const shares=Math.min(byRisk,byCash);return {symbol:r.symbol,price:r.price,atr:r2(r.atr),stopDistance:r2(stop),suggestedStop:r2(r.price-stop),maxShares:shares,...(byCash<byRisk?{limitedBy:'cash'}:{}),maxValueKRW:Math.round(shares*r.price*fx),maxWeightPct:r1(shares*r.price*fx/equityKRW*100)};}),
+    note:`Largest position whose loss at the stop (${atrMultiple}× ATR below entry) stays within ${riskPct}% of equity, and no more than the available cash buys (limitedBy: cash). A ceiling, not a target; other limits still apply.`};
 }
 // Regime gauge: each stress reading scores −1 (risk-off), 0 or +1 (risk-on); the total sets the regime.
 function regime({vix,vix5dChangePct,hySpread,hySpreadChange,advanceRatioPct,kospiVs50dPct,sox20dPct,oil20dPct}){
