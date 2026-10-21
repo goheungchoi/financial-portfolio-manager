@@ -185,4 +185,9 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
   condition; evidence-gap inspection flags. On the exploratory pairs the flag fires on 30 of 32, because nearly every
   waiting verdict hinged on earnings or data that the two models researched differently: expect a large inspection queue
   while such gaps dominate.
-- Next evaluation period start: not yet set.
+- Evaluation period start: 2026-10-21 23:47:20 KST (2026-10-21T14:47:20Z), frozen with `scripts/routing-report.cjs
+  --freeze` on app 1.5.22 after its first review completed both runs (the cheaper model's output limit fixed, the stale
+  label reaching the context, Samsung's preliminary figures read from the filing). Binding: protocol 2026-10-20, engine
+  code 9b8f801becebc605, settings 3e70f68a39598799, scope both, main gpt-6-sol medium, cheaper gpt-6-luna none,
+  threshold 40, spot checks 25%, cheaper-model limit 4 reviews or 120 minutes, consequence gate 20%. Pairs before the
+  start, including the 23:47:08 pair, do not count.
