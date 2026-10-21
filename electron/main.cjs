@@ -254,7 +254,8 @@ app.whenReady().then(async () => {
   // Index closes and the cached market overview feed the market narrative and the episode library.
   // The performance store is created further down; until then there are no closes.
   automation.indexCloses=()=>{try{return Object.fromEntries(Object.keys(require('./performance.cjs').INDEXES).map(index=>[index,performance.closes(index).slice(-90)]));}catch{return {};}};
-  automation.marketOverviewCache=()=>research.cached('MARKET','market')?.value??null;
+  automation.marketOverviewCache=()=>{const hit=research.cached('MARKET','market');return hit?{value:hit.value,at:hit.at}:null;};
+  automation.freshenMarket=async()=>{if(!kisState.snapshot)return;const F=require('./market-freshness.cjs');if(!F.krOpen(Date.now(),{closedDays:new Set([...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])])}))return;await research.market();};
   ipcMain.handle('narrative:refresh',async event=>{authorize(event);try{await automation.buildNarrative();return {ok:true,state:automation.narrativeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED',state:automation.narrativeState()};}});
   ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
   // Holdings for exposure and sizing; sector names come from cached quotes.

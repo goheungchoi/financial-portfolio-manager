@@ -15,6 +15,30 @@ function planGap(context){
     return {market:m.market,cashPct:pct(m.cash??0,m.equity),investedPct:Math.round((100-(pct(m.cash??0,m.equity)??0))*10)/10,...(inMarket.length?{plannedInvestedPct:Math.round(inMarket.reduce((s,t)=>s+t.targetPct,0)*10)/10}:{})};});
   return {planAsOf:plan.asOf,planCashTargetPct:plan.cashTargetPct??null,markets:summary,targets};
 }
+// The smallest feasible position for each target: one share, as a share of total equity, and whether cash, the sizing
+// rules and the caps allow it. Facts for the review's comparison with staying in cash; one share can be a large weight.
+function addMinimumPositions(context){
+  const gap=context?.planGap;if(!gap?.targets?.length)return context;const C=require('./complexity.cjs');
+  const equity=C.equityKRW(context),fx=C.usdKrw(context);const markets=C.marketsOf(context);
+  const price=s=>(context.quotes??[]).find(q=>q.symbol===s)?.price??null;const sizing=new Map((context.positionSizing?.rows??[]).map(r=>[r.symbol,r]));
+  const cashKRW=m=>{if(m==='US'){const us=markets.find(x=>x.market==='US');const usd=us?.buyingPower?.usd??(typeof context.cash==='object'?context.cash?.USD:context.currency==='USD'?context.cash:null);return fx&&Number.isFinite(usd)?usd*fx:null;}return typeof context.cash==='object'?context.cash?.KRW??null:context.currency==='KRW'?context.cash:null;};
+  for(const t of gap.targets){const m=marketOf(t.symbol);const p=price(t.symbol);const value=p>0?(m==='US'?(fx?p*fx:null):p):null;
+    if(value==null||!(equity>0)){t.minimumPosition={shares:1,unavailable:'price or equity unknown'};continue;}
+    const cash=cashKRW(m);const row=sizing.get(t.symbol);const policy=context.risk?.markets?.[m]??{};
+    const checks={cash:cash==null?null:cash>=value,sizing:row?row.maxShares>=1:null,companyCap:Number.isFinite(policy.maxCompanyPct)?value/equity*100<=policy.maxCompanyPct:null,orderCap:Number.isFinite(policy.maxOrderKRW)?value<=policy.maxOrderKRW:null};
+    t.minimumPosition={shares:1,valueKRW:Math.round(value),weightPct:Math.round(value/equity*1000)/10,checks,feasible:Object.values(checks).every(v=>v!==false)&&checks.cash===true};}
+  return context;
+}
+// Verdict quality the decision format cannot enforce on its own: logged as incomplete, never used to fail a review.
+function verdictIssues(context,decision){
+  const issues=[];const targets=new Map((context?.planGap?.targets??[]).map(t=>[t.symbol,t]));const vague=/^(stronger evidence|more evidence|sustained stabili[sz]ation|better (entry|after-cost case)|improvement|stabili[sz]ation)\.?$/i;
+  for(const v of decision?.planVerdicts??[]){const c=v.condition;
+    if(v.verdict==='waiting'){if(!c||!c.unresolved||!c.evidence||!c.recheck||c.kind==='none')issues.push(`${v.symbol}: waiting without a specific condition, resolving evidence and recheck`);else if(vague.test(c.evidence.trim()))issues.push(`${v.symbol}: the resolving evidence is vague`);
+      if(c?.kind==='data'&&!v.dataGap)issues.push(`${v.symbol}: missing data without a data-gap assessment`);}
+    if(['waiting','passed'].includes(v.verdict)&&targets.get(v.symbol)?.minimumPosition?.feasible&&!v.minimumPosition)issues.push(`${v.symbol}: no comparison of the minimum feasible position with cash`);}
+  if(decision?.action==='Hold'&&!String(decision.plan?.invalidation??'').trim())issues.push('Hold without a reconsideration condition (plan.invalidation)');
+  return issues;
+}
 // Targets the review gave no verdict on (planVerdicts); used to log incomplete accounting, never to fail a review.
 function missingVerdicts(context,decision){const targets=context?.scoutPlan?.targets??[];if(!targets.length)return [];const seen=new Set((decision?.planVerdicts??[]).map(f=>f.symbol));return targets.map(t=>t.symbol).filter(s=>!seen.has(s));}
-module.exports={planGap,missingVerdicts,marketOf};
+module.exports={planGap,missingVerdicts,marketOf,addMinimumPositions,verdictIssues};

@@ -40,7 +40,9 @@ function report({records,contextOf,adjudications=[],freeze=null,currentBinding=n
   // Every review the cheaper model would have decided is adjudicated; a situation enters the bound only when all of its
   // cheaper-decided reviews are. Material differences and the random audit cover the main-model side.
   const cheaper=sim.rows.filter(r=>r.decided==='cheaper');
-  const queue=[...new Map([...cheaper,...sim.rows.filter(r=>MATERIAL.includes(r.triage)||(['same','wording'].includes(r.triage)&&audited(r.reviewId)))].map(r=>[r.reviewId,r])).values()];
+  // Pairs where only one model read evidence bearing on the decision are queued for inspection too.
+  const inspect=new Set(eligible.filter(r=>r.evidenceGap?.inspect).map(r=>r.reviewId));
+  const queue=[...new Map([...cheaper,...sim.rows.filter(r=>MATERIAL.includes(r.triage)||inspect.has(r.reviewId)||(['same','wording'].includes(r.triage)&&audited(r.reviewId)))].map(r=>[r.reviewId,r])).values()];
   const pending=queue.filter(r=>!adj.has(r.reviewId));
   const situations=new Map();for(const r of cheaper){const x=situations.get(r.situation)??[];x.push(r);situations.set(r.situation,x);}
   const judged=[...situations].filter(([,rows])=>rows.every(r=>adj.has(r.reviewId)));
@@ -63,7 +65,7 @@ function report({records,contextOf,adjudications=[],freeze=null,currentBinding=n
   const misses=[...adj.values()].filter(a=>miss(a));const by=k=>misses.filter(a=>a.category===k).length;
   return {verdict,prospective:true,freeze,binding:freeze.binding,checks,
     errors:{missedActions:by('missed-action'),wrongActions:by('wrong-action'),sizing:by('sizing'),constraint:by('constraint'),factual:by('factual'),evidenceIgnored:by('evidence-ignored'),bothWrong:[...adj.values()].filter(a=>a.outcome==='both-wrong').length},
-    queue:queue.map(r=>({reviewId:r.reviewId,triage:r.triage,decided:r.decided,adjudicated:adj.has(r.reviewId)})),simulation:sim.summary,
+    queue:queue.map(r=>({reviewId:r.reviewId,triage:r.triage,decided:r.decided,evidenceGap:inspect.has(r.reviewId),adjudicated:adj.has(r.reviewId)})),simulation:sim.summary,
     shadowEvaluationCostUSD:Math.round(inPeriod.reduce((x,r)=>x+(r.shadow?.usage?.micro??0),0)/1e4)/100,
     supplementary:{records:supplementary.length,byProvenance:supplementary.reduce((x,r)=>{const k=r.provenance?.broker??'unknown';x[k]=(x[k]??0)+1;return x;},{}),note:'Paper, mock and unknown-provenance records, and replay results, are reported separately and never count toward the criteria.'}};
 }

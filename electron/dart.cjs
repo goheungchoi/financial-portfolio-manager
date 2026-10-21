@@ -61,6 +61,17 @@ async function companyFilings(fetcher,key,stockCode,today,state){
   for(const type of ['A','B','I']){const body=await (await call('list.json',{corp_code:corp,bgn_de:day(365),end_de:day(0),pblntf_ty:type,page_count:'100'})).json();if(body.status==='000')rows.push(...(body.list??[]));else if(body.status!=='013')throw new Error(body.status==='020'?'DART_RATE_LIMITED':'DART_UNAVAILABLE');}
   const filings=disclosures(rows);let dividendsTable=null;
   for(const year of [Number(today.slice(0,4))-1,Number(today.slice(0,4))-2]){const body=await (await call('alotMatter.json',{corp_code:corp,bsns_year:String(year),reprt_code:'11011'})).json();if(body.status==='000'){dividendsTable=dividendTable(body.list);if(dividendsTable)break;}}
-  return {corpCode:corp,filings,earnings:earningsTiming(filings,today),dividends:dividendsTable};
+  return {corpCode:corp,filings,earnings:earningsTiming(filings,today),dividends:dividendsTable,preliminary:await preliminaryFigures(call,filings)};
 }
-module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings};
+// The figures of the newest preliminary-earnings filing, read from the document itself. A failure here never fails the
+// filing list; it is reported as unavailable with a reason.
+async function preliminaryFigures(call,filings){
+  const P=require('./dart-preliminary.cjs');const filing=P.latestFiling(filings);if(!filing)return null;
+  const rceptNo=/rcpNo=(\d{14})/.exec(filing.url)[1];const source={date:filing.date,title:filing.title,rceptNo,url:filing.url};
+  try{const response=await call('document.xml',{rcept_no:rceptNo});const buffer=Buffer.from(await response.arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('DART_FORMAT');
+    if(buffer.subarray(0,2).toString('latin1')!=='PK'){const status=/<status>(\d+)<\/status>/.exec(buffer.toString('utf8'))?.[1];return {source,unavailable:status==='020'?'DART_RATE_LIMITED':status==='014'?'DOCUMENT_NOT_FOUND':'DART_UNAVAILABLE'};}
+    const parsed=P.parsePreliminary(P.decodeDocument(unzipFirst(buffer)),{title:filing.title});
+    return parsed?{source,...parsed}:{source,unavailable:'FIGURES_NOT_FOUND_IN_DOCUMENT'};}
+  catch(error){return {source,unavailable:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DART_UNAVAILABLE'};}
+}
+module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,preliminaryFigures};

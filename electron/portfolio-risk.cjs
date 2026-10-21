@@ -30,13 +30,17 @@ function sizing({equityKRW,riskPct,atrMultiple,rows}){
     note:`Largest position whose loss at the stop (${atrMultiple}× ATR below entry) stays within ${riskPct}% of equity, and no more than the available cash buys (limitedBy: cash). A ceiling, not a target; other limits still apply.`};
 }
 // Regime gauge: each stress reading scores −1 (risk-off), 0 or +1 (risk-on); the total sets the regime.
-function regime({vix,vix5dChangePct,hySpread,hySpreadChange,advanceRatioPct,kospiVs50dPct,sox20dPct,oil20dPct}){
-  const parts=[];const add=(name,value,score,reading)=>{if(value!=null&&Number.isFinite(value))parts.push({name,value:r2(value),score,reading});};
+// breadth: {asOf, stale, note} for the KOSPI advancers reading. A stale reading is shown with its time and kept out of
+// the score, never presented as current.
+function regime({vix,vix5dChangePct,hySpread,hySpreadChange,advanceRatioPct,kospiVs50dPct,sox20dPct,oil20dPct,breadth=null}){
+  const parts=[];const add=(name,value,score,reading,extra={})=>{if(value!=null&&Number.isFinite(value))parts.push({name,value:r2(value),score,reading,...extra});};
   add('VIX',vix,vix>=25?-1:vix<=15?1:0,vix>=25?'high fear':vix<=15?'calm':'normal');
   add('VIX 5-day change %',vix5dChangePct,vix5dChangePct>=20?-1:vix5dChangePct<=-15?1:0,vix5dChangePct>=20?'fear rising fast':vix5dChangePct<=-15?'fear easing':'steady');
   add('High-yield spread %',hySpread,hySpread>=5?-1:hySpread<=3.5?1:0,hySpread>=5?'credit stress':hySpread<=3.5?'easy credit':'normal');
   add('High-yield spread change',hySpreadChange,hySpreadChange>=0.25?-1:hySpreadChange<=-0.25?1:0,hySpreadChange>=0.25?'widening':hySpreadChange<=-0.25?'tightening':'steady');
-  add('KOSPI advancers %',advanceRatioPct,advanceRatioPct<=30?-1:advanceRatioPct>=70?1:0,advanceRatioPct<=30?'broad selling':advanceRatioPct>=70?'broad buying':'mixed');
+  {const label=advanceRatioPct<=30?'broad selling':advanceRatioPct>=70?'broad buying':'mixed';
+   if(breadth?.stale)add('KOSPI advancers %',advanceRatioPct,0,`stale: ${breadth.note??'not current'}`,{asOf:breadth.asOf,stale:true});
+   else add('KOSPI advancers %',advanceRatioPct,advanceRatioPct<=30?-1:advanceRatioPct>=70?1:0,label,breadth?{asOf:breadth.asOf,...(breadth.note?{note:breadth.note}:{})}:{});}
   add('KOSPI vs 50-day average %',kospiVs50dPct,kospiVs50dPct<=-5?-1:kospiVs50dPct>=3?1:0,kospiVs50dPct<=-5?'below trend':kospiVs50dPct>=3?'above trend':'near trend');
   add('Semiconductor index 20-day %',sox20dPct,sox20dPct<=-10?-1:sox20dPct>=10?1:0,sox20dPct<=-10?'chips falling':sox20dPct>=10?'chips rising':'flat');
   add('Oil two-week change %',oil20dPct,oil20dPct>=12?-1:0,oil20dPct>=12?'oil spike':'no spike');

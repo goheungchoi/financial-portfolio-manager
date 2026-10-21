@@ -22,4 +22,22 @@ function createAnchor(clock=Date.now){
     export:()=>({evidence:Object.fromEntries([...results].map(([key,e])=>[key,{tool:e.tool,args:e.args,at:e.at,fetchedBy:e.fetchedBy,...(e.error?{error:e.error}:{value:keep(e.value)})}])),live:transcripts.live,shadow:transcripts.shadow})
   };
 }
-module.exports={createAnchor,READ_TOOLS};
+// Evidence only one model looked at. Different tool choices alone are normal and not errors. A pair is flagged for
+// inspection when the one-sided evidence bears on a decision: one model waits on missing data or an event for a stock
+// (or trades it) while the other read that stock's events, financials, estimates or analysts; or only one model read the
+// market overview while Korea was open. Adjudication decides whether the omission was material and the data available.
+const KEY_SECTIONS=['events','financials','estimates','analysts'];
+const DATA_WORDS=/earnings|results|figures|filing|data|실적|잠정/i;
+function evidenceGap(live,shadow,{liveDecision=null,shadowDecision=null,koreaOpen=false}={}){
+  const key=t=>{const a=t.args??{};return [t.tool,a.symbol??'',Array.isArray(a.sections)?[...a.sections].sort().join('+'):a.dataset??a.market??''].join(' ');};
+  const reads=list=>(list??[]).filter(t=>!t.write&&!t.error);const L=reads(live),S=reads(shadow);const LK=new Set(L.map(key)),SK=new Set(S.map(key));
+  const sections=list=>{const out=new Map();for(const t of list){const sym=t.args?.symbol;if(!sym)continue;const x=out.get(sym)??new Set();for(const sec of t.args?.sections??[])if(KEY_SECTIONS.includes(sec))x.add(sec);out.set(sym,x);}return out;};
+  const LS=sections(L),SS=sections(S);const reasons=[];
+  const overview=list=>list.some(t=>t.tool==='get_market_overview');if(koreaOpen&&overview(L)!==overview(S))reasons.push(`only the ${overview(L)?'main':'cheaper'} model read the market overview while Korea was open`);
+  // A verdict that depends on information: waiting on data or an event, or acting.
+  const needs=d=>new Set((d?.planVerdicts??[]).filter(v=>v.verdict==='acted'||['data','event'].includes(v.condition?.kind)||(!v.condition&&v.verdict==='waiting'&&DATA_WORDS.test(v.reason??''))).map(v=>v.symbol).concat(d&&d.action!=='Hold'&&d.symbol?[d.symbol]:[]));
+  const check=(who,needSet,mine,theirs)=>{for(const sym of needSet){const got=mine.get(sym)??new Set(),other=theirs.get(sym)??new Set();const missed=[...other].filter(x=>!got.has(x));if(missed.length)reasons.push(`the ${who} model's ${sym} verdict depends on information, and only the other model read ${missed.join(', ')}`);}};
+  check('main',needs(liveDecision),LS,SS);check('cheaper',needs(shadowDecision),SS,LS);
+  return {liveOnly:[...LK].filter(k=>!SK.has(k)),shadowOnly:[...SK].filter(k=>!LK.has(k)),inspect:reasons.length>0,reasons};
+}
+module.exports={createAnchor,evidenceGap,READ_TOOLS};

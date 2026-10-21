@@ -12,7 +12,8 @@
 const POINTS={move3:15,move15:8,regime:8,breadthShift:5,breadthExtreme:6,fear:4,news:10,earningsHeld:16,earningsCandidate:10,macro:6,overPlan:6,passedTarget:6,lowConfidence:6};
 const AGENT_SHARE=0.3,GATE_PCT=20;
 const iso=t=>new Date(t+9*3600000).toISOString().slice(0,10);
-const breadth=c=>c?.marketRegime?.components?.find(x=>x.name==='KOSPI advancers %')?.value??null;
+// Stale breadth readings (marked by the freshness policy) are ignored.
+const breadth=c=>{const x=c?.marketRegime?.components?.find(x=>x.name==='KOSPI advancers %');return x&&!x.stale?x.value:null;};
 const usdKrw=c=>c?.fx?.usdKRW??c?.macro?.indicators?.find(i=>i.name==='USD/KRW')?.value??null;
 // Markets in a review context: a combined context lists them in markets[]; a single-market context carries the market,
 // currency, equity, session and execution flags at its top level.

@@ -9,11 +9,18 @@ const POLICY=threshold=>({openaiModel:'main',reasoningEffort:'main',routineModel
 const DAY=86400000,HOUR=3600000;
 // The evaluation protocol version (docs/ROUTING-EVALUATION.md); a pass is bound to it.
 const PROTOCOL_VERSION='2026-10-20';
-// What an evaluation pass is bound to: the protocol, the routing code, the models and the router settings. A pass stops
-// counting when any of these change.
+// What an evaluation is bound to: the protocol, the whole decision engine (every engine module: review instructions,
+// decision format, tool definitions, evidence preparation, validation and post-processing), the decision-relevant
+// settings, the models and the router settings. Records and passes count only under the binding they were made with.
+const path=require('node:path');let engineHash=null;
+function engineCode(){if(engineHash)return engineHash;const h=createHash('sha256');
+  for(const f of fs.readdirSync(__dirname).filter(f=>f.endsWith('.cjs')).sort()){h.update(f+'\n');h.update(fs.readFileSync(path.join(__dirname,f),'utf8').replace(/\r\n/g,'\n'));}
+  return engineHash=h.digest('hex').slice(0,16);}
+// Settings that do not change what the agents see or how decisions are checked: alerts, digests, switches, the shadow run itself.
+const OPERATIONAL=new Set(['enabled','autoSubmit','desktopAlerts','mobileAlerts','phoneSnapshots','phoneAmounts','digestEnabled','digestHour','shadowEvaluation','shadowPct','shadowUSDPerDay']);
+function settingsHash(config){const kept=Object.keys(config??{}).filter(k=>!OPERATIONAL.has(k)).sort().map(k=>[k,config[k]]);return createHash('sha256').update(JSON.stringify(kept)).digest('hex').slice(0,16);}
 function binding(config){
-  const code=createHash('sha256');for(const f of ['./complexity.cjs','./routing-sim.cjs','./token-saver.cjs'])code.update(fs.readFileSync(require.resolve(f),'utf8').replace(/\r\n/g,'\n'));
-  return {protocol:PROTOCOL_VERSION,code:code.digest('hex').slice(0,16),scope:config.scope??null,mainModel:config.openaiModel,mainEffort:config.reasoningEffort,cheaperModel:config.routineModel,cheaperEffort:config.routineEffort,
+  return {protocol:PROTOCOL_VERSION,code:engineCode(),settings:settingsHash(config),scope:config.scope??null,mainModel:config.openaiModel,mainEffort:config.reasoningEffort,cheaperModel:config.routineModel,cheaperEffort:config.routineEffort,
     threshold:config.complexityThreshold,spotCheckPct:config.spotCheckPct,maxRuns:config.lunaMaxRuns,maxMinutes:config.lunaMaxMinutes,gatePct:GATE_PCT};
 }
 const sameBinding=(a,b)=>Boolean(a&&b)&&JSON.stringify(a)===JSON.stringify(b);
