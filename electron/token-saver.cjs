@@ -12,6 +12,8 @@ const BACKGROUND=['marketNarrative','similarEpisodes','positionSizing','risk','p
 function decisionView(context){const view={...context};for(const k of BACKGROUND)delete view[k];
   if(view.marketRegime)view.marketRegime=view.marketRegime.regime??null;
   if(Array.isArray(view.news))view.news=view.news.filter(n=>n?.importance==='high').map(n=>n.title);
+  // A new top story changes the view; its coverage counts growing does not.
+  if(Array.isArray(view.topStories))view.topStories=view.topStories.map(s=>s.terms?.[0]).sort();
   return view;}
 // Money-like numbers are kept as {money:value} so comparison can allow a tolerance; everything else must match exactly.
 function canonical(value,key=''){
