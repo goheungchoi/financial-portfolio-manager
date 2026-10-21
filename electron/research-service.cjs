@@ -63,7 +63,7 @@ class ResearchService {
       const upcoming=[...meetings.filter(m=>m.date>=today).map(m=>({date:m.date,kind:'meeting',title:(m.type??'Shareholder meeting')+(m.agenda.length?': '+m.agenda.slice(0,3).join(', '):'')})),
         ...(dividends?.upcoming??[]).filter(p=>p.recordDate>=today).map(p=>({date:p.recordDate,kind:'dividend',title:`Dividend record date (${({'결산':'year-end','분기':'quarterly','중간':'interim'})[p.kind]??p.kind??'cash'})${p.perShare?` · ${p.perShare.toLocaleString()} KRW`:' · amount not set'}`})),
         ...(dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
-      return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
+      return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,preliminaryEarnings:dart?.preliminary??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
     }
     if(name==='fund'){
       if(main.status!=='ok')return main;const d=main.data;const closes=ok('daily')?.closes??[];let leverage=null;
@@ -199,7 +199,8 @@ class ResearchService {
 function digest(name,d){
   if(name==='analysts')return {...d,latest:d.latest?.slice(0,4),targetRevisions:d.targetRevisions?{...d.targetRevisions,recent:d.targetRevisions.recent.slice(0,3)}:undefined};
   if(name==='dividends')return {trailing12mPerShare:d.trailing12mPerShare,trailingYieldPct:d.trailingYieldPct,frequency:d.frequency,annualTotals:d.annualTotals?.slice(0,4),upcoming:d.upcoming,annualReport:d.annualReport?.years,annualReportUnavailable:d.annualReportUnavailable};
-  if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
+  // Preliminary earnings: only the figures the company disclosed; the rest is listed as not disclosed.
+  if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,...(d.preliminaryEarnings?{preliminaryEarnings:d.preliminaryEarnings.unavailable?{source:d.preliminaryEarnings.source,unavailable:d.preliminaryEarnings.unavailable}:{...d.preliminaryEarnings,metrics:Object.fromEntries(Object.entries(d.preliminaryEarnings.metrics??{}).filter(([k])=>(d.preliminaryEarnings.disclosed??[]).includes(k)))}}:{}),filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
   if(name==='financials'&&d.currency==='USD')return {periods:(d.periods??[]).slice(0,4).map(({filed,...r})=>r),source:d.source};
   if(name==='financials')return {periods:(d.periods??[]).slice(0,4).map(({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})=>({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})),annualRatios:d.periods?.length?undefined:d.annualRatios,note:'Periods not ending in December are year to date.'};
   if(name==='valuation')return {...d,monthly:undefined};

@@ -62,6 +62,12 @@ adjudication (section 5).
 adjudication); `failed`. Size differences are measured against equity in won, with U.S. prices converted. A material
 difference is not a miss.
 
+Each pair also records an evidence gap (`electron/evidence-anchor.cjs`): evidence only one model read. A pair is queued for
+inspection when that evidence bears on a decision (one model waits on data or an event for a stock, or trades it, while
+only the other read its events, financials, estimates or analysts; or only one read the market overview while Korea was
+open). Different tool choices are not errors: adjudication decides whether the omitted evidence was material and
+available.
+
 ## 5. Adjudication
 
 Adjudicated: every review the simulated router would have left to the cheaper model, whatever its triage; every
@@ -165,3 +171,18 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
   started auto trading on the KIS live account. Binding: protocol 2026-10-20, routing code a7c2695f4ce0179b (app 1.5.20),
   scope both, main gpt-6-sol medium, cheaper gpt-6-luna none, threshold 40, spot checks 25%, cheaper-model limit
   4 reviews or 120 minutes, consequence gate 20%. The one pair recorded before the start (23:34:56 KST) does not count.
+- 2026-10-21: the first period (from 2026-10-20 23:36 KST) is reclassified as exploratory, after a review of its pairs
+  found input and reasoning gaps (stale breadth at the open, unresolved earnings data, untestable waiting conditions) and
+  that the binding covered only the routing code. Its records stay for debugging and tuning but never count toward the
+  criteria; its freeze file is kept as `artifacts/routing-eval/freeze-2026-10-20-exploratory.json`. The binding now covers
+  the whole decision engine (every engine module) and a hash of the decision-relevant settings, captured when each
+  review starts. A new untouched period starts with a new freeze after the revised agent ships.
+- 2026-10-21: revised agent before the next period: breadth freshness policy (refreshed before each review while Korea is
+  open; stale or unknown-time readings labeled and kept out of the regime score); preliminary earnings read from the
+  filing document (OpenDART's structured APIs cover periodic reports only, verified from its guide; the earlier claim
+  about mid-November timing was not verified and is withdrawn); testable verdicts (condition kind, unresolved question,
+  resolving evidence, recheck), data-gap assessments, minimum-feasible-position comparisons and a Hold reconsideration
+  condition; evidence-gap inspection flags. On the exploratory pairs the flag fires on 30 of 32, because nearly every
+  waiting verdict hinged on earnings or data that the two models researched differently: expect a large inspection queue
+  while such gaps dominate.
+- Next evaluation period start: not yet set.

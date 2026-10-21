@@ -61,3 +61,14 @@ test('sizing never allows more shares than the available cash buys',()=>{
   const pr=require('../electron/portfolio-risk.cjs');const s=pr.sizing({equityKRW:500001,riskPct:10,atrMultiple:2,rows:[{symbol:'360750',price:25505,atr:100,fx:1,cashKRW:500001},{symbol:'005930',price:209000,atr:12863,fx:1,cashKRW:500001},{symbol:'NASD:A',price:100,atr:1,fx:1300,cashKRW:0}]});
   assert.deepEqual(s.rows.map(r=>[r.symbol,r.maxShares,r.limitedBy??null]),[['360750',19,'cash'],['005930',1,null],['NASD:A',0,'cash']]);
 });
+test('breadth freshness: a previous session reading is labeled stale and kept out of the regime score',()=>{
+  const pr=require('../electron/portfolio-risk.cjs');const F=require('../electron/market-freshness.cjs');const k=s=>Date.parse(s+'+09:00');
+  const stale=F.breadthFreshness(k('2026-10-20T15:20'),k('2026-10-21T09:01'));assert.equal(stale.stale,true);assert.match(stale.note,/earlier session/);
+  assert.equal(F.breadthFreshness(k('2026-10-21T09:00'),k('2026-10-21T09:01')).stale,false);assert.equal(F.breadthFreshness(k('2026-10-21T09:00'),k('2026-10-21T09:40')).stale,true,'older than 30 minutes during the session');
+  assert.equal(F.breadthFreshness(k('2026-10-21T14:00'),k('2026-10-21T20:00')).stale,false,'latest reading after the close is labeled, not stale');
+  assert.equal(F.breadthFreshness(undefined,k('2026-10-21T10:00')).stale,true);
+  const base={vix:20,hySpread:4,kospiVs50dPct:0};
+  const r=pr.regime({...base,advanceRatioPct:13.2,breadth:stale});const c=r.components.find(x=>x.name==='KOSPI advancers %');
+  assert.equal(c.stale,true);assert.equal(c.score,0,'stale breadth does not move the regime');assert.equal(c.asOf,'2026-10-20 15:20 KST');assert.match(c.reading,/^stale/);
+  assert.equal(pr.regime({...base,advanceRatioPct:13.2,breadth:{asOf:'x',stale:false}}).components.find(x=>x.name==='KOSPI advancers %').score,-1);
+});
