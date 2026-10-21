@@ -29,7 +29,9 @@ class ResearchService {
   cached(symbol,source){const row=this.db.prepare('SELECT at,payload FROM research_cache WHERE symbol=? AND source=?').get(symbol,source);return row?{at:row.at,value:JSON.parse(row.payload)}:null;}
   // One raw source: fresh cache, a recent failure, or a new fetch (shared by concurrent callers).
   async source(symbol,source,refresh=false){
-    const spec=SOURCES[source];const hit=this.cached(symbol,source);
+    const spec=SOURCES[source];let hit=this.cached(symbol,source);
+    // OpenDART results saved before preliminary-earnings figures were read are refetched once.
+    if(hit&&source==='dart'&&!('preliminary' in (hit.value??{})))hit={...hit,at:0};
     if(hit&&!refresh&&this.clock()-hit.at<spec.ttl)return {status:'ok',retrievedAt:hit.at,data:hit.value};
     const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL)return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};
     const key=symbol+'|'+source;if(this.inflight.has(key))return this.inflight.get(key);
