@@ -60,7 +60,7 @@ function service({kis,provider,dartReady=true,clock}={}){
   const db=new DatabaseSync(':memory:');const calls=[];let now=clock??Date.parse('2026-10-17T01:00:00Z');
   const s=new ResearchService({db,master:{get:symbol=>symbol==='005930'?{name:'삼성전자',market:'KOSPI',type:'stock'}:null,status:()=>({total:1})},
     kis:kis??(async(op,{section})=>{calls.push(section);if(section==='overview')return {price:217000,per:33,pbr:null};if(section==='dividends')return {trailingYieldPct:0.6,frequency:'quarterly',upcoming:[{recordDate:'2026-12-31',kind:'결산',perShare:null,pending:true}],payments:[]};if(section==='meetings')return {meetings:[{date:'2027-03-18',type:'정기총회',agenda:['정관변경']}]};if(section==='analysts')return {brokerages:3,latest:[1,2,3,4,5,6]};if(section==='estimates')return {years:['2025']};throw Object.assign(new Error('x'),{code:'RATE_LIMITED'});}),
-    provider:provider??(async()=>{calls.push('dart');return {filings:[{date:'2026-10-08',kind:'earnings',title:'잠정실적'},{date:'2026-10-01',kind:'ownership',title:'대량보유'}],earnings:{lastRelease:'2026-10-08',nextExpected:'2027-01-08'},dividends:{years:[{year:'2025',perShare:1668,payoutRatioPct:25.1}]}};}),
+    provider:provider??(async()=>{calls.push('dart');return {preliminary:null,filings:[{date:'2026-10-08',kind:'earnings',title:'잠정실적'},{date:'2026-10-01',kind:'ownership',title:'대량보유'}],earnings:{lastRelease:'2026-10-08',nextExpected:'2027-01-08'},dividends:{years:[{year:'2025',perShare:1668,payoutRatioPct:25.1}]}};}),
     kisReady:()=>true,dartReady:()=>dartReady,clock:()=>now});
   return {s,calls,advance:ms=>{now+=ms;}};
 }
@@ -268,4 +268,10 @@ test('scout and trading reviews are offered the market overview tool',async()=>{
   const client=new AiClient('sk-fixture-key-123',async(url,options)=>{const body=JSON.parse(options.body);bodies.push(body);return reply(body.text.format.name==='portfolio_plan'?JSON.stringify({summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[],retrospective:''}):JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'ok'}));});
   await client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low'});await client.decide({universe:[],discovery:{enabled:true}},{research:true});
   assert.ok(bodies.every(b=>b.tools.some(t=>t.name==='get_market_overview')));
+});
+test('OpenDART results saved before preliminary figures existed are refetched once',async()=>{
+  const {ResearchService}=require('../electron/research-service.cjs');const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE research_cache(symbol TEXT,source TEXT,at INTEGER,payload TEXT,PRIMARY KEY(symbol,source))');
+  db.prepare('INSERT INTO research_cache VALUES(?,?,?,?)').run('005930','dart',Date.now(),JSON.stringify({filings:[]}));let calls=0;
+  const s=new ResearchService({db,master:{get:()=>null},kis:async()=>({}),provider:async()=>{calls++;return {filings:[],preliminary:null};},dartReady:()=>true});
+  await s.source('005930','dart');assert.equal(calls,1,'old shape refetched');await s.source('005930','dart');assert.equal(calls,1,'new shape cached');
 });

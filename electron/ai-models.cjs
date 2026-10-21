@@ -1,6 +1,6 @@
 // Standard text-token rates checked against official model pages, 2026-10-16 KST.
 const MODELS={'gpt-6-luna':{input:0.1,output:0.5},'gpt-6-sol':{input:2,output:10},'gpt-6-astra':{input:10,output:50}};
-function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort=config.reasoningEffort??'none';if(!Object.hasOwn(MODELS,model)||!['none','low','medium','high'].includes(effort)||model==='gpt-6-astra'&&effort==='none')throw new Error('INVALID_MODEL_SETTINGS');return {model,effort,maxOutput:effort==='none'?1200:8192};}
+function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort=config.reasoningEffort??'none';if(!Object.hasOwn(MODELS,model)||!['none','low','medium','high'].includes(effort)||model==='gpt-6-astra'&&effort==='none')throw new Error('INVALID_MODEL_SETTINGS');return {model,effort,maxOutput:effort==='none'?4096:8192};}
 // Request size limits for a portfolio review: the first request, and follow-up rounds that carry research results.
 // The budget reservation and the AI client both use this, so they always agree.
 const reviewByteLimit=options=>options?.continuation?140000:70000;

@@ -400,7 +400,7 @@ class Automation {
       const fx=this.fx?.()?.usdKRW??null;const equity=p?.equityKRW??(context.environment==='kis'?context.equity:null);
       const rows=(context.universe??[]).map(u=>{const q=context.quotes?.find(r=>r.symbol===u.symbol);const c=daily(u.symbol);const atr=ind.atr(c,14);const us=/:/.test(u.symbol);const usMarket=(context.markets??[]).find(m=>m.market==='US');const cashKRW=us?(fx?((usMarket?.buyingPower?.usd??context.cash?.USD??(context.environment==='kis'&&context.currency==='USD'?context.cash:null))??NaN)*fx:NaN):(typeof context.cash==='object'?context.cash?.KRW:context.currency==='KRW'?context.cash:NaN);return {symbol:u.symbol,price:q?.price??c.at(-1)?.close,atr,fx:us?fx:1,cashKRW:Number.isFinite(cashKRW)?cashKRW:undefined};}).filter(r=>r.atr&&r.price&&r.fx);
       const sizing=pr.sizing({equityKRW:equity,riskPct:this.config.sizingRiskPct,atrMultiple:this.config.sizingAtrMultiple,rows});if(sizing?.rows.length)out.positionSizing=sizing;
-      const g=this.regimeState();if(g)out.marketRegime={regime:g.regime,score:g.score,components:g.components.map(({name,value,reading})=>({name,value,reading}))};
+      const g=this.regimeState();if(g)out.marketRegime={regime:g.regime,score:g.score,components:g.components.map(({name,value,reading,asOf,stale,note})=>({name,value,reading,...(asOf?{asOf}:{}),...(stale?{stale:true}:{}),...(note?{note}:{})}))};
     }catch{}
     return out;
   }

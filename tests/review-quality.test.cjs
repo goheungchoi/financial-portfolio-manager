@@ -48,3 +48,10 @@ test('end to end: the fingerprint covers every engine module and decision-releva
   assert.equal(sim.binding({...DEFAULTS,phoneSnapshots:!DEFAULTS.phoneSnapshots,shadowPct:50}).settings,b.settings,'operational switches do not');
   assert.match(b.code,/^[0-9a-f]{16}$/);
 });
+test('end to end: the stale label and its time survive into the review context, and the cheaper model has room for the verdict format',()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:1}],()=>[]),{request:async()=>({})},()=>{});
+  a.indexCloses=()=>({});a.macro={get:()=>({series:[{id:'US_VIX',value:20},{id:'US_HY_SPREAD',value:4,change:0}]})};a.marketOverviewCache=()=>({value:{breadth:[{index:'KOSPI',advanceRatioPct:13.2}]},at:Date.now()-10*86400000});
+  const c=a.riskContext({universe:[],quotes:[]}).marketRegime.components.find(x=>x.name==='KOSPI advancers %');assert.equal(c.stale,true);assert.ok(c.asOf);assert.match(c.reading,/^stale: from an earlier session/);
+  assert.ok(require('../electron/ai-models.cjs').settings({openaiModel:'gpt-6-luna',reasoningEffort:'none'}).maxOutput>=4096);
+});
