@@ -91,4 +91,16 @@ function analyze(points,from){
     dailyPnl:days.map(p=>({day:p.day,pnl:p.pnl,returnPct:p.dailyReturn==null?null:r2(p.dailyReturn*100)})),drawdown:drawdown.map(d=>({day:d.day,drawdownPct:r2(d.drawdownPct)})),contributions};
 }
 function benchmarkFor(kind){return kind==='USD'?'SPX':'KOSPI';}
-module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze};
+// When a market's session for a trading day is over and its index readings are closes: 15:40 Seoul for Korean indexes,
+// 16:20 New York for U.S. ones (after the closing auctions and the VIX settle). An index row fetched before then is an
+// intraday reading and is not stored as that day's close.
+const nyOffset=day=>{const name=new Date(day+'T12:00:00Z').toLocaleString('en-US',{timeZone:'America/New_York',timeZoneName:'shortOffset'});const m=/GMT([+-]\d+)/.exec(name);const h=m?Number(m[1]):-5;return (h<0?'-':'+')+String(Math.abs(h)).padStart(2,'0')+':00';};
+const sessionEnd=(market,day)=>market==='US'?Date.parse(`${day}T16:20:00${nyOffset(day)}`):Date.parse(`${day}T15:40:00+09:00`);
+const finishedRows=(index,rows,now=Date.now())=>(rows??[]).filter(r=>isDay(r?.day)&&sessionEnd(INDEXES[index]?.market??'KR',r.day)<=now);
+// Whether a Korean or U.S. session ended after `since` (and by `now`): index closes should be refreshed then.
+function closedSince(since,now=Date.now()){
+  for(let back=0;back<=3;back++){const day=new Date(now+9*3600000-back*86400000).toISOString().slice(0,10);
+    for(const market of ['KR','US']){const end=sessionEnd(market,day);if(end>since&&end<=now)return true;}}
+  return false;
+}
+module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,finishedRows,closedSince,sessionEnd};
