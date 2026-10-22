@@ -1,4 +1,4 @@
-const {company,technicals,DATASETS}=require('./market-evidence.cjs');
+const {company,technicals,orderBook,DATASETS}=require('./market-evidence.cjs');
 const {exchangeTimestamp}=require('./kis-stream.cjs');
 async function fetchEvidence(client,{symbol,dataset},includeCandles=false){
   const us=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/.exec(symbol);
@@ -10,6 +10,10 @@ async function fetchEvidence(client,{symbol,dataset},includeCandles=false){
     const body=us?(await client.overseasRequest('/uapi/overseas-price/v1/quotations/price-detail','HHDFS76200200',params)).body:await client.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol});
     if(!body.output||typeof body.output!=='object')throw new Error('INVALID_RESPONSE');
     return {...meta,metrics:company(body.output,Boolean(us))};
+  }
+  if(dataset==='order_book'){
+    const body=us?(await client.overseasRequest('/uapi/overseas-price/v1/quotations/inquire-asking-price','HHDFS76200100',params,{includeAccount:false})).body:await client.quotation('inquire-asking-price-exp-ccn','FHKST01010200',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol});
+    const data=orderBook(body,Boolean(us));return data?{...meta,data}:{...meta,status:'unavailable',reason:'NO_TWO_SIDED_BOOK'};
   }
   const daily=dataset==='daily_technicals';let candles;
   // Charts get two pages of daily bars (about 200); AI evidence keeps one.

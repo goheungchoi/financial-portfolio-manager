@@ -5,7 +5,7 @@ const VOLATILE=/^(timestamp|retrievedAt|updatedAt|fetchedAt|generatedAt|heartbea
 const IGNORED=new Set(['performance','decisionScoreboard','triggerEvidence','reviewInterval','reviewWatches','paperVersion']);
 const MONEY=/price|last|close|value|equity|cash|amount|total|marketValue|pnl|gain|profit|cost|notional|evaluation|usdKRW|rate/i;
 // Background the agents read but that moves every day without changing what to do; it never blocks a skip on its own.
-const BACKGROUND=['marketNarrative','similarEpisodes','positionSizing','risk','portfolioExposure','eventCalendar','macro','research','opportunitySet','tradingNotes','agentDesk','scoutBrief','scoutPlan','planGap'];
+const BACKGROUND=['marketNarrative','similarEpisodes','positionSizing','risk','portfolioExposure','eventCalendar','macro','research','opportunitySet','tradingNotes','agentDesk','scoutBrief','scoutPlan','planGap','orderBooks'];
 // What a skip compares: holdings, cash and prices (within tolerance), sessions, lessons, the regime label, and only
 // headlines marked important. Other headlines, even about your symbols, arrive hourly; important ones also start
 // their own review through the news trigger.
