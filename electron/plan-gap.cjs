@@ -22,10 +22,17 @@ function addMinimumPositions(context){
   const equity=C.equityKRW(context),fx=C.usdKrw(context);const markets=C.marketsOf(context);
   const price=s=>(context.quotes??[]).find(q=>q.symbol===s)?.price??null;const sizing=new Map((context.positionSizing?.rows??[]).map(r=>[r.symbol,r]));
   const cashKRW=m=>{if(m==='US'){const us=markets.find(x=>x.market==='US');const usd=us?.buyingPower?.usd??(typeof context.cash==='object'?context.cash?.USD:context.currency==='USD'?context.cash:null);return fx&&Number.isFinite(usd)?usd*fx:null;}return typeof context.cash==='object'?context.cash?.KRW??null:context.currency==='KRW'?context.cash:null;};
+  // The trading limits of the target's market: per market in a combined context, the context's own in a single-market one.
+  const policyOf=m=>context.risk?.markets?context.risk.markets[m]??{}:(context.market??'KR')===m?context.risk??{}:{};
+  const marketEquity=m=>Array.isArray(context.markets)&&context.markets.length?context.markets.find(x=>x.market===m)?.equity:context.equity;
   for(const t of gap.targets){const m=marketOf(t.symbol);const p=price(t.symbol);const value=p>0?(m==='US'?(fx?p*fx:null):p):null;
     if(value==null||!(equity>0)){t.minimumPosition={shares:1,unavailable:'price or equity unknown'};continue;}
-    const cash=cashKRW(m);const row=sizing.get(t.symbol);const policy=context.risk?.markets?.[m]??{};
-    const checks={cash:cash==null?null:cash>=value,sizing:row?row.maxShares>=1:null,companyCap:Number.isFinite(policy.maxCompanyPct)?value/equity*100<=policy.maxCompanyPct:null,orderCap:Number.isFinite(policy.maxOrderKRW)?value<=policy.maxOrderKRW:null};
+    const cash=cashKRW(m);const row=sizing.get(t.symbol);const policy=policyOf(m);
+    // As the order checks apply them: the order limit to one share in the market's currency, and concentration to the
+    // shares already held plus one, against that market's account value (an empty account fails it).
+    const held=context.positions?.[t.symbol]?.quantity??0;const base=marketEquity(m);
+    const checks={cash:cash==null?null:cash>=value,sizing:row?row.maxShares>=1:null,
+      companyCap:Number.isFinite(policy.maxCompanyPct)?base>0&&(held+1)*p/base*100<=policy.maxCompanyPct:null,orderCap:Number.isFinite(policy.maxOrderKRW)?p<=policy.maxOrderKRW:null};
     t.minimumPosition={shares:1,valueKRW:Math.round(value),weightPct:Math.round(value/equity*1000)/10,checks,feasible:Object.values(checks).every(v=>v!==false)&&checks.cash===true};}
   return context;
 }

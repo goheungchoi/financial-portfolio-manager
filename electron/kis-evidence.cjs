@@ -13,7 +13,7 @@ async function fetchEvidence(client,{symbol,dataset},includeCandles=false){
   }
   if(dataset==='order_book'){
     const body=us?(await client.overseasRequest('/uapi/overseas-price/v1/quotations/inquire-asking-price','HHDFS76200100',params,{includeAccount:false})).body:await client.quotation('inquire-asking-price-exp-ccn','FHKST01010200',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol});
-    const data=orderBook(body,Boolean(us));return data?{...meta,data}:{...meta,status:'unavailable',reason:'NO_TWO_SIDED_BOOK'};
+    const data=orderBook(body,Boolean(us),retrievedAt);return data?{...meta,data}:{...meta,status:'unavailable',reason:'NO_TWO_SIDED_BOOK'};
   }
   const daily=dataset==='daily_technicals';let candles;
   // Charts get two pages of daily bars (about 200); AI evidence keeps one.

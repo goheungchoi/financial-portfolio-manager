@@ -28,19 +28,24 @@ function technicals(candles,interval,dataset,now=Date.now(),market='KR'){
 }
 // Best bid/ask levels from the KIS asking-price quotation (Korea: output1 askp/bidp, U.S.: output2 pask/pbid). Zero or
 // missing prices are absent levels, never prices; with no bid or no ask the book is unavailable.
-function orderBook(body,us=false){
+function orderBook(body,us=false,now=Date.now()){
   const book=us?body?.output2:body?.output1;if(!book||typeof book!=='object')return null;
   const level=i=>{const bid=number(book[us?'pbid'+i:'bidp'+i]),ask=number(book[us?'pask'+i:'askp'+i]);
     return {bid:bid>0?bid:null,bidSize:bid>0?number(book[us?'vbid'+i:'bidp_rsqn'+i]):null,ask:ask>0?ask:null,askSize:ask>0?number(book[us?'vask'+i:'askp_rsqn'+i]):null};};
   const levels=[1,2,3,4,5].map(level).filter(l=>l.bid!=null||l.ask!=null);const best=levels[0];
   if(!best||best.bid==null||best.ask==null||best.ask<best.bid)return null;
   const mid=(best.bid+best.ask)/2;const o1=body.output1??{};
-  // Korean book time is HHMMSS in Seoul; the U.S. book carries the Seoul date and time of the quote (dymd/dhms).
-  const hms=String(us?o1.dhms??'':book.aspr_acpt_hour??'');const ymd=us?String(o1.dymd??''):'';
-  const quoteTime=/^\d{6}$/.test(hms)?(/^\d{8}$/.test(ymd)?`${ymd.slice(0,4)}-${ymd.slice(4,6)}-${ymd.slice(6)} `:'')+`${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4)} KST`:null;
+  // Korean book time is HHMMSS in Seoul (today's, or yesterday's when that would be in the future); the U.S. book
+  // carries the Seoul date and time of the quote (dymd/dhms). Unparseable times leave quoteAt null: age unknown.
+  const hms=String(us?o1.dhms??'':book.aspr_acpt_hour??'');let ymd=us?String(o1.dymd??''):new Date(now+9*3600000).toISOString().slice(0,10).replaceAll('-','');
+  const at=d=>Date.parse(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}T${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4)}+09:00`);
+  let quoteAt=/^\d{6}$/.test(hms)&&/^\d{8}$/.test(ymd)?at(ymd):NaN;
+  if(!us&&quoteAt>now+60000){ymd=new Date(now+9*3600000-86400000).toISOString().slice(0,10).replaceAll('-','');quoteAt=at(ymd);}
+  quoteAt=Number.isFinite(quoteAt)?quoteAt:null;
+  const quoteTime=quoteAt?`${ymd.slice(0,4)}-${ymd.slice(4,6)}-${ymd.slice(6)} ${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4)} KST`:null;
   const total=k=>us?null:number(book[k]);
   return {bid:best.bid,ask:best.ask,bidSize:best.bidSize,askSize:best.askSize,spread:Math.round((best.ask-best.bid)*1e4)/1e4,spreadPct:Math.round((best.ask-best.bid)/mid*1e4)/100,mid:Math.round(mid*1e4)/1e4,levels,
-    ...(us?{}:{totalBidSize:total('total_bidp_rsqn'),totalAskSize:total('total_askp_rsqn')}),quoteTime,
+    ...(us?{}:{totalBidSize:total('total_bidp_rsqn'),totalAskSize:total('total_askp_rsqn')}),quoteTime,quoteAt,ageSeconds:quoteAt?Math.max(0,Math.round((now-quoteAt)/1000)):null,
     note:'Resting limit orders at the time of the quote; sizes are shares. A buy fills near the ask and a sale near the bid, so the spread is a round-trip cost on top of commissions.'};
 }
 class MarketEvidence {

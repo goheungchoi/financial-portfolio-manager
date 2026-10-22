@@ -5,9 +5,13 @@ const levels=(prefix,prices,sizes)=>Object.fromEntries(prices.flatMap((p,i)=>[[p
 const KR={rt_cd:'0',output1:{aspr_acpt_hour:'160000',...levels(['askp','askp_rsqn'],[25285,25290,25295,25300,25305,0,0,0,0,0],[9125,8000,7000,6000,5000,0,0,0,0,0]),...levels(['bidp','bidp_rsqn'],[25280,25275,25270,25265,25260,0,0,0,0,0],[32336,9000,8000,7000,6000,0,0,0,0,0]),total_askp_rsqn:'260878',total_bidp_rsqn:'289688'},output2:{antc_cnpr:'25285',stck_prpr:'25285'}};
 const US={rt_cd:'0',output1:{last:'216.6600',dymd:'20261022',dhms:'183344'},output2:{pbid1:'216.6200',pask1:'216.6800',vbid1:'21',vask1:'7',pbid2:'216.6000',pask2:'216.6900',vbid2:'100',vask2:'1'}};
 test('the KIS asking-price quotation becomes best bid/ask, spread and levels; one-sided or empty books are unavailable',()=>{
-  const kr=orderBook(KR);assert.deepEqual({bid:kr.bid,ask:kr.ask,bidSize:kr.bidSize,askSize:kr.askSize,spread:kr.spread,spreadPct:kr.spreadPct,quoteTime:kr.quoteTime,totalBidSize:kr.totalBidSize},{bid:25280,ask:25285,bidSize:32336,askSize:9125,spread:5,spreadPct:0.02,quoteTime:'16:00:00 KST',totalBidSize:289688});
+  const at=Date.parse('2026-10-22T18:33:45+09:00');
+  const kr=orderBook(KR,false,at);assert.deepEqual({bid:kr.bid,ask:kr.ask,bidSize:kr.bidSize,askSize:kr.askSize,spread:kr.spread,spreadPct:kr.spreadPct,quoteTime:kr.quoteTime,ageSeconds:kr.ageSeconds,totalBidSize:kr.totalBidSize},{bid:25280,ask:25285,bidSize:32336,askSize:9125,spread:5,spreadPct:0.02,quoteTime:'2026-10-22 16:00:00 KST',ageSeconds:9225,totalBidSize:289688});
   assert.equal(kr.levels.length,5,'zero-priced levels are absent, not prices');
-  const us=orderBook(US,true);assert.deepEqual({bid:us.bid,ask:us.ask,spreadPct:us.spreadPct,quoteTime:us.quoteTime,levels:us.levels.length},{bid:216.62,ask:216.68,spreadPct:0.03,quoteTime:'2026-10-22 18:33:44 KST',levels:2});
+  const us=orderBook(US,true,at);assert.deepEqual({bid:us.bid,ask:us.ask,spreadPct:us.spreadPct,quoteTime:us.quoteTime,ageSeconds:us.ageSeconds,levels:us.levels.length},{bid:216.62,ask:216.68,spreadPct:0.03,quoteTime:'2026-10-22 18:33:44 KST',ageSeconds:1,levels:2});
+  // A Korean book time later than now is yesterday's; a missing time leaves the age unknown.
+  assert.equal(orderBook(KR,false,Date.parse('2026-10-23T09:00:30+09:00')).quoteTime,'2026-10-22 16:00:00 KST');
+  const untimed=orderBook({output1:{...KR.output1,aspr_acpt_hour:''}},false,at);assert.deepEqual([untimed.quoteTime,untimed.ageSeconds],[null,null]);
   assert.equal(orderBook({output1:{askp1:'0',bidp1:'25280'}}),null,'no ask: unavailable');
   assert.equal(orderBook({output1:{askp1:'100',bidp1:'101'}}),null,'crossed book: unavailable');
   assert.equal(orderBook({}),null);
@@ -23,7 +27,9 @@ test('order_book is fetched read-only from the matching KIS quotation for each m
 function automation(){
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:50000}],async()=>50000),{request:async()=>({})},()=>{});
-  const asked=[];a.evidence={get:async args=>{asked.push(args.symbol);return args.symbol==='000270'?{symbol:args.symbol,status:'unavailable'}:{symbol:args.symbol,dataset:'order_book',status:'available',data:{bid:100,ask:101,bidSize:5,askSize:7,spreadPct:1,quoteTime:'10:00:00 KST',levels:[]}};}};
+  // 069500: fresh; 005930: two days old; 360750: unknown age; 000270: no book.
+  const age={'069500':12,'005930':2*86400,'360750':null};
+  const asked=[];a.evidence={get:async args=>{asked.push(args.symbol);return args.symbol==='000270'?{symbol:args.symbol,status:'unavailable'}:{symbol:args.symbol,dataset:'order_book',status:'available',retrievedAt:Date.parse('2026-10-22T10:00:00+09:00'),delay:'Broker entitlement dependent',data:{bid:100,ask:101,bidSize:5,askSize:7,spreadPct:1,quoteTime:age[args.symbol]==null?null:'2026-10-22 09:59:48 KST',ageSeconds:age[args.symbol],levels:[]}};}};
   return {a,asked};
 }
 const session=open=>({open,status:open?'open':'closed',...(open?{session:{id:'regular',regular:true}}:{})});
@@ -34,13 +40,14 @@ test('reviews get the live book for holdings, scout targets and watches whose re
     scoutPlan:{targets:[{symbol:'005930'},{symbol:'000270'},{symbol:'NASD:AMZN'},{symbol:'999999'}]},reviewWatches:[{symbol:'360750'}]};
   await a.attachOrderBooks(context);
   assert.deepEqual(asked,['069500','005930','000270','360750'],'U.S. closed and out-of-universe symbols are not read');
-  assert.deepEqual(context.orderBooks.map(b=>b.symbol),['069500','005930','360750'],'unavailable books are left out');
-  assert.deepEqual(Object.keys(context.orderBooks[0]),['symbol','bid','ask','bidSize','askSize','spreadPct','quoteTime']);
-  const closed={...context,markets:[{market:'KR',marketSession:session(false)},{market:'US',marketSession:session(false)}]};delete closed.orderBooks;
-  await a.attachOrderBooks(closed);assert.equal('orderBooks' in closed,false,'no book outside regular sessions');
+  const books=context.orderBooks.books;assert.deepEqual(books.map(b=>b.symbol),['069500','005930','360750'],'unavailable books are left out');
+  assert.deepEqual(books.map(b=>[b.ageSeconds,b.stale,b.ageUnknown??false]),[[12,false,false],[172800,true,false],[null,true,true]],'old and unknown-age books are marked stale');
+  assert.deepEqual([context.orderBooks.staleAfterSeconds,context.orderBooks.delay,context.orderBooks.readAt],[300,'Broker entitlement dependent','2026-10-22T01:00:00.000Z'],'the feed delay note is kept');
+  const closed={...context,markets:[{market:'KR',marketSession:session(false)},{market:'US',marketSession:session(false)}]};delete closed.orderBooks;asked.length=0;
+  await a.attachOrderBooks(closed);assert.equal('orderBooks' in closed,false,'no book outside regular sessions');assert.equal(asked.length,0);
   const paper={environment:'local-paper',universe:[{symbol:'005930'}],positions:{'005930':{quantity:1}}};await a.attachOrderBooks(paper);assert.equal('orderBooks' in paper,false);
 });
 test('a changing order book alone does not stop an unchanged review from being skipped',()=>{
   const {fingerprint}=require('../electron/token-saver.cjs');const base={universe:[],quotes:[]};
-  assert.equal(fingerprint({...base,orderBooks:[{symbol:'360750',bid:1,ask:2}]}).exact,fingerprint({...base,orderBooks:[{symbol:'360750',bid:3,ask:4}]}).exact);
+  assert.equal(fingerprint({...base,orderBooks:{books:[{symbol:'360750',bid:1,ask:2}]}}).exact,fingerprint({...base,orderBooks:{books:[{symbol:'360750',bid:3,ask:4}]}}).exact);
 });
