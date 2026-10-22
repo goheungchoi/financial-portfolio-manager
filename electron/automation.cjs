@@ -80,6 +80,7 @@ class Automation {
   // ten minutes. Given to reviews, the scout and the narrative whatever the portfolio holds.
   // Live bid/ask for the symbols a review is most likely to act on (holdings, scout targets, review watches; at most
   // eight), read just before the review and only while that symbol's regular session is open. Background for skipping.
+  // A book older than five minutes, or of unknown age, is kept but marked stale; the feed's delay note is kept.
   async attachOrderBooks(context){
     if(context.environment==='local-paper'||!this.evidence)return;
     const session=market=>context.environment==='kis-combined'?context.markets?.find(m=>m.market===market)?.marketSession:context.marketSession;
@@ -88,8 +89,9 @@ class Automation {
     const wanted=[...Object.entries(context.positions??{}).filter(([,p])=>p?.quantity>0).map(([s])=>s),...(context.scoutPlan?.targets??[]).map(t=>t.symbol),...(context.reviewWatches??[]).map(w=>w.symbol)];
     const symbols=[...new Set(wanted)].filter(s=>universe.has(s)&&regular(/^\d{6}$/.test(s)?'KR':'US')).slice(0,8);if(!symbols.length)return;
     const books=await Promise.all(symbols.map(symbol=>this.evidence.get({symbol,dataset:'order_book'},context).catch(()=>null)));
-    const rows=books.filter(b=>b?.status==='available'&&b.data).map(b=>({symbol:b.symbol,bid:b.data.bid,ask:b.data.ask,bidSize:b.data.bidSize,askSize:b.data.askSize,spreadPct:b.data.spreadPct,quoteTime:b.data.quoteTime}));
-    if(rows.length)context.orderBooks=rows;
+    const STALE_SECONDS=300;const available=books.filter(b=>b?.status==='available'&&b.data);
+    const rows=available.map(b=>{const age=Number.isFinite(b.data.ageSeconds)?b.data.ageSeconds:null;return {symbol:b.symbol,bid:b.data.bid,ask:b.data.ask,bidSize:b.data.bidSize,askSize:b.data.askSize,spreadPct:b.data.spreadPct,quoteTime:b.data.quoteTime??null,ageSeconds:age,stale:age==null||age>STALE_SECONDS,...(age==null?{ageUnknown:true}:{})};});
+    if(rows.length)context.orderBooks={readAt:new Date(Math.max(...available.map(b=>b.retrievedAt??0))||Date.now()).toISOString(),staleAfterSeconds:STALE_SECONDS,delay:available.find(b=>b.delay)?.delay??null,books:rows};
   }
   topStories(now=Date.now()){
     if(this.storiesCache&&now-this.storiesCache.at<10*60000)return this.storiesCache.value;
