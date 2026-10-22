@@ -63,3 +63,17 @@ test('daily records keep intraday high and low and holdings; analytics give peak
   assert.equal(s.analytics['1W'].from,'2026-09-01');assert.ok(!('positions' in s.points[0]),'holdings stay out of the chart points');
 });
 const round2=v=>Math.round(v*100)/100;
+test('index readings are stored as closes only after their session ends, and a close prompts a refresh',()=>{
+  const {finishedRows,closedSince}=require('../electron/performance.cjs');const k=s=>Date.parse(s);
+  const kospi=[{day:'2026-10-21',close:5735.66},{day:'2026-10-22',close:5587.1}];
+  assert.deepEqual(finishedRows('KOSPI',kospi,k('2026-10-22T12:40:00+09:00')).map(r=>r.day),['2026-10-21'],'a midday KOSPI reading is not the day\'s close');
+  assert.deepEqual(finishedRows('KOSPI',kospi,k('2026-10-22T15:41:00+09:00')).map(r=>r.day),['2026-10-21','2026-10-22']);
+  // U.S. rows carry the U.S. trading date: 2026-10-22 ends at 16:20 New York (05:20 Seoul on the 23rd in daylight time).
+  const vix=[{day:'2026-10-21',close:16.68},{day:'2026-10-22',close:18.56}];
+  assert.deepEqual(finishedRows('VIX',vix,k('2026-10-22T20:00:00+09:00')).map(r=>r.day),['2026-10-21'],'an overnight VIX reading is not a close');
+  assert.deepEqual(finishedRows('VIX',vix,k('2026-10-23T05:21:00+09:00')).map(r=>r.day),['2026-10-21','2026-10-22']);
+  assert.deepEqual(finishedRows('SPX',[{day:'2026-11-05',close:1}],k('2026-11-06T06:19:00+09:00')),[],'standard time: 16:20 New York is 06:20 Seoul');
+  assert.equal(closedSince(k('2026-10-22T12:40:00+09:00'),k('2026-10-22T16:00:00+09:00')),true,'the Korean close passed since the last refresh');
+  assert.equal(closedSince(k('2026-10-22T15:50:00+09:00'),k('2026-10-22T16:30:00+09:00')),false);
+  assert.equal(closedSince(k('2026-10-22T15:50:00+09:00'),k('2026-10-23T05:30:00+09:00')),true,'the U.S. close passed');
+});
