@@ -15,9 +15,10 @@ test('a single-market account applies its own order and concentration limits, co
   assert.deepEqual(small.planGap.targets[0].minimumPosition.checks,{cash:true,sizing:true,companyCap:false,orderCap:false});assert.equal(small.planGap.targets[0].minimumPosition.feasible,false);
   const four=ctx({positions:{'360750':{quantity:3}},risk:{maxCompanyPct:20}});four.planGap=PG.planGap(four);PG.addMinimumPositions(four);assert.equal(four.planGap.targets[1].minimumPosition.checks.companyCap,false,'3 held + 1 = 101,660 is 20.3% of equity, over 20%');
   const ok=ctx({positions:{'360750':{quantity:2}},risk:{maxCompanyPct:20}});ok.planGap=PG.planGap(ok);PG.addMinimumPositions(ok);assert.equal(ok.planGap.targets[1].minimumPosition.checks.companyCap,true,'2 held + 1 = 76,245 is 15.2%');
-  // A combined account's U.S. limits are in dollars against the U.S. account value, as the order checks apply them.
-  const us={markets:[{market:'KR',currency:'KRW',equity:500001,cash:500001},{market:'US',currency:'USD',equity:0,cash:0,buyingPower:{usd:350}}],cash:{KRW:500001,USD:0},macro:{indicators:[{name:'USD/KRW',value:1300}]},quotes:[{symbol:'NASD:A',price:100}],scoutPlan:{targets:[{symbol:'NASD:A',role:'candidate',targetWeightPct:10}]},risk:{markets:{US:{maxOrderKRW:150,maxCompanyPct:50}}}};
-  us.planGap=PG.planGap(us);PG.addMinimumPositions(us);assert.deepEqual(us.planGap.targets[0].minimumPosition.checks,{cash:true,sizing:null,companyCap:false,orderCap:true});
+  // A combined account's U.S. limits are in dollars against the U.S. account value plus the KRW integrated margin lends it.
+  const us=fx=>({markets:[{market:'KR',currency:'KRW',equity:500001,cash:500001},{market:'US',currency:'USD',equity:0,cash:0,buyingPower:{usd:350,...(fx?{fromKRWUSD:350,integratedMargin:true}:{})}}],cash:{KRW:500001,USD:0},macro:{indicators:[{name:'USD/KRW',value:1300}]},quotes:[{symbol:'NASD:A',price:100}],scoutPlan:{targets:[{symbol:'NASD:A',role:'candidate',targetWeightPct:10}]},risk:{markets:{US:{maxOrderKRW:150,maxCompanyPct:50}}}});
+  const funded=us(true);funded.planGap=PG.planGap(funded);PG.addMinimumPositions(funded);assert.deepEqual(funded.planGap.targets[0].minimumPosition.checks,{cash:true,sizing:null,companyCap:true,orderCap:true},'$100 is 28.6% of the $350 funded through KRW');
+  const empty=us(false);empty.planGap=PG.planGap(empty);PG.addMinimumPositions(empty);assert.equal(empty.planGap.targets[0].minimumPosition.checks.companyCap,false,'an account with nothing fails the concentration check');
 });
 test('verdict issues: untestable waiting, vague evidence, unassessed data gaps, missing comparisons, Hold without reconsideration',()=>{
   const c=ctx();c.planGap=PG.planGap(c);PG.addMinimumPositions(c);

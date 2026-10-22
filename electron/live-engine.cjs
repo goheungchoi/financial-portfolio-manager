@@ -54,7 +54,7 @@ class LiveEngine {
     const notional=command.quantity*command.limitPrice;if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)throw new Error('ORDER_SIZE_LIMIT');
     const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,exempt:this.costs.exempt?.(command.symbol)??false}):null;
     // Leveraged and inverse products need their own opt-in and cap; without automatic mode they wait for manual approval.
-    const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:balance.reportedTotal,holdings:balance.holdings}):null;
+    const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:balance.reportedTotal+this.integratedFunding(balance),holdings:balance.holdings}):null;
     let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:balance.reportedTotal,balance,loanDate:credit.loanDate??null});}
     const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||Boolean(gate?.requiresApproval)}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
@@ -72,19 +72,21 @@ class LiveEngine {
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
       const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})}});
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
+      // Percentage limits use one base: the account value plus the KRW that funds U.S. buys through integrated margin (the
+      // U.S. account alone may hold nothing, which would otherwise block every buy or skip the leveraged-product check).
+      const accountBase=prepared.balance.reportedTotal+this.integratedFunding(prepared.balance);
       // Extended sessions: U.S. pre- and after-market orders always wait for your approval, and every extended-session order is
       // capped at a smaller share of equity. Nothing has been sent to KIS yet, so the order simply stays Ready.
       if(prepared.session&&!prepared.session.regular){
         if(prepared.session.approval&&this.submittingAutomatically)throw new Error('EXTENDED_APPROVAL_REQUIRED');
-        // The base includes KRW that funds U.S. buys through integrated margin (the U.S. account alone may hold nothing).
-        const pct=this.extendedMaxOrderPct?.()??5;const base=prepared.balance.reportedTotal+(this.market==='US'&&this.buyingPower?this.buyingPower(prepared.balance).fromKRWUSD:0);if(order.notional>base*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
+        const pct=this.extendedMaxOrderPct?.()??5;if(order.notional>accountBase*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
         order={...order,session:prepared.session.id};}
       this.observeBalance(prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
-      if(this.exposure)this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:prepared.balance.reportedTotal,holdings:prepared.balance.holdings});
+      if(this.exposure)this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:accountBase,holdings:prepared.balance.holdings});
       if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
-      if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/prepared.balance.reportedTotal*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
+      if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/accountBase*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
       if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
       if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,exempt:this.costs.exempt?.(order.symbol)??false})};}
       // A margin buy is funded by the loan; the broker's credit capacity was checked when preparing the order.
