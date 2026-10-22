@@ -1,5 +1,5 @@
-const DATASETS=['company','daily_technicals','minute_technicals','range_10m'];
-const TOOL={type:'function',name:'get_market_evidence',description:'Read company valuation/day/52-week ranges or computed SMA5/10/20 and fast stochastic (14,3) from daily or minute candles; range_10m is the last ten completed clock minutes. Only review-universe symbols. Missing metrics remain unavailable. No trading or credentials.',strict:true,parameters:{type:'object',properties:{symbol:{type:'string'},dataset:{type:'string',enum:DATASETS}},required:['symbol','dataset'],additionalProperties:false}};
+const DATASETS=['company','daily_technicals','minute_technicals','range_10m','order_book'];
+const TOOL={type:'function',name:'get_market_evidence',description:'Read company valuation/day/52-week ranges or computed SMA5/10/20 and fast stochastic (14,3) from daily or minute candles; range_10m is the last ten completed clock minutes; order_book is the live bid/ask book (best five levels with sizes, spread as a percentage of the midpoint, quote time). Only review-universe symbols. Missing metrics remain unavailable. No trading or credentials.',strict:true,parameters:{type:'object',properties:{symbol:{type:'string'},dataset:{type:'string',enum:DATASETS}},required:['symbol','dataset'],additionalProperties:false}};
 function validRequest(value,symbols){return value&&Object.keys(value).sort().join(',')==='dataset,symbol'&&DATASETS.includes(value.dataset)&&symbols.includes(value.symbol);}
 const number=value=>value===null||value===undefined||String(value).trim()===''||!Number.isFinite(Number(value))?null:Number(value);
 function company(output={},us=false){
@@ -26,6 +26,23 @@ function technicals(candles,interval,dataset,now=Date.now(),market='KR'){
   const ks=[0,1,2].map(offset=>kAt(rows.length-offset));
   return {...base,SMA5:sma(5),SMA10:sma(10),SMA20:sma(20),stochastic:{variant:'Fast stochastic: K=14 bars, D=SMA3(K)',K:ks[0],D:ks.every(v=>v!=null)?ks.reduce((a,b)=>a+b,0)/3:null},note:'Null means insufficient bars or zero range. Daily latest bar date must be checked for session/holiday gaps. Indicators are evidence, not buy/sell instructions.'};
 }
+// Best bid/ask levels from the KIS asking-price quotation (Korea: output1 askp/bidp, U.S.: output2 pask/pbid). Zero or
+// missing prices are absent levels, never prices; with no bid or no ask the book is unavailable.
+function orderBook(body,us=false){
+  const book=us?body?.output2:body?.output1;if(!book||typeof book!=='object')return null;
+  const level=i=>{const bid=number(book[us?'pbid'+i:'bidp'+i]),ask=number(book[us?'pask'+i:'askp'+i]);
+    return {bid:bid>0?bid:null,bidSize:bid>0?number(book[us?'vbid'+i:'bidp_rsqn'+i]):null,ask:ask>0?ask:null,askSize:ask>0?number(book[us?'vask'+i:'askp_rsqn'+i]):null};};
+  const levels=[1,2,3,4,5].map(level).filter(l=>l.bid!=null||l.ask!=null);const best=levels[0];
+  if(!best||best.bid==null||best.ask==null||best.ask<best.bid)return null;
+  const mid=(best.bid+best.ask)/2;const o1=body.output1??{};
+  // Korean book time is HHMMSS in Seoul; the U.S. book carries the Seoul date and time of the quote (dymd/dhms).
+  const hms=String(us?o1.dhms??'':book.aspr_acpt_hour??'');const ymd=us?String(o1.dymd??''):'';
+  const quoteTime=/^\d{6}$/.test(hms)?(/^\d{8}$/.test(ymd)?`${ymd.slice(0,4)}-${ymd.slice(4,6)}-${ymd.slice(6)} `:'')+`${hms.slice(0,2)}:${hms.slice(2,4)}:${hms.slice(4)} KST`:null;
+  const total=k=>us?null:number(book[k]);
+  return {bid:best.bid,ask:best.ask,bidSize:best.bidSize,askSize:best.askSize,spread:Math.round((best.ask-best.bid)*1e4)/1e4,spreadPct:Math.round((best.ask-best.bid)/mid*1e4)/100,mid:Math.round(mid*1e4)/1e4,levels,
+    ...(us?{}:{totalBidSize:total('total_bidp_rsqn'),totalAskSize:total('total_askp_rsqn')}),quoteTime,
+    note:'Resting limit orders at the time of the quote; sizes are shares. A buy fills near the ask and a sale near the bid, so the spread is a round-trip cost on top of commissions.'};
+}
 class MarketEvidence {
   constructor(fetchData){this.fetchData=fetchData;}
   async get(args,context){
@@ -34,4 +51,4 @@ class MarketEvidence {
     catch{return {symbol:args.symbol,dataset:args.dataset,status:'unavailable',reason:'DATA_SOURCE_UNAVAILABLE'};}
   }
 }
-module.exports={TOOL,DATASETS,validRequest,company,technicals,MarketEvidence};
+module.exports={TOOL,DATASETS,validRequest,company,technicals,orderBook,MarketEvidence};
