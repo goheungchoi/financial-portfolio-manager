@@ -29,3 +29,10 @@ test('reviews receive the event calendar',async()=>{
   a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await a.review();const ctx=supplied[0].context;assert.ok(ctx.eventCalendar.some(e=>e.title==='U.S. CPI'));assert.ok(ctx.eventCalendar.every(e=>e.date&&e.title));assert.ok(a.getState().calendar.some(e=>e.kind==='macro'));
 });
+test('a results date announced in an IR notice replaces the estimate on the calendar',()=>{
+  const {build}=require('../electron/event-calendar.cjs');
+  const events=build({today:'2026-10-22',symbols:[{symbol:'000270',name:'기아'}],sources:()=>({earnings:{nextExpected:'2026-10-24',announced:{date:'2026-10-30',time:'14:10'}}})}).filter(e=>e.kind==='earnings');
+  assert.deepEqual(events.map(e=>[e.date,e.title,e.estimated]),[['2026-10-30','기아 results announcement at 14:10 KST',false]]);
+  const past=build({today:'2026-10-31',days:120,symbols:[{symbol:'000270',name:'기아'}],sources:()=>({earnings:{nextExpected:'2027-01-24',announced:{date:'2026-10-30'}}})}).filter(e=>e.kind==='earnings');
+  assert.deepEqual(past.map(e=>e.date),['2027-01-24'],'after the announced date the estimate is used again');
+});

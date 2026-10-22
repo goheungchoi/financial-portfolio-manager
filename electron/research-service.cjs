@@ -30,8 +30,8 @@ class ResearchService {
   // One raw source: fresh cache, a recent failure, or a new fetch (shared by concurrent callers).
   async source(symbol,source,refresh=false){
     const spec=SOURCES[source];let hit=this.cached(symbol,source);
-    // OpenDART results saved before preliminary-earnings figures were read are refetched once.
-    if(hit&&source==='dart'&&!('preliminary' in (hit.value??{})))hit={...hit,at:0};
+    // OpenDART results saved before the current format (unit-sales filings told apart, announced results dates) are refetched once.
+    if(hit&&source==='dart'&&(hit.value?.version??1)<2)hit={...hit,at:0};
     if(hit&&!refresh&&this.clock()-hit.at<spec.ttl)return {status:'ok',retrievedAt:hit.at,data:hit.value};
     const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL)return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};
     const key=symbol+'|'+source;if(this.inflight.has(key))return this.inflight.get(key);
@@ -64,7 +64,9 @@ class ResearchService {
       const today=seoulDate(this.clock());
       const upcoming=[...meetings.filter(m=>m.date>=today).map(m=>({date:m.date,kind:'meeting',title:(m.type??'Shareholder meeting')+(m.agenda.length?': '+m.agenda.slice(0,3).join(', '):'')})),
         ...(dividends?.upcoming??[]).filter(p=>p.recordDate>=today).map(p=>({date:p.recordDate,kind:'dividend',title:`Dividend record date (${({'결산':'year-end','분기':'quarterly','중간':'interim'})[p.kind]??p.kind??'cash'})${p.perShare?` · ${p.perShare.toLocaleString()} KRW`:' · amount not set'}`})),
-        ...(dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
+        // An announced results date replaces the estimate.
+        ...(dart?.earnings?.announced?.date>=today?[{date:dart.earnings.announced.date,kind:'earnings',title:`Results announcement (IR notice): ${dart.earnings.announced.purpose}${dart.earnings.announced.time?' at '+dart.earnings.announced.time+' KST':''}`,announced:true}]
+          :dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
       return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,preliminaryEarnings:dart?.preliminary??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
     }
     if(name==='fund'){

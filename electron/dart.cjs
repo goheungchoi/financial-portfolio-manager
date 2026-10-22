@@ -40,11 +40,14 @@ function dividendTable(rows){
   return {source:'DART annual report',fiscalYearEnd:String(list[0].stlm_dt),years:years.map((year,i)=>({year,perShare:perShare[i],payoutRatioPct:payout[i],yieldPct:yieldPct[i],totalKRW:total[i],eps:eps[i]})).filter(y=>y.perShare!=null||y.payoutRatioPct!=null)};
 }
 // Next earnings release, estimated from the lag after quarter end of the latest preliminary-earnings filing.
-function earningsTiming(items,today){
+// Filings proven to hold earnings figures (confirmed) or titled as financial-statement results (재무제표기준) anchor the
+// estimate when present, so monthly unit-sales reports filed under the same title do not.
+function earningsTiming(items,today,{confirmed=[]}={}){
   const quarterEnd=day=>{const [y,m]=day.split('-').map(Number);const q=Math.floor((m-1)/3);const endMonth=q*3;return endMonth===0?`${y-1}-12-31`:new Date(Date.UTC(y,endMonth,0)).toISOString().slice(0,10);};
   const lagOf=day=>Math.round((Date.parse(day)-Date.parse(quarterEnd(day)))/86400000);
   // Quarterly results come 5 to 60 days after quarter end; filings right after it are usually monthly sales reports.
-  const releases=items.filter(i=>i.kind==='earnings'&&i.date).map(i=>i.date).sort().reverse();if(!releases.length)return null;
+  const all=items.filter(i=>i.kind==='earnings'&&i.date),strong=all.filter(i=>/재무제표기준/.test(i.title??'')||confirmed.includes(i.date));
+  const releases=(strong.length?strong:all).map(i=>i.date).sort().reverse();if(!releases.length)return null;
   const last=releases.find(d=>lagOf(d)>=5&&lagOf(d)<=60);if(!last)return {lastRelease:releases[0]};const lag=lagOf(last);
   let end=quarterEnd(last);let next;do{const [y,m]=end.split('-').map(Number);end=new Date(Date.UTC(y,m+3,0)).toISOString().slice(0,10);next=new Date(Date.parse(end)+lag*86400000).toISOString().slice(0,10);}while(next<today);
   return {lastRelease:last,daysAfterQuarterEnd:lag,nextExpected:next,basis:'Estimated from the timing of the last preliminary-earnings filing; not an announced date.'};
@@ -61,17 +64,40 @@ async function companyFilings(fetcher,key,stockCode,today,state){
   for(const type of ['A','B','I']){const body=await (await call('list.json',{corp_code:corp,bgn_de:day(365),end_de:day(0),pblntf_ty:type,page_count:'100'})).json();if(body.status==='000')rows.push(...(body.list??[]));else if(body.status!=='013')throw new Error(body.status==='020'?'DART_RATE_LIMITED':'DART_UNAVAILABLE');}
   const filings=disclosures(rows);let dividendsTable=null;
   for(const year of [Number(today.slice(0,4))-1,Number(today.slice(0,4))-2]){const body=await (await call('alotMatter.json',{corp_code:corp,bsns_year:String(year),reprt_code:'11011'})).json();if(body.status==='000'){dividendsTable=dividendTable(body.list);if(dividendsTable)break;}}
-  return {corpCode:corp,filings,earnings:earningsTiming(filings,today),dividends:dividendsTable,preliminary:await preliminaryFigures(call,filings)};
+  const preliminary=await preliminaryFigures(call,filings);const announced=await announcedResults(call,filings,today);
+  const timing=earningsTiming(filings,today,{confirmed:preliminary&&!preliminary.unavailable?[preliminary.source.date]:[]});
+  return {version:2,corpCode:corp,filings,earnings:timing||announced?{...(timing??{}),...(announced?{announced}:{})}:null,dividends:dividendsTable,preliminary};
 }
-// The figures of the newest preliminary-earnings filing, read from the document itself. A failure here never fails the
-// filing list; it is reported as unavailable with a reason.
+// A filing's original document (document.xml, a ZIP) as text; throws a short error code.
+async function fetchDocument(call,rceptNo){
+  const response=await call('document.xml',{rcept_no:rceptNo});const buffer=Buffer.from(await response.arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('DART_FORMAT');
+  if(buffer.subarray(0,2).toString('latin1')!=='PK'){const status=/<status>(\d+)<\/status>/.exec(buffer.toString('utf8'))?.[1];throw new Error(status==='020'?'DART_RATE_LIMITED':status==='014'?'DOCUMENT_NOT_FOUND':'DART_UNAVAILABLE');}
+  return require('./dart-preliminary.cjs').decodeDocument(unzipFirst(buffer));
+}
+const receiptOf=filing=>/rcpNo=(\d{14})/.exec(filing.url)[1];
+const errorCode=error=>/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DART_UNAVAILABLE';
+// The announced date of the next results presentation, from the newest IR notices of the last 45 days (at most three
+// documents read). Null when none announces results on or after today; a failure here is never an error.
+async function announcedResults(call,filings,today){
+  const P=require('./dart-preliminary.cjs');const since=new Date(Date.parse(today+'T00:00:00Z')-45*86400000).toISOString().slice(0,10);
+  const notices=filings.filter(f=>f.kind==='ir'&&f.date>=since&&/rcpNo=\d{14}/.test(f.url??'')).slice(0,3);
+  for(const f of notices){try{const ir=P.parseIrNotice(await fetchDocument(call,receiptOf(f)));if(ir?.results&&ir.date>=today)return {date:ir.date,time:ir.time,purpose:ir.purpose,method:ir.method,source:{date:f.date,title:f.title,rceptNo:receiptOf(f),url:f.url},basis:'Announced in an IR notice filed with DART.'};}catch{return null;}}
+  return null;
+}
+// The figures of the newest preliminary-earnings filing, read from the document itself. Filings under that title holding
+// monthly unit sales instead are kept as monthlySales and the scan moves to older filings (at most five documents). A
+// failure here never fails the filing list; it is reported as unavailable with a reason.
 async function preliminaryFigures(call,filings){
-  const P=require('./dart-preliminary.cjs');const filing=P.latestFiling(filings);if(!filing)return null;
-  const rceptNo=/rcpNo=(\d{14})/.exec(filing.url)[1];const source={date:filing.date,title:filing.title,rceptNo,url:filing.url};
-  try{const response=await call('document.xml',{rcept_no:rceptNo});const buffer=Buffer.from(await response.arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('DART_FORMAT');
-    if(buffer.subarray(0,2).toString('latin1')!=='PK'){const status=/<status>(\d+)<\/status>/.exec(buffer.toString('utf8'))?.[1];return {source,unavailable:status==='020'?'DART_RATE_LIMITED':status==='014'?'DOCUMENT_NOT_FOUND':'DART_UNAVAILABLE'};}
-    const parsed=P.parsePreliminary(P.decodeDocument(unzipFirst(buffer)),{title:filing.title});
-    return parsed?{source,...parsed}:{source,unavailable:'FIGURES_NOT_FOUND_IN_DOCUMENT'};}
-  catch(error){return {source,unavailable:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DART_UNAVAILABLE'};}
+  const P=require('./dart-preliminary.cjs');const list=P.preliminaryFilings(filings).slice(0,5);if(!list.length)return null;
+  const sourceOf=f=>({date:f.date,title:f.title,rceptNo:receiptOf(f),url:f.url});let monthlySales=null;const skipped=[];
+  for(const filing of list){
+    const source=sourceOf(filing);let doc;
+    try{doc=await fetchDocument(call,source.rceptNo);}catch(error){return {source,unavailable:errorCode(error),...(monthlySales?{monthlySales}:{}),...(skipped.length?{skipped}:{})};}
+    const parsed=P.parsePreliminary(doc,{title:filing.title});
+    if(parsed)return {source,...parsed,...(monthlySales?{monthlySales}:{}),...(skipped.length?{skipped}:{})};
+    const sales=P.parseMonthlySales(doc);if(sales&&!monthlySales)monthlySales={source,...sales};
+    skipped.push({date:filing.date,rceptNo:source.rceptNo,reason:sales?'monthly unit sales, no earnings figures':'no earnings figures in the document'});
+  }
+  return {source:sourceOf(list[0]),unavailable:'NO_EARNINGS_FIGURES_IN_RECENT_FILINGS',note:'The recent filings under the preliminary-results title hold no revenue or profit figures.',...(monthlySales?{monthlySales}:{}),skipped};
 }
-module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,preliminaryFigures};
+module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,preliminaryFigures,announcedResults};
