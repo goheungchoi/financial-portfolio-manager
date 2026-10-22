@@ -191,3 +191,10 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
   code 9b8f801becebc605, settings 3e70f68a39598799, scope both, main gpt-6-sol medium, cheaper gpt-6-luna none,
   threshold 40, spot checks 25%, cheaper-model limit 4 reviews or 120 minutes, consequence gate 20%. Pairs before the
   start, including the 23:47:08 pair, do not count.
+- Evaluation period start: 2026-10-22 09:05:51 KST (2026-10-22T00:05:51Z), frozen with `scripts/routing-report.cjs
+  --freeze` on app 1.5.23 after its first review completed both runs and the 08:30 market narrative ran. Binding:
+  protocol 2026-10-20, engine code f8fcb718d9101424, settings 3e70f68a39598799, scope both, main gpt-6-sol medium,
+  cheaper gpt-6-luna none, threshold 40, spot checks 25%, cheaper-model limit 4 reviews or 120 minutes, consequence
+  gate 20%. The period from 2026-10-21 23:47 KST ended with the 1.5.23 update; its pairs do not count. 1.5.23 added the
+  top market stories (stories many outlets cover) to reviews, the scout and the narrative, and lets narrative drivers
+  state causal chains with each step labeled signal, headline or hypothesis.
