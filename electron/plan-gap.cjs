@@ -24,12 +24,14 @@ function addMinimumPositions(context){
   const cashKRW=m=>{if(m==='US'){const us=markets.find(x=>x.market==='US');const usd=us?.buyingPower?.usd??(typeof context.cash==='object'?context.cash?.USD:context.currency==='USD'?context.cash:null);return fx&&Number.isFinite(usd)?usd*fx:null;}return typeof context.cash==='object'?context.cash?.KRW??null:context.currency==='KRW'?context.cash:null;};
   // The trading limits of the target's market: per market in a combined context, the context's own in a single-market one.
   const policyOf=m=>context.risk?.markets?context.risk.markets[m]??{}:(context.market??'KR')===m?context.risk??{}:{};
-  const marketEquity=m=>Array.isArray(context.markets)&&context.markets.length?context.markets.find(x=>x.market===m)?.equity:context.equity;
+  // The account value the order checks use: the U.S. side adds the KRW that funds its buys through integrated margin.
+  const marketEquity=m=>{const x=Array.isArray(context.markets)&&context.markets.length?context.markets.find(r=>r.market===m):context;const equity=x?.equity;
+    return Number.isFinite(equity)?equity+(m==='US'?Number(x.buyingPower?.fromKRWUSD)||0:0):null;};
   for(const t of gap.targets){const m=marketOf(t.symbol);const p=price(t.symbol);const value=p>0?(m==='US'?(fx?p*fx:null):p):null;
     if(value==null||!(equity>0)){t.minimumPosition={shares:1,unavailable:'price or equity unknown'};continue;}
     const cash=cashKRW(m);const row=sizing.get(t.symbol);const policy=policyOf(m);
     // As the order checks apply them: the order limit to one share in the market's currency, and concentration to the
-    // shares already held plus one, against that market's account value (an empty account fails it).
+    // shares already held plus one, against that market's account value (an account with nothing fails it).
     const held=context.positions?.[t.symbol]?.quantity??0;const base=marketEquity(m);
     const checks={cash:cash==null?null:cash>=value,sizing:row?row.maxShares>=1:null,
       companyCap:Number.isFinite(policy.maxCompanyPct)?base>0&&(held+1)*p/base*100<=policy.maxCompanyPct:null,orderCap:Number.isFinite(policy.maxOrderKRW)?p<=policy.maxOrderKRW:null};

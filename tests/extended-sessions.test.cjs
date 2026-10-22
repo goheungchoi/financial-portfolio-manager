@@ -53,6 +53,18 @@ test('with integrated margin, the extended-session cap counts the KRW that funds
   e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
   const ok=e.propose({symbol:'NASD:AAA',side:'Buy',quantity:3,limitPrice:10});const r=await e.submit(ok.id,'PLACE LIVE ORDER');assert.equal(r.status,'Accepted','$30 within 10% of $350');assert.equal(places,1);
 });
+test('with integrated margin, the concentration cap and the leveraged-product check use the KRW-funded account value',async()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');
+  const snapshot={accountKey:'acct:US',environment:'live',reportedTotal:0,cash:0,holdings:[]};
+  // A fresh engine per order: an accepted order needs reconciliation before the next one.
+  const engine=()=>{const out={places:0,seen:[]};const broker={request:async op=>{if(op==='prepare-order')return {balance:snapshot,price:10,ticket:'t',session:{id:'us-regular',regular:true}};if(op==='place-order'){out.places++;return {brokerOrderId:'1'};}throw new Error(op);}};
+    const e=new LiveEngine(new DatabaseSync(':memory:'),broker,()=>({status:'connected',snapshot:{...snapshot,reportedTotal:1}}),{market:'US'});e.buyingPower=()=>({usd:350,fromKRWUSD:350,integratedMargin:true});
+    e.exposure={check:args=>{out.seen.push(args.equity);return {product:{kind:'standard'},requiresApproval:false};}};
+    e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:20,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');out.e=e;return out;};
+  const a=engine();const ok=a.e.propose({symbol:'NASD:AAA',side:'Buy',quantity:6,limitPrice:10});assert.equal((await a.e.submit(ok.id,'PLACE LIVE ORDER')).status,'Accepted','$60 is 17% of $350, within 20%');assert.equal(a.places,1);
+  assert.deepEqual(a.seen,[351,350],'the leveraged-product check sees the account value plus $350 when proposing ($1 here) and submitting ($0), not an empty account it would skip');
+  const b=engine();const big=b.e.propose({symbol:'NASD:AAA',side:'Buy',quantity:8,limitPrice:10});await assert.rejects(b.e.submit(big.id,'PLACE LIVE ORDER'),/CONCENTRATION_LIMIT/,'$80 is 23% of $350');assert.equal(b.places,0);
+});
 test('a U.S. account holding nothing counts as funded when integrated margin lends it KRW',()=>{
   const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');const snapshot={accountKey:'acct:US',environment:'live',reportedTotal:0,cash:0,holdings:[]};
   const make=()=>new LiveEngine(new DatabaseSync(':memory:'),{request:async()=>{}},()=>({status:'connected',snapshot}),{market:'US'});const limits={symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'percent',value:2}};
