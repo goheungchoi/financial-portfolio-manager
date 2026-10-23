@@ -20,10 +20,11 @@ function number(value) {
   const result=Number(value);if(!Number.isFinite(result) || Math.abs(result)>Number.MAX_SAFE_INTEGER)throw new Error('INVALID_RESPONSE');return result;
 }
 function optionalNumber(value){return value===undefined || value===null || value===''?null:number(value);}
+// The live order inquiry leaves cncl_yn blank for an order that was never canceled (seen 2026-10-23); blank means N.
 function normalizeOrders(rows,start,end) {
   const records=new Map();
   for(const row of rows) {
-    if(!/^[A-Z0-9]{6}$/.test(row.pdno) || typeof row.prdt_name!=='string' || typeof row.odno!=='string' || !/^\d{1,20}$/.test(row.odno) || !['01','02'].includes(row.sll_buy_dvsn_cd) || !['Y','N'].includes(row.cncl_yn))throw new Error('INVALID_RESPONSE');
+    if(!/^[A-Z0-9]{6}$/.test(row.pdno) || typeof row.prdt_name!=='string' || typeof row.odno!=='string' || !/^\d{1,20}$/.test(row.odno) || !['01','02'].includes(row.sll_buy_dvsn_cd) || !['Y','N',''].includes(row.cncl_yn))throw new Error('INVALID_RESPONSE');
     let timestamp;try{timestamp=exchangeTimestamp(row.ord_dt,row.ord_tmd);}catch{throw new Error('INVALID_RESPONSE');}
     if(row.ord_dt<start || row.ord_dt>end)throw new Error('INVALID_RESPONSE');
     const quantity=number(row.ord_qty),filled=number(row.tot_ccld_qty),remaining=number(row.rmn_qty),rejected=number(row.rjct_qty),executionAmount=number(row.tot_ccld_amt),averagePrice=number(row.avg_prvs),orderPrice=number(row.ord_unpr);

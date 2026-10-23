@@ -22,6 +22,12 @@ test('order snapshots distinguish partial fills/cancellations, strip private fie
   assert.ok(!JSON.stringify(orders).includes('must-not-escape'));
   assert.throws(()=>normalizeOrders([row,{...row,tot_ccld_qty:'5'}],'20261001','20261015'),/INCOMPLETE_HISTORY/);
 });
+test('a live order row with a blank cancel flag is a normal order, not a malformed response',()=>{
+  // The row KIS returned for a filled live buy on 2026-10-23 (cncl_yn and orgn_odno blank).
+  const live={ord_dt:'20261023',ord_tmd:'100347',odno:'0007143000',orgn_odno:'',pdno:'028050',prdt_name:'삼성E&A',sll_buy_dvsn_cd:'02',cncl_yn:'',ord_qty:'3',tot_ccld_qty:'3',rmn_qty:'0',rjct_qty:'0',tot_ccld_amt:'180900',avg_prvs:'60300',ord_unpr:'60300',ord_gno_brno:'91253',excg_id_dvsn_cd:'KRX'};
+  const [order]=normalizeOrders([live],'20261023','20261023');assert.equal(order.status,'Filled');assert.equal(order.orderId,'0007143000');assert.equal(order.filled,3);
+  assert.throws(()=>normalizeOrders([{...live,cncl_yn:'X'}],'20261023','20261023'),/INVALID_RESPONSE/,'other values are still rejected');
+});
 test('gross trading cash flow is separate from profit and correction-linked aggregates remain unavailable',()=>{
   const orders=normalizeOrders([row,{...row,odno:'0002',sll_buy_dvsn_cd:'01',tot_ccld_amt:'800'}],'20261001','20261015');
   assert.deepEqual(executionSummary(orders),{orderCount:2,executedOrders:2,ambiguous:false,buy:600,sell:800,grossFlow:200});
