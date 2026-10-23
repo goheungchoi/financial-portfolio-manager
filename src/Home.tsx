@@ -1,3 +1,4 @@
+import {priceBasis} from './live-change.mjs';
 import {useEffect,useState} from 'react';
 import type {PortfolioState,PortfolioRow} from './UnifiedPortfolio';
 import type {RuntimeState} from './RuntimeSettings';
@@ -24,9 +25,12 @@ export function HomeMetrics({state}:{state:PortfolioState}){
   const equity=krLoaded?state.rows.filter(r=>r.market==='KR'||withUS).reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash:null;
   const sample=state.valuationSample??Math.max(Date.parse(state.timestamps.KR??'')||0,Date.parse(state.timestamps.US??'')||0);
   const us=state.rows.filter(r=>r.market==='US');
+  // Where the totals come from: a change here (a market loading, a holding moving from its balance price to a live quote)
+  // settles the value without showing it as a move.
+  const basis=priceBasis(state.rows.filter(r=>r.market==='KR'||withUS),{krLoaded,withUS});
   return <div className="home-metrics">
-    <section className="metric-card" aria-label="Combined equity"><small>Total equity</small><strong>{equity==null?'—':<LiveValue value={equity} format={krw}/>}</strong>
-      <div className="metric-foot">{equity!=null&&<TickDelta value={equity} sample={sample}/>}<span title="Korea and U.S. account totals in their own currencies">{withUS?`${state.totals.KRW!=null?compact(state.totals.KRW):'—'} · ${state.totals.USD!=null?native(state.totals.USD,'USD'):'—'}`:'Korea only'}</span></div></section>
+    <section className="metric-card" aria-label="Combined equity"><small>Total equity</small><strong>{equity==null?'—':<LiveValue value={equity} format={krw} basis={basis}/>}</strong>
+      <div className="metric-foot">{equity!=null&&<TickDelta value={equity} sample={sample} basis={basis}/>}<span title="Korea and U.S. account totals in their own currencies">{withUS?`${state.totals.KRW!=null?compact(state.totals.KRW):'—'} · ${state.totals.USD!=null?native(state.totals.USD,'USD'):'—'}`:'Korea only'}</span></div></section>
     <section className="metric-card" aria-label="Cash"><small>Cash</small><strong>{state.cash.KRW==null&&state.cash.USD==null?'—':krw(cash)}</strong>
       <div className="metric-foot"><span>{equity?`${(cash/equity*100).toFixed(0)}% of equity`:'—'}</span>{withUS&&state.cash.USD?<span>incl. {native(state.cash.USD,'USD')}</span>:null}</div></section>
     <section className="metric-card" aria-label="Unrealized"><small>Unrealized</small><PortfolioProfit rows={state.rows} loaded={equity!=null}/>

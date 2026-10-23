@@ -5,7 +5,7 @@ import {AllocationChart} from './AllocationChart';
 import {TickDelta,LiveValue} from './LiveValue';
 import {useDraftState} from './useDraftState';
 import {usErrorMessage} from './usErrors';
-export type PortfolioRow={symbol:string;name:string;market:string;currency:string;sector:string;region:string;color:string;quantity:number;price:number;cost:number;nativeValue:number;valueKRW:number|null;costKRW:number|null};
+export type PortfolioRow={symbol:string;name:string;market:string;currency:string;sector:string;region:string;color:string;quantity:number;price:number;cost:number;nativeValue:number;valueKRW:number|null;costKRW:number|null;priceSource?:string};
 export type PortfolioState={brokerCode?:string|null;httpStatus?:number|null;valuationSample?:number;rows:PortfolioRow[];cash:{KRW:number|null;USD:number|null};totals:{KRW:number|null;USD:number|null;equityKRW:number|null};fx:{usdKRW:number;source:string;timestamp:number|null}|null;complete:boolean;timestamps:{KR:string|null;US:string|null};sessions:{KR:boolean;US:boolean};usError:string|null;warnings:{symbol:string;code:string}[]};
 const money=(n:number,currency='KRW')=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 export function UnifiedPortfolio({mode='overview',onCompany}:{mode?:'overview'|'holdings';onCompany?:(symbol:string)=>void}){
