@@ -58,9 +58,15 @@ adjudication (section 5).
 
 ## 4. Automatic triage
 
-`same`, `wording` (immaterial); `verdict`, `size`, `action`, `symbol` (material differences, candidates for
+`same`, `wording` (immaterial); `verdict`, `size`, `action`, `symbol`, `withheld` (material differences, candidates for
 adjudication); `failed`. Size differences are measured against equity in won, with U.S. prices converted. A material
 difference is not a miss.
+
+`withheld` (from protocol 2026-10-24): one model proposed a Buy that the app held back because its plan was incomplete,
+and the other did not. Both may execute nothing, but an incomplete plan and a deliberate Hold reveal different reasoning
+and reliability, so the pair is adjudicated rather than counted as an agreement. The record keeps the intended trade
+(symbol, quantity), why it was held back, whether one correction request was made and whether it was accepted. A
+withheld Buy is not automatically a model error.
 
 Each pair also records an evidence gap (`electron/evidence-anchor.cjs`): evidence only one model read. A pair is queued for
 inspection when that evidence bears on a decision (one model waits on data or an event for a stock, or trades it, while
@@ -84,7 +90,8 @@ acted, or changed a verdict, and did not?
 - Outcome: `sol-better`, `luna-better`, `both-defensible`, `both-wrong` (recorded separately, with whether the cheaper
   model was worse), `immaterial`.
 - Error category for the worse side: `missed-action`, `wrong-action`, `sizing`, `constraint`, `factual`,
-  `evidence-ignored`.
+  `evidence-ignored`, `incomplete-plan` (a trade held back because its plan was incomplete, when that is judged the
+  error; the intended trade is judged on its merits separately).
 - Severity, by what the error puts at stake as a share of total equity, without overlap: low below 2%; medium from 2%
   to below 10%; high at 10% or more. A `constraint` error is at least medium.
 
@@ -198,3 +205,11 @@ routing keeps the mandatory escalations, random spot checks and the same triage 
   gate 20%. The period from 2026-10-21 23:47 KST ended with the 1.5.23 update; its pairs do not count. 1.5.23 added the
   top market stories (stories many outlets cover) to reviews, the scout and the narrative, and lets narrative drivers
   state causal chains with each step labeled signal, headline or hypothesis.
+- 2026-10-24: protocol version 2026-10-24. No evaluation period is active: the period frozen on 2026-10-22 09:05 KST
+  ended with the 1.5.24 update, which changed the engine code, and later releases changed it further. Amendments, before
+  any data of the next period: `withheld` is a material triage class with `incomplete-plan` as an adjudication category
+  (above); a Buy now needs a before-and-after portfolio comparison (the position and its related exposure as shares of
+  total equity, and whether equity is reliable), checked against the app's own weights; reviews see the previous review
+  and must explain a reversal; data gaps carry a retry limit; Korean cash and equity exclude KRW committed to unsettled
+  U.S. buys. These change the trading instructions, so the next freeze starts a new period under this protocol version;
+  earlier pairs stay diagnostic. Thresholds unchanged.

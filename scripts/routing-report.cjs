@@ -19,7 +19,7 @@ const audited=id=>createHash('sha256').update(String(id)).digest()[0]<26;
 // Only records from a verified live broker account count; paper, mock and unknown provenance are supplementary.
 const isLive=r=>r.provenance?.broker==='live'&&r.provenance?.connection==='live'&&r.account!=='paper';
 // An adjudication counts only when complete; anything else stays pending.
-const OUTCOMES=['sol-better','luna-better','both-defensible','both-wrong','immaterial'],CATEGORIES=['missed-action','wrong-action','sizing','constraint','factual','evidence-ignored'],SEVERITIES=['low','medium','high'];
+const OUTCOMES=['sol-better','luna-better','both-defensible','both-wrong','immaterial'],CATEGORIES=['missed-action','wrong-action','sizing','constraint','factual','evidence-ignored','incomplete-plan'],SEVERITIES=['low','medium','high'];
 function validAdjudication(a){
   if(!a||typeof a.reviewId!=='string'||!OUTCOMES.includes(a.outcome)||typeof a.reason!=='string'||a.reason.trim().length<20||!Number.isFinite(Date.parse(a.judgedAt))||a.missedActionChecked!==true)return false;
   if(['sol-better','luna-better','both-wrong'].includes(a.outcome)&&(!CATEGORIES.includes(a.category)||!SEVERITIES.includes(a.severity)))return false;
