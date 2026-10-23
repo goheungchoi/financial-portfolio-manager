@@ -86,3 +86,25 @@ test('a filled Korean order is reconciled from the live order history and stops 
   await e.reconcile();const done=e.orders().find(o=>o.id===buy.id);assert.deepEqual([done.status,done.filled,done.fillPrice],['Filled',3,60300]);
   const again=e.propose({symbol:'028050',side:'Sell',quantity:3,limitPrice:54000});assert.equal((await e.submit(again.id,'PLACE LIVE ORDER')).status,'Accepted','the stop-loss can be placed once the fill is recorded');
 });
+test('failed order checks are shown to reviews as unconfirmed, raise one alert, and clear on success',async()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');const {combinedContext}=require('../electron/combined-context.cjs');
+  const snapshot={accountKey:'acct:KR',environment:'live',reportedTotal:1500001,cash:1500001,holdings:[]};let history='broken';
+  const broker={request:async op=>{if(op==='prepare-order')return {balance:snapshot,price:60300,ticket:'t',session:{id:'krx-regular',regular:true}};if(op==='place-order')return {brokerOrderId:'0007143000'};
+    if(op==='orders'){if(history==='broken')throw new Error('INVALID_RESPONSE');return {orders:[{orderId:'0007143000',filled:3,status:'Filled',averagePrice:60300}]};}
+    if(op==='live-context')return {balance:{...snapshot,holdings:[{symbol:'028050',quantity:3,cost:60300}]},quotes:[{symbol:'028050',price:60500}],marketSession:{open:true}};throw new Error(op);}};
+  const e=new LiveEngine(new DatabaseSync(':memory:'),broker,()=>({status:'connected',snapshot}),{market:'KR'});
+  e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
+  assert.equal(e.orderReconciliation(),null,'nothing open, nothing to confirm');
+  const buy=e.propose({symbol:'028050',side:'Buy',quantity:3,limitPrice:60300});await e.submit(buy.id,'PLACE LIVE ORDER');
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const logs=[],alerts=[];const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:50000}],async()=>50000),{request:async()=>({})},(id,role,title,body)=>logs.push(title));a.notify=(id,m)=>alerts.push(id);
+  for(let i=0;i<4;i++){await assert.rejects(e.reconcile(),/INVALID_RESPONSE/);a.observeReconcile('KR',e.reconcileHealth);}
+  assert.equal(alerts.length,1,'one alert per episode, not one per check');assert.equal(logs.filter(t=>t==='Order status not confirmed').length,1);
+  const ctx=await e.context();assert.equal(ctx.orderReconciliation.status,'unconfirmed');assert.equal(ctx.orderReconciliation.failedChecks,4);assert.match(ctx.orderReconciliation.note,/may already be filled/);
+  assert.deepEqual(Object.keys(ctx.orders[0]),['symbol','side','quantity','filled','status','orderId','placedAt','lastConfirmedAt']);assert.equal(ctx.orders[0].orderId,'0007143000');
+  const us={market:'US',currency:'USD',equity:0,cash:0,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:false}};
+  assert.deepEqual(combinedContext({...ctx,market:'KR'},us,null).orderReconciliation.map(r=>[r.market,r.status]),[['KR','unconfirmed']]);
+  history='fixed';await e.reconcile();a.observeReconcile('KR',e.reconcileHealth);assert.equal(e.reconcileHealth.failures,0);assert.equal(e.orders()[0].status,'Filled');assert.equal(e.orderReconciliation(),null,'filled: nothing open');
+  history='broken';const again=e.propose({symbol:'028050',side:'Sell',quantity:3,limitPrice:54000});await e.submit(again.id,'PLACE LIVE ORDER');
+  for(let i=0;i<3;i++){await assert.rejects(e.reconcile());a.observeReconcile('KR',e.reconcileHealth);}assert.equal(alerts.length,2,'a new episode alerts again');
+});
