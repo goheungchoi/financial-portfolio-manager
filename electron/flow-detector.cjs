@@ -24,10 +24,12 @@ function unexplained(prev,now,orders){
   const explained=market=>recent.filter(o=>(o.market??'KR')===market).reduce((sum,o)=>sum+cashEffect(o),0);
   return {KR:now.krCash-prev.krCash-explained('KR'),US:usKnown?now.usCash-prev.usCash-explained('US'):0};
 }
-// Which flows an unexplained change amounts to: none below the threshold or when KRW and USD offset each other.
+// Which flows an unexplained change amounts to: none below the threshold. KRW and USD changes that offset each other
+// are money moving between the two markets (integrated-margin funding of a U.S. buy, a currency exchange): recorded as
+// a transfer pair so each market's own returns stay right; transfers do not count in the combined account.
 function flowsFrom(u,fx){
   const usKRW=fx>0?u.US*fx:null;const big=v=>Math.abs(v)>=THRESHOLD_KRW;
-  if(usKRW!=null&&!big(u.KR+usKRW))return [];
+  if(usKRW!=null&&!big(u.KR+usKRW))return big(u.KR)&&big(usKRW)?[{market:'KR',amount:Math.round(u.KR),transfer:true},{market:'US',amount:Math.round(u.US*100)/100,transfer:true}]:[];
   const out=[];if(big(u.KR))out.push({market:'KR',amount:Math.round(u.KR)});
   if(usKRW!=null?big(usKRW):Math.abs(u.US)>=10)out.push({market:'US',amount:Math.round(u.US*100)/100});
   return out;
@@ -44,7 +46,8 @@ class FlowDetector {
     if(!prev||prev.basis!==BASIS){save();return [];}
     const u=unexplained(prev,now,orders);if(!u)return [];
     const found=flowsFrom(u,fx);save();const day=seoulDate(now.at);
-    return found.map(f=>this.performance.addFlow(account,{day,market:f.market,amount:f.amount,detected:true,
+    return found.map(f=>this.performance.addFlow(account,f.transfer?{day,market:f.market,amount:f.amount,transfer:true,
+      note:`Transfer between markets: ${f.amount<0?'out of':'into'} the ${f.market==='US'?'U.S.':'Korean'} account (integrated-margin funding or currency exchange).`}:{day,market:f.market,amount:f.amount,detected:true,
       note:`Detected: ${f.market==='US'?'U.S.':'Korean'} cash ${f.amount>0?'rose':'fell'} with no matching trade. Confirm or remove.`}));
   }
 }

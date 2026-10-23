@@ -21,8 +21,15 @@ test('a U.S. buy funded in KRW is not a deposit, and settlement is not a withdra
   const db=new DatabaseSync(':memory:');const d=new FlowDetector(db,new PerformanceHistory(db,()=>now),()=>now);const net=(settled,buy)=>settled-buy;
   d.observe('a',{krCash:net(1342560,0),usCash:0,fx:1318.4});now+=3600000;
   const usBuy1={market:'US',side:'Buy',status:'Filled',filled:1,fillPrice:331.27,resultCosts:{netCash:-332.08},createdAt:now-60000};
-  assert.deepEqual(d.observe('a',{krCash:net(1342560,431000),usCash:0,fx:1318.4,orders:[googl]}),[],'the buy');
+  const buy=d.observe('a',{krCash:net(1342560,431000),usCash:0,fx:1318.4,orders:[usBuy1]});assert.deepEqual(buy.map(f=>[f.market,f.amount,f.transfer]),[['KR',-431000,true],['US',332.08,true]],'the buy moves money between markets; nothing to confirm');
   now+=86400000*2;assert.deepEqual(d.observe('a',{krCash:net(1342560-431000,0),usCash:0,fx:1318.4,orders:[usBuy1]}),[],'settlement: KIS moves the KRW out of cash');
   const old=new DatabaseSync(':memory:');old.exec('CREATE TABLE flow_watch(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');old.prepare('INSERT INTO flow_watch VALUES(?,?)').run('a',JSON.stringify({at:now-1000,krCash:1342560,usCash:0}));
   const d2=new FlowDetector(old,new PerformanceHistory(old,()=>now),()=>now);assert.deepEqual(d2.observe('a',{krCash:613645,usCash:0,fx:1318.4}),[],'an old-basis reading restarts instead of reporting a ₩714k withdrawal');
+});
+test('transfers keep the returns of each market right and do not count in the combined account',()=>{
+  const {PerformanceHistory}=require('../electron/performance.cjs');let now=Date.parse('2026-10-16T06:00:00Z');const p=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);
+  const rec=(KRW,USD)=>p.record('a',{totals:{KRW,USD,equityKRW:KRW+USD*1318.4},cash:{KRW:0,USD:0},fx:{usdKRW:1318.4}});
+  rec(1521370,0);now+=86400000;p.addFlow('a',{day:'2026-10-17',market:'KR',amount:-728915,transfer:true});p.addFlow('a',{day:'2026-10-17',market:'US',amount:533.84,transfer:true});
+  rec(1521370-728915,528.19);const all=k=>p.summary('a',k).periods.find(x=>x.label==='All');
+  assert.ok(Math.abs(all('KRW').twr)<1e-9,'Korea did not lose the KRW it sent');assert.ok(Math.abs(all('COMBINED').twr-((1521370-728915+528.19*1318.4)/1521370-1))<1e-9,'combined: only the real −2.1% change');
 });
