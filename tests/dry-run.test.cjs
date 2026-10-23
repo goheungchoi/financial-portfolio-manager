@@ -46,3 +46,30 @@ test('dry runs refuse while a review is running and outside KIS',async()=>{
   const {automation}=harness();automation.busy=true;await assert.rejects(automation.dryRun('inputs'),/REVIEW_BUSY/);automation.busy=false;
   await assert.rejects(automation.dryRun('other'),/INVALID_REQUEST/);automation.configure({scope:'paper'});await assert.rejects(automation.dryRun('inputs'),/DRY_RUN_NEEDS_KIS/);
 });
+// A KIS-scope automation whose engine is a stub, so a normal review can reach order proposal and submission.
+function engineHarness(){
+  const h=harness();const calls={propose:[],submit:[]};
+  const ctx=()=>({environment:'kis',market:'KR',currency:'KRW',executionEnabled:true,automaticExecutionEnabled:true,marketSession:{open:true,status:'open'},equity:10000000,cash:5000000,positions:{},
+    universe:[{symbol:'005930',name:'Samsung',price:217000}],quotes:[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now(),stale:false}],orders:[],
+    risk:{symbols:[],anyStock:true,maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,baseline:10000000,dayPeakEquity:10000000,lossLimit:{mode:'off',value:0}}});
+  h.automation.live={identity:()=>'acct',autoEnabled:true,enabled:true,market:'KR',context:async()=>ctx(),orderReconciliation:()=>null,propose:cmd=>{calls.propose.push(cmd);return {id:'P1',status:'Ready'};},autoSubmit:async id=>{calls.submit.push(id);return {id:'O1',status:'Accepted'};},getState:()=>({}),orders:()=>[]};
+  return {...h,calls};
+}
+const buy={decision:{action:'Buy',symbol:'005930',quantity:1,explanation:'Buy one.',credit:'none',loanDate:'',plan:{thesis:'t',invalidation:'i',stopPrice:200000,targetPrice:240000,horizonDays:30,confidence:'medium'}},usage:{inputTokens:1,outputTokens:1},provider:'openai'};
+test('after the shared-input refactor a normal review still reaches proposal and submission, recording its trigger and lessons',async()=>{
+  const {automation,supplied,queue,calls}=engineHarness();queue.push(()=>buy);
+  await automation.review('Scheduled review');
+  assert.equal(calls.propose.length,1,'proposed');assert.deepEqual(calls.submit,['P1'],'submitted');
+  const r=automation.reviewHistory(1,true)[0];assert.equal(r.trigger,'Scheduled review');assert.ok(Array.isArray(r.contextEvidence.lessonIds),'lesson ids recorded');
+  const given=supplied.find(([op])=>op==='decision')[1].context;assert.equal(given.agentDesk.conditionalOrders.monitoring.startsWith('inactive'),true,'paused: monitoring stated inactive');
+});
+test('a dry run is never the next review\'s baseline and never reaches the engine',async()=>{
+  const {automation,queue,calls}=engineHarness();await automation.review('Scheduled review');const baseline=automation.lastFingerprint;assert.ok(baseline);
+  queue.push(()=>buy);const r=await automation.dryRun('review');assert.equal(r.review.decision.action,'Buy');
+  assert.equal(automation.lastFingerprint,baseline,'the skip baseline is still the last real review');assert.deepEqual(calls,{propose:[],submit:[]});
+});
+test('conditional-order monitoring is stated active only when orders can actually fire',async()=>{
+  const {automation}=harness();assert.equal(automation.conditionalMonitoringActive(),false,'paused');
+  automation.configure({enabled:true});automation.sessionArmed=true;assert.equal(automation.conditionalMonitoringActive(),true);assert.equal(automation.deskState().monitoringActive,true);
+  automation.configure({scope:'paper'});assert.equal(automation.conditionalMonitoringActive(),false,'the paper account never fires them');
+});
