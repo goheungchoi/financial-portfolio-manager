@@ -8,7 +8,7 @@ const {assess,GATE_PCT}=require('./complexity.cjs');const {route}=require('./tok
 const POLICY=threshold=>({openaiModel:'main',reasoningEffort:'main',routineModel:'cheaper',routineEffort:'cheaper',modelRouting:'complexity',complexityThreshold:threshold,degradeNearBudget:true,shadowEvaluation:false});const {createHash}=require('node:crypto');const fs=require('node:fs');
 const DAY=86400000,HOUR=3600000;
 // The evaluation protocol version (docs/ROUTING-EVALUATION.md); a pass is bound to it.
-const PROTOCOL_VERSION='2026-10-20';
+const PROTOCOL_VERSION='2026-10-24';
 // What an evaluation is bound to: the protocol, the whole decision engine (every engine module: review instructions,
 // decision format, tool definitions, evidence preparation, validation and post-processing), the decision-relevant
 // settings, the models and the router settings. Records and passes count only under the binding they were made with.

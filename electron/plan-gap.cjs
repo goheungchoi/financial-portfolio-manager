@@ -52,4 +52,13 @@ function verdictIssues(context,decision){
 }
 // Targets the review gave no verdict on (planVerdicts); used to log incomplete accounting, never to fail a review.
 function missingVerdicts(context,decision){const targets=context?.scoutPlan?.targets??[];if(!targets.length)return [];const seen=new Set((decision?.planVerdicts??[]).map(f=>f.symbol));return targets.map(t=>t.symbol).filter(s=>!seen.has(s));}
-module.exports={planGap,missingVerdicts,marketOf,addMinimumPositions,verdictIssues};
+// The app's own weight of a proposed Buy's symbol before and after, against total equity, for comparison with the
+// weights the review stated in plan.portfolioImpact. Null when equity or the price is unknown.
+function impactCheck(context,decision){
+  const C=require('./complexity.cjs');const equity=C.equityKRW(context),fx=C.usdKrw(context);const s=decision.symbol;const q=(context.quotes??[]).find(x=>x.symbol===s);
+  const unit=q?.price>0?(marketOf(s)==='US'?(fx?q.price*fx:null):q.price):null;if(!(equity>0)||unit==null)return null;
+  const held=context.positions?.[s]?.quantity??0;const pct=v=>Math.round(v/equity*1000)/10;
+  const before=pct(held*unit),after=pct((held+(decision.quantity||0))*unit);const stated=decision.plan.portfolioImpact;
+  return {appWeightBeforePct:before,appWeightAfterPct:after,statedWeightAfterPct:stated.weightAfterPct,differencePts:Math.round(Math.abs(after-stated.weightAfterPct)*10)/10,equityReliable:context.equityReliability?.reliable??null};
+}
+module.exports={planGap,missingVerdicts,marketOf,addMinimumPositions,verdictIssues,impactCheck};
