@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getPerformance: () => ipcRenderer.invoke('performance:get'),
   addCashFlow: value => ipcRenderer.invoke('performance:add-flow', value),
   removeCashFlow: id => ipcRenderer.invoke('performance:remove-flow', id),
+  confirmCashFlow: id => ipcRenderer.invoke('performance:confirm-flow', id),
   refreshBenchmarks: () => ipcRenderer.invoke('performance:refresh-benchmarks'),
   getScoreboard: () => ipcRenderer.invoke('scoreboard:get'),
   refreshScoreboard: () => ipcRenderer.invoke('scoreboard:refresh'),
