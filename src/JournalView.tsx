@@ -8,7 +8,8 @@ type Review=RuntimeState['reviews'][number];
 const PROVIDER:Record<string,string>={local:'Local rules',openai:'OpenAI',external:'External agent'};
 const day=(t:number)=>new Date(t).toLocaleDateString('en-CA');
 const clock=(t:number)=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-const title=(r:Review)=>r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`;
+const withheldOf=(r:Review)=>(r.decision as {withheld?:{symbol:string}}).withheld;
+const title=(r:Review)=>withheldOf(r)?`Buy withheld: incomplete plan (${withheldOf(r)!.symbol})`:r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`;
 const money=(value:number|null,currency:string)=>value==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2,signDisplay:'exceptZero'}).format(value);
 // The selected decision with what came of it: the order, its outcome and any lesson drawn from it.
 function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state:RuntimeState;onNavigate?(tab:string):void;onLessons():void}){

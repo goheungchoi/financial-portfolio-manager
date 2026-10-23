@@ -55,9 +55,13 @@ class ScheduleObserver {
   noteEventReview(trigger,state){if(EVENT_TRIGGERS.has(trigger))this.run(state,[{rule:'event',trigger}]);}
   // An actual review: whether a proposed run happened since the previous actual review, its cost, and its changes.
   recordReview(review,costUSD){
-    const prevAt=this.lastReview?.timestamp??-Infinity;const covered=this.db.prepare("SELECT id FROM schedule_observations WHERE kind='proposed-run' AND at>? AND at<=? LIMIT 1").get(prevAt,review.timestamp);
+    // Coverage is coarse: a proposed run since the previous actual review. Runs set off only by account or order changes
+    // follow trades the current schedule already made, so they do not show the proposed rules would have found them.
+    const prevAt=this.lastReview?.timestamp??-Infinity;const CONSEQUENCE=new Set(['holdings changed','orders changed','order confirmation changed']);
+    const runs=this.db.prepare("SELECT payload FROM schedule_observations WHERE kind='proposed-run' AND at>? AND at<=?").all(prevAt,review.timestamp).map(r=>JSON.parse(r.payload));
+    const covered=runs.some(r=>r.reasons.some(x=>!CONSEQUENCE.has(x.rule)));
     const changes=decisionChanges(this.lastReview,review);
-    this.save('review',{at:review.timestamp,reviewId:review.id,trigger:review.trigger,covered:Boolean(covered),costUSD:costUSD??null,action:review.decision?.action??null,changes});this.lastReview=review;
+    this.save('review',{at:review.timestamp,reviewId:review.id,trigger:review.trigger,covered,coveredBy:[...new Set(runs.flatMap(r=>r.reasons.map(x=>x.rule)))],costUSD:costUSD??null,action:review.decision?.action??null,changes});this.lastReview=review;
   }
   // Savings and safety, reported apart. projected cost: proposed runs at the median actual review cost.
   summary(since=0){

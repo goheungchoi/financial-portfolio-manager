@@ -53,3 +53,11 @@ test('in the app, observation records only: no AI or broker calls, no schedule c
   assert.equal(db.prepare("SELECT COUNT(*) n FROM schedule_observations WHERE kind='review'").get().n,1,'the actual review is logged');
   const ctx=JSON.parse(db.prepare('SELECT payload FROM review_contexts').get()?.payload??'{}');assert.ok(!/schedule_observation|proposed-run|scheduleObserver/.test(JSON.stringify(ctx)),'nothing reaches review inputs');
 });
+test('runs set off only by a trade the current schedule made do not count as coverage',()=>{
+  const db=new DatabaseSync(':memory:');const o=new ScheduleObserver(db);o.observe(state(T));const hold={decision:{action:'Hold',symbol:'',quantity:0,planVerdicts:[]}};
+  o.recordReview({id:'r0',timestamp:T+M,trigger:'Scheduled review',...hold},0.1);
+  o.observe(state(T+5*M,{orders:[{id:'o1',status:'Filled',filled:1}],holdings:{'028050':3,'NASD:GOOGL':1}}));
+  o.recordReview({id:'r1',timestamp:T+10*M,trigger:'Scheduled review',...hold},0.1);
+  const rec=JSON.parse(db.prepare("SELECT payload FROM schedule_observations WHERE kind='review' ORDER BY at DESC").get().payload);
+  assert.equal(rec.covered,false);assert.deepEqual(rec.coveredBy.sort(),['holdings changed','orders changed']);
+});

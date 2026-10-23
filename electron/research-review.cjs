@@ -18,7 +18,20 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
     if(round>0){const fitted=await require('./context-fit.cjs').fit(continuation,{keepFrom,compact});if(fitted.steps.length){continuation=fitted.items;log('System','Research context condensed',JSON.stringify(fitted.steps));}}
     const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});
     usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;
-    if(!result.toolCalls)return {...result,usage};
+    if(!result.toolCalls){
+      // A Buy held back because its plan is incomplete gets one request naming the missing field; the safeguard stays.
+      // The answer is accepted only if it is a complete plan; otherwise the Buy stays withheld and says so.
+      if(result.decision?.withheld&&Array.isArray(result.continuation)){
+        const w=result.decision.withheld;log('System','Plan correction requested',`${w.quantity} ${w.symbol}: ${w.reason}`);
+        const ask={role:'user',content:`The app held back your Buy of ${w.quantity} ${w.symbol} because its plan is incomplete: ${w.reason}. Return your decision again with every plan field filled from your own analysis (thesis, invalidation, stopPrice below the current price, horizonDays, confidence). If you cannot justify a complete plan, return Hold. Do not change the trade only to satisfy the format.`};
+        try{const again=await request({research:false,final:true,continuation:[...result.continuation,ask]});usage.inputTokens+=again.usage?.inputTokens??0;usage.outputTokens+=again.usage?.outputTokens??0;
+          if(again.decision&&!again.decision.withheld){log('System','Plan correction accepted',`${again.decision.action} ${again.decision.symbol??''} ${again.decision.quantity??''}`.trim());return {...again,usage,decision:{...again.decision,planCorrected:{missing:w.reason}}};}
+          log('System','Plan correction not accepted',again.decision?.withheld?.reason??'no decision');}
+        catch(error){log('System','Plan correction failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED');}
+        const {continuation:_,...kept}=result;return {...kept,usage,decision:{...result.decision,withheld:{...w,correctionTried:true}}};
+      }
+      const {continuation:_,...done}=result;return {...done,usage};
+    }
     if(!evidence||round===ROUNDS-1||result.toolCalls.length>MAX_CALLS||!Array.isArray(result.continuation))throw new Error('INVALID_AI_RESPONSE');
     keepFrom=Array.isArray(continuation)?continuation.length:0;continuation=result.continuation;
     for(const call of result.toolCalls){

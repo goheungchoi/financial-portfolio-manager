@@ -16,7 +16,7 @@ function summarize(id:string,events:Interaction[]):Run{
   const planned=events.some(e=>e.title==='Scout plan');
   // A dry run logs one summary entry when it finishes; it has no "Review completed" entry.
   const dry=events.some(e=>e.title==='Dry run · inputs checked'||e.title==='Dry-run review · nothing applied');
-  const outcome=failed?'Failed':planned?'Plan':dry?'Dry run':value?.action??(events.some(e=>/reflection/i.test(e.title))?'Reflection':done?'Completed':'In progress');
+  const outcome=failed?'Failed':planned?'Plan':dry?'Dry run':value?.withheld?'Buy withheld':value?.action??(events.some(e=>/reflection/i.test(e.title))?'Reflection':done?'Completed':'In progress');
   return {id,events,started:first.timestamp,trigger:events.find(e=>e.kind==='Program')?.title??first.title,outcome,tone:failed?'failed':planned?'scout':dry?'done':value?.action?.toLowerCase()??(done?'done':'running'),model:model?model.body.split(' ')[0]:null,tokens:usage&&usage.inputTokens!=null?`${(usage.inputTokens+(usage.outputTokens??0)).toLocaleString()} tokens`:null,symbol:value?.symbol??''};
 }
 // A short, readable preview of the context object the AI received.
