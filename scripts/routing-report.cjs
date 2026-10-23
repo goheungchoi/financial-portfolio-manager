@@ -8,7 +8,7 @@
 const fs=require('node:fs');const path=require('node:path');const {createHash}=require('node:crypto');const {DatabaseSync}=require('node:sqlite');
 const {simulate,binding}=require('../electron/routing-sim.cjs');
 const arg=(name,fallback)=>{const i=process.argv.indexOf('--'+name);return i>0&&process.argv[i+1]&&!process.argv[i+1].startsWith('--')?process.argv[i+1]:fallback;};
-const MATERIAL=['action','symbol','size','verdict'];
+const MATERIAL=['action','symbol','size','verdict','withheld'];
 // One-sided 95% Clopper-Pearson upper bound on a binomial proportion (x events in n trials).
 function upperBound(x,n,alpha=0.05){if(!n)return null;if(x>=n)return 1;let lo=x/n,hi=1;
   const cdf=p=>{let term=Math.pow(1-p,n),sum=term;for(let k=1;k<=x;k++){term*=(n-k+1)/k*p/(1-p);sum+=term;}return sum;};

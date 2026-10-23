@@ -460,7 +460,7 @@ class Automation {
   recordShadow(review,assessed,shadow,anchor){
     const C=require('./complexity.cjs');const a=assessed.assessment;const frozen=this.replays.context(review.id)??{};
     const cost=kind=>this.db.prepare('SELECT payload FROM ai_calls WHERE day>=?').all(seoulDate(review.timestamp-86400000)).map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===review.id&&(c.kind??'review')===kind).reduce((x,c)=>({micro:x.micro+(c.accountedMicro??0),inputTokens:x.inputTokens+(c.usage?.inputTokens??0),outputTokens:x.outputTokens+(c.usage?.outputTokens??0),calls:x.calls+1}),{micro:0,inputTokens:0,outputTokens:0,calls:0});
-    const brief=d=>d?{action:d.action,symbol:d.symbol||null,quantity:d.quantity||0,explanation:String(d.explanation??'').slice(0,1200),plan:d.plan??null,planVerdicts:d.planVerdicts??[],complexity:d.complexity??null}:null;
+    const brief=d=>d?{action:d.action,symbol:d.symbol||null,quantity:d.quantity||0,explanation:String(d.explanation??'').slice(0,1200),plan:d.plan??null,planVerdicts:d.planVerdicts??[],complexity:d.complexity??null,...(d.withheld?{withheld:{symbol:d.withheld.symbol,quantity:d.withheld.quantity,reason:d.withheld.reason,...(d.withheld.correctionTried?{correctionTried:true}:{})}}:{}),...(d.planCorrected?{planCorrected:d.planCorrected}:{})}:null;
     const symbol=review.decision.symbol||shadow.decision?.symbol;const quote=(frozen.quotes??[]).find(q=>q.symbol===symbol);const fx=C.usdKrw(frozen);
     const priceKRW=quote?.price>0?(/:/.test(symbol)?(fx?quote.price*fx:null):quote.price):null;
     const transcript=anchor.export();

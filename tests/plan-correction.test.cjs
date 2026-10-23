@@ -26,3 +26,8 @@ test('reviews are told how to explain a reversal of the previous review',()=>{
   const auto=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(auto,/context\.previousReview=\{at:/);
   const {fingerprint}=require('../electron/token-saver.cjs');const base={universe:[],quotes:[]};assert.equal(fingerprint({...base,previousReview:{action:'Hold'}}).exact,fingerprint({...base,previousReview:{action:'Buy'}}).exact,'the previous review alone does not force a review');
 });
+test('review fix: withheld pairs stay in the adjudication queue with their details',()=>{
+  const fs=require('node:fs'),path=require('node:path');
+  assert.match(fs.readFileSync(path.join(__dirname,'..','scripts','routing-report.cjs'),'utf8'),/const MATERIAL=\['action','symbol','size','verdict','withheld'\];/);
+  const auto=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(auto,/withheld:\{symbol:d\.withheld\.symbol,quantity:d\.withheld\.quantity,reason:d\.withheld\.reason/);
+});

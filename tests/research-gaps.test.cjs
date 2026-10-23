@@ -28,3 +28,11 @@ test('through real reviews: gaps are recorded from each review and the next revi
   for(let i=0;i<3;i++)await a.review('User request');await a.review('User request');
   const last=supplied.at(-1).context.researchGaps;assert.equal(last[0].symbol,'005930');assert.equal(last[0].status,'retry limit reached');assert.equal(last[0].reviews,3);
 });
+test('review fix: a different question for the same symbol starts a new count; paraphrases continue it',()=>{
+  const g=new ResearchGaps(new DatabaseSync(':memory:'));
+  for(const q of ['What is filing-backed capital spending and free cash flow after it?','Cash generation after capital expenditure and its implications for the valuation.','How much cash remains after capital expenditures ahead of earnings?'])
+    g.record('s',[wait('NASD:AMZN',q)],[{symbol:'NASD:AMZN',source:'get_company_research:financials'}]);
+  assert.equal(g.context('s')[0].reviews,3,'three paraphrases of one question');assert.equal(g.context('s')[0].status,'retry limit reached');
+  g.record('s',[wait('NASD:AMZN','Whether a recent regulatory filing changes the litigation risk')],[{symbol:'NASD:AMZN',source:'get_company_research:events'}]);
+  const [fresh]=g.context('s');assert.equal(fresh.reviews,1,'a new question does not inherit the exhausted limit');assert.equal(fresh.status,'retrying');assert.deepEqual(fresh.sourcesTried,['get_company_research:events'],'nor the old sources');
+});
