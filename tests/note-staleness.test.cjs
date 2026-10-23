@@ -35,13 +35,18 @@ test('regression: a stale "buy pending" note is marked superseded once the buy i
   assert.deepEqual(note.accountStateConflict.resolvedOrders,[{side:'Buy',quantity:3,filled:3,status:'Filled',fillPrice:58700}]);assert.match(note.accountStateConflict.note,/thesis may still apply/);
   assert.equal(snap.agentDesk.conditionalOrders.monitoring.startsWith('inactive'),true);
 });
-test('a legacy note with no order link is superseded by its text only when a confirmed check after it shows nothing open',()=>{
+test('a legacy note with no order link is superseded by its text only when an order open at writing time has since resolved',()=>{
   const at=Date.parse('2026-10-14T05:37:00Z');const note={symbol:'990020',note:STALE,updatedAt:at,expiresAt:at+45*86400000};
-  const filled=[{id:'i1',symbol:'990050',side:'Buy',quantity:3,filled:3,status:'Filled',fillPrice:58700,reconciledAt:at+3600000}];
-  assert.ok(annotate([note],{orders:filled,positions:{'990050':{quantity:3}},confirmedAt:at+3600000})[0].accountStateConflict);
-  assert.equal(annotate([note],{orders:filled,positions:{'990050':{quantity:3}},confirmedAt:at-60000})[0].accountStateConflict,undefined,'a check older than the note proves nothing');
-  assert.equal(annotate([note],{orders:[{...filled[0],status:'Accepted',filled:0}],confirmedAt:at+3600000})[0].accountStateConflict,undefined,'an order really is open');
-  assert.equal(annotate([{...note,note:'Thesis: buyback and Q3 profit; reassess near ₩54,000.'}],{orders:filled,confirmedAt:at+3600000})[0].accountStateConflict,undefined,'a thesis without order claims is untouched');
+  const filled=[{id:'i1',symbol:'990020',side:'Buy',quantity:3,filled:3,status:'Filled',fillPrice:58700,createdAt:at-8*3600000,reconciledAt:at+8*3600000}];
+  const flagged=annotate([note],{orders:filled,positions:{'990020':{quantity:3}},confirmedAt:at+9*3600000})[0].accountStateConflict;
+  assert.ok(flagged);assert.deepEqual(flagged.resolvedOrders,[{side:'Buy',quantity:3,filled:3,status:'Filled',fillPrice:58700}]);
+  assert.equal(annotate([note],{orders:[{...filled[0],reconciledAt:at-60000}],confirmedAt:at+9*3600000})[0].accountStateConflict,undefined,'resolved before the note: nothing newer to supersede it');
+  assert.equal(annotate([note],{orders:[{...filled[0],status:'Accepted',filled:0}],confirmedAt:at+9*3600000})[0].accountStateConflict,undefined,'an order really is open');
+  assert.equal(annotate([{...note,note:'Thesis: buyback and Q3 profit; reassess near ₩52,500.'}],{orders:filled,confirmedAt:at+9*3600000})[0].accountStateConflict,undefined,'a thesis without order claims is untouched');
+  // The correction written after reconciliation quotes the old claim and says no order is open: it is not flagged, even
+  // though routine order checks keep running after it.
+  const correction={symbol:'990020',note:'Reconciled 20:13 KST: the buy filled; 3 held; no open order. The earlier "Buy 3 accepted 0 filled" claim is superseded.',updatedAt:at+10*3600000};
+  assert.equal(annotate([correction],{orders:filled,positions:{'990020':{quantity:3}},confirmedAt:at+11*3600000})[0].accountStateConflict,undefined);
 });
 test('a corrected note keeps the original in history and its expiry; reviews are told account state outranks notes',()=>{
   const {AgentDesk}=require('../electron/agent-desk.cjs');const db=new DatabaseSync(':memory:');let now=1000;const desk=new AgentDesk(db,()=>now);
