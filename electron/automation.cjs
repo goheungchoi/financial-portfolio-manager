@@ -8,15 +8,21 @@ function loggableContext(context){
   for(const key of keys){if(text.length<=LOG_LIMIT)break;value[key]=`[not kept in the log: ${(JSON.stringify(value[key])?.length??0).toLocaleString('en-US')} characters; the AI received it in full]`;text=JSON.stringify(value);}
   return text.length<=LOG_LIMIT?text:text.slice(0,LOG_LIMIT-1)+'…';
 }
-// What a dry run reports about review inputs: holdings, open orders and their confirmation, conditional orders and
-// whether they are monitored, and returns with deposits and withdrawals excluded.
-function dryRunSummary(c){
+// What a dry run reports about the assembled review inputs: when and for which account they were built, market
+// sessions, quote times, holdings, open orders and their confirmation, conditional orders and whether they are
+// monitored, cash, and returns with deposits and withdrawals excluded.
+function dryRunSummary(c,{assembledAt=Date.now(),account=null,scope=null}={}){
   const perf=market=>{const h=c.performance?.history?.[market]??(c.market===market?c.performance?.history:null);if(!h)return null;const all=(h.timeWeightedReturns??[]).find(p=>p.period==='All');const last=(h.recentDailyPnl??[]).at(-1)??null;
-    return {allPeriodReturnPct:all?.returnPct??null,latestDay:last,...(h.unconfirmedFlows?.length?{unconfirmedFlows:h.unconfirmedFlows}:{})};};
-  const co=c.agentDesk?.conditionalOrders??null;
-  return {positions:Object.entries(c.positions??{}).filter(([,p])=>p?.quantity>0).map(([symbol,p])=>({symbol,quantity:p.quantity})),cash:c.cash??null,
-    openOrders:(c.orders??[]).map(({symbol,side,quantity,filled,status,orderId})=>({symbol,side,quantity,filled,status,orderId:orderId??null})),orderReconciliation:c.orderReconciliation??null,
-    conditionalOrders:co?{allowed:Boolean(co.allowed),armed:(co.armed??[]).map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity})),monitoring:co.monitoring??null}:null,
+    return {allPeriodReturnPct:all?.returnPct??null,since:all?.from??null,latestDay:last,...(h.unconfirmedFlows?.length?{unconfirmedFlows:h.unconfirmedFlows}:{})};};
+  const co=c.agentDesk?.conditionalOrders??null;const iso=t=>Number.isFinite(t)?new Date(t).toISOString():null;
+  const quoteTimes=(c.quotes??[]).map(q=>q.timestamp??q.retrievedAt).filter(Number.isFinite);
+  const sessions=Array.isArray(c.markets)&&c.markets.length?Object.fromEntries(c.markets.map(m=>[m.market,m.marketSession?.status??null])):{[c.market??'KR']:c.marketSession?.status??null};
+  const price=s=>(c.quotes??[]).find(q=>q.symbol===s)?.price??null;
+  return {assembledAt:iso(assembledAt),scope,account,environment:c.environment??null,sessions,
+    quotes:{count:quoteTimes.length,oldest:iso(Math.min(...quoteTimes)),newest:iso(Math.max(...quoteTimes)),stale:(c.quotes??[]).filter(q=>q.stale).length},
+    positions:Object.entries(c.positions??{}).filter(([,p])=>p?.quantity>0).map(([symbol,p])=>({symbol,quantity:p.quantity,costTotal:p.costTotal??null,price:price(symbol)})),cash:c.cash??null,
+    openOrders:(c.orders??[]).map(({symbol,side,quantity,filled,status,orderId,placedAt,lastConfirmedAt})=>({symbol,side,quantity,filled,status,orderId:orderId??null,placedAt:placedAt??null,lastConfirmedAt:lastConfirmedAt??null})),orderReconciliation:c.orderReconciliation??null,
+    conditionalOrders:co?{allowed:Boolean(co.allowed),monitoring:co.monitoring??null,armed:(co.armed??[]).map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity,conditions:o.conditions,expires:o.expires}))}:null,
     performance:{KR:perf('KR'),US:perf('US')}};
 }
 class Automation {
@@ -210,7 +216,9 @@ class Automation {
     if(this.config.scope==='paper')throw new Error('DRY_RUN_NEEDS_KIS');if(mode==='review'&&(this.config.provider!=='openai'||!this.providerStatus.aiConnected))throw new Error('AI_NOT_CONNECTED');
     this.busy=true;const id=randomUUID();const watchScope=this.watchScope();
     try{
-      const {context}=await this.assembleReviewContext({watchScope,trigger:'Dry run'});const summary=dryRunSummary(context);
+      const {context}=await this.assembleReviewContext({watchScope,trigger:'Dry run'});const summary=dryRunSummary(context,{assembledAt:Date.now(),account:this.accountTag(),scope:this.config.scope});
+      // The full assembled inputs, as the model would receive them, are kept with the record for inspection.
+      const snapshot=require('./token-saver.cjs').compact(context);
       let review=null;
       if(mode==='review'){
         const providerContext=require('./token-saver.cjs').compact(context);const transcript=[];
@@ -229,14 +237,26 @@ class Automation {
         review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120))};
       }
       const record={id,timestamp:Date.now(),mode,summary,...(review?{review}:{})};
-      this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify(record));
+      this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify({...record,snapshot}));
       this.log(id,'System',mode==='review'?'Dry-run review · nothing applied':'Dry run · inputs checked',JSON.stringify(review?{summary,decision:{action:review.decision.action,symbol:review.decision.symbol,quantity:review.decision.quantity,explanation:review.decision.explanation},calls:review.calls,costUSD:review.costUSD}:{summary}));
       return record;
     }finally{this.busy=false;}
   }
   // Whether armed conditional orders are being checked and can fire: the one rule the firing loop, reviews and the UI share.
   conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper');}
-  dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>JSON.parse(r.payload));}
+  dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>{const {snapshot,...rest}=JSON.parse(r.payload);return rest;});}
+  // What a dry-run review would cost before it starts: today's AI use against the limits, and an estimate from the
+  // recent completed reviews on the configured model (a review is one or more requests).
+  dryRunEstimate(){
+    const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
+    const rows=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload)).filter(c=>!c.kind&&c.model===this.config.openaiModel&&c.status==='completed'&&Number.isFinite(c.accountedMicro));
+    const byReview=new Map();for(const c of rows){const v=byReview.get(c.reviewId)??{micro:0,calls:0};v.micro+=c.accountedMicro;v.calls++;byReview.set(c.reviewId,v);}
+    const recent=[...byReview.values()].slice(0,10);const sorted=recent.map(v=>v.micro).sort((a,b)=>a-b);const median=sorted.length?sorted[Math.floor(sorted.length/2)]:null;
+    const usd=v=>v==null?null:Math.round(v)/1e6;
+    return {model:this.config.openaiModel,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${this.config.openaiModel} reviews`,
+      today:{calls:usage.calls,usedUSD:usd(usage.reservedMicro),maxCalls:this.config.unlimitedCalls?null:this.config.maxCallsPerDay,maxUSD:this.config.unlimitedBudget?null:this.config.maxUSDPerDay},
+      note:'A dry-run review counts against the same daily AI limits as live reviews.'};
+  }
   async assembleReviewContext({watchScope,trigger='User request',externalDecision=null,setStage=()=>{}}){
     let context;
       // Korean breadth and flows are refreshed before each review while the Korean session is open, so no review starts

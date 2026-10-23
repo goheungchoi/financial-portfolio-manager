@@ -456,3 +456,6 @@ main>.engine-settings{margin-bottom:18px}
 .market-sessions li{display:grid;grid-template-columns:92px minmax(0,1fr) auto;align-items:center;gap:10px;font-size:12px;padding:4px 8px;border-radius:6px}.market-sessions li.live{background:color-mix(in srgb,var(--accent) 12%,transparent)}.market-sessions li.done{opacity:.5}
 .market-time{font-variant-numeric:tabular-nums;color:var(--muted)}.market-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .market-tag{font-size:10px;padding:2px 6px;border-radius:4px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}.market-tag.tradable{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 50%,transparent)}
+
+/* Dry run: the assembled review inputs, scrollable. */
+.dry-run-inputs{max-height:320px;overflow:auto;font-size:12px;line-height:1.4;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
