@@ -36,6 +36,8 @@ class Automation {
     this.outcomes=new (require('./outcome-ledger.cjs').OutcomeLedger)(db);this.memory=new (require('./learning-memory.cjs').LearningMemory)(db);
     this.trials=new (require('./lesson-trials.cjs').LessonTrials)(db,this.memory);
     this.reflections=new (require('./reflection.cjs').ReflectionQueue)(db,this.memory);
+    // Observation only: records when event-driven scheduling would run beside the current schedule; changes nothing.
+    this.scheduleObserver=new (require('./schedule-observer.cjs').ScheduleObserver)(db);
     this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db,Date.now,()=>{try{return this.live?.identity()??null;}catch{return null;}});this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);this.desk=new (require('./agent-desk.cjs').AgentDesk)(db);this.narratives=new (require('./narrative.cjs').NarrativeStore)(db);this.replays=new (require('./replay.cjs').ReplayStore)(db);this.episodes=new (require('./episodes.cjs').EpisodeLibrary)(db);db.exec('CREATE TABLE IF NOT EXISTS narrative_slots(id INTEGER PRIMARY KEY CHECK(id=1),slot TEXT NOT NULL)');
     const row=db.prepare('SELECT payload FROM automation_settings WHERE id=1').get();this.config={...DEFAULTS,...(row?JSON.parse(row.payload):{})};this.sessionArmed=false;this.lastError=null;this.lastSuccess=0;this.savedAt=null;if(!row)this.saveConfig();
   }
@@ -253,6 +255,25 @@ class Automation {
     const confirmedAt=Math.max(...engines.map(e=>e.reconcileHealth?.lastSuccessAt??-Infinity),...this.engineOrders().map(o=>o.reconciledAt??-Infinity));
     return require('./note-staleness.cjs').annotate(notes,{orders:this.engineOrders(),positions,reconciliation,confirmedAt:Number.isFinite(confirmedAt)?confirmedAt:null});
   }
+  // Live state for the schedule observer (electron/schedule-observer.cjs), from data the app already holds: regular
+  // sessions, streamed and refreshed quotes, the engines' holdings and orders, the regime, cached top stories and the scout
+  // plan. Makes no broker or AI calls.
+  scheduleState(now=Date.now()){
+    const ms=require('./market-sessions.cjs'),mh=require('./market-hours.cjs');const environment=this.live?.getConnection?.()?.snapshot?.environment??'mock';
+    const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);const markets={};
+    for(const m of mh.marketsFor(this.config.scope)){const s=ms.marketStatus(m,now,{environment,enabled:this.sessionOptions(),...(m==='KR'?{closedDays:closed}:{})});markets[m]=s.regular?{open:s.regular.startAt<=now&&now<s.regular.endAt,startAt:s.regular.startAt,endAt:s.regular.endAt}:{open:false};}
+    const prices={};for(const q of [...(this.marketQuotes?.()??[]),...(this.usQuotes??[])])if(q?.price>0)prices[q.symbol]=q.price;
+    const holdings={};for(const e of [this.live,this.usLive].filter(Boolean)){try{const snap=e.riskBalance??e.getConnection?.()?.snapshot;for(const h of snap?.holdings??[])holdings[h.symbol]=h.quantity;}catch{}}
+    const scope=this.watchScope();const plan=this.scoutStore.latest(scope);
+    const watched=[...new Set([...Object.keys(holdings),...(plan?.plan?.targets??[]).map(t=>t.symbol),...this.watches.list(scope).map(w=>w.symbol)])];
+    const recon=[this.live,this.usLive].filter(Boolean).map(e=>{try{return e.orderReconciliation?.()?.status??null;}catch{return null;}});
+    const names=new Set(watched.flatMap(s=>{let n=null;try{n=(/^\d{6}$/.test(s)?this.live:this.usLive)?.nameOf?.(s);}catch{}return [s,n].filter(Boolean);}));
+    // A top story counts when it names a watched symbol or company, or is broad-market news.
+    const BROAD=/코스피|코스닥|증시|나스닥|금리|환율|사이드카|서킷|연준|fed|s&p|dow/i;
+    const stories=this.topStories(now).map(s=>({key:s.terms?.[0]??'',relevant:(s.symbols??[]).some(x=>watched.includes(x))||(s.terms??[]).some(t=>[...names].some(n=>String(n).toLowerCase()===t))||(s.terms??[]).some(t=>BROAD.test(t))}));
+    return {at:now,markets,prices,watched,holdings,orders:this.engineOrders().filter(o=>now-(o.createdAt??0)<7*86400000).map(o=>({id:o.id,status:o.status,filled:o.filled??0})),
+      reconciliation:recon.includes('unconfirmed')?'unconfirmed':recon.includes('confirmed')?'confirmed':null,regime:this.regimeState()?.regime??null,stories,scoutPlanAsOf:plan?.timestamp??null};
+  }
   // Whether armed conditional orders are being checked and can fire: the one rule the firing loop, reviews and the UI share.
   conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper');}
   dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>{const {snapshot,...rest}=JSON.parse(r.payload);return rest;});}
@@ -294,7 +315,7 @@ class Automation {
     return {context,emergency,usValue,execution,lessonIds};
   }
   async review(trigger='User request',externalDecision) {
-    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;const id=randomUUID();let context;let stage='Account data';const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
+    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;const id=randomUUID();let context;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
       costRevision=JSON.stringify(this.costs?.get());
       let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;}}));
@@ -373,6 +394,7 @@ class Automation {
       const contextEvidence={guidelines:this.config.guidelines,environment:context.environment,marketSession:context.marketSession??null,quote:context.quotes.find(q=>q.symbol===result.decision.symbol)??null,position:context.positions?.[result.decision.symbol]??null,emergency:context.emergency.active,reviewedLessons:context.reviewedLessons,lessonIds};
       const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null};
       this.db.prepare('INSERT INTO reviews VALUES(?,?)').run(id,JSON.stringify(recorded));
+      if(this.config.scope!=='paper')try{const cost=this.db.prepare('SELECT payload FROM ai_calls').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===id&&!c.kind).reduce((a,c)=>a+(c.accountedMicro??c.estimatedMicro??0),0)/1e6;this.scheduleObserver.recordReview(recorded,cost);}catch{}
       let proposal=null,order=null,executionNote=null;
       if(result.decision.action!=='Hold') {
         if(context.environment==='kis-combined')execution=/^\d{6}$/.test(result.decision.symbol)?this.live:this.usLive;
@@ -704,6 +726,8 @@ class Automation {
     // Scout runs follow their own weekday schedule, independent of trading reviews; each slot runs once.
     if(this.config.scoutEnabled&&!this.scouting&&!this.scoutAvailable()){const scope=this.watchScope();const slot=require('./scout.cjs').dueSlot(this.config.scoutSchedule);if(slot&&this.scoutStore.lastSlot(scope)!==slot&&Date.now()-(this.lastScoutAttempt??0)>=600000){this.lastScoutAttempt=Date.now();this.scoutStore.markSlot(scope,slot);void this.scout('Scheduled').catch(()=>{});}}
     // Desk checks every 5 seconds: conditional orders while auto trading is on, one at a time.
+    // Schedule observation every 30 seconds while auto trading runs on KIS: records only (electron/schedule-observer.cjs).
+    if(this.sessionArmed&&this.config.enabled&&this.config.scope!=='paper'&&Date.now()-(this.lastScheduleObservation??0)>=30000){this.lastScheduleObservation=Date.now();try{this.scheduleObserver.observe(this.scheduleState());}catch{}}
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
     if(deskDue&&this.conditionalMonitoringActive()&&!this.firing){
       const scope=this.watchScope();const data=this.formulaData();const formula=require('./formula.cjs');
