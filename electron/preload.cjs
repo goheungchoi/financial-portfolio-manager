@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   configureRuntime: value => ipcRenderer.invoke('runtime:configure',value),
   reviewRuntime: () => ipcRenderer.invoke('runtime:review'),
   dryRun: mode => ipcRenderer.invoke('runtime:dry-run', mode),
+  dryRunEstimate: () => ipcRenderer.invoke('runtime:dry-run-estimate'),
   runScout: () => ipcRenderer.invoke('scout:run'),
   importProviders: () => ipcRenderer.invoke('runtime:providers'),
   refreshNews: () => ipcRenderer.invoke('runtime:news'),

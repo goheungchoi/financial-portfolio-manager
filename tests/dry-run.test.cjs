@@ -20,7 +20,7 @@ test('checking inputs builds the review inputs through the normal path and makes
   const {automation,supplied,db,calls}=harness();const before=counts(db);const lastRun=automation.lastRun;
   const r=await automation.dryRun('inputs');
   assert.equal(supplied.filter(([op])=>op==='decision').length,0,'no AI call');assert.equal(r.mode,'inputs');assert.equal(r.review,undefined);
-  assert.deepEqual(r.summary.positions,[{symbol:'005930',quantity:10}]);assert.deepEqual(r.summary.openOrders,[]);assert.equal(r.summary.orderReconciliation,null);
+  assert.deepEqual(r.summary.positions.map(p=>[p.symbol,p.quantity]),[['005930',10]]);assert.deepEqual(r.summary.openOrders,[]);assert.equal(r.summary.orderReconciliation,null);
   assert.equal(r.summary.conditionalOrders.monitoring,'inactive: auto trading is paused, so armed orders do not fire until it is started');
   assert.deepEqual(counts(db),before,'nothing else changed');assert.equal(automation.lastRun,lastRun,'the schedule is untouched');assert.deepEqual(calls,{propose:0,submit:0});
   assert.equal(automation.dryRuns()[0].id,r.id);
@@ -72,4 +72,14 @@ test('conditional-order monitoring is stated active only when orders can actuall
   const {automation}=harness();assert.equal(automation.conditionalMonitoringActive(),false,'paused');
   automation.configure({enabled:true});automation.sessionArmed=true;assert.equal(automation.conditionalMonitoringActive(),true);assert.equal(automation.deskState().monitoringActive,true);
   automation.configure({scope:'paper'});assert.equal(automation.conditionalMonitoringActive(),false,'the paper account never fires them');
+});
+test('checking inputs reports the assembled snapshot and keeps the full inputs for inspection; the estimate shows budget impact',async()=>{
+  const {automation,db}=harness();const r=await automation.dryRun('inputs');const s=r.summary;
+  assert.ok(Date.parse(s.assembledAt)>0);assert.equal(s.scope,'kis');assert.equal(s.account?.label,'KIS mock');assert.equal(s.environment,'kis');assert.equal(s.sessions.KR,'open');
+  assert.equal(s.quotes.count,1);assert.ok(s.quotes.newest);assert.deepEqual(s.positions.map(p=>[p.symbol,p.quantity,p.price]),[['005930',10,217000]]);
+  const stored=JSON.parse(db.prepare('SELECT payload FROM dry_runs WHERE id=?').get(r.id).payload);assert.ok(stored.snapshot.universe.length>0,'full inputs saved');assert.equal('snapshot' in automation.dryRuns()[0],false,'not sent to the screen');
+  db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('a','2026-10-23',JSON.stringify({reviewId:'r1',model:'gpt-6-sol',status:'completed',accountedMicro:60000,timestamp:1}));
+  db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('b','2026-10-23',JSON.stringify({reviewId:'r1',model:'gpt-6-sol',status:'completed',accountedMicro:40000,timestamp:2}));
+  db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('c','2026-10-23',JSON.stringify({reviewId:'r2',model:'gpt-6-sol',status:'completed',accountedMicro:80000,timestamp:3,kind:'shadow'}));
+  const e=automation.dryRunEstimate();assert.equal(e.estimateUSD,0.1,'one review of two requests; shadow calls excluded');assert.deepEqual(e.requests,{min:2,max:2});assert.equal(e.today.maxCalls,automation.config.maxCallsPerDay);assert.match(e.note,/same daily AI limits/);
 });
