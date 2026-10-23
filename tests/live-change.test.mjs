@@ -23,3 +23,7 @@ test('the console shows a finished dry run as a dry run, not in progress',async(
   assert.match(src,/Dry run · inputs checked'\|\|e\.title==='Dry-run review · nothing applied'/);assert.match(src,/dry\?'Dry run'/);
   const auto=fs.readFileSync(new URL('../electron/automation.cjs',import.meta.url),'utf8');assert.match(auto,/'Dry-run review · nothing applied':'Dry run · inputs checked'/,'titles the console matches are the ones dry runs log');
 });
+test('the console shows standalone notices such as a detected deposit as a Notice, not in progress',async()=>{
+  const fs=await import('node:fs');const src=fs.readFileSync(new URL('../src/AiConsole.tsx',import.meta.url),'utf8');
+  assert.match(src,/const notice=!dry&&!events\.some\(e=>\['Program','Agent','Context'\]\.includes\(e\.kind\)/);assert.match(src,/notice\?'Notice'/);assert.match(src,/dry\|\|notice\?'done'/);
+});
