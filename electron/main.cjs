@@ -449,6 +449,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
   ipcMain.handle('scout:run',async event=>{authorize(event);try{await automation.scout();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.scoutError??'SCOUT_FAILED',state:runtimeState()};}});
+  ipcMain.handle('runtime:dry-run',async(event,mode)=>{authorize(event);try{const record=await automation.dryRun(mode);return {ok:true,record,state:runtimeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DRY_RUN_FAILED',state:runtimeState()};}});
   ipcMain.handle('runtime:review',async event=>{authorize(event);try{await automation.review();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.',state:runtimeState()};}});
   ipcMain.handle('runtime:providers',async event=>{
     if(remembered.progress.providers==='connecting'){authorize(event);return {ok:false,error:'BUSY',state:runtimeState()};}

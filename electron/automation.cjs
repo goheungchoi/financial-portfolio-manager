@@ -8,11 +8,22 @@ function loggableContext(context){
   for(const key of keys){if(text.length<=LOG_LIMIT)break;value[key]=`[not kept in the log: ${(JSON.stringify(value[key])?.length??0).toLocaleString('en-US')} characters; the AI received it in full]`;text=JSON.stringify(value);}
   return text.length<=LOG_LIMIT?text:text.slice(0,LOG_LIMIT-1)+'…';
 }
+// What a dry run reports about review inputs: holdings, open orders and their confirmation, conditional orders and
+// whether they are monitored, and returns with deposits and withdrawals excluded.
+function dryRunSummary(c){
+  const perf=market=>{const h=c.performance?.history?.[market]??(c.market===market?c.performance?.history:null);if(!h)return null;const all=(h.timeWeightedReturns??[]).find(p=>p.period==='All');const last=(h.recentDailyPnl??[]).at(-1)??null;
+    return {allPeriodReturnPct:all?.returnPct??null,latestDay:last,...(h.unconfirmedFlows?.length?{unconfirmedFlows:h.unconfirmedFlows}:{})};};
+  const co=c.agentDesk?.conditionalOrders??null;
+  return {positions:Object.entries(c.positions??{}).filter(([,p])=>p?.quantity>0).map(([symbol,p])=>({symbol,quantity:p.quantity})),cash:c.cash??null,
+    openOrders:(c.orders??[]).map(({symbol,side,quantity,filled,status,orderId})=>({symbol,side,quantity,filled,status,orderId:orderId??null})),orderReconciliation:c.orderReconciliation??null,
+    conditionalOrders:co?{allowed:Boolean(co.allowed),armed:(co.armed??[]).map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity})),monitoring:co.monitoring??null}:null,
+    performance:{KR:perf('KR'),US:perf('US')}};
+}
 class Automation {
   constructor(db,paper,provider,log) {
     this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();
     db.exec('CREATE TABLE IF NOT EXISTS routing_eval(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,account TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS shadow_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS routing_pass(id TEXT PRIMARY KEY,decidedAt INTEGER NOT NULL,payload TEXT NOT NULL)');
-    db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
+    db.exec('CREATE TABLE IF NOT EXISTS dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
     this.reviewInterval=new (require('./review-interval.cjs').ReviewInterval)(db);
     this.watches=new (require('./review-watches.cjs').ReviewWatches)(db);
@@ -187,10 +198,45 @@ class Automation {
     const state=this.paper.getState();
     return {environment:'local-paper',paperVersion:state.account.version,equity:state.account.equity,cash:state.account.availableCash,positions:state.account.positions,universe:state.universe,quotes:state.quotes,orders:state.orders.filter(order=>['Pending','Partially filled'].includes(order.status)).map(({symbol,side,quantity,filled,status})=>({symbol,side,quantity,filled,status})),risk:state.policy,news:this.newsContext(),reviewedLessons:this.db.prepare('SELECT text FROM lessons WHERE approved=1 ORDER BY rowid DESC LIMIT 5').all().map(row=>row.text)};
   }
-  async review(trigger='User request',externalDecision) {
-    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;const id=randomUUID();let context;let stage='Account data';const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
-    try {
-      costRevision=JSON.stringify(this.costs?.get());
+  // A review's inputs, built through the normal path: fresh market data, reconciled orders, account context, lessons,
+  // costs, performance, plan and order books. Shared by reviews and dry runs.
+  // Dry runs check a review without acting on it. 'inputs' builds a fresh review input snapshot and makes no AI call;
+  // 'review' also asks the configured model, with every state-changing tool answering "not applied: dry run". Neither
+  // proposes or submits orders, changes conditional orders, watches, triggers, notes, the watchlist, the review interval
+  // or the schedule, nor feeds the journal, lessons, learning or the routing evaluation. AI cost is accounted as usual.
+  // Building the inputs still refreshes market data and reconciles open orders with KIS, as every review does.
+  async dryRun(mode='inputs'){
+    if(!['inputs','review'].includes(mode))throw new Error('INVALID_REQUEST');if(this.busy)throw new Error('REVIEW_BUSY');
+    if(this.config.scope==='paper')throw new Error('DRY_RUN_NEEDS_KIS');if(mode==='review'&&(this.config.provider!=='openai'||!this.providerStatus.aiConnected))throw new Error('AI_NOT_CONNECTED');
+    this.busy=true;const id=randomUUID();const watchScope=this.watchScope();
+    try{
+      const {context}=await this.assembleReviewContext({watchScope,trigger:'Dry run'});const summary=dryRunSummary(context);
+      let review=null;
+      if(mode==='review'){
+        const providerContext=require('./token-saver.cjs').compact(context);const transcript=[];
+        const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
+        const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
+        // Every desk tool is a no-op except compute, which only reads prices.
+        const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
+        const model={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');let calls=0;const callIds=[];
+        const request=async options=>{options={...options,...model};const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
+          const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
+          const callId=randomUUID();callIds.push(callId);this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('INSERT INTO ai_usage VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(day,usage.calls+1,usage.reservedMicro+reserve);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,JSON.stringify({reviewId:id,model:model.openaiModel,reasoningEffort:model.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'dry-run'}));this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}
+          calls++;try{const r=await this.decisionWithRetry(providerContext,options);require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,r,'completed');return r;}
+          catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}};
+        const r=await require('./research-review.cjs').researchReview({context:providerContext,wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log:(kind,title,body)=>transcript.push({kind,title,body:String(body).slice(0,400)}),compact:null,request});
+        const micro=callIds.reduce((sum,cid)=>{const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(cid);const p=row?JSON.parse(row.payload):{};return sum+(p.accountedMicro??p.estimatedMicro??0);},0);
+        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120))};
+      }
+      const record={id,timestamp:Date.now(),mode,summary,...(review?{review}:{})};
+      this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify(record));
+      this.log(id,'System',mode==='review'?'Dry-run review · nothing applied':'Dry run · inputs checked',JSON.stringify(review?{summary,decision:{action:review.decision.action,symbol:review.decision.symbol,quantity:review.decision.quantity,explanation:review.decision.explanation},calls:review.calls,costUSD:review.costUSD}:{summary}));
+      return record;
+    }finally{this.busy=false;}
+  }
+  dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>JSON.parse(r.payload));}
+  async assembleReviewContext({watchScope,trigger='User request',externalDecision=null,setStage=()=>{}}){
+    let context;
       // Korean breadth and flows are refreshed before each review while the Korean session is open, so no review starts
       // from a previous session's reading.
       try{await this.freshenMarket?.();}catch{}
@@ -203,15 +249,22 @@ class Automation {
         if(this.config.provider==='openai'&&!this.config.shareKisWithAI)throw new Error('DATA_SHARING_NOT_ENABLED');
         if(this.config.scope==='both'){const kr=await this.live.context(),us=await this.usLive.context(usValue);kr.tradingCosts=this.costs?.context('KR',kr.universe,kr.positions);us.tradingCosts=this.costs?.context('US',us.universe,us.positions);context=require('./combined-context.cjs').combinedContext(kr,us,this.fx?.(),this.metadata?.());}else context=await execution.context(this.config.scope==='us'?usValue:null);context.news=this.newsContext();if(context.environment!=='local-paper'){const stories=this.storiesContext();if(stories.length)context.topStories=stories;}context.reviewedLessons=this.db.prepare('SELECT text FROM lessons WHERE approved=1 ORDER BY rowid DESC LIMIT 5').all().map(row=>row.text);
       }else context=this.context();
-      stage='Local trade evidence';this.outcomes.sync();this.memory.sync();const accounts=[this.live,this.usLive].flatMap(engine=>{try{return [engine.identity()];}catch{return [];}});const lessons=this.memory.relevantLessons(context,accounts);context.reviewedLessons=lessons.map(row=>row.text);const lessonIds=lessons.map(row=>row.id);
+      setStage('Local trade evidence');this.outcomes.sync();this.memory.sync();const accounts=[this.live,this.usLive].flatMap(engine=>{try{return [engine.identity()];}catch{return [];}});const lessons=this.memory.relevantLessons(context,accounts);context.reviewedLessons=lessons.map(row=>row.text);const lessonIds=lessons.map(row=>row.id);
       const conflicts=this.scoreboard.conflicts().filter(c=>lessonIds.includes(c.a)&&lessonIds.includes(c.b));if(conflicts.length)context.lessonConflicts=conflicts.map(c=>({lessons:[lessonIds.indexOf(c.a)+1,lessonIds.indexOf(c.b)+1],symbol:c.symbol,note:c.reason+' Weigh both; neither is a validated rule.'}));
       if(context.environment!=='local-paper'){const board=this.scoreboard.context();if(board)context.decisionScoreboard=board;const macro=this.macro?.context();if(macro)context.macro=macro;}
-      stage='Portfolio context';const emergency=context.environment==='kis'?{...this.emergencyState(),active:false,loss:null}:this.emergencyState();
+      setStage('Portfolio context');const emergency=context.environment==='kis'?{...this.emergencyState(),active:false,loss:null}:this.emergencyState();
       if(context.environment==='kis'){const policy=context.risk;const {lossStatus}=require('./loss-policy.cjs');emergency.loss=lossStatus(policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW},policy.baseline,context.equity);emergency.active=emergency.loss.breached;}
       context.tradingCosts=context.environment==='kis-combined'?{markets:context.markets.map(row=>({market:row.market,...row.tradingCosts}))}:context.environment==='local-paper'?{basis:'simulation',currency:'KRW',commissionPct:.1,slippagePct:.1,saleTaxPct:0,capitalGainsTax:'Not modeled in the local paper simulator. Live trading uses your fee and tax settings.'}:this.costs?.context(context.market??'KR',context.universe,context.positions);context.emergency=emergency;context.userGuidelines=this.config.guidelines;const peak=context.environment==='local-paper'?(this.paper.account().dayPeakEquity??this.paper.account().dayBaseline):(context.environment==='kis-combined'?null:context.risk.dayPeakEquity??context.risk.baseline);context.performance={dailyBaseline:emergency.loss?.baseline??null,observedDailyPeak:peak,currentEquity:context.equity,drawdownFromObservedPeakPct:peak>0?Math.max(0,(peak-context.equity)/peak*100):null};
       context.reviewInterval=this.reviewInterval.get(watchScope,this.config);if(context.environment==='kis'||context.environment==='kis-combined'){const history=context.environment==='kis-combined'?{KR:this.performanceSummary?.('KR')??null,US:this.performanceSummary?.('US')??null}:this.performanceSummary?.(context.market)??null;if(history)context.performance.history=history;}
-      context.reviewWatches=this.watches.list(watchScope).map(({baseline,...watch})=>watch);if(context.environment!=='local-paper'){const plan=require('./scout.cjs').reviewContext(this.scoutStore.latest(watchScope));if(plan){context.scoutPlan=plan;const gap=require('./plan-gap.cjs').planGap(context);if(gap)context.planGap=gap;}const brief=this.scoutBriefState(watchScope);if(brief)context.scoutBrief=brief;context.agentDesk=this.desk.context(watchScope,this.config,(context.universe??[]).map(r=>r.symbol));const story=this.storyContext();if(story.marketNarrative)context.marketNarrative=story.marketNarrative;if(story.similarEpisodes?.length)context.similarEpisodes=story.similarEpisodes;const risk=this.riskContext(context);Object.assign(context,risk);if(context.planGap)require('./plan-gap.cjs').addMinimumPositions(context);const events=this.calendarState(14,(context.universe??[]).map(r=>({symbol:r.symbol,name:r.name})));if(events.length)context.eventCalendar=events.slice(0,15).map(({date,kind,market,symbol,title,estimated})=>({date,kind,market,symbol,title,estimated}));}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];const usStarters=['us','both'].includes(this.config.scope)?this.discovery.usStarters?.()??[]:[];const starterCandidates=[...(starters.length?[{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[]),...(usStarters.length?[{market:'US',symbols:usStarters,source:'KIS NASDAQ and NYSE market-cap rankings',note:'The U.S. market has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[])];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starterCandidates.length?{starterCandidates}:{})};}if(['Price movement trigger','News event trigger','Agent trigger'].includes(trigger))context.triggerEvidence=this.triggerEvidence;
+      context.reviewWatches=this.watches.list(watchScope).map(({baseline,...watch})=>watch);if(context.environment!=='local-paper'){const plan=require('./scout.cjs').reviewContext(this.scoutStore.latest(watchScope));if(plan){context.scoutPlan=plan;const gap=require('./plan-gap.cjs').planGap(context);if(gap)context.planGap=gap;}const brief=this.scoutBriefState(watchScope);if(brief)context.scoutBrief=brief;context.agentDesk=this.desk.context(watchScope,this.config,(context.universe??[]).map(r=>r.symbol));if(context.agentDesk?.conditionalOrders?.allowed)context.agentDesk.conditionalOrders.monitoring=this.config.enabled&&this.sessionArmed?'active':'inactive: auto trading is paused, so armed orders do not fire until it is started';const story=this.storyContext();if(story.marketNarrative)context.marketNarrative=story.marketNarrative;if(story.similarEpisodes?.length)context.similarEpisodes=story.similarEpisodes;const risk=this.riskContext(context);Object.assign(context,risk);if(context.planGap)require('./plan-gap.cjs').addMinimumPositions(context);const events=this.calendarState(14,(context.universe??[]).map(r=>({symbol:r.symbol,name:r.name})));if(events.length)context.eventCalendar=events.slice(0,15).map(({date,kind,market,symbol,title,estimated})=>({date,kind,market,symbol,title,estimated}));}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];const usStarters=['us','both'].includes(this.config.scope)?this.discovery.usStarters?.()??[]:[];const starterCandidates=[...(starters.length?[{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[]),...(usStarters.length?[{market:'US',symbols:usStarters,source:'KIS NASDAQ and NYSE market-cap rankings',note:'The U.S. market has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[])];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starterCandidates.length?{starterCandidates}:{})};}if(['Price movement trigger','News event trigger','Agent trigger'].includes(trigger))context.triggerEvidence=this.triggerEvidence;
       try{await this.attachOrderBooks(context);}catch{}
+    return {context,emergency,usValue,execution,lessonIds};
+  }
+  async review(trigger='User request',externalDecision) {
+    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;const id=randomUUID();let context;let stage='Account data';const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
+    try {
+      costRevision=JSON.stringify(this.costs?.get());
+      let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;}}));
       this.observeEmergency(emergency);if(emergency.active)this.lastEmergencyAttempt=Date.now();
       // Token saving: an unchanged scheduled review is skipped before any provider call.
       const saver=require('./token-saver.cjs');const hash=saver.fingerprint(context);
@@ -421,7 +474,7 @@ class Automation {
       return note('proposed',capReached?`Daily automatic order limit reached; proposal ${proposal.id} awaits approval.`:`Proposal at ${limit} for ${quantity} shares awaits approval.`,{proposalId:proposal.id,results:check.results});
     }catch(error){const code=/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'ORDER_FAILED';return note('rejected',`The broker or a risk check refused it (${code}).`);}
   }
-  deskState(){const scope=this.watchScope();return {triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
+  deskState(){const scope=this.watchScope();return {monitoringActive:Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
   followPlan(scope,decision,reviewId){
     const p=decision.plan;const day=seoulDate();
@@ -645,4 +698,4 @@ class Automation {
   }
   approveLesson(id,approved){if(typeof id!=='string'||typeof approved!=='boolean')throw new Error('INVALID_REQUEST');this.syncLearning();if(this.learningError)throw new Error('LESSON_REVIEW_FAILED');const lifecycle=this.memory.lifecycle(id);if(lifecycle)this.memory.review(id,{expectedSignature:lifecycle.signature,action:approved?'approve':'retire'});else this.db.prepare('UPDATE lessons SET approved=? WHERE id=?').run(approved?1:0,id);return this.getState();}
 }
-module.exports={loggableContext,Automation,DEFAULTS};
+module.exports={loggableContext,dryRunSummary,Automation,DEFAULTS};
