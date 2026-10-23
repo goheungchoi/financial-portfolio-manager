@@ -1,16 +1,18 @@
 import {useEffect,useRef,useState} from 'react';
+import {nextChange} from './live-change.mjs';
 export const formatMoney=(value:number)=>new Intl.NumberFormat('ko-KR',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(value);
-export function TickDelta({value,sample,currency='KRW'}:{value:number;sample:number;currency?:string}){
-  const previous=useRef({value,sample});const [delta,setDelta]=useState<number|null>(null);
-  useEffect(()=>{if(previous.current.sample===sample&&previous.current.value===value)return;setDelta(value-previous.current.value);previous.current={value,sample};},[value,sample]);
+// basis names where the value comes from; a change of basis (loading, a price source settling) is not shown as a move.
+export function TickDelta({value,sample,currency='KRW',basis=''}:{value:number;sample:number;currency?:string;basis?:string}){
+  const previous=useRef<{value:number;basis:string}|null>({value,basis});const lastSample=useRef(sample);const [delta,setDelta]=useState<number|null>(null);
+  useEffect(()=>{if(lastSample.current===sample&&previous.current?.value===value&&previous.current?.basis===basis)return;lastSample.current=sample;const next=nextChange(previous.current,value,basis);previous.current=next.state;setDelta(next.delta);},[value,sample,basis]);
   const format=(amount:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(amount);
   // A signed, colored amount; no change shows a quiet dash. The meaning lives in the tooltip.
   const text=delta===null||delta===0?'—':`${delta>0?'+':'−'}${format(Math.abs(delta))}`;
   return <span className={`tick-delta ${delta!==null&&delta>0?'increase':delta!==null&&delta<0?'decrease':'unchanged'}`} data-delta={delta??''} title={delta===null?'Waiting for the next price update':'Change since the last price update, including fills, fees and cash changes'}><b>{text}</b></span>;
 }
-export function LiveValue({value,format=formatMoney}:{value:number;format?(value:number):string}){
-  const previous=useRef(value);const [change,setChange]=useState({delta:0,sequence:0});
-  useEffect(()=>{if(value!==previous.current){const delta=value-previous.current;previous.current=value;setChange(current=>({delta,sequence:current.sequence+1}));}},[value]);
+export function LiveValue({value,format=formatMoney,basis=''}:{value:number;format?(value:number):string;basis?:string}){
+  const previous=useRef<{value:number;basis:string}|null>({value,basis});const [change,setChange]=useState({delta:0,sequence:0});
+  useEffect(()=>{const next=nextChange(previous.current,value,basis);previous.current=next.state;if(next.delta)setChange(current=>({delta:next.delta!,sequence:current.sequence+1}));else if(next.delta===null)setChange(current=>({delta:0,sequence:current.sequence}));},[value,basis]);
   return <span key={change.sequence} className={`live-number ${change.delta>0?'tick-up':change.delta<0?'tick-down':''}`} title={change.delta?`Change since previous update: ${change.delta>0?'+':''}${format(change.delta)}`:'Waiting for a changed value'}>{format(value)}</span>;
 }
 export function EquityTrace({value,sample}:{value:number;sample:number}){
