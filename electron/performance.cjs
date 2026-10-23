@@ -27,7 +27,7 @@ class PerformanceHistory {
   addFlow(account,value){
     const today=seoulDate(this.clock());
     if(typeof account!=='string'||!account||!value||!isDay(value.day)||value.day>today||!['KR','US'].includes(value.market)||!Number.isFinite(value.amount)||value.amount===0||Math.abs(value.amount)>1e12||typeof(value.note??'')!=='string'||String(value.note??'').length>200)throw new Error('INVALID_FLOW');
-    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{})};
+    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{}),...(value.transfer?{transfer:true}:{})};
     this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(flow.id,account,JSON.stringify(flow));return flow;
   }
   removeFlow(account,id){this.db.prepare('DELETE FROM cash_flows WHERE id=? AND account=?').run(id,account);}
@@ -40,12 +40,14 @@ class PerformanceHistory {
   closes(index){return this.db.prepare('SELECT day,close FROM benchmark_closes WHERE idx=? ORDER BY day').all(index).map(row=>({day:row.day,close:row.close}));}
   // series: 'KRW' (Korea account), 'USD' (U.S. account) or 'COMBINED' (KRW, U.S. flows converted at that day's rate).
   series(account,kind){
+    // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
+    // and not in the combined one.
     const history=this.history(account),flows=this.flows(account);let previous=null,index=1,lastFx=null;const points=[];
     for(const row of history){
       lastFx=row.fx??lastFx;const value=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(value))continue;
-      const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'||f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
+      const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
       // Flows recorded on days without a valuation are folded into the next valued day.
-      const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'||f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
+      const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
       const netFlow=flow+skipped,base=previous?previous.value+netFlow:null;const dailyReturn=base>0&&Number.isFinite(base)?value/base-1:null;
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.

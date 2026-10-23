@@ -22,9 +22,10 @@ test('withdrawals are detected; small amounts and currency conversions are not f
   tick('2026-10-23T11:00:00+09:00');const [w]=d.observe('acct',{krCash:700000,usCash:0});assert.equal(w.amount,-300000);
   tick('2026-10-23T12:00:00+09:00');assert.deepEqual(d.observe('acct',{krCash:700500,usCash:0}),[],'₩500 (for example a small dividend) is below the threshold');
   // Integrated margin: KRW pays for a U.S. buy while USD cash stays at zero.
-  tick('2026-10-23T23:40:00+09:00');assert.deepEqual(d.observe('acct',{krCash:700500-347000,usCash:0,fx:1388,orders:[{market:'US',side:'Buy',status:'Filled',filled:1,fillPrice:250,createdAt:at('2026-10-23T23:35:00+09:00')}]}),[],'KRW funding a U.S. buy is a conversion');
+  tick('2026-10-23T23:40:00+09:00');const funding=d.observe('acct',{krCash:700500-347000,usCash:0,fx:1388,orders:[{market:'US',side:'Buy',status:'Filled',filled:1,fillPrice:250,createdAt:at('2026-10-23T23:35:00+09:00')}]});
+  assert.deepEqual(funding.map(f=>[f.market,f.amount,f.transfer,f.detected]),[['KR',-347000,true,undefined],['US',250,true,undefined]],'KRW funding a U.S. buy is a transfer between markets, not a deposit');
   // A manual exchange of ₩139,000 into $100 is also a conversion.
-  tick('2026-10-24T00:10:00+09:00');assert.deepEqual(d.observe('acct',{krCash:353500-139000,usCash:100,fx:1390}),[]);
+  tick('2026-10-24T00:10:00+09:00');assert.deepEqual(d.observe('acct',{krCash:353500-139000,usCash:100,fx:1390}).map(f=>[f.market,f.amount,f.transfer]),[['KR',-139000,true],['US',100,true]],'a currency exchange is a transfer');
 });
 test('a U.S. fill without both U.S. readings is not judged; a U.S. deposit is recorded in dollars',()=>{
   const {d,tick}=setup();d.observe('acct',{krCash:500000});
