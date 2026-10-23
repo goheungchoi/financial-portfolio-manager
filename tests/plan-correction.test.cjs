@@ -49,5 +49,5 @@ test('reviews are told whether equity is reliable for the comparison',()=>{
 test('protocol 2026-10-24: withheld pairs are queued and incomplete-plan is an adjudication category',()=>{
   const fs=require('node:fs'),path=require('node:path');const {PROTOCOL_VERSION}=require('../electron/routing-sim.cjs');assert.equal(PROTOCOL_VERSION,'2026-10-24');
   const rep=fs.readFileSync(path.join(__dirname,'..','scripts','routing-report.cjs'),'utf8');assert.match(rep,/'evidence-ignored','incomplete-plan'\]/);
-  const doc=fs.readFileSync(path.join(__dirname,'..','docs','ROUTING-EVALUATION.md'),'utf8');assert.match(doc,/`symbol`, `withheld` \(material differences/);assert.match(doc,/A\nwithheld Buy is not automatically a model error/);assert.match(doc,/protocol version 2026-10-24/);
+  const doc=fs.readFileSync(path.join(__dirname,'..','docs','ROUTING-EVALUATION.md'),'utf8');assert.match(doc,/`symbol`, `withheld` \(material differences/);assert.match(doc.replace(/\s+/g,' '),/A withheld Buy is not automatically a model error/);assert.match(doc,/protocol version 2026-10-24/);
 });
