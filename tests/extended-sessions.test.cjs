@@ -72,3 +72,17 @@ test('a U.S. account holding nothing counts as funded when integrated margin len
   const e=make();e.buyingPower=()=>({usd:350,fromKRWUSD:350,integratedMargin:true});assert.equal(e.funded(snapshot),true);
   const state=e.configure(limits,'ENABLE LIVE');assert.equal(state.policy.maxDailyLossKRW,7,'2% of the $350 funded through KRW, not $1');
 });
+test('a filled Korean order is reconciled from the live order history and stops blocking new orders',async()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');const {normalizeOrders}=require('../electron/kis-activity.cjs');
+  const snapshot={accountKey:'acct:KR',environment:'live',reportedTotal:1505000,cash:1505000,holdings:[]};let places=0;
+  // An order history row as KIS returns it, with its blank cancel flag.
+  const row={ord_dt:'20261016',ord_tmd:'100500',odno:'0009876500',orgn_odno:'',pdno:'990020',prdt_name:'노스윈드건설',sll_buy_dvsn_cd:'02',cncl_yn:'',ord_qty:'3',tot_ccld_qty:'3',rmn_qty:'0',rjct_qty:'0',tot_ccld_amt:'176100',avg_prvs:'58700',ord_unpr:'58700',ord_gno_brno:'91000',excg_id_dvsn_cd:'KRX'};
+  const broker={request:async(op,args)=>{if(op==='prepare-order')return {balance:snapshot,price:58700,ticket:'t',session:{id:'krx-regular',regular:true}};if(op==='place-order'){places++;return {brokerOrderId:places===1?'0009876500':'0007150000'};}
+    if(op==='orders')return {orders:normalizeOrders([row],args.startDate.replaceAll('-',''),args.endDate.replaceAll('-',''))};throw new Error(op);}};
+  const e=new LiveEngine(new DatabaseSync(':memory:'),broker,()=>({status:'connected',snapshot}),{market:'KR'});e.day=()=>'2026-10-16';
+  e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
+  const buy=e.propose({symbol:'990020',side:'Buy',quantity:3,limitPrice:58700});await e.submit(buy.id,'PLACE LIVE ORDER');
+  const stop=e.propose({symbol:'990020',side:'Sell',quantity:3,limitPrice:54000});await assert.rejects(e.submit(stop.id,'PLACE LIVE ORDER'),/RECONCILIATION_REQUIRED/,'blocked until the fill is recorded');
+  await e.reconcile();const done=e.orders().find(o=>o.id===buy.id);assert.deepEqual([done.status,done.filled,done.fillPrice],['Filled',3,58700]);
+  const again=e.propose({symbol:'990050',side:'Sell',quantity:3,limitPrice:54000});assert.equal((await e.submit(again.id,'PLACE LIVE ORDER')).status,'Accepted','the stop-loss can be placed once the fill is recorded');
+});

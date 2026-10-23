@@ -108,7 +108,8 @@ class LiveEngine {
         const report=await this.broker.request('orders',{startDate:day,endDate:day});
         for(const order of open.filter(row=>row.day===day)) {
           const found=order.brokerOrderId?report.orders.find(row=>row.orderId===order.brokerOrderId):null;
-          if(found){const resultCosts=found.filled>0&&found.fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:found.filled,price:found.fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,exempt:this.costs?.exempt?.(order.symbol)??false}):null;this.save({...order,resultCosts,fillPrice:found.fillPrice??null,reconciledAt:Date.now(),filled:found.filled,status:found.status==='Filled'?'Filled':found.status==='Rejected'?'Rejected':/cancel/i.test(found.status)?'Canceled':found.filled>0?'Partially filled':'Accepted',reason:null});}
+          // Korean order history reports the average execution price as averagePrice; U.S. history as fillPrice.
+          if(found){const fillPrice=found.fillPrice??(found.averagePrice>0?found.averagePrice:null);const resultCosts=found.filled>0&&fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:found.filled,price:fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,exempt:this.costs?.exempt?.(order.symbol)??false}):null;this.save({...order,resultCosts,fillPrice,reconciledAt:Date.now(),filled:found.filled,status:found.status==='Filled'?'Filled':found.status==='Rejected'?'Rejected':/cancel/i.test(found.status)?'Canceled':found.filled>0?'Partially filled':'Accepted',reason:null});}
         }
       }
       return this.getState();
