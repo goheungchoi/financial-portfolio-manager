@@ -27,10 +27,15 @@ class PerformanceHistory {
   addFlow(account,value){
     const today=seoulDate(this.clock());
     if(typeof account!=='string'||!account||!value||!isDay(value.day)||value.day>today||!['KR','US'].includes(value.market)||!Number.isFinite(value.amount)||value.amount===0||Math.abs(value.amount)>1e12||typeof(value.note??'')!=='string'||String(value.note??'').length>200)throw new Error('INVALID_FLOW');
-    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock()};
+    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{})};
     this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(flow.id,account,JSON.stringify(flow));return flow;
   }
   removeFlow(account,id){this.db.prepare('DELETE FROM cash_flows WHERE id=? AND account=?').run(id,account);}
+  // A detected flow the user confirmed keeps its amount and stops being flagged.
+  confirmFlow(account,id){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)throw new Error('INVALID_FLOW');
+    const {detected,...flow}=JSON.parse(row.payload);this.db.prepare('UPDATE cash_flows SET payload=? WHERE id=? AND account=?').run(JSON.stringify({...flow,confirmedAt:this.clock()}),id,account);}
+  // Net deposits (positive) and withdrawals in one market's currency on one Seoul day.
+  flowsOn(account,day,market){return this.flows(account).filter(f=>f.day===day&&f.market===market).reduce((sum,f)=>sum+f.amount,0);}
   saveCloses(index,rows){if(!INDEXES[index])throw new Error('INVALID_INDEX');const insert=this.db.prepare('INSERT INTO benchmark_closes VALUES(?,?,?) ON CONFLICT(idx,day) DO UPDATE SET close=excluded.close');for(const row of rows)if(isDay(row.day)&&Number.isFinite(row.close)&&row.close>0)insert.run(index,row.day,row.close);}
   closes(index){return this.db.prepare('SELECT day,close FROM benchmark_closes WHERE idx=? ORDER BY day').all(index).map(row=>({day:row.day,close:row.close}));}
   // series: 'KRW' (Korea account), 'USD' (U.S. account) or 'COMBINED' (KRW, U.S. flows converted at that day's rate).

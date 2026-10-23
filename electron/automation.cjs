@@ -96,6 +96,12 @@ class Automation {
   async reconcileOpenOrders(){
     for(const [market,engine] of [['KR',this.live],['US',this.usLive]]){if(!engine?.orderReconciliation?.())continue;try{await engine.reconcile();}catch{}this.observeReconcile(market,engine.reconcileHealth);}
   }
+  // A deposit or withdrawal found in the balance, not recorded by the user: one log entry and one alert.
+  noteDetectedFlow(flow){
+    const amount=flow.currency==='USD'?`$${Math.abs(flow.amount).toLocaleString('en-US')}`:`₩${Math.abs(flow.amount).toLocaleString('en-US')}`;
+    const message=`${flow.amount>0?'Deposit':'Withdrawal'} detected: ${flow.market==='US'?'U.S.':'Korean'} cash ${flow.amount>0?'rose':'fell'} by ${amount} with no matching trade on ${flow.day}. Returns treat it as a ${flow.amount>0?'deposit':'withdrawal'}; confirm or remove it under Performance → Deposits & withdrawals.`;
+    this.log(randomUUID(),'System',flow.amount>0?'Deposit detected':'Withdrawal detected',message);try{this.notify?.('flow-'+flow.id,message);}catch{}
+  }
   // One alert per episode when open-order statuses cannot be confirmed with KIS after three checks; cleared on success.
   observeReconcile(market,health){
     this.reconcileAlerts??={};if(!health?.failures){this.reconcileAlerts[market]=false;return;}
