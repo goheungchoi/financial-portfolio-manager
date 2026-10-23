@@ -8,7 +8,7 @@ test('KRW committed to unsettled U.S. buys is not counted twice (2026-10-24 regr
   const p=combinePortfolio(kr,us,fx);assert.equal(p.committedKRW,714383);assert.equal(p.cash.KRW,1319081-714383);
   assert.ok(Math.abs(p.totals.equityKRW-1490818)<2,`equity ${p.totals.equityKRW} ≈ ₩1.49m, not ₩2.2m`);
   const before=combinePortfolio(kr,{...us,unsettled:undefined},fx);assert.ok(before.totals.equityKRW>2200000,'without the KIS figure it double counts');
-  assert.equal(committedKRW({...us,cash:50}),0,'USD cash on hand: not applied');assert.equal(committedKRW({...us,unsettled:{buyKRW:714383,sellKRW:800000}}),0);
+  assert.equal(committedKRW({...us,cash:50}),714383,'USD cash on hand: still applied (uncertainty is reported separately)');assert.equal(committedKRW({...us,unsettled:{buyKRW:714383,sellKRW:800000}}),0);
 });
 test('reviews see Korean cash and equity net of the committed KRW, with a note',()=>{
   const korea={market:'KR',currency:'KRW',equity:1498481,cash:1319081,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:false}};
@@ -32,4 +32,13 @@ test('transfers keep the returns of each market right and do not count in the co
   rec(1496381,0);now+=86400000;p.addFlow('a',{day:'2026-10-24',market:'KR',amount:-714383,transfer:true});p.addFlow('a',{day:'2026-10-24',market:'US',amount:539.32,transfer:true});
   rec(1496381-714383,535.12);const all=k=>p.summary('a',k).periods.find(x=>x.label==='All');
   assert.ok(Math.abs(all('KRW').twr)<1e-9,'Korea did not lose the KRW it sent');assert.ok(Math.abs(all('COMBINED').twr-((1496381-714383+535.12*1324.6)/1496381-1))<1e-9,'combined: only the real −0.4% change');
+});
+test('review fix: USD cash on hand keeps the KRW correction and reports the uncertain part instead of dropping it',()=>{
+  const {settlement}=require('../electron/integrated-settlement.cjs');
+  assert.deepEqual(settlement({...us,cash:0.01,fx:{usdKRW:1324.6}}),{committedKRW:714383,uncertainKRW:13},'$0.01 of USD cash no longer zeroes the correction');
+  assert.deepEqual(settlement({...us,cash:600,fx:{usdKRW:1324.6}}),{committedKRW:714383,uncertainKRW:714383},'capped at the committed amount');
+  const p=combinePortfolio(kr,{...us,cash:100,fx:{usdKRW:1324.6}},fx);assert.equal(p.committedKRW,714383);assert.equal(p.settlementUncertainKRW,132460);
+  const korea={market:'KR',currency:'KRW',equity:1498481,cash:1319081,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:false}};
+  const c=combinedContext(korea,{market:'US',currency:'USD',equity:635.11,cash:100,unsettledKRW:714383,unsettledUncertainKRW:132460,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:true}},fx);
+  assert.match(c.markets.find(m=>m.market==='KR').cashNote,/USD cash may have paid for up to ₩132,460 of it, so equity may be understated/);
 });
