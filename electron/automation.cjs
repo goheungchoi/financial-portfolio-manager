@@ -93,6 +93,16 @@ class Automation {
     const rows=available.map(b=>{const age=Number.isFinite(b.data.ageSeconds)?b.data.ageSeconds:null;return {symbol:b.symbol,bid:b.data.bid,ask:b.data.ask,bidSize:b.data.bidSize,askSize:b.data.askSize,spreadPct:b.data.spreadPct,quoteTime:b.data.quoteTime??null,ageSeconds:age,stale:age==null||age>STALE_SECONDS,...(age==null?{ageUnknown:true}:{})};});
     if(rows.length)context.orderBooks={readAt:new Date(Math.max(...available.map(b=>b.retrievedAt??0))||Date.now()).toISOString(),staleAfterSeconds:STALE_SECONDS,delay:available.find(b=>b.delay)?.delay??null,books:rows};
   }
+  async reconcileOpenOrders(){
+    for(const [market,engine] of [['KR',this.live],['US',this.usLive]]){if(!engine?.orderReconciliation?.())continue;try{await engine.reconcile();}catch{}this.observeReconcile(market,engine.reconcileHealth);}
+  }
+  // One alert per episode when open-order statuses cannot be confirmed with KIS after three checks; cleared on success.
+  observeReconcile(market,health){
+    this.reconcileAlerts??={};if(!health?.failures){this.reconcileAlerts[market]=false;return;}
+    if(health.failures<3||this.reconcileAlerts[market])return;this.reconcileAlerts[market]=true;
+    const message=`Order status could not be confirmed with KIS (${market}, ${health.error}) after ${health.failures} checks. An open order may already be filled; new ${market} orders, including stop-losses, are blocked until it is confirmed. Check the order in the KIS app.`;
+    this.log(randomUUID(),'System','Order status not confirmed',message);try{this.notify?.('reconcile-'+market+'-'+health.since,message);}catch{}
+  }
   topStories(now=Date.now()){
     if(this.storiesCache&&now-this.storiesCache.at<10*60000)return this.storiesCache.value;
     let value=[];try{const events=this.db.prepare('SELECT payload,firstSeenAt FROM news_events WHERE firstSeenAt>=?').all(now-7*86400000).map(r=>({...JSON.parse(r.payload),firstSeenAt:r.firstSeenAt}));value=require('./news-stories.cjs').topStories(events,now);}catch{}
@@ -178,6 +188,8 @@ class Automation {
       // Korean breadth and flows are refreshed before each review while the Korean session is open, so no review starts
       // from a previous session's reading.
       try{await this.freshenMarket?.();}catch{}
+      // Open orders are checked against KIS order history first, so a review does not reason from a stale order status.
+      await this.reconcileOpenOrders();
       let usValue;let execution=this.config.scope==='us'?this.usLive:this.live;
       if(this.config.scope!=='paper') {
         if(this.config.scope==='us'||this.config.scope==='both')usValue=await this.refreshUS();

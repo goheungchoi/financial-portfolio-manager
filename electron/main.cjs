@@ -168,7 +168,7 @@ app.whenReady().then(async () => {
   const publishMarket = () => {
     paper?.tick();
     automation?.tick();if(notifier){notifier.observe([...paper.orders(),...live.orders(),...(usLive?.orders()??[])]);void notifier.tick();}
-    if(kisState.snapshot && !kisService.isBusy && !live.busy && Date.now()-lastReconcile>30000){lastReconcile=Date.now();void live.reconcile().catch(()=>{});if(usSnapshot)void usLive.reconcile().catch(()=>{});}
+    if(kisState.snapshot && !kisService.isBusy && !live.busy && Date.now()-lastReconcile>30000){lastReconcile=Date.now();void live.reconcile().catch(()=>{}).finally(()=>automation?.observeReconcile('KR',live.reconcileHealth));if(usSnapshot)void usLive.reconcile().catch(()=>{}).finally(()=>automation?.observeReconcile('US',usLive.reconcileHealth));}
     if(kisState.snapshot&&!kisService.isBusy&&!usRefreshing&&Date.now()>(kisService.cooldownUntil??0)&&Date.now()-lastUSRefresh>60000){lastUSRefresh=Date.now();usRefreshing=true;void automation.refreshUS().catch(error=>{usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}).finally(()=>{usRefreshing=false;});}
     if(automation && Date.now()-lastNews>(automation.config.enabled&&automation.config.newsTrigger!=='off'?300000:1800000) && (automation.config.newsURL||automation.config.newsFeeds?.length||automation.config.kisNews||automation.providerStatus.dartConnected))void refreshNews();
     const state = marketState();
