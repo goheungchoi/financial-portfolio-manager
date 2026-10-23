@@ -5,6 +5,8 @@
 // mistaken for a flow. Detected flows count in returns at once and wait for the user to confirm or remove them.
 const {seoulDate}=require('./kis-activity.cjs');
 const THRESHOLD_KRW=10000;
+// Korean cash net of KRW committed to unsettled U.S. buys (electron/integrated-settlement.cjs).
+const BASIS='net-of-unsettled';
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 // An order's cash effect in its market currency: the broker's net cash when known, otherwise the gross amount.
 function cashEffect(order){
@@ -35,10 +37,11 @@ class FlowDetector {
   // Records and returns the flows found since the last observation; the observation advances only when it was judged.
   observe(account,{krCash,usCash=null,fx=null,orders=[]}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null};
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS};
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const prev=row?JSON.parse(row.payload):null;
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(now));
-    if(!prev){save();return [];}
+    // Readings taken before KRW committed to unsettled U.S. buys was netted out are a different basis: start again.
+    if(!prev||prev.basis!==BASIS){save();return [];}
     const u=unexplained(prev,now,orders);if(!u)return [];
     const found=flowsFrom(u,fx);save();const day=seoulDate(now.at);
     return found.map(f=>this.performance.addFlow(account,{day,market:f.market,amount:f.amount,detected:true,
