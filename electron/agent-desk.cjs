@@ -13,7 +13,7 @@ const isSymbol=s=>typeof s==='string'&&/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]
 const fail=reason=>({status:'rejected',reason});
 const describe=e=>e?.code?`${e.code}${e.detail?`: ${e.detail}`:''}`:'INVALID';
 class AgentDesk {
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
+  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS agent_note_history(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,replacedAt INTEGER NOT NULL,reason TEXT NOT NULL);CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
   rows(table,scope,status){return this.db.prepare(`SELECT payload FROM ${table} WHERE scope=?${status?' AND status=?':''} ORDER BY rowid DESC`).all(...(status?[scope,status]:[scope])).map(r=>JSON.parse(r.payload));}
   write(table,item){this.db.prepare(`INSERT INTO ${table} VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,payload=excluded.payload`).run(item.id,item.scope,item.status,JSON.stringify(item));return item;}
   // Expired triggers and orders are closed before anything reads them.
@@ -37,12 +37,19 @@ class AgentDesk {
   cancelTrigger(scope,id){const t=this.rows('agent_triggers',scope,'active').find(x=>x.id===id);if(!t)throw new Error('NOT_FOUND');this.write('agent_triggers',{...t,status:'cancelled',closedAt:this.clock(),closedBy:'user'});}
   // Notes
   notes(scope){this.expire(scope);return this.db.prepare('SELECT payload FROM agent_notes WHERE scope=?').all(scope).map(r=>JSON.parse(r.payload)).sort((a,b)=>b.updatedAt-a.updatedAt);}
-  saveNote(scope,args){
+  // The note a change replaces is kept in agent_note_history with the reason it changed.
+  archiveNote(scope,symbol,reason){const row=this.db.prepare('SELECT payload FROM agent_notes WHERE scope=? AND symbol=?').get(scope,symbol);if(row)this.db.prepare('INSERT INTO agent_note_history(scope,symbol,payload,replacedAt,reason) VALUES(?,?,?,?,?)').run(scope,symbol,row.payload,this.clock(),reason);return row?JSON.parse(row.payload):null;}
+  noteHistory(scope,symbol){return this.db.prepare('SELECT payload,replacedAt,reason FROM agent_note_history WHERE scope=? AND symbol=? ORDER BY id DESC').all(scope,symbol).map(r=>({...JSON.parse(r.payload),replacedAt:r.replacedAt,reason:r.reason}));}
+  // A correction keeps the note's expiry and records what it supersedes; the original stays in history.
+  correctNote(scope,symbol,{note,reason}){const old=this.archiveNote(scope,symbol,reason);if(!old)throw new Error('NO_NOTE');const now=this.clock();
+    const item={symbol,note:cut(note,LIMITS.noteLength),updatedAt:now,expiresAt:old.expiresAt,corrected:{at:now,reason}};this.db.prepare('UPDATE agent_notes SET payload=? WHERE scope=? AND symbol=?').run(JSON.stringify(item),scope,symbol);return item;}
+  saveNote(scope,args,{orderIds=[]}={}){
     const symbol=String(args?.symbol??'').trim().toUpperCase();if(symbol&&!isSymbol(symbol))return fail('symbol must be a stock code or an empty string.');
-    if(args?.action==='clear'){const r=this.db.prepare('DELETE FROM agent_notes WHERE scope=? AND symbol=?').run(scope,symbol);return r.changes?{status:'cleared',symbol}:fail('No note for that symbol.');}
+    if(args?.action==='clear'){this.archiveNote(scope,symbol,'cleared by a review');const r=this.db.prepare('DELETE FROM agent_notes WHERE scope=? AND symbol=?').run(scope,symbol);return r.changes?{status:'cleared',symbol}:fail('No note for that symbol.');}
     const note=cut(args?.note,LIMITS.noteLength);if(!note)return fail('The note is empty.');const days=Number(args.expiresInDays);if(!Number.isFinite(days)||days<1||days>90)return fail('expiresInDays must be 1 to 90.');
     const exists=this.db.prepare('SELECT 1 FROM agent_notes WHERE scope=? AND symbol=?').get(scope,symbol);if(!exists&&this.notes(scope).length>=LIMITS.notes)return fail('Up to 30 notes; clear one first.');
-    const now=this.clock();const item={symbol,note,updatedAt:now,expiresAt:now+days*86400000};this.db.prepare('INSERT INTO agent_notes VALUES(?,?,?) ON CONFLICT(scope,symbol) DO UPDATE SET payload=excluded.payload').run(scope,symbol,JSON.stringify(item));return {status:'saved',symbol:symbol||'(general)',expiresAt:new Date(item.expiresAt).toISOString()};
+    // Open orders for the symbol when the note is written: once they resolve, the note's order claims are superseded.
+    if(exists)this.archiveNote(scope,symbol,'replaced by a review');const now=this.clock();const item={symbol,note,updatedAt:now,expiresAt:now+days*86400000,...(orderIds.length?{orderIds}:{})};this.db.prepare('INSERT INTO agent_notes VALUES(?,?,?) ON CONFLICT(scope,symbol) DO UPDATE SET payload=excluded.payload').run(scope,symbol,JSON.stringify(item));return {status:'saved',symbol:symbol||'(general)',expiresAt:new Date(item.expiresAt).toISOString()};
   }
   deleteNote(scope,symbol){this.db.prepare('DELETE FROM agent_notes WHERE scope=? AND symbol=?').run(scope,symbol);}
   // Conditional orders
@@ -67,7 +74,7 @@ class AgentDesk {
   cancelOrder(scope,id){const o=this.orders(scope).find(x=>x.id===id);if(!o)throw new Error('NOT_FOUND');this.update(o,{status:'cancelled',closedAt:this.clock(),closedBy:'user'});}
   // What a review sees of its desk.
   context(scope,config,symbols){
-    const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString().slice(0,10)}));
+    const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString()}));
     return {notes:relevant,triggers:this.triggers(scope).map(t=>({id:t.id,name:t.name,conditions:t.conditions,combine:t.combine,expires:new Date(t.expiresAt).toISOString()})),
       conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxActive:config.conditionalMaxActive,maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours}:{}),
         armed:this.orders(scope).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString()})),
