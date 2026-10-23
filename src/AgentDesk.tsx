@@ -9,7 +9,7 @@ export function AgentDesk({desk,conditionalOn,onChange}:{desk:DeskState;conditio
   const empty=!desk.notes.length&&!desk.triggers.length&&!desk.orders.length&&!desk.recentOrders.length;
   return <section className="agent-desk" aria-label="Agent desk"><div className="section-head"><div><h2>Agent desk</h2><small className="muted">Notes, review triggers and conditional orders the AI is keeping.</small></div></div>
     {empty&&<p className="muted">Nothing yet. The AI adds notes, triggers{conditionalOn?' and conditional orders':''} during reviews.</p>}
-    {desk.orders.length>0&&<><h3 className="research-sub">Conditional orders · armed</h3><ul className="desk-list" aria-label="Armed conditional orders">{desk.orders.map(o=><li key={o.id}>
+    {desk.orders.length>0&&<><h3 className="research-sub">Conditional orders · armed{desk.monitoringActive===false?' · inactive while auto trading is paused':''}</h3><ul className="desk-list" aria-label="Armed conditional orders">{desk.orders.map(o=><li key={o.id}>
       <div><span className={`role-tag ${o.side==='Buy'?'role-add':'role-trim'}`}>{PURPOSE[o.purpose]??o.purpose}</span> <b>{o.side} {o.quantity} {o.symbol}</b> at {o.limitPrice??'the market price'}<small> when {conds(o.conditions,o.combine)} · until {when(o.expiresAt)}{o.waiting?` · waiting: ${o.waiting}`:''}</small>{o.reason&&<small className="desk-reason">{o.reason}</small>}</div>
       <button aria-label={`Cancel conditional order ${o.id}`} onClick={()=>void act(()=>window.portfolio?.cancelConditionalOrder(o.id))}>Cancel</button></li>)}</ul></>}
     {desk.triggers.length>0&&<><h3 className="research-sub">Review triggers</h3><ul className="desk-list" aria-label="Review triggers">{desk.triggers.map(t=><li key={t.id}>
