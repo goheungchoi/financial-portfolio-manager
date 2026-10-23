@@ -27,7 +27,7 @@ export function HomeMetrics({state}:{state:PortfolioState}){
   return <div className="home-metrics">
     <section className="metric-card" aria-label="Combined equity"><small>Total equity</small><strong>{equity==null?'—':<LiveValue value={equity} format={krw}/>}</strong>
       <div className="metric-foot">{equity!=null&&<TickDelta value={equity} sample={sample}/>}<span title="Korea and U.S. account totals in their own currencies">{withUS?`${state.totals.KRW!=null?compact(state.totals.KRW):'—'} · ${state.totals.USD!=null?native(state.totals.USD,'USD'):'—'}`:'Korea only'}</span></div></section>
-    <section className="metric-card" aria-label="Cash"><small>Cash</small><strong>{state.cash.KRW==null&&state.cash.USD==null?'—':compact(cash)}</strong>
+    <section className="metric-card" aria-label="Cash"><small>Cash</small><strong>{state.cash.KRW==null&&state.cash.USD==null?'—':krw(cash)}</strong>
       <div className="metric-foot"><span>{equity?`${(cash/equity*100).toFixed(0)}% of equity`:'—'}</span>{withUS&&state.cash.USD?<span>incl. {native(state.cash.USD,'USD')}</span>:null}</div></section>
     <section className="metric-card" aria-label="Unrealized"><small>Unrealized</small><PortfolioProfit rows={state.rows} loaded={equity!=null}/>
       {us.length>0&&<div className="metric-foot" aria-label="U.S. unrealized"><span>U.S.</span><PortfolioProfit rows={us} currency="USD" loaded={state.totals.USD!=null}/></div>}</section>
