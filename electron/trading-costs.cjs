@@ -99,7 +99,7 @@ class TradingCosts{
   // passed on only when complete; otherwise estimates that need it are incomplete (taxStatus says what is missing).
   // Estimates use the ledger's KRW cost per share where the app holds purchase records.
   get(){
-    const settings=this.saved();let ledger;try{ledger=this.ledger(settings);}catch{return settings;}const year=annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US')});
+    const settings=this.saved();let ledger;try{ledger=this.ledger(settings);}catch{return settings;}const year=annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US'),issues:ledger.issues??[]});
     // The entered per-share basis (shares beyond the records) is kept as entered; the ledger average fills only the rest.
     const basis={...settings.taxBasisKRW};for(const [symbol,p] of Object.entries(ledger.positions))if(p.perShareKRW!=null&&settings.taxBasisKRW[symbol]==null)basis[symbol]=p.perShareKRW;
     // The connected account's lots, so a quote for any quantity uses the ledger's own disposal rule; a symbol whose share
@@ -132,21 +132,33 @@ class TradingCosts{
   orders(){return this.table('live_intents')?this.db.prepare('SELECT payload FROM live_intents').all().map(r=>JSON.parse(r.payload)):[];}
   // Taxable fills: live accounts of this taxpayer only (the connected live account and accounts linked to it); mock and
   // paper orders never enter the tax ledger.
-  // The broker's trade history is the record (manual trades included); the app's own fills fill in only where that
-  // history does not yet cover them: for each ticker, side and trade date (within a day), broker rows are used when
-  // they hold at least the app's quantity, otherwise the app's fills.
-  fills(){
+  // The broker's trade history is the record (manual trades included). Each of the app's fills is matched to it one to
+  // one: the same account, ticker, side, U.S. trade date, quantity and price (or the rows of one order filled in
+  // several executions); a matched row takes the app's order time. An app fill with no broker row that day is kept (the
+  // history has not listed it yet). An app fill whose day has broker rows that do not match is ambiguous: the broker
+  // rows are used, and the mismatch is reported as a missing input instead of guessing.
+  fills(){return this.matchedFills().fills;}
+  matchedFills(){
     const {taxpayerAccounts,ownerAccount}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());
+    const nyDate=ms=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
+    // The order time gives the U.S. trade date; an order day far from it (old or test records) is used as it is.
+    const tradeDate=o=>{if(Number.isFinite(o.createdAt)&&o.createdAt>0){const d=nyDate(o.createdAt);if(Math.abs(Date.parse(d)-Date.parse(o.day))<=2*86400000)return d;}return o.day;};
     const app=this.orders().filter(o=>o.environment==='live'&&accounts.has(ownerAccount(o.accountKey))&&o.market==='US'&&o.filled>0&&o.fillPrice>0&&['Buy','Sell'].includes(o.side)&&/^\d{4}-\d{2}-\d{2}$/.test(o.day??'')&&/^(NASD|NYSE|AMEX):/.test(o.symbol??'')).map(o=>{const r=o.reportedCosts?.status==='reported'?o.reportedCosts:null;
-      return {id:o.id,account:ownerAccount(o.accountKey),symbol:o.symbol,side:o.side,quantity:o.filled,price:o.fillPrice,feesUSD:r?r.feesUSD:o.resultCosts?(o.resultCosts.commission+o.resultCosts.transactionTax):null,tradeDate:o.day,timestamp:o.createdAt,settlementDate:r?.settlementDate??null,settlementKRW:r?.settlementKRW??null,exchangeRate:r?.exchangeRate??null,feesSource:r?'Broker':'Estimated',source:'App order'};});
-    const broker=this.db.prepare('SELECT payload FROM tax_events').all().map(r=>JSON.parse(r.payload)).filter(e=>accounts.has(e.account));
-    const ticker=s=>String(s).split(':').pop(),near=(a,b)=>Math.abs(Date.parse(a)-Date.parse(b))<=86400000;
-    const group=(rows,f)=>rows.filter(x=>x.account===f.account&&ticker(x.symbol)===ticker(f.symbol)&&x.side===f.side&&near(x.tradeDate,f.tradeDate));
-    const appOnly=app.filter(f=>group(broker,f).reduce((n,x)=>n+x.quantity,0)<group(app,f).reduce((n,x)=>n+x.quantity,0));
-    const brokerUsed=broker.filter(e=>!appOnly.some(f=>group([e],f).length));
-    // One symbol per ticker, so the broker's rows and the app's fills share a cost pool.
-    const symbolOf=new Map([...app,...brokerUsed,...(this.holdings()??[])].filter(x=>/^(NASD|NYSE|AMEX):/.test(x.symbol)).map(x=>[ticker(x.symbol),x.symbol]));
-    return [...brokerUsed,...appOnly].map(x=>({...x,symbol:symbolOf.get(ticker(x.symbol))??x.symbol}));
+      return {id:o.id,account:ownerAccount(o.accountKey),symbol:o.symbol,side:o.side,quantity:o.filled,price:o.fillPrice,feesUSD:r?r.feesUSD:o.resultCosts?(o.resultCosts.commission+o.resultCosts.transactionTax):null,tradeDate:tradeDate(o),timestamp:o.createdAt,timeKnown:Number.isFinite(o.createdAt)&&o.createdAt>0,settlementDate:r?.settlementDate??null,settlementKRW:r?.settlementKRW??null,exchangeRate:r?.exchangeRate??null,feesSource:r?'Broker':'Estimated',source:'App order'};});
+    const broker=this.db.prepare('SELECT payload FROM tax_events').all().map(r=>({...JSON.parse(r.payload),timeKnown:false})).filter(e=>accounts.has(e.account));
+    const ticker=s=>String(s).split(':').pop();const sameDay=(x,f)=>x.account===f.account&&ticker(x.symbol)===ticker(f.symbol)&&x.side===f.side&&x.tradeDate===f.tradeDate;
+    const used=new Map(),appOnly=[],issues=[];
+    for(const f of [...app].sort((a,b)=>(a.timestamp??0)-(b.timestamp??0))){
+      const open=broker.filter(b=>!used.has(b.id)&&sameDay(b,f));
+      const exact=open.find(b=>b.quantity===f.quantity&&Math.abs(b.price-f.price)<=0.005);
+      const parts=exact?[exact]:open.length>1&&open.reduce((n,b)=>n+b.quantity,0)===f.quantity&&Math.abs(open.reduce((n,b)=>n+b.quantity*b.price,0)/f.quantity-f.price)<=0.005?open:null;
+      if(parts){for(const b of parts)used.set(b.id,f);continue;}
+      if(open.length){issues.push(`broker and app records of ${f.symbol} ${f.side.toLowerCase()} on ${f.tradeDate} do not match`);continue;}
+      appOnly.push(f);
+    }
+    const symbolOf=new Map([...app,...broker,...(this.holdings()??[])].filter(x=>/^(NASD|NYSE|AMEX):/.test(x.symbol)).map(x=>[ticker(x.symbol),x.symbol]));
+    const fills=[...broker.map(b=>used.has(b.id)?{...b,timestamp:used.get(b.id).timestamp,timeKnown:used.get(b.id).timeKnown,appOrderId:used.get(b.id).id}:b),...appOnly].map(x=>({...x,symbol:symbolOf.get(ticker(x.symbol))??x.symbol}));
+    return {fills,issues:[...new Set(issues)]};
   }
   // Imports the broker's U.S. trade history rows (kis-overseas.cjs trades()) for an account. A row's identity is its
   // trade and settlement dates, ticker, side, quantity, price and occurrence: re-imports and corrected fees replace the
@@ -187,11 +199,11 @@ class TradingCosts{
   // Cost pools are kept per account; realized gains are combined for the taxpayer afterwards. Positions are the connected
   // account's (entered basis applies to it only).
   ledger(settings=this.saved()){
-    const fills=this.fills(),current=require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey);const accounts=[...new Set(fills.map(f=>f.account))];
+    const {fills,issues}=this.matchedFills(),current=require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey);const accounts=[...new Set(fills.map(f=>f.account))];
     const lots=this.openingLots();const all=[...new Set([...accounts,...lots.map(l=>l.account)])].filter(a=>a===current||accounts.includes(a));
     const pools=Object.fromEntries(all.map(a=>[a,buildLedger({fills:fills.filter(f=>f.account===a),openingLots:lots.filter(l=>l.account===a),rateOn:day=>this.rateOn(day),userBasis:a===current?settings.taxBasisKRW:{},method:settings.taxMethod,today:today(),krClosed:this.krClosed()})]));
     const own=pools[current]??buildLedger({fills:[],rateOn:()=>null,method:settings.taxMethod});
-    return {method:settings.taxMethod,sales:all.flatMap(a=>pools[a].sales.map(s=>({...s,account:a}))).sort((x,y)=>x.settlementDate.localeCompare(y.settlementDate)),purchases:all.flatMap(a=>pools[a].purchases.map(p=>({...p,account:a}))),positions:own.positions,accounts:all};
+    return {method:settings.taxMethod,sales:all.flatMap(a=>pools[a].sales.map(s=>({...s,account:a}))).sort((x,y)=>x.settlementDate.localeCompare(y.settlementDate)),purchases:all.flatMap(a=>pools[a].purchases.map(p=>({...p,account:a}))),positions:own.positions,accounts:all,issues};
   }
   // Settlement days whose reference rate is still missing, for the provider worker to fetch.
   // Every settlement day of a recorded trade needs the reference rate, whatever the broker reported (its rate is only
@@ -201,7 +213,7 @@ class TradingCosts{
   taxSummary(){
     const settings=this.saved(),ledger=this.ledger(settings);
     const orders=this.orders().filter(o=>o.filled>0&&o.resultCosts).sort((a,b)=>(b.createdAt??0)-(a.createdAt??0)).slice(0,30).map(o=>({id:o.id,market:o.market,symbol:o.symbol,side:o.side,quantity:o.filled,day:o.day,currency:o.resultCosts.currency??(o.market==='US'?'USD':'KRW'),basis:o.resultCosts.basis,commission:o.resultCosts.commission,transactionTax:o.resultCosts.transactionTax,netCash:o.resultCosts.netCash,estimate:o.costEstimate?{commission:o.costEstimate.commission,transactionTax:o.costEstimate.transactionTax}:null,reportStatus:o.reportedCosts?.status??'pending'}));
-    return {settings,year:annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US')}),ledger,orders,openingLots:this.openingLots(require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey)),income:this.incomeSummary(settings.taxYear),fundClasses:this.fundClasses(),reconciliation:this.reconciliation(ledger),profile:this.profile.get(),applicability:{KR:this.applicability('KR'),US:this.applicability('US')},ruleVersion:rules.RULE_VERSION};
+    return {settings,year:annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US'),issues:ledger.issues??[]}),ledger,orders,openingLots:this.openingLots(require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey)),income:this.incomeSummary(settings.taxYear),fundClasses:this.fundClasses(),reconciliation:this.reconciliation(ledger),profile:this.profile.get(),applicability:{KR:this.applicability('KR'),US:this.applicability('US')},ruleVersion:rules.RULE_VERSION};
   }
   // The statutory sale-tax rate of a Korean sale today: the override, or the higher of the KOSPI and KOSDAQ rates.
   krSaleTaxPct(settings=this.saved()){return settings.krSellTaxOverridePct??Math.max(...['KOSPI','KOSDAQ'].map(m=>rules.krSaleTax(m,1e6,today())?.ratePct??0));}

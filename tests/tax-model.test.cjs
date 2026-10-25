@@ -11,7 +11,7 @@ test('foreign-share gains 4m and losses 1m with complete inputs: taxable 500,000
 test('one sale with unknown basis: the annual and marginal tax are unknown; the known subtotal is kept and labeled',()=>{
   const y=annualTax({sales:[{year:2026,gainKRW:5000000},{year:2026,gainKRW:null}]},2026,0);
   assert.equal(y.complete,false);assert.equal(y.estimatedTaxKRW,null);assert.equal(y.totalKRW,null);assert.equal(y.result.status,'incomplete');assert.equal(y.result.value,null);
-  assert.equal(y.knownTotalKRW,5000000);assert.equal(y.knownRecordsTaxKRW,550000);assert.equal(y.result.knownSubtotal,550000);assert.deepEqual(y.result.missingInputs,['acquisition basis or exchange rate for 1 sale(s)']);
+  assert.equal(y.knownTotalKRW,5000000);assert.equal(y.knownRecordsTaxKRW,550000);assert.equal(y.result.knownSubtotal,550000);assert.deepEqual(y.result.missingInputs,['acquisition basis or exchange rate']);
   assert.equal(marginalTax(y,1000000),null,'no marginal estimate from a partial year');
   assert.equal(annualTax({sales:[]},2026,null).result.missingInputs[0],'gains realized at other brokers this year (enter 0 if none)');
 });
@@ -213,10 +213,40 @@ test('review fix: re-importing a window replaces rows KIS corrected instead of k
   assert.deepEqual(costs.fills().map(x=>x.quantity).sort((a,b)=>a-b),[2,10],'the 5-share partial row is gone; a row outside the window is untouched');
   costs.importTrades('a',[],0,{start:'2026-09-30',end:'2026-09-30'});assert.deepEqual(costs.fills().map(x=>x.quantity),[10]);db.close();
 });
-test('review fix: same-day trades replay buys before sales, whatever order the broker lists them in',()=>{
-  const fills=[f('b0','Buy',10,100,'2026-03-02'),{...f('s','Sell',10,200,'2026-06-01'),timestamp:0},{...f('b1','Buy',10,200,'2026-06-01'),timestamp:0}];
-  const l=buildLedger({fills,rateOn:d=>({rate:1000,source:'t'})});assert.equal(l.sales[0].costKRW,1500000,'average of 100 and 200 after the buy');assert.notEqual(l.sales[0].basisSource,'Unknown basis');
-  const day=buildLedger({fills:[{...f('s','Sell',1,120,'2026-06-01'),timestamp:0},{...f('b','Buy',1,100,'2026-06-01'),timestamp:0}],rateOn:()=>({rate:1000,source:'t'})});assert.equal(day.sales[0].gainKRW,20000,'a day trade listed sale-first still has its basis');assert.deepEqual(day.positions,{});
+test('review fix 2: trades replay in execution order; a same-day order that is not known makes the result unknown, not assumed',()=>{
+  const r=()=>({rate:1000,source:'t'});
+  // Reproduced: one share at 100,000, sold at 150,000, then another bought at 200,000 the same day.
+  const timed=buildLedger({fills:[{...f('b0','Buy',1,100,'2026-10-01'),timestamp:1},{...f('s','Sell',1,150,'2026-10-20'),timestamp:2},{...f('b1','Buy',1,200,'2026-10-20'),timestamp:3}],rateOn:r});
+  assert.equal(timed.sales[0].gainKRW,50000,'not averaged with the later purchase');assert.equal(timed.positions['NASD:TEST'].costKRW,200000);
+  const untimed=buildLedger({fills:[{...f('b0','Buy',1,100,'2026-10-01'),timestamp:1},{...f('s','Sell',1,150,'2026-10-20'),timestamp:0},{...f('b1','Buy',1,200,'2026-10-20'),timestamp:0},{...f('s2','Sell',1,300,'2026-11-02'),timestamp:0}],rateOn:r});
+  assert.equal(untimed.sales[0].gainKRW,null);assert.deepEqual(untimed.sales[0].missing,['order of same-day buys and sales on 2026-10-20']);
+  assert.equal(untimed.sales[1].gainKRW,null,'a later sale from the same pool depends on that order too');assert.deepEqual(untimed.sales[1].missing,['order of same-day buys and sales on 2026-10-20']);
+  const y=annualTax(untimed,2026,0);assert.equal(y.complete,false);assert.deepEqual(y.result.missingInputs,['order of same-day buys and sales on 2026-10-20']);
+  const oneSide=buildLedger({fills:[{...f('b0','Buy',1,100,'2026-10-20'),timestamp:0},{...f('b1','Buy',1,200,'2026-10-20'),timestamp:0},{...f('s','Sell',2,150,'2026-10-21'),timestamp:0}],rateOn:r});assert.equal(oneSide.sales[0].gainKRW,0,'purchases alone on a day need no order');
+});
+test('review fix 1: broker rows and app fills match one to one by U.S. trade date, quantity and price; a mismatch is reported',()=>{
+  const {db,costs}=ledgerDb();const app=(id,side,qty,price,at)=>db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run(id,'a:US',JSON.stringify({id,accountKey:'a:US',environment:'live',market:'US',side,symbol:'NASD:TEST',filled:qty,fillPrice:price,day:new Date(Date.parse(at)+9*3600000).toISOString().slice(0,10),createdAt:Date.parse(at),resultCosts:{commission:0.25,transactionTax:0}}));
+  // Reproduced: a manual broker buy on Oct 20 and a different app buy on Oct 21 (00:30 KST on Oct 22).
+  app('app21','Buy',1,110,'2026-10-21T15:30:00Z');costs.importTrades('a',[row('Buy',1,100,'2026-10-20','2026-10-21')]);
+  assert.deepEqual(costs.fills().map(x=>[x.source,x.tradeDate,x.price]).sort(),[['App order','2026-10-21',110],['KIS trade history','2026-10-20',100]],'both purchases kept');
+  costs.importTrades('a',[row('Buy',1,110,'2026-10-21','2026-10-22')]);let m=costs.matchedFills();
+  assert.deepEqual(m.fills.map(x=>[x.source,x.tradeDate,x.price]).sort(),[['KIS trade history','2026-10-20',100],['KIS trade history','2026-10-21',110]],'once listed, the broker row replaces the app fill');
+  const matched=m.fills.find(x=>x.price===110);assert.equal(matched.timeKnown,true);assert.equal(matched.appOrderId,'app21');assert.deepEqual(m.issues,[]);
+  // One order filled in two executions matches the rows that make it up.
+  app('split','Sell',3,120,'2026-10-22T15:00:00Z');costs.importTrades('a',[row('Sell',1,119,'2026-10-22','2026-10-23'),row('Sell',2,120.5,'2026-10-22','2026-10-23')]);
+  m=costs.matchedFills();assert.deepEqual(m.issues,[]);assert.equal(m.fills.filter(x=>x.side==='Sell').length,2);assert.ok(m.fills.filter(x=>x.side==='Sell').every(x=>x.appOrderId==='split'));
+  // Rows that do not add up to the app's fill are not guessed at.
+  app('odd','Buy',5,130,'2026-10-23T15:00:00Z');costs.importTrades('a',[row('Buy',4,130,'2026-10-23','2026-10-26')]);
+  m=costs.matchedFills();assert.deepEqual(m.issues,['broker and app records of NASD:TEST buy on 2026-10-23 do not match']);assert.ok(!m.fills.some(x=>x.id==='odd'),'not counted twice');
+  costs.save({...DEFAULT_COSTS,annualRealizedKRW:0});assert.ok(costs.taxSummary().year.result.missingInputs.includes('broker and app records of NASD:TEST buy on 2026-10-23 do not match'));db.close();
+});
+test('review fix 3: unknown fees make the result incomplete; zero fees are valid; estimated fees are named',()=>{
+  const r=()=>({rate:1000,source:'t'});
+  const unknown=buildLedger({fills:[f('b','Buy',1,100,'2026-03-02'),f('s','Sell',1,500,'2026-10-15',{feesUSD:null})],rateOn:r});
+  assert.equal(unknown.sales[0].gainKRW,null);assert.deepEqual(unknown.sales[0].missing,['sale fees of 2026-10-15']);const y=annualTax(unknown,2026,0);assert.equal(y.complete,false);assert.equal(y.estimatedTaxKRW,null);assert.deepEqual(y.result.missingInputs,['sale fees of 2026-10-15']);
+  const buyFees=buildLedger({fills:[f('b','Buy',1,100,'2026-03-02',{feesUSD:null}),f('s','Sell',1,500,'2026-10-15')],rateOn:r});assert.equal(buyFees.sales[0].gainKRW,null);assert.deepEqual(buyFees.sales[0].missing,['purchase fees of 2026-03-02']);
+  const zero=buildLedger({fills:[f('b','Buy',1,100,'2026-03-02',{feesSource:'Broker'}),f('s','Sell',1,500,'2026-10-15',{feesSource:'Broker'})],rateOn:r});assert.equal(zero.sales[0].gainKRW,400000,'explicit zero fees');assert.ok(!annualTax(zero,2026,0).result.assumptions.some(a=>/fees estimated/.test(a)));
+  const est=buildLedger({fills:[f('b','Buy',1,100,'2026-03-02',{feesUSD:0.25,feesSource:'Estimated'}),f('s','Sell',1,500,'2026-10-15',{feesUSD:1.25,feesSource:'Broker'})],rateOn:r});assert.ok(annualTax(est,2026,0).result.assumptions.includes('fees estimated from the fee plan where the broker has not reported them'),'an estimated purchase fee is named');
 });
 test('live check fix: KIS trade history is parsed in USD, zero placeholders are unknown, and a mismatched row is refused',async()=>{
   const {OverseasClient}=require('../electron/kis-overseas.cjs');
