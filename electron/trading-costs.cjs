@@ -171,7 +171,7 @@ class TradingCosts{
   // Shares the broker holds against shares the ledger holds, per symbol of the connected account. A difference means a
   // missing record or opening lot, or a corporate action (split, merger) not reconciled: that symbol's basis is unknown.
   reconciliation(ledger){
-    const held=this.holdings();if(!held)return null;const ticker=s=>String(s).split(':').pop();const out=[];
+    const held=this.holdings();if(!held||this.currentAccount()?.environment!=='live')return null;const ticker=s=>String(s).split(':').pop();const out=[];
     for(const h of held){const own=Object.entries(ledger.positions).find(([s])=>ticker(s)===ticker(h.symbol));const q=own?.[1].quantity??0;if(Math.abs(q-h.quantity)>1e-9)out.push({symbol:h.symbol,brokerQuantity:h.quantity,ledgerQuantity:q});}
     for(const [s,p] of Object.entries(ledger.positions))if(!held.some(h=>ticker(h.symbol)===ticker(s)))out.push({symbol:s,brokerQuantity:0,ledgerQuantity:p.quantity});
     return out;
