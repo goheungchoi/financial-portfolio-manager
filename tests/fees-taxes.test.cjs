@@ -67,3 +67,12 @@ test('U.S. charges: unavailable on mock, matched by ticker/side/date on live, am
   assert.equal(await real.live.refreshCharges(),1);const u=real.live.orders().find(o=>o.id==='u'),o=real.live.orders().find(o=>o.id==='o');
   assert.equal(u.resultCosts.netCash,-200.5);assert.equal(u.reportedCosts.exchangeRate,1401.5);assert.equal(u.reportedCosts.settlementKRW,281000);assert.equal(o.reportedCosts.status,'ambiguous','5 broker shares vs 4 app shares');
 });
+test('U.S. charges: a report KIS has not finalized (zero rate) is not taken as final, and earlier zero reports are fetched again',async()=>{
+  let trades=[{tradeDate:'2026-10-23',settlementDate:'2026-10-26',ticker:'GOOGL',side:'Buy',quantity:1,price:323.64,settlementUSD:323.64,settlementKRW:null,feesUSD:0,exchangeRate:null}];
+  const e=engine('US',{charges:()=>trades});const now=Date.now();
+  // As stored by 1.5.34 on 2026-10-23: zero fees and rate recorded as reported.
+  e.put({id:'g',symbol:'NASD:GOOGL',side:'Buy',quantity:1,filled:1,fillPrice:323.64,day:'2026-10-23',createdAt:now-3600000,reportedCosts:{status:'reported',feesUSD:0,exchangeRate:0,settlementKRW:0,settlementDate:'2026-10-26'}});
+  assert.equal(await e.live.refreshCharges(now),0);assert.equal(e.live.orders()[0].reportedCosts.status,'pending');assert.equal(e.live.orders()[0].reportedCosts.code,'NOT_FINAL');
+  trades=[{...trades[0],settlementUSD:324.44,settlementKRW:429752,feesUSD:0.8,exchangeRate:1324.6}];
+  assert.equal(await e.live.refreshCharges(now+16*60000),1);const g=e.live.orders()[0];assert.equal(g.reportedCosts.exchangeRate,1324.6);assert.equal(g.resultCosts.commission,0.8);assert.equal(g.resultCosts.netCash,-324.44);
+});

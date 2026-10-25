@@ -414,6 +414,8 @@ app.whenReady().then(async () => {
       const days=costs.missingRateDays();if(days.length&&!process.env.PORTFOLIO_SMOKE_DATA)costs.saveRates(await providerService.request('fx-rates',{days}),'ECOS USD/KRW reference rate');
       chargesAt=Date.now();})().catch(error=>{chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'CHARGES_FAILED';}).finally(()=>{chargesTask=null;});return chargesTask;};
   setInterval(()=>{void refreshCharges();},15*60000).unref();
+  // A first check soon after start, so the tax record does not wait a quarter of an hour.
+  setTimeout(()=>{void refreshCharges();},2*60000).unref();
   ipcMain.handle('costs:tax-summary',event=>{authorize(event);return {...costs.taxSummary(),refreshedAt:chargesAt||null,error:chargesError,refreshing:Boolean(chargesTask),environment:kisState.snapshot?.environment??null};});
   ipcMain.handle('costs:refresh-charges',async event=>{authorize(event);chargesError=null;await refreshCharges();return {...costs.taxSummary(),refreshedAt:chargesAt||null,error:chargesError,refreshing:false,environment:kisState.snapshot?.environment??null};});
   ipcMain.handle('macro:get',event=>{authorize(event);return macroState();});
