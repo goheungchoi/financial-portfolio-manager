@@ -28,6 +28,7 @@ process.parentPort.on('message',async ({data})=>{
       if(operation==='us-context')snapshot=await us.context(data.symbols??[],sess);
       else if(operation==='us-orders')snapshot=await us.orders(data.startDate);
       else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end);
+      else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
       else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
       else if(operation==='us-place-order'){const entry=prepared.get(data.ticket);prepared.delete(data.ticket);if(!entry||entry.market!=='US'||entry.expiresAt<Date.now())throw new Error();if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
       else throw new Error();

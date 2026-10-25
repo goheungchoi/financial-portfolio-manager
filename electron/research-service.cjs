@@ -10,7 +10,7 @@ const US_SECTIONS=['overview','risk','financials','dividends','events'],US_DEFAU
 const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},market:{ttl:10*60000,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},market:{ttl:10*60000,from:'kis'},'us-market':{ttl:5*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
 const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
 const FAILURE_TTL=10*60000;
@@ -131,6 +131,7 @@ class ResearchService {
   }
   // Korean market overview: breadth, sector moves and the day's largest foreign and institutional buying.
   async market(refresh=false){return this.source('MARKET','market',refresh);}
+  async usMarket(refresh=false){return this.source('MARKET','us-market',refresh);}
   // Factor ranks within the largest same-sector stocks: value, momentum, quality, growth and low volatility, as percentiles.
   async factors(symbol,refresh){
     const id=this.identity(symbol);const peers=this.master?.peers?.(symbol,8)??[];if(!peers.length)return {status:'unavailable',reason:'NO_PEERS'};

@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getCompany:symbol=>ipcRenderer.invoke('company:get',symbol),
   getResearch:(symbol,sections,refresh)=>ipcRenderer.invoke('research:company',symbol,sections,refresh),
   openFiling:url=>ipcRenderer.invoke('research:open-filing',url),
-  getMarketOverview:refresh=>ipcRenderer.invoke('research:market',refresh),
+  getMarketOverview:refresh=>ipcRenderer.invoke('research:market',refresh),getUSMarketOverview:refresh=>ipcRenderer.invoke('research:us-market',refresh),
   openChartWindow:symbol=>ipcRenderer.invoke('chart:pop-out',symbol),
   getMacro:()=>ipcRenderer.invoke('macro:get'),
   getAttention:()=>ipcRenderer.invoke('workspace:attention'),

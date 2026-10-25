@@ -73,3 +73,14 @@ test('U.S. intents stay separate from domestic account, preserve approval and pr
   await assert.rejects(engine.submit(order.id,''),/APPROVAL_REQUIRED/);await engine.submit(order.id,'PLACE MOCK ORDER');await engine.submit(order.id,'PLACE MOCK ORDER');assert.equal(posts,1);await engine.reconcile();const filled=engine.orders()[0];assert.equal(filled.filled,1);assert.equal(filled.resultCosts.gross,201.12);assert.equal(filled.resultCosts.commission,.5);
   const domestic=new LiveEngine(db,broker,()=>({snapshot:{...balance,accountKey:'fixture'}}));assert.equal(domestic.orders().length,0);assert.equal(domestic.getState().enabled,false);assert.throws(()=>domestic.configure({symbols:['NASD:AAPL']},'ENABLE MOCK'),/INVALID_LIMITS/);db.close();
 });
+test('U.S. order history for Activity: KST order time, USD amounts, Korean-date range, every channel',async()=>{
+  // Shape and values of the 2026-10-25 read-only TTTS3035R response (account fields omitted).
+  const googl={ord_dt:'20261023',ord_gno_brno:'01790',odno:'0030955423',sll_buy_dvsn_cd:'02',rvse_cncl_dvsn:'00',pdno:'GOOGL',prdt_name:'알파벳 A',ft_ord_qty:'1',ft_ord_unpr3:'323.74000000',ft_ccld_qty:'1',ft_ccld_unpr3:'323.64000000',ft_ccld_amt3:'323.64000',nccs_qty:'0',ord_tmd:'000734',ovrs_excg_cd:'NASD',dmst_ord_dt:'20261024',thco_ord_tmd:'000734',mdia_dvsn_name:'OpenAPI'};
+  const old={...googl,odno:'0030000001',dmst_ord_dt:'20261001',ord_dt:'20260930'};const canceled={...googl,odno:'0030966999',pdno:'NVDA',rvse_cncl_dvsn:'02',ft_ccld_qty:'0',ft_ccld_amt3:'0',ft_ccld_unpr3:'0',nccs_qty:'0',mdia_dvsn_name:'MTS'};
+  let params;const client=new OverseasClient({overseasIdentity:()=>({environment:'live'}),overseasRequest:async(path,tr,p)=>{params={tr,...p};return {body:{output:[googl,old,canceled]},continuation:'D'};}});
+  const rows=await client.orderHistory('2026-10-02','2026-10-25');assert.equal(params.tr,'TTTS3035R');assert.equal(params.ORD_STRT_DT,'20261001','a day early: U.S. dates trail Korean ones');
+  assert.equal(rows.length,2,'the Oct 1 (KST) order is outside the range');const g=rows.find(r=>r.symbol==='NASD:GOOGL');
+  assert.equal(new Date(g.timestamp).toISOString(),'2026-10-23T15:07:34.000Z','00:07:34 KST on Oct 24');assert.equal(g.executionAmount,323.64);assert.equal(g.averagePrice,323.64);assert.equal(g.currency,'USD');assert.equal(g.status,'Filled');assert.equal(g.channel,'OpenAPI');
+  const c=rows.find(r=>r.symbol==='NASD:NVDA');assert.equal(c.status,'Canceled');assert.equal(c.executionAmount,0);assert.equal(c.channel,'MTS');
+  await assert.rejects(client.orderHistory('2026-10-25','2026-10-02'),/INVALID_DATE_RANGE/);
+});
