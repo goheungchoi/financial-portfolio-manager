@@ -27,7 +27,7 @@ test('tax estimates apply annual deduction once, include historical KRW basis an
   const sale=estimateCosts({...args,settings});assert.equal(sale.taxableGainKRW,792944);assert.equal(sale.capitalGainsTaxKRW,152430,'national ₩138,580 + local ₩13,850, amounts below 10 won dropped');assert.equal(sale.gainAfterEstimatedTax,382.33);assert.equal(sale.incomeTax.status,'estimated');
   const sheltered=estimateCosts({...args,settings:{...settings,annualRealizedKRW:0}});assert.equal(sheltered.capitalGainsTaxKRW,0);
   assert.equal(estimateCosts({...args,price:100,settings:{...settings,annualRealizedKRW:3000000}}).capitalGainsTaxKRW,-110000);
-  assert.equal(estimateCosts({...args,settings:{...settings,taxYear:2020}}).capitalGainsTaxKRW,null);assert.deepEqual(missing.incomeTax.missingInputs,['USD/KRW exchange rate','KRW acquisition basis','gains realized this year']);assert.equal(missing.incomeTax.status,'incomplete');
+  assert.equal(estimateCosts({...args,settings:{...settings,taxYear:2020}}).capitalGainsTaxKRW,null);assert.deepEqual(missing.incomeTax.missingInputs,['KRW acquisition basis','USD/KRW exchange rate','gains realized this year']);assert.equal(missing.incomeTax.status,'incomplete');
   assert.equal(estimateCosts({market:'KR',side:'Sell',quantity:10,price:10000,costPerShare:9000}).netCash,99785);
   assert.throws(()=>validateCosts({usCommissionPct:-1}),/INVALID_COST/);assert.throws(()=>validateCosts({usdKRW:0}),/INVALID_COST/);
   const db=new DatabaseSync(':memory:'),costs=new TradingCosts(db);costs.save(settings);assert.equal(new TradingCosts(db).get().usdKRW,1400);db.close();
