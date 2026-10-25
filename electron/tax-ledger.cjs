@@ -22,7 +22,9 @@ function estimatedSettlement(tradeDate,{krClosed=new Set()}={}){
 function buildLedger({fills,rateOn,userBasis={},method='moving-average',openingLots=[],today=null,krClosed=new Set()}){
   if(!['moving-average','fifo'].includes(method))throw new Error('INVALID_METHOD');
   const pools=new Map(),sales=[],purchases=[];const pool=symbol=>{if(!pools.has(symbol))pools.set(symbol,{lots:[]});return pools.get(symbol);};
-  const entries=[...openingLots.map(l=>({kind:'opening',day:l.acquiredOn,order:-1,lot:l})),...fills.map(f=>({kind:'fill',day:f.tradeDate,order:f.timestamp??0,fill:f}))].sort((a,b)=>a.day.localeCompare(b.day)||a.order-b.order);
+  // Within a day: opening lots, then buys, then sales (broker rows carry no time of day), then time where known.
+  const rank=e=>e.kind==='opening'?0:e.fill.side==='Buy'?1:2;
+  const entries=[...openingLots.map(l=>({kind:'opening',day:l.acquiredOn,order:-1,lot:l})),...fills.map(f=>({kind:'fill',day:f.tradeDate,order:f.timestamp??0,fill:f}))].sort((a,b)=>a.day.localeCompare(b.day)||rank(a)-rank(b)||a.order-b.order);
   for(const entry of entries){
     if(entry.kind==='opening'){const l=entry.lot;pool(l.symbol).lots.push({quantity:l.quantity,costKRW:l.costKRW,costUSD:l.costUSD??null,date:l.acquiredOn,source:'Opening lot',expensesIncluded:l.expensesIncluded!==false});continue;}
     const fill=entry.fill;const settlementDate=fill.settlementDate??estimatedSettlement(fill.tradeDate,{krClosed});const gross=fill.quantity*fill.price,fees=fill.feesUSD??0;
@@ -57,10 +59,10 @@ function annualTax(ledger,year,outsideKRW=null,{applicability=null,asOf=Date.now
   const {overseasGainsTax,taxResult,ROUNDING}=require('./tax-rules.cjs');
   const yearSales=ledger.sales.filter(s=>s.year===year),known=yearSales.filter(s=>s.gainKRW!=null),appKRW=known.reduce((n,s)=>n+s.gainKRW,0);
   const knownTotal=appKRW+(outsideKRW??0);const missing=[];if(outsideKRW==null)missing.push('gains realized outside this app this year');if(known.length<yearSales.length)missing.push(`acquisition basis or exchange rate for ${yearSales.length-known.length} sale(s)`);
-  const unsupported=applicability?.status==='unsupported';const complete=!missing.length&&!unsupported;
+  const noRule=!overseasGainsTax(0,year);const unsupported=applicability?.status==='unsupported'||noRule;const complete=!missing.length&&!unsupported;
   const assumptions=[...(applicability?.assumptions??[]),ROUNDING,...(yearSales.some(s=>s.settlementEstimated)?['settlement dates estimated where the broker has not reported them']:[])];
   const tax=overseasGainsTax(complete?knownTotal:0,year),knownTax=overseasGainsTax(knownTotal,year);
-  const result=taxResult({status:unsupported?'unsupported':complete?'estimated':'incomplete',value:tax?.totalKRW??null,knownSubtotal:knownTax?.totalKRW??null,missingInputs:[...missing,...(applicability?.reasons??[])],assumptions,taxYear:year,asOf,sourceIds:tax?.sources??[]});
+  const result=taxResult({status:unsupported?'unsupported':complete?'estimated':'incomplete',value:tax?.totalKRW??null,knownSubtotal:knownTax?.totalKRW??null,missingInputs:[...missing,...(applicability?.reasons??[]),...(noRule?[`tax rules for ${year} are not implemented`]:[])],assumptions,taxYear:year,asOf,sourceIds:tax?.sources??[]});
   return {year,appRealizedKRW:appKRW,outsideKRW,knownTotalKRW:knownTotal,totalKRW:complete?knownTotal:null,deductionKRW:DEDUCTION_KRW,deductionRemainingKRW:complete?Math.max(0,DEDUCTION_KRW-Math.max(0,knownTotal)):null,lossOffsetKRW:complete?Math.max(0,-knownTotal):null,
     taxableKRW:complete?tax.taxableKRW:null,nationalTaxKRW:complete?tax.nationalKRW:null,localTaxKRW:complete?tax.localKRW:null,estimatedTaxKRW:complete?tax.totalKRW:null,knownRecordsTaxKRW:knownTax?.totalKRW??null,rate:RATE,sales:yearSales.length,unknownSales:yearSales.length-known.length,complete,result};
 }
@@ -68,6 +70,6 @@ function annualTax(ledger,year,outsideKRW=null,{applicability=null,asOf=Date.now
 // year is incomplete. A negative change is a possible reduction of the annual liability, not cash from the broker.
 function marginalTax(annual,gainKRW){
   if(annual?.totalKRW==null||!Number.isFinite(gainKRW))return null;const {overseasGainsTax}=require('./tax-rules.cjs');
-  return overseasGainsTax(annual.totalKRW+gainKRW,annual.year).totalKRW-overseasGainsTax(annual.totalKRW,annual.year).totalKRW;
+  const after=overseasGainsTax(annual.totalKRW+gainKRW,annual.year),before=overseasGainsTax(annual.totalKRW,annual.year);return after&&before?after.totalKRW-before.totalKRW:null;
 }
 module.exports={buildLedger,annualTax,marginalTax,quoteDisposal,estimatedSettlement,usBusinessDay,DEDUCTION_KRW,RATE};

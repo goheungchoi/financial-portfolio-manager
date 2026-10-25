@@ -37,17 +37,18 @@ function flowsFrom(u,fx){
 class FlowDetector {
   constructor(db,performance,clock=Date.now){this.db=db;this.performance=performance;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS flow_watch(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   // Records and returns the flows found since the last observation; the observation advances only when it was judged.
-  // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD).
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0}){
+  // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD); unsettledKRW: all unsettled U.S. buys.
+  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0)};
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0)};
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const prev=row?JSON.parse(row.payload):null;
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(now));
     // Readings taken before KRW committed to unsettled U.S. buys was netted out are a different basis: start again.
     if(!prev||prev.basis!==BASIS){save();return [];}
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
-    if((prev.provisionalKRW??0)!==now.provisionalKRW){if(!orders.some(o=>OPEN.includes(o.status)))save();return [];}
+    // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.
+    if((prev.provisionalKRW??0)!==now.provisionalKRW||(prev.provisionalKRW??0)>0&&(prev.unsettledKRW??0)!==now.unsettledKRW){if(!orders.some(o=>OPEN.includes(o.status)))save();return [];}
     const u=unexplained(prev,now,orders);if(!u)return [];
     const found=flowsFrom(u,fx);save();const day=seoulDate(now.at);
     return found.map(f=>this.performance.addFlow(account,f.transfer?{day,market:f.market,amount:f.amount,transfer:true,

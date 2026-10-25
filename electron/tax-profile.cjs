@@ -25,13 +25,21 @@ function applicability(profile,{accountKey,environment},market){
   const account=profile.accounts[ownerAccount(accountKey)];
   if(account&&account.type!=='ordinary')reasons.push(`${account.type==='isa'?'ISA':account.type==='pension'?'pension or IRP':account.type==='ria'?'RIA':account.type} account rules are not implemented`);
   else if(!account)assumptions.push('ordinary taxable brokerage account (not confirmed)');
+  // Other accounts of the same owner: ISA, pension and corporate accounts are taxed separately (or belong to another
+  // taxpayer) and stay out of the ordinary aggregate; an RIA or other special account interacts with it, which is not implemented.
+  if(market==='US')for(const [key,a] of Object.entries(profile.accounts)){if(key===ownerAccount(accountKey)||!a.linked)continue;
+    if(SEPARATE.includes(a.type))assumptions.push(`${a.type==='isa'?'ISA':a.type==='pension'?'pension or IRP':'corporate'} account ${key} excluded: taxed separately`);
+    else if(a.type!=='ordinary')reasons.push(`a linked ${a.type==='ria'?'RIA':'special'} account: its effect on ordinary overseas gains is not implemented`);}
   if(market==='US'){if(profile.longTermResident===false)reasons.push('residents of under 5 of the last 10 years follow different overseas-gain rules');else if(profile.longTermResident==null&&profile.residency!=='non-resident')assumptions.push('resident in Korea for 5 or more of the last 10 years (not confirmed)');}
   if(market==='KR'){if(profile.majorShareholder===true)reasons.push('major-shareholder taxation of Korean shares is not implemented');else if(profile.majorShareholder==null)assumptions.push('minority shareholder of Korean listed companies (not confirmed)');}
   return {status:reasons.length?'unsupported':assumptions.length?'estimated':'supported',reasons,assumptions};
 }
-// The accounts whose realized gains count for this taxpayer: the connected live account and accounts linked as the same owner.
+// The accounts whose realized gains count for this taxpayer under the ordinary rules: the connected live account and
+// accounts linked as the same owner, except accounts taxed separately (ISA, pension) or owned by a company.
+const SEPARATE=['isa','pension','corporate'];
 function taxpayerAccounts(profile,current){
-  const owned=new Set(Object.entries(profile.accounts).filter(([,a])=>a.linked).map(([k])=>k));if(current?.environment==='live'&&current.accountKey)owned.add(ownerAccount(current.accountKey));return owned;
+  const owned=new Set(Object.entries(profile.accounts).filter(([,a])=>a.linked).map(([k])=>k));if(current?.environment==='live'&&current.accountKey)owned.add(ownerAccount(current.accountKey));
+  for(const k of [...owned])if(SEPARATE.includes(profile.accounts[k]?.type))owned.delete(k);return owned;
 }
 class TaxProfile {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS tax_profile(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)');}

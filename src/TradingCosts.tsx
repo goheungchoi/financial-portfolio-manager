@@ -29,7 +29,7 @@ export function TradingCosts(){
     </Card>
     <TaxProfileCard/>
     <Card title="Korean tax on U.S. shares" hint="22% above the ₩2,500,000 yearly deduction, shared across brokers.">
-      <Row title="Tax year"><NumberField label="Tax year" min={2020} max={2100} unit="" value={value.taxYear} onChange={v=>edit('taxYear',v)}/></Row>
+      <Row title="Tax year"><NumberField label="Tax year" min={2023} max={2100} unit="" value={value.taxYear} onChange={v=>edit('taxYear',v)}/></Row>
       <Row title="Gains realized outside this app" hint="Other brokers or manual trades this year, losses included">{optional('annualRealizedKRW','Gains realized outside this app (KRW)',1,'KRW')}</Row>
       <Row title="Cost method"><select aria-label="Tax cost method" value={value.taxMethod} onChange={e=>edit('taxMethod',e.target.value)}><option value="moving-average">Moving average (KIS default)</option><option value="fifo">First in, first out</option></select></Row>
       <Row title="USD → KRW settlement rate" hint="Used when the broker hasn't reported one">{optional('usdKRW','Indicative USD to KRW settlement rate',0.01,'KRW')}</Row>
