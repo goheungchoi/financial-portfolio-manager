@@ -182,7 +182,10 @@ app.whenReady().then(async () => {
   // Leveraged/inverse products, margin and short policy per account.
   const exposure=new (require("./exposure.cjs").Exposure)(store.db);live.exposure=exposure;
   const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload)};
+  // Which part of unsettled U.S. buys is known to be KRW-funded, tracked across U.S. balance readings.
+  const funding=new (require('./integrated-settlement.cjs').FundingTracker)(store.db);
   usLive=new LiveEngine(store.db,usBroker,()=>({snapshot:kisState.snapshot&&usSnapshot?.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot:null}),{market:'US'});
+  usLive.annotateBalance=balance=>funding.annotate(balance,automation.fx?.()?.usdKRW??null);
   // U.S. buying power capped at real cash: USD, plus settled KRW when integrated margin is on (one pool shared with Korea).
   live.sessionOptions=usLive.sessionOptions=()=>automation.sessionOptions();live.extendedMaxOrderPct=usLive.extendedMaxOrderPct=()=>automation.config.extendedMaxOrderPct;
   usLive.buyingPower=balance=>require('./buying-power.cjs').usBuyingPower({usdCash:balance?.cash??0,broker:balance?.brokerBuyingPower??null,krwCash:kisState.snapshot?(Number.isFinite(kisState.snapshot.settledCash)?kisState.snapshot.settledCash:kisState.snapshot.cash):null,usdKRW:balance?.fx?.usdKRW??automation?.fx?.()?.usdKRW??null});usLive.costs=costs;usLive.exposure=exposure;automation.usLive=usLive;
@@ -308,8 +311,8 @@ app.whenReady().then(async () => {
   if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   // Deposits and withdrawals not recorded by the user, detected after each balance refresh (electron/flow-detector.cjs).
   const flowDetector=new (require('./flow-detector.cjs').FlowDetector)(store.db,performance);
-  detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-require('./integrated-settlement.cjs').committedKRW(us);
-    for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash:null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
+  detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
+    for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash:null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};

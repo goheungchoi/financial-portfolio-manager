@@ -28,11 +28,23 @@ test('through real reviews: gaps are recorded from each review and the next revi
   for(let i=0;i<3;i++)await a.review('User request');await a.review('User request');
   const last=supplied.at(-1).context.researchGaps;assert.equal(last[0].symbol,'005930');assert.equal(last[0].status,'retry limit reached');assert.equal(last[0].reviews,3);
 });
-test('review fix: a different question for the same symbol starts a new count; paraphrases continue it',()=>{
-  const g=new ResearchGaps(new DatabaseSync(':memory:'));
-  for(const q of ['What is filing-backed capital spending and free cash flow after it?','Cash generation after capital expenditure and its implications for the valuation.','How much cash remains after capital expenditures ahead of earnings?'])
-    g.record('s',[wait('NASD:AMZN',q)],[{symbol:'NASD:AMZN',source:'get_company_research:financials'}]);
-  assert.equal(g.context('s')[0].reviews,3,'three paraphrases of one question');assert.equal(g.context('s')[0].status,'retry limit reached');
-  g.record('s',[wait('NASD:AMZN','Whether a recent regulatory filing changes the litigation risk')],[{symbol:'NASD:AMZN',source:'get_company_research:events'}]);
-  const [fresh]=g.context('s');assert.equal(fresh.reviews,1,'a new question does not inherit the exhausted limit');assert.equal(fresh.status,'retrying');assert.deepEqual(fresh.sourcesTried,['get_company_research:events'],'nor the old sources');
+test('review fix: a gap is identified by metric, period and document, not wording; a different metric starts afresh',()=>{
+  const g=new ResearchGaps(new DatabaseSync(':memory:'));const ask=(unresolved,metric,period='FY2026 Q3',document='10-Q')=>({...wait('NASD:AMZN',unresolved),dataGap:{material:true,why:'w',otherSource:'',alternative:'',retry:'',metric,period,document}});
+  for(const [q,m,p] of [['What was operating income in the quarter?','Operating income','FY2026 Q3'],['Is the operating-income figure filed yet?','operating income','Q3 FY2026'],['Profit from operations, per the 10-Q','Operating Income.','fy2026 q3']])
+    g.record('s',[ask(q,m,p)],[{symbol:'NASD:AMZN',source:'get_company_research:financials'}]);
+  const [gap]=g.context('s');assert.equal(gap.reviews,3,'three wordings of one gap');assert.equal(gap.status,'retry limit reached');assert.equal(gap.metric,'operating income');assert.match(gap.id,/^[0-9a-f]{16}$/);
+  const ctx={researchGaps:g.context('s')};const issue=v=>verdictIssues(ctx,{action:'Hold',plan:{invalidation:'x'},planVerdicts:[v]}).some(i=>/retry limit/.test(i));
+  assert.ok(issue(ask('Operating income still missing','operating income','Q3 FY2026')),'the same gap again is flagged');
+  assert.ok(!issue(ask('What was operating income in the quarter?','net income')),'net income is a different metric: not flagged, however similar the wording');
+  g.record('s',[ask('What was net income in the quarter?','Net income')],[{symbol:'NASD:AMZN',source:'get_company_research:events'}]);
+  const [fresh]=g.context('s');assert.equal(fresh.reviews,1,'reproduced case: operating income then net income no longer reaches the limit');assert.equal(fresh.status,'retrying');assert.deepEqual(fresh.sourcesTried,['get_company_research:events']);
+  g.record('s',[ask('Net income for the next quarter','Net income','FY2026 Q4')]);assert.equal(g.context('s')[0].reviews,1,'a different period is a different gap');
+  g.record('s',[ask('Net income for the next quarter','Net income','FY2026 Q4','annual report')]);assert.equal(g.context('s')[0].reviews,1,'and a different document');
+  const {gapIdentity}=require('../electron/research-gaps.cjs');assert.equal(gapIdentity('X',ask('a','capex')).id,gapIdentity('X',ask('b','Capital expenditures')).id,'exact abbreviations are the same metric');
+  assert.notEqual(gapIdentity('X',ask('a','capex')).id,gapIdentity('X',ask('a','free cash flow')).id);
+});
+test('reviews are asked to name the missing metric, period and document for a data wait',()=>{
+  const {validateDecision}=require('../electron/ai-client.cjs');const d=validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'x',credit:'none',loanDate:'',planVerdicts:[{...wait('NASD:AMZN'),dataGap:{material:true,why:'w',otherSource:'o',alternative:'a',retry:'r',metric:'Operating income',period:'FY2026 Q3',document:'10-Q'},minimumPosition:null}]},['NASD:AMZN']);
+  assert.deepEqual([d.planVerdicts[0].dataGap.metric,d.planVerdicts[0].dataGap.period,d.planVerdicts[0].dataGap.document],['Operating income','FY2026 Q3','10-Q']);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');assert.match(src,/required:\['material','why','otherSource','alternative','retry','metric','period','document'\]/);assert.match(src,/a different metric, period or document is a different gap/);
 });

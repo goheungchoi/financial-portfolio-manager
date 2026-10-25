@@ -3,8 +3,9 @@ function combinePortfolio(korea,us,fx,metadata={}){
   const rate=fx?.usdKRW>0&&Number.isFinite(fx.usdKRW)?fx.usdKRW:null;const rows=[];
   for(const [market,snapshot,currency] of [['KR',korea,'KRW'],['US',us,'USD']])for(const row of snapshot?.holdings??[]){const info=metadata[row.symbol]??{},factor=market==='KR'?1:rate;rows.push({...row,market,currency,sector:info.sector||'Unclassified',region:info.region||(market==='KR'?'South Korea (listing)':'United States (listing)'),color:COLORS[rows.length%COLORS.length],nativeValue:row.quantity*row.price,valueKRW:factor==null?null:row.quantity*row.price*factor,costKRW:factor==null?null:row.quantity*row.cost*factor});}
   // Korean equity uses settled (D+2) cash so unsettled purchases are not counted as both cash and shares, less the KRW
-  // committed to unsettled U.S. buys through integrated margin, which the U.S. shares already count.
-  const {committedKRW:committed,uncertainKRW}=require('./integrated-settlement.cjs').settlement(us);
+  // committed to unsettled U.S. buys through integrated margin, which the U.S. shares already count (all of it, the
+  // conservative figure; the part that may have been USD-funded is reported as uncertain).
+  const {unsettledKRW:committed,uncertainKRW}=require('./integrated-settlement.cjs').settlement(us);
   const krCash=korea?(Number.isFinite(korea.settledCash)?korea.settledCash:korea.cash)-committed:null;
   const krEquity=korea?krCash+rows.filter(row=>row.market==='KR').reduce((sum,row)=>sum+row.nativeValue,0):null;const usEquity=us?us.cash+rows.filter(row=>row.market==='US').reduce((sum,row)=>sum+row.nativeValue,0):null;
   const complete=krEquity!=null&&usEquity!=null;const equityKRW=complete&&(rate!=null||usEquity===0)?krEquity+usEquity*(rate??0):null;
