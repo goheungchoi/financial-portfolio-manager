@@ -47,7 +47,8 @@ function verdictIssues(context,decision){
     if(['waiting','passed'].includes(v.verdict)&&targets.get(v.symbol)?.minimumPosition?.feasible&&!v.minimumPosition)issues.push(`${v.symbol}: no comparison of the minimum feasible position with cash`);}
   if(decision?.action==='Hold'&&!String(decision.plan?.invalidation??'').trim())issues.push('Hold without a reconsideration condition (plan.invalidation)');
   // A gap at its retry limit should not produce the same data wait again.
-  for(const g of context?.researchGaps??[])if(g.status==='retry limit reached'){const v=(decision?.planVerdicts??[]).find(x=>x.symbol===g.symbol);if(v?.verdict==='waiting'&&v.condition?.kind==='data')issues.push(`${g.symbol}: still waiting on data after ${g.reviews} reviews (retry limit reached)`);}
+  // Only a wait on the same gap (the same identity) is another exhausted wait; a wait on different evidence starts afresh.
+  for(const g of context?.researchGaps??[])if(g.status==='retry limit reached'){const v=(decision?.planVerdicts??[]).find(x=>x.symbol===g.symbol);if(v?.verdict==='waiting'&&v.condition?.kind==='data'&&(!g.id||require('./research-gaps.cjs').gapIdentity(v.symbol,v).id===g.id))issues.push(`${g.symbol}: still waiting on data after ${g.reviews} reviews (retry limit reached)`);}
   return issues;
 }
 // Targets the review gave no verdict on (planVerdicts); used to log incomplete accounting, never to fail a review.

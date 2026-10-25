@@ -315,7 +315,7 @@ class Automation {
       try{await this.attachOrderBooks(context);}catch{}
       // Whether total equity can be trusted for weights: unconfirmed order status, an uncertain settlement or a missing market.
       if(context.environment!=='local-paper'){const reasons=[];if(context.orderReconciliation)reasons.push('open order status unconfirmed');
-        for(const m of context.markets??[])if(m.unsettledUncertainKRW)reasons.push(`up to ₩${Math.round(m.unsettledUncertainKRW).toLocaleString('en-US')} of unsettled U.S. buys may be USD-funded`);
+        reasons.push(...(context.equityUncertainty?.reasons??[]));
         if(!Number.isFinite(context.equity))reasons.push('total equity unavailable (a market or the exchange rate is missing)');context.equityReliability={reliable:!reasons.length,...(reasons.length?{reasons}:{})};}
       // Data gaps that persisted across reviews, with the research already tried (electron/research-gaps.cjs).
       if(context.environment!=='local-paper'){const gaps=this.researchGaps.context(watchScope);if(gaps.length)context.researchGaps=gaps;}
