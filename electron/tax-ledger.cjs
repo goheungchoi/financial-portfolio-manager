@@ -1,41 +1,53 @@
-// Korean capital-gains ledger for overseas shares bought and sold through this app.
-// Gains are computed in KRW: acquisition cost = (price x quantity + fees) at the purchase settlement-date rate,
-// proceeds = (price x quantity - fees) at the sale settlement-date rate. Broker KRW settlement amounts are used when reported.
+// Korean capital-gains ledger for overseas shares, per account. Gains are in KRW: acquisition cost = (price x quantity +
+// fees) and proceeds = (price x quantity - fees), each at the reference rate (first published USD/KRW base rate) on the
+// settlement date, as KIS describes for the tax. The broker's KRW settlement amount and registered rate are cash
+// settlement evidence, kept beside the tax figures but never used as them: KIS fixes them before the settlement-date
+// rate is published. Until that rate exists (a future settlement), the broker rate stands in, flagged provisional.
 // Realization follows the settlement date (the tax year of a late-December sale can be the next year).
 const DEDUCTION_KRW=2500000,RATE=0.22;// 20% national + 2% local income tax
-const round=n=>Math.round(n);
-// Next weekday after a U.S. trade date (T+1); exchange holidays are not modeled, so this is an estimate.
-function estimatedSettlement(tradeDate){const d=new Date(Date.parse(tradeDate+'T00:00:00Z')+86400000);while([0,6].includes(d.getUTCDay()))d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10);}
-// fills: [{id,symbol,side,quantity,price,feesUSD,tradeDate,settlementDate?,settlementKRW?,exchangeRate?,feesSource}]
-// rateOn(day) -> {rate,day,source}|null for the KRW reference rate on or before a day.
-// userBasis: {symbol: KRW per share} for shares acquired before the app's records (user-entered).
-function buildLedger({fills,rateOn,userBasis={},method='moving-average'}){
-  if(!['moving-average','fifo'].includes(method))throw new Error('INVALID_METHOD');
-  const positions=new Map(),sales=[],purchases=[];
-  const ordered=[...fills].sort((a,b)=>a.tradeDate.localeCompare(b.tradeDate)||(a.timestamp??0)-(b.timestamp??0));
-  for(const fill of ordered){
-    const settlementDate=fill.settlementDate??estimatedSettlement(fill.tradeDate);const gross=fill.quantity*fill.price,fees=fill.feesUSD??0;
-    const fx=fill.settlementKRW!=null?{rate:null,source:'Broker KRW settlement'}:fill.exchangeRate?{rate:fill.exchangeRate,source:'Broker registered rate'}:rateOn(settlementDate);
-    const amountKRW=fill.settlementKRW!=null?Math.abs(fill.settlementKRW):fx?.rate?round((fill.side==='Buy'?gross+fees:gross-fees)*fx.rate):null;
-    const position=positions.get(fill.symbol)??{quantity:0,costKRW:0,lots:[],unknown:false};positions.set(fill.symbol,position);
-    if(fill.side==='Buy'){
-      if(amountKRW==null)position.unknown=true;position.quantity+=fill.quantity;position.costKRW+=amountKRW??0;position.lots.push({quantity:fill.quantity,costKRW:amountKRW});
-      purchases.push({id:fill.id,symbol:fill.symbol,settlementDate,quantity:fill.quantity,costKRW:amountKRW,fxSource:fx?.source??'Rate unavailable',settlementEstimated:!fill.settlementDate});continue;
-    }
-    // Shares sold beyond the app's own purchases use the user-entered basis, otherwise the gain is unknown.
-    const fromLots=Math.min(fill.quantity,position.quantity),outside=fill.quantity-fromLots;let costKRW=0,known=!position.unknown||fromLots===0;
-    if(fromLots>0){
-      if(method==='moving-average'){const share=position.costKRW/position.quantity;costKRW+=share*fromLots;position.costKRW-=share*fromLots;position.quantity-=fromLots;let left=fromLots;for(const lot of position.lots){const take=Math.min(left,lot.quantity);lot.quantity-=take;left-=take;if(!left)break;}}
-      else{let left=fromLots;for(const lot of position.lots){if(!left)break;const take=Math.min(left,lot.quantity);if(take&&lot.costKRW==null)known=false;const part=take&&lot.costKRW!=null?lot.costKRW*take/lot.quantity:0;costKRW+=part;lot.costKRW=lot.costKRW==null?null:lot.costKRW-part;lot.quantity-=take;left-=take;position.costKRW-=part;}position.quantity-=fromLots;}
-      position.lots=position.lots.filter(lot=>lot.quantity>0);if(!position.quantity){position.costKRW=0;position.unknown=false;}
-    }
-    let basisSource=fromLots?'App purchases':'Entered basis';
-    if(outside>0){if(userBasis[fill.symbol]!=null){costKRW+=userBasis[fill.symbol]*outside;basisSource=fromLots?'App purchases + entered basis':'Entered basis';}else{known=false;basisSource='Unknown basis';}}
-    const gainKRW=known&&amountKRW!=null?round(amountKRW-costKRW):null;
-    sales.push({id:fill.id,symbol:fill.symbol,tradeDate:fill.tradeDate,settlementDate,year:Number(settlementDate.slice(0,4)),quantity:fill.quantity,proceedsKRW:amountKRW,costKRW:known?round(costKRW):null,gainKRW,basisSource,fxSource:fx?.source??'Rate unavailable',feesSource:fill.feesSource??'Estimated',settlementEstimated:!fill.settlementDate});
-  }
-  return {method,sales,purchases,positions:Object.fromEntries([...positions].filter(([,p])=>p.quantity>0).map(([symbol,p])=>[symbol,{quantity:p.quantity,costKRW:p.unknown?null:round(p.costKRW),perShareKRW:p.unknown?null:Math.round(p.costKRW/p.quantity*100)/100}]))};
+const round=n=>Math.round(n);const {dispose}=require('./tax-lots.cjs');
+const addDays=(day,n)=>new Date(Date.parse(day+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);
+const usBusinessDay=day=>require('./kis-overseas.cjs').usSession(new Date(day+'T16:00:00Z')).open;
+// U.S. trades settle T+1 U.S. business days (T+2 before 2024-05-28); the KRW settlement then falls on that date or the
+// next Korean business day. An estimate: the broker's settlement date replaces it once reported.
+function estimatedSettlement(tradeDate,{krClosed=new Set()}={}){
+  let d=tradeDate,n=tradeDate>='2024-05-28'?1:2;while(n>0){d=addDays(d,1);if(usBusinessDay(d))n--;}
+  while([0,6].includes(new Date(d+'T00:00:00Z').getUTCDay())||krClosed.has(d))d=addDays(d,1);return d;
 }
+// fills: [{id,symbol,side,quantity,price,feesUSD,tradeDate,settlementDate?,settlementKRW?,exchangeRate?,feesSource,source?}]
+// rateOn(day) -> {rate,day,source}|null: the reference rate for the day (or the last one before a non-publication day).
+// openingLots: [{id,symbol,quantity,acquiredOn,costKRW,costUSD?,expensesIncluded,source}] for shares acquired before
+// the records (entered by the user); they join the pool in date order. userBasis: {symbol: KRW per share}, the older
+// per-share fallback for shares sold beyond the pool. today: dates on or after it may use the provisional broker rate.
+function buildLedger({fills,rateOn,userBasis={},method='moving-average',openingLots=[],today=null,krClosed=new Set()}){
+  if(!['moving-average','fifo'].includes(method))throw new Error('INVALID_METHOD');
+  const pools=new Map(),sales=[],purchases=[];const pool=symbol=>{if(!pools.has(symbol))pools.set(symbol,{lots:[]});return pools.get(symbol);};
+  const entries=[...openingLots.map(l=>({kind:'opening',day:l.acquiredOn,order:-1,lot:l})),...fills.map(f=>({kind:'fill',day:f.tradeDate,order:f.timestamp??0,fill:f}))].sort((a,b)=>a.day.localeCompare(b.day)||a.order-b.order);
+  for(const entry of entries){
+    if(entry.kind==='opening'){const l=entry.lot;pool(l.symbol).lots.push({quantity:l.quantity,costKRW:l.costKRW,costUSD:l.costUSD??null,date:l.acquiredOn,source:'Opening lot',expensesIncluded:l.expensesIncluded!==false});continue;}
+    const fill=entry.fill;const settlementDate=fill.settlementDate??estimatedSettlement(fill.tradeDate,{krClosed});const gross=fill.quantity*fill.price,fees=fill.feesUSD??0;
+    let fx=rateOn(settlementDate);if(!fx&&fill.exchangeRate&&(!today||settlementDate>=today))fx={rate:fill.exchangeRate,source:'Broker registered rate (provisional)',provisional:true};
+    const usd=fill.side==='Buy'?gross+fees:gross-fees,amountKRW=fx?.rate?round(usd*fx.rate):null;
+    const evidence={brokerKRW:fill.settlementKRW!=null?Math.abs(fill.settlementKRW):null,brokerRate:fill.exchangeRate??null};
+    const flags={settlementEstimated:!fill.settlementDate,rateProvisional:Boolean(fx?.provisional),fxSource:fx?.source??'Rate unavailable',taxRate:fx?.rate??null,...evidence};
+    if(fill.side==='Buy'){
+      pool(fill.symbol).lots.push({quantity:fill.quantity,costKRW:amountKRW,costUSD:fill.feesUSD==null?null:usd,date:fill.tradeDate,source:fill.source??'Trade',expensesIncluded:fill.feesUSD!=null});
+      purchases.push({id:fill.id,symbol:fill.symbol,settlementDate,quantity:fill.quantity,costKRW:amountKRW,...flags});continue;
+    }
+    // Shares sold beyond the pool use the user-entered per-share basis, otherwise the gain is unknown.
+    const p=pool(fill.symbol),d=dispose(p.lots,fill.quantity,method);p.lots=d.lots;let costKRW=d.costKRW??0,known=d.known;
+    let basisSource=d.taken?(d.used.some(l=>l.source==='Opening lot')?'Records + opening lots':'Records'):'Entered basis';
+    if(d.outside>0){if(userBasis[fill.symbol]!=null){costKRW+=userBasis[fill.symbol]*d.outside;basisSource=d.taken?'Records + entered basis':'Entered basis';}else{known=false;basisSource='Unknown basis';}}
+    const gainKRW=known&&amountKRW!=null?round(amountKRW-costKRW):null;
+    sales.push({id:fill.id,symbol:fill.symbol,tradeDate:fill.tradeDate,settlementDate,year:Number(settlementDate.slice(0,4)),quantity:fill.quantity,proceedsKRW:amountKRW,costKRW:known?round(costKRW):null,gainKRW,basisSource,feesSource:fill.feesSource??'Estimated',expensesExcluded:d.used.some(l=>l.expensesIncluded===false),...flags});
+  }
+  const positions=Object.fromEntries([...pools].map(([symbol,p])=>{const qty=p.lots.reduce((n,l)=>n+l.quantity,0);if(!qty)return null;const known=p.lots.every(l=>l.costKRW!=null),cost=p.lots.reduce((n,l)=>n+(l.costKRW??0),0);
+    return [symbol,{quantity:qty,costKRW:known?round(cost):null,perShareKRW:known?Math.round(cost/qty*100)/100:null,lots:p.lots.map(l=>({...l}))}];}).filter(Boolean));
+  return {method,sales,purchases,positions};
+}
+// The basis of a hypothetical sale from a position's lots, by the same disposal rule as the ledger (the ledger is not
+// changed). Null position: no lots recorded.
+function quoteDisposal(position,quantity,method){return dispose(position?.lots??[],quantity,method);}
 // The year's overseas capital-gains tax for the taxpayer. The full liability needs every sale's basis and the gains
 // realized outside this app; when one is missing the liability is null (incomplete), and the known-record figures are
 // a labeled subtotal, not a bound (a missing sale may be a loss). The basic deduction is capped: losses beyond it are
@@ -58,4 +70,4 @@ function marginalTax(annual,gainKRW){
   if(annual?.totalKRW==null||!Number.isFinite(gainKRW))return null;const {overseasGainsTax}=require('./tax-rules.cjs');
   return overseasGainsTax(annual.totalKRW+gainKRW,annual.year).totalKRW-overseasGainsTax(annual.totalKRW,annual.year).totalKRW;
 }
-module.exports={buildLedger,annualTax,marginalTax,estimatedSettlement,DEDUCTION_KRW,RATE};
+module.exports={buildLedger,annualTax,marginalTax,quoteDisposal,estimatedSettlement,usBusinessDay,DEDUCTION_KRW,RATE};

@@ -21,9 +21,15 @@ test('settlement-date year, user basis for older shares, unknown basis and the a
   assert.equal(summary.totalKRW,4500000);assert.equal(summary.taxableKRW,2000000);assert.equal(summary.estimatedTaxKRW,440000);assert.equal(summary.deductionRemainingKRW,0);assert.equal(summary.complete,true);
   assert.equal(annualTax({sales:[]},2026,null).complete,false,'outside-app gains not entered');
 });
-test('broker KRW settlement and registered rates take precedence over reference rates',()=>{
+test('tax amounts use the settlement-date reference rate; broker KRW and rates are kept as cash evidence (tax plan PR 2)',()=>{
+  // 2026-10-25 read-only check: KIS fixed 1,324.6 for Oct 23 trades settling Oct 26, before that day's rate existed.
   const ledger=buildLedger({fills:[fill('b','Buy',1,100,'2026-03-02',{settlementKRW:-131000}),fill('s','Sell',1,120,'2026-10-15',{exchangeRate:1490,feesUSD:1})],rateOn});
-  assert.equal(ledger.purchases[0].costKRW,131000);assert.equal(ledger.sales[0].proceedsKRW,Math.round(119*1490));assert.equal(ledger.sales[0].fxSource,'Broker registered rate');
+  assert.equal(ledger.purchases[0].costKRW,130000,'100 x 1,300 on 2026-03-03');assert.equal(ledger.purchases[0].brokerKRW,131000,'the broker figure is kept beside it');
+  assert.equal(ledger.sales[0].proceedsKRW,Math.round(119*1500));assert.equal(ledger.sales[0].brokerRate,1490);assert.equal(ledger.sales[0].rateProvisional,false);
+  const future=buildLedger({fills:[fill('f','Buy',1,100,'2026-10-23',{settlementDate:'2026-10-26',exchangeRate:1324.6})],rateOn:()=>null,today:'2026-10-25'});
+  assert.equal(future.purchases[0].costKRW,132460);assert.equal(future.purchases[0].rateProvisional,true,'until the settlement-date rate is published');
+  const past=buildLedger({fills:[fill('p','Buy',1,100,'2026-10-20',{settlementDate:'2026-10-21',exchangeRate:1324.6})],rateOn:()=>null,today:'2026-10-25'});
+  assert.equal(past.purchases[0].costKRW,null,'a missing rate on a past publication day is missing, not replaced by the broker rate');
 });
 test('broker-reported costs: KR splits the statutory sale tax from the reported total; ETFs and ETNs pay no sale tax',()=>{
   const kr=brokerCosts({market:'KR',side:'Sell',quantity:10,price:70000,settings:DEFAULT_COSTS,reported:{charges:1505}});
@@ -38,7 +44,8 @@ test('TradingCosts flags domestic ETFs from the security master and fills missin
   const costs=new TradingCosts(db);assert.equal(costs.exempt('069500'),true);assert.equal(costs.exempt('005930'),false);assert.equal(costs.exempt('NASD:SPY'),false);
   costs.currentAccount=()=>({accountKey:'k',environment:'live'});db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('b','k:US',JSON.stringify({id:'b',accountKey:'k:US',environment:'live',market:'US',side:'Buy',symbol:'NASD:TEST',filled:1,fillPrice:10,day:'2026-10-16'}));
   assert.deepEqual(costs.missingRateDays(),['2026-10-19']);costs.saveRates([{date:'2026-10-19',value:1400}],'ECOS');assert.deepEqual(costs.missingRateDays(),[]);
-  assert.equal(costs.rateOn('2026-10-20').rate,1400,'falls back to the latest earlier rate');assert.equal(costs.rateOn('2026-11-30'),null,'but not more than a week');
+  assert.equal(costs.rateOn('2026-10-20'),null,'a normal publication day without a rate is missing');assert.equal(costs.rateOn('2026-10-24').rate,1400,'a Saturday uses the last published rate');assert.match(costs.rateOn('2026-10-24').source,/no publication on 2026-10-24/);
+  costs.krClosed=()=>new Set(['2026-10-20']);assert.equal(costs.rateOn('2026-10-20').rate,1400,'and so does a Korean holiday');assert.equal(costs.rateOn('2026-11-30'),null,'but not more than a week');
 });
 function engine(market,responses){
   const db=new DatabaseSync(':memory:');const calls=[];const snapshot={accountKey:'acct',environment:'live',holdings:[]};

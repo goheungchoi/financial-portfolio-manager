@@ -67,3 +67,54 @@ test('reviews get each symbol\'s classification, the rule version and the year s
   assert.equal(kr.oneShare[0].sell.transactionTax,0);assert.equal(kr.oneShare[0].sell.incomeTax.status,'incomplete');assert.match(kr.taxModel,/unknown \(not zero\)/);assert.equal(kr.krSaleTaxPct,0.2);
   const us=costs.context('US',[{symbol:'NASD:AAPL',price:200}],{});assert.equal(us.tax.annual.status,'incomplete','outside gains not entered');assert.equal(us.oneShare[0].sell.capitalGainsTaxKRW,null);db.close();
 });
+// PR 2: the capital-gains ledger.
+const RATES={'2026-03-03':1200,'2026-06-02':1300,'2026-10-16':1400,'2026-10-26':1400,'2027-01-04':1450};const rateOn=day=>RATES[day]?{rate:RATES[day],source:'test'}:null;
+const f=(id,side,quantity,price,tradeDate,extra={})=>({id,symbol:'NASD:TEST',side,quantity,price,feesUSD:0,tradeDate,...extra});
+test('opening 10 shares at 100,000 plus 10 at 200,000, sell 10: moving average 1.5m, FIFO 1m',()=>{
+  const opening=[{id:'o',symbol:'NASD:TEST',quantity:10,acquiredOn:'2025-05-02',costKRW:1000000,expensesIncluded:true}];
+  const fills=[f('b','Buy',10,2000000/10/1200,'2026-03-02'),f('s','Sell',10,150,'2026-10-15')];
+  const avg=buildLedger({fills,rateOn,openingLots:opening}),fifo=buildLedger({fills,rateOn,openingLots:opening,method:'fifo'});
+  assert.equal(avg.purchases[0].costKRW,2000000);assert.equal(avg.sales[0].costKRW,1500000);assert.equal(fifo.sales[0].costKRW,1000000,'the earlier opening lot goes first');assert.equal(fifo.sales[0].basisSource,'Records + opening lots');
+  assert.equal(fifo.positions['NASD:TEST'].costKRW,2000000);assert.equal(avg.positions['NASD:TEST'].costKRW,1500000);
+});
+test('a quote for a FIFO sale crossing two lots uses the same basis as the executed ledger',()=>{
+  const {quoteDisposal}=require('../electron/tax-ledger.cjs');const buys=[f('b1','Buy',3,100,'2026-03-02'),f('b2','Buy',5,200,'2026-06-01')];
+  const before=buildLedger({fills:buys,rateOn,method:'fifo'});const q=quoteDisposal(before.positions['NASD:TEST'],5,'fifo');
+  const after=buildLedger({fills:[...buys,f('s','Sell',5,250,'2026-10-15')],rateOn,method:'fifo'});
+  assert.equal(Math.round(q.costKRW),after.sales[0].costKRW);assert.equal(after.sales[0].costKRW,3*100*1200+2*200*1300,'not one averaged basis');
+  const settings={...DEFAULT_COSTS,usdKRW:1400,annualRealizedKRW:0,taxYear:new Date().getFullYear(),taxLots:{'NASD:TEST':{method:'fifo',lots:before.positions['NASD:TEST'].lots}}};
+  const est=estimateCosts({market:'US',side:'Sell',quantity:5,price:250,symbol:'NASD:TEST',settings,classification:classify('NASD:TEST',{market:'NASD',type:'stock'})});
+  assert.equal(est.taxableGainKRW,Math.round(est.netCash*1400-after.sales[0].costKRW));assert.equal(est.gainAfterFees,Math.round((est.netCash-(3*100+2*200))*100)/100,'economic gain from the recorded USD cost, no re-estimated commission');
+  assert.ok(!est.incomeTax.assumptions.includes('acquisition commission estimated from the current fee plan'));
+});
+test('USD 1,000 bought at 1,200 and sold at 1,400 with no fees: KRW 200,000 gain',()=>{
+  const l=buildLedger({fills:[f('b','Buy',10,100,'2026-03-02'),f('s','Sell',10,100,'2026-10-15')],rateOn});assert.equal(l.sales[0].gainKRW,200000);
+});
+test('a year-end trade settles in the next year by the U.S. calendar; the broker date replaces the estimate',()=>{
+  const {estimatedSettlement}=require('../electron/tax-ledger.cjs');assert.equal(estimatedSettlement('2026-12-31'),'2027-01-04','New Year holiday, then the weekend');assert.equal(estimatedSettlement('2026-11-25'),'2026-11-27','Thanksgiving');
+  assert.equal(estimatedSettlement('2026-10-23'),'2026-10-26','matches KIS for the Oct 23 buys');assert.equal(estimatedSettlement('2026-10-23',{krClosed:new Set(['2026-10-26'])}),'2026-10-27','a Korean holiday moves the KRW settlement');
+  const sale=buildLedger({fills:[f('b','Buy',1,100,'2026-03-02'),f('s','Sell',1,100,'2026-12-31')],rateOn}).sales[0];assert.equal(sale.year,2027);assert.equal(sale.settlementEstimated,true);
+  const confirmed=buildLedger({fills:[f('b','Buy',1,100,'2026-03-02'),f('s','Sell',1,100,'2026-12-31',{settlementDate:'2027-01-04'})],rateOn}).sales[0];assert.equal(confirmed.settlementEstimated,false);
+});
+function ledgerDb(){const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});costs.saveRates(Object.entries(RATES).map(([date,value])=>({date,value})),'test');return {db,costs};}
+const row=(side,quantity,price,tradeDate,settlementDate,extra={})=>({ticker:'TEST',side,quantity,price,tradeDate,settlementDate,feesUSD:0,settlementKRW:null,exchangeRate:1324.6,...extra});
+test('broker trade history is the record: re-imports and amended fees replace rows; app fills fill only the gaps',()=>{
+  const {db,costs}=ledgerDb();const app=(id,side,qty,price,day)=>db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run(id,'a:US',JSON.stringify({id,accountKey:'a:US',environment:'live',market:'US',side,symbol:'NASD:TEST',filled:qty,fillPrice:price,day,createdAt:1,resultCosts:{commission:0,transactionTax:0}}));
+  app('app-buy','Buy',10,100,'2026-03-02');app('app-sell','Sell',4,150,'2026-10-23');
+  assert.equal(costs.importTrades('a',[row('Buy',10,100,'2026-03-02','2026-03-03'),row('Buy',5,120,'2026-06-01','2026-06-02')]),2,'the app buy and a manual buy');
+  assert.equal(costs.importTrades('a',[row('Buy',10,100,'2026-03-02','2026-03-03',{feesUSD:2.5}),row('Buy',5,120,'2026-06-01','2026-06-02')]),0,'re-import: nothing added');
+  const fills=costs.fills();assert.deepEqual(fills.map(x=>[x.source,x.side,x.quantity]).sort(),[['App order','Sell',4],['KIS trade history','Buy',10],['KIS trade history','Buy',5]],'the app buy is not counted twice; the unsettled app sale stays until the broker lists it');
+  assert.equal(fills.find(x=>x.quantity===10).feesUSD,2.5,'the amended fee replaced the row');assert.ok(fills.every(x=>x.symbol==='NASD:TEST'),'one pool per ticker');
+  costs.importTrades('a',[row('Sell',4,150,'2026-10-23','2026-10-26')]);assert.equal(costs.fills().filter(x=>x.side==='Sell').map(x=>x.source).join(),'KIS trade history','once listed, the broker row replaces the app fill');
+  db.close();
+});
+test('a share count that differs from the broker (split, transfer, missing record) makes that basis unknown, not doubled',()=>{
+  const {db,costs}=ledgerDb();costs.importTrades('a',[row('Buy',10,100,'2026-03-02','2026-03-03')]);let held=[{symbol:'NASD:TEST',quantity:10}];costs.holdings=()=>held;
+  const sell=()=>estimateCosts({market:'US',side:'Sell',quantity:10,price:60,symbol:'NASD:TEST',settings:{...costs.get(),usdKRW:1400,annualRealizedKRW:0,taxStatus:null},classification:classify('NASD:TEST',{market:'NASD',type:'stock'})});
+  assert.notEqual(sell().taxableGainKRW,null,'counts agree');assert.deepEqual(costs.reconciliation(costs.ledger()),[]);
+  held=[{symbol:'NASD:TEST',quantity:20}];assert.deepEqual(costs.reconciliation(costs.ledger()),[{symbol:'NASD:TEST',brokerQuantity:20,ledgerQuantity:10}]);
+  const after=sell();assert.equal(after.taxableGainKRW,null);assert.match(after.incomeTax.missingInputs[0],/share count differs from the broker \(10 recorded, 20 held\)/);
+  held=[{symbol:'NASD:TEST',quantity:10},{symbol:'NASD:OLD',quantity:3}];assert.match(costs.get().taxLots['NASD:OLD'].invalid,/3 shares held with no acquisition record or opening lot/);
+  costs.addOpeningLot({symbol:'NASD:OLD',quantity:3,acquiredOn:'2025-02-03',costKRW:450000,expensesIncluded:false});assert.equal(costs.get().taxLots['NASD:OLD'].invalid,undefined,'an opening lot reconciles it');
+  assert.throws(()=>costs.addOpeningLot({symbol:'NASD:OLD',quantity:3,acquiredOn:'2999-01-01',costKRW:1,expensesIncluded:true}),/INVALID_OPENING_LOT/);db.close();
+});
