@@ -181,7 +181,7 @@ app.whenReady().then(async () => {
   costs=new TradingCosts(store.db);live.costs=costs;automation.costs=costs;
   // Tax figures cover the connected live account (and accounts the user links as the same owner).
   costs.currentAccount=()=>kisState.snapshot?.accountKey?{accountKey:kisState.snapshot.accountKey,environment:kisState.snapshot.environment}:null;
-  costs.krClosed=()=>new Set(automation.officialClosedDays?.()??[]);costs.holdings=()=>kisState.snapshot&&usSnapshot?.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot.holdings:null;
+  costs.krClosed=()=>new Set(automation.officialClosedDays?.()??[]);costs.marketRate=()=>usSnapshot?.fx?.usdKRW??null;costs.holdings=()=>kisState.snapshot&&usSnapshot?.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot.holdings:null;
   // Leveraged/inverse products, margin and short policy per account.
   const exposure=new (require("./exposure.cjs").Exposure)(store.db);live.exposure=exposure;
   const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload)};

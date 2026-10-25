@@ -151,3 +151,26 @@ test('financial income is its own annual summary: incomplete until declared, fla
   costs.currentAccount=()=>({accountKey:'m',environment:'mock'});assert.throws(()=>costs.addIncome({symbol:'005930',category:'dividend',payDate:'2026-04-17',currency:'KRW',country:'KR',net:1}),/KIS_NOT_CONNECTED/,'mock accounts keep no income records');
   assert.throws(()=>income.validate({symbol:'005930',category:'gift',payDate:'2026-04-17',currency:'KRW',country:'KR',net:1}),/INVALID_INCOME_EVENT/);db.close();
 });
+// PR 4: decision estimates for reviews.
+test('reviews get whole-holding quotes, and one scenario for selling every U.S. holding shares the deduction once',()=>{
+  const {db,costs}=ledgerDb();costs.save({...DEFAULT_COSTS,annualRealizedKRW:0,usdKRW:1400});
+  // Two holdings with KRW 2m gains each: separately each fits under the deduction; together KRW 1.5m is taxable.
+  costs.importTrades('a',[{...row('Buy',10,100,'2026-03-02','2026-03-03'),ticker:'AAA'},{...row('Buy',10,100,'2026-03-02','2026-03-03'),ticker:'BBB'}]);
+  costs.holdings=()=>[{symbol:'NASD:AAA',quantity:10},{symbol:'NASD:BBB',quantity:10}];
+  const price=(2000000+1200000)/1400/10+0.03;// proceeds net of the 0.25% commission and levy, close to KRW 3.2m each
+  const ctx=costs.context('US',[{symbol:'NASD:AAA',price},{symbol:'NASD:BBB',price}],{'NASD:AAA':{quantity:10,costTotal:1000},'NASD:BBB':{quantity:10,costTotal:1000}});
+  assert.equal(ctx.heldSale.length,2);assert.equal(ctx.heldSale[0].quantity,10,'the whole holding, not one share');
+  for(const q of ctx.heldSale){assert.ok(Math.abs(q.taxableGainKRW-2000000)<10000,`${q.symbol} gain ${q.taxableGainKRW}`);assert.equal(q.annualTaxChangeKRW,0,'alone, under the deduction');}
+  const all=ctx.allUSHoldingsSale;assert.equal(all.status,'estimated');assert.equal(all.separateQuotesSumKRW,0);
+  assert.equal(all.annualTaxChangeKRW,rules.overseasGainsTax(all.taxableGainKRW,new Date().getFullYear()).totalKRW,'together the deduction is used once');assert.ok(all.annualTaxChangeKRW>300000);db.close();
+});
+test('review instructions: use the app tax figures and their status; no flat 22%, no refund, no tax-free ETF assumption',()=>{
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
+  for(const re of [/never apply 22% to proceeds or to a gain yourself/,/never treat a loss as a guaranteed refund/,/never assume a Korean ETF is tax-free/,/it is not a reason to Hold and never a reason to drop a protective exit/,/one KRW 2\.5m deduction is shared by every sale this year/])assert.match(src,re);
+});
+test('without a saved indicative rate, a quote uses the current market rate and says so',()=>{
+  const {db,costs}=ledgerDb();costs.save({...DEFAULT_COSTS,annualRealizedKRW:0});costs.importTrades('a',[row('Buy',1,100,'2026-03-02','2026-03-03')]);costs.holdings=()=>[{symbol:'NASD:TEST',quantity:1}];
+  const sell=()=>estimateCosts({market:'US',side:'Sell',quantity:1,price:120,symbol:'NASD:TEST',settings:costs.get(),classification:classify('NASD:TEST',{market:'NASD',type:'stock'})});
+  assert.deepEqual(sell().incomeTax.missingInputs,['USD/KRW exchange rate']);costs.marketRate=()=>1400;
+  const q=sell();assert.equal(q.incomeTax.status,'estimated');assert.equal(q.taxableGainKRW,Math.round(q.netCash*1400-120000));assert.ok(q.incomeTax.assumptions.includes('exchange rate: the current market rate, not the settlement-date reference rate'));db.close();
+});

@@ -150,3 +150,25 @@ For each supported rule, record the exact legal provision, effective dates, sour
 Run unit tests, idempotent import tests, historical replay and side-by-side reconciliation with KIS tax-support statements. Explain every material discrepancy by transaction, FX, basis, expenses, year or category. Do not force totals to agree by adjusting a rate. Reconcile broker cash independently from tax amounts.
 
 Release first as calculated diagnostics without submitting orders or changing tax settings. Verify fresh AI inputs show the same classifications, completeness and marginal tax as the UI. Then enable those estimates in normal review contexts. Do not submit tax returns, select personal tax elections, or change trading settings as part of this implementation plan.
+
+## 7. Implementation status (2026-10-25)
+
+Implemented in four commits after 1.5.34 (tests: `tests/tax-model.test.cjs`, plus updated `fees-taxes` and `overseas` tests).
+
+| Plan step | Where | Notes |
+| --- | --- | --- |
+| PR 1 structured results, profile, classification, dated rules | `tax-rules.cjs`, `tax-profile.cjs`, `security-tax-classification.cjs`, `trading-costs.cjs`, `tax-ledger.cjs` | Unconfirmed profile answers stay assumptions; ISA, pension, RIA, corporate, non-resident and major-shareholder cases are `unsupported`. Mock and paper trades never enter the ledger. |
+| PR 2 ledger | `tax-lots.cjs`, `tax-ledger.cjs`, `trading-costs.cjs`, `main.cjs` | KIS CTOS4001R history imported as the record; opening lots; reconciliation with KIS holdings; one disposal engine for ledger and quotes; settlement-date reference rate. |
+| PR 3 funds and income | `income-events.cjs`, `security-tax-classification.cjs` | ETF class entered from issuer documents; taxable-NAV withholding when NAVs are known; income ledger with reconciliation and a comprehensive-tax flag; detected inflows can be marked as dividends. |
+| PR 4 decisions and UI | `trading-costs.cjs` (`heldSale`, `allUSHoldingsSale`), `ai-client.cjs`, `src/TradingCosts.tsx`, `src/TaxLedger.tsx` | Four separate figures per sale; agent instructions from section 4. |
+
+Broker-field check, 2026-10-25 (read-only, live account): for the Oct 23 Alphabet and Nvidia buys settling Oct 26, KIS reported `erlm_exrt` 1,324.6 before that day's reference rate existed, and `wcrc_excc_amt` = `tr_amt` (gross at that rate, truncated) + `dmst_wcrc_fee`. Both are therefore kept as cash-settlement evidence; the tax amount uses the settlement-date reference rate, with the broker rate standing in, flagged provisional, only until publication.
+
+Not yet done, and why:
+
+- Side-by-side reconciliation with a KIS tax-support statement: needs the statement from the account holder.
+- Broker import of dividends and interest: no KIS endpoint verified yet; payments are entered or converted from detected inflows.
+- Taxable-NAV data source for Korean ETFs, ETN rules, RIA/ISA/pension calculations, domestic taxable (major-shareholder) gains, the high-dividend regime: reported as unknown or unsupported.
+- Rounding (amounts below 10 won dropped) is stated as an assumption until checked against a broker statement; money uses JavaScript numbers with explicit truncation rather than a decimal type.
+- A method change (moving average or FIFO) recomputes history; rule changes are versioned (`RULE_VERSION`), method changes are not yet.
+- Agent-visible tax context changed: under the routing protocol the next evaluation freeze starts a new period.
