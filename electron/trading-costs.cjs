@@ -86,14 +86,16 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
   return {...costs,gainAfterFees:gain,taxableGainKRW,capitalGainsTaxKRW,gainAfterEstimatedTax:gain==null||capitalGainsTaxKRW==null?null:!us?gain:round(gain-capitalGainsTaxKRW/rate,2),incomeTax};
 }
 class TradingCosts{
-  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);
+  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);
+    // Rows imported by 1.5.35 took the KRW unit price as USD; they are dropped and imported again (parser 2).
+    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);
     // Injected by the app: the connected account, Korean non-trading days and the broker's U.S. holdings.
     this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;this.marketRate=()=>null;}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
   saved(){const row=this.db.prepare('SELECT payload FROM trading_cost_settings WHERE id=1').get();const saved=row?JSON.parse(row.payload):{};return {...DEFAULT_COSTS,...migrate(saved.settings??saved)};}
   // Whether the ordinary rules apply to the connected account's market; without a connected account nothing is decided.
   applicability(market){const current=this.currentAccount();if(!current)return {status:'estimated',reasons:[],assumptions:['no live account connected']};return require('./tax-profile.cjs').applicability(this.profile.get(),current,market);}
-  // annualRealizedKRW is entered as gains realized outside this app; app sales come from the ledger. The year's total is
+  // annualRealizedKRW is entered as gains realized at other brokers; KIS sales come from the ledger. The year's total is
   // passed on only when complete; otherwise estimates that need it are incomplete (taxStatus says what is missing).
   // Estimates use the ledger's KRW cost per share where the app holds purchase records.
   get(){
@@ -156,10 +158,11 @@ class TradingCosts{
     const known=ticker=>{const o=this.orders().find(x=>/^(NASD|NYSE|AMEX):/.test(x.symbol??'')&&x.symbol.split(':').pop()===ticker);if(o)return o.symbol;const h=(this.holdings()??[]).find(x=>String(x.symbol).split(':').pop()===ticker);if(h)return h.symbol;
       const m=this.table('securities')?this.db.prepare('SELECT symbol FROM securities WHERE symbol IN (?,?,?)').get('NASD:'+ticker,'NYSE:'+ticker,'AMEX:'+ticker):null;return m?.symbol??'US:'+ticker;};
     const put=this.db.prepare('INSERT INTO tax_events VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload');
-    for(const r of rows??[]){if(!r?.tradeDate||!(r.quantity>0)||!/^[A-Z][A-Z0-9./-]{0,14}$/.test(r.ticker??'')||!['Buy','Sell'].includes(r.side))continue;
+    for(const r of rows??[]){if(!r?.tradeDate||!(r.quantity>0)||!(r.price>0)||!/^[A-Z][A-Z0-9./-]{0,14}$/.test(r.ticker??'')||!['Buy','Sell'].includes(r.side))continue;
+      if(r.grossUSD>0&&Math.abs(r.price*r.quantity/r.grossUSD-1)>0.01)throw new Error('INVALID_TRADE_HISTORY');
       const key=[owner,r.tradeDate,r.settlementDate,r.ticker,r.side,r.quantity,r.price].join('|');const n=(seen.get(key)??0)+1;seen.set(key,n);const id=require('node:crypto').createHash('sha256').update(key+'|'+n).digest('hex').slice(0,24);
       kept.add(id);if(!this.db.prepare('SELECT id FROM tax_events WHERE id=?').get(id))added++;
-      put.run(id,owner,JSON.stringify({id,account:owner,source:'KIS trade history',symbol:known(r.ticker),side:r.side,quantity:r.quantity,price:r.price,feesUSD:r.feesUSD??null,tradeDate:r.tradeDate,timestamp:0,settlementDate:r.settlementDate,settlementKRW:r.settlementKRW??null,exchangeRate:r.exchangeRate??null,feesSource:'Broker',importedAt:now}));}
+      put.run(id,owner,JSON.stringify({id,parser:2,account:owner,source:'KIS trade history',symbol:known(r.ticker),side:r.side,quantity:r.quantity,price:r.price,feesUSD:r.feesUSD??null,tradeDate:r.tradeDate,timestamp:0,settlementDate:r.settlementDate,settlementKRW:r.settlementKRW??null,exchangeRate:r.exchangeRate??null,feesSource:'Broker',importedAt:now}));}
     if(window)for(const r of this.db.prepare('SELECT id,payload FROM tax_events WHERE account=?').all(owner)){const d=JSON.parse(r.payload).tradeDate;if(d>=window.start&&d<=window.end&&!kept.has(r.id))this.db.prepare('DELETE FROM tax_events WHERE id=?').run(r.id);}
     return added;
   }

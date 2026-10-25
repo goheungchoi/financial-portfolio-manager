@@ -132,7 +132,8 @@ class LiveEngine {
   // ticker, side and trade date; when other trades of the same kind make the match ambiguous the estimate is kept.
   async refreshCharges(now=Date.now()){
     const {brokerCosts}=require('./trading-costs.cjs');const attempt=(o,status,code=null)=>this.save({...o,reportedCosts:{status,code,attempts:(o.reportedCosts?.attempts??0)+1,lastAttempt:now}});
-    const due=this.orders().filter(o=>o.filled>0&&o.fillPrice>0&&o.brokerOrderId&&o.costSettings&&['Filled','Canceled','Rejected'].includes(o.status)&&!['reported','unavailable','ambiguous'].includes(o.reportedCosts?.status)&&(o.reportedCosts?.attempts??0)<12&&now-(o.reportedCosts?.lastAttempt??0)>=15*60000&&now-(o.createdAt??now)<10*86400000);
+    const provisional=o=>this.market==='US'&&o.reportedCosts?.status==='reported'&&!(o.reportedCosts.exchangeRate>0);
+    const due=this.orders().filter(o=>o.filled>0&&o.fillPrice>0&&o.brokerOrderId&&o.costSettings&&['Filled','Canceled','Rejected'].includes(o.status)&&(!['reported','unavailable','ambiguous'].includes(o.reportedCosts?.status)||provisional(o))&&(o.reportedCosts?.attempts??0)<12&&now-(o.reportedCosts?.lastAttempt??0)>=15*60000&&now-(o.createdAt??now)<10*86400000);
     if(!due.length)return 0;let updated=0;
     if(this.market==='US'){
       const start=due.map(o=>o.day).sort()[0];let trades;
@@ -142,6 +143,8 @@ class LiveEngine {
         const rows=trades.filter(t=>t.ticker===o.symbol.split(':')[1]&&t.side===o.side&&near(t.tradeDate,o.day));if(!rows.length){attempt(o,'pending','NOT_SETTLED');continue;}
         const peers=this.orders().filter(p=>p.symbol===o.symbol&&p.side===o.side&&near(p.day,o.day)&&p.filled>0),rowQty=rows.reduce((n,r)=>n+r.quantity,0),appQty=peers.reduce((n,p)=>n+p.filled,0);
         if(rowQty!==appQty){attempt(o,'ambiguous','QUANTITY_MISMATCH');continue;}
+        // KIS reports zero fees and rate until a trade is final; keep the estimate until it is.
+        if(!rows.every(r=>r.exchangeRate>0)){attempt(o,'pending','NOT_FINAL');continue;}
         const share=o.filled/appQty,sum=key=>rows.every(r=>r[key]!=null)?rows.reduce((n,r)=>n+r[key],0)*share:null;
         const reported={status:'reported',source:'KIS settled trade history',feesUSD:Math.round(sum('feesUSD')*100)/100,settlementUSD:sum('settlementUSD')==null?null:Math.round(sum('settlementUSD')*100)/100,settlementKRW:sum('settlementKRW')==null?null:Math.round(sum('settlementKRW')),exchangeRate:rows[0].exchangeRate,settlementDate:rows[0].settlementDate,retrievedAt:now};
         this.save({...o,reportedCosts:reported,resultCosts:brokerCosts({market:'US',side:o.side,quantity:o.filled,price:o.fillPrice,costPerShare:o.costPerShare,symbol:o.symbol,settings:o.costSettings,reported})});updated++;

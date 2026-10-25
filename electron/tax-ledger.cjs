@@ -51,14 +51,14 @@ function buildLedger({fills,rateOn,userBasis={},method='moving-average',openingL
 // changed). Null position: no lots recorded.
 function quoteDisposal(position,quantity,method){return dispose(position?.lots??[],quantity,method);}
 // The year's overseas capital-gains tax for the taxpayer. The full liability needs every sale's basis and the gains
-// realized outside this app; when one is missing the liability is null (incomplete), and the known-record figures are
+// realized at other brokers; when one is missing the liability is null (incomplete), and the known-record figures are
 // a labeled subtotal, not a bound (a missing sale may be a loss). The basic deduction is capped: losses beyond it are
 // reported separately as offset capacity for further gains in the same year, never as a refund or a carryforward.
 // applicability: from tax-profile.cjs, for the accounts in the ledger.
 function annualTax(ledger,year,outsideKRW=null,{applicability=null,asOf=Date.now()}={}){
   const {overseasGainsTax,taxResult,ROUNDING}=require('./tax-rules.cjs');
   const yearSales=ledger.sales.filter(s=>s.year===year),known=yearSales.filter(s=>s.gainKRW!=null),appKRW=known.reduce((n,s)=>n+s.gainKRW,0);
-  const knownTotal=appKRW+(outsideKRW??0);const missing=[];if(outsideKRW==null)missing.push('gains realized outside this app this year');if(known.length<yearSales.length)missing.push(`acquisition basis or exchange rate for ${yearSales.length-known.length} sale(s)`);
+  const knownTotal=appKRW+(outsideKRW??0);const missing=[];if(outsideKRW==null)missing.push('gains realized at other brokers this year (enter 0 if none)');if(known.length<yearSales.length)missing.push(`acquisition basis or exchange rate for ${yearSales.length-known.length} sale(s)`);
   const noRule=!overseasGainsTax(0,year);const unsupported=applicability?.status==='unsupported'||noRule;const complete=!missing.length&&!unsupported;
   const assumptions=[...(applicability?.assumptions??[]),ROUNDING,...(yearSales.some(s=>s.settlementEstimated)?['settlement dates estimated where the broker has not reported them']:[])];
   const tax=overseasGainsTax(complete?knownTotal:0,year),knownTax=overseasGainsTax(knownTotal,year);

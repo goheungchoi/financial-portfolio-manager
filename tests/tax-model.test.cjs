@@ -13,7 +13,7 @@ test('one sale with unknown basis: the annual and marginal tax are unknown; the 
   assert.equal(y.complete,false);assert.equal(y.estimatedTaxKRW,null);assert.equal(y.totalKRW,null);assert.equal(y.result.status,'incomplete');assert.equal(y.result.value,null);
   assert.equal(y.knownTotalKRW,5000000);assert.equal(y.knownRecordsTaxKRW,550000);assert.equal(y.result.knownSubtotal,550000);assert.deepEqual(y.result.missingInputs,['acquisition basis or exchange rate for 1 sale(s)']);
   assert.equal(marginalTax(y,1000000),null,'no marginal estimate from a partial year');
-  assert.equal(annualTax({sales:[]},2026,null).result.missingInputs[0],'gains realized outside this app this year');
+  assert.equal(annualTax({sales:[]},2026,null).result.missingInputs[0],'gains realized at other brokers this year (enter 0 if none)');
 });
 test('losses: no refund and no carryforward; the deduction left is capped and loss offset is separate',()=>{
   const y=annualTax({sales:[{year:2026,gainKRW:1000000},{year:2026,gainKRW:-3000000}]},2026,0);
@@ -217,4 +217,23 @@ test('review fix: same-day trades replay buys before sales, whatever order the b
   const fills=[f('b0','Buy',10,100,'2026-03-02'),{...f('s','Sell',10,200,'2026-06-01'),timestamp:0},{...f('b1','Buy',10,200,'2026-06-01'),timestamp:0}];
   const l=buildLedger({fills,rateOn:d=>({rate:1000,source:'t'})});assert.equal(l.sales[0].costKRW,1500000,'average of 100 and 200 after the buy');assert.notEqual(l.sales[0].basisSource,'Unknown basis');
   const day=buildLedger({fills:[{...f('s','Sell',1,120,'2026-06-01'),timestamp:0},{...f('b','Buy',1,100,'2026-06-01'),timestamp:0}],rateOn:()=>({rate:1000,source:'t'})});assert.equal(day.sales[0].gainKRW,20000,'a day trade listed sale-first still has its basis');assert.deepEqual(day.positions,{});
+});
+test('live check fix: KIS trade history is parsed in USD, zero placeholders are unknown, and a mismatched row is refused',async()=>{
+  const {OverseasClient}=require('../electron/kis-overseas.cjs');
+  // The shape of a KIS trade-history response for one U.S. buy (account fields omitted).
+  const ctso={trad_dt:'20261023',sttl_dt:'20261026',sll_buy_dvsn_cd:'02',pdno:'CTSO',ccld_qty:'1',ft_ccld_unpr2:'331.27000000',ovrs_stck_ccld_unpr:'436746.36800000',tr_frcr_amt2:'331.270000',tr_amt:'436746',frcr_excc_amt_1:'332.070000',wcrc_excc_amt:'437801',dmst_frcr_fee1:'0.80000',frcr_fee1:'',crcy_cd:'USD',erlm_exrt:'1318.40000000'};
+  const early={...ctso,pdno:'FBRK',ft_ccld_unpr2:'204.58000000',ovrs_stck_ccld_unpr:'0',tr_frcr_amt2:'204.580000',frcr_excc_amt_1:'204.580000',wcrc_excc_amt:'0',dmst_frcr_fee1:'0',erlm_exrt:'0'};
+  const client=new OverseasClient({overseasIdentity:()=>({environment:'live'}),overseasRequest:async()=>({body:{output1:[ctso,early]},continuation:''})});
+  const [g,n]=await client.trades('2026-10-01','2026-10-25');
+  assert.equal(g.price,331.27,'the USD unit price, not the KRW one');assert.equal(g.feesUSD,0.8);assert.equal(g.exchangeRate,1318.4);assert.equal(g.settlementKRW,437801);
+  assert.equal(n.price,204.58);assert.equal(n.exchangeRate,null,'zero before KIS finalizes means unknown');assert.equal(n.settlementKRW,null);
+  const {db,costs}=ledgerDb();assert.throws(()=>costs.importTrades('a',[{...row('Buy',1,436746.37,'2026-10-16','2026-10-19'),grossUSD:331.27}]),/INVALID_TRADE_HISTORY/,'a KRW price in a USD field is refused');
+  costs.importTrades('a',[{...g},{...n}].map(r=>({...r,ticker:r.ticker})));costs.holdings=()=>[{symbol:'NASD:CTSO',quantity:1},{symbol:'NASD:FBRK',quantity:1}];
+  const lots=costs.get().taxLots;assert.ok(Math.abs(lots['NASD:CTSO'].lots[0].costUSD-332.07)<1e-9);db.close();
+});
+test('live check fix: trade rows imported by the old parser are dropped at start and imported again',()=>{
+  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL)');
+  db.prepare('INSERT INTO tax_events VALUES(?,?,?)').run('old','a',JSON.stringify({id:'old',account:'a',symbol:'NASD:CTSO',side:'Buy',quantity:1,price:436746.368,tradeDate:'2026-10-16'}));
+  const costs=new TradingCosts(db);assert.equal(db.prepare('SELECT count(*) n FROM tax_events').get().n,0);
+  costs.importTrades('a',[row('Buy',1,100,'2026-10-16','2026-10-19')]);new TradingCosts(db);assert.equal(db.prepare('SELECT count(*) n FROM tax_events').get().n,1,'current rows survive a restart');db.close();
 });
