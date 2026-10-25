@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {useDraftState} from './useDraftState';
 import {ScoutPanel} from './ScoutPanel';
-import {MarketPulse} from './MarketPulse';
+import {MarketPulse,USMarketPulse} from './MarketPulse';
 import {QuickLook} from './QuickLook';
 import {MarketNarrative} from './MarketNarrative';
 export type Security={symbol:string;name:string;englishName:string;market:string;type:string};
@@ -18,7 +18,10 @@ const typeLabel:Record<string,string>={stock:'Stock',etf:'ETF',etn:'ETN',reit:'R
 export function Discover({onOpenChart,onNavigate}:{onOpenChart(symbol:string):void;onNavigate(tab:string):void}){
   const [state,setState]=useState<DiscoveryState|null>(null);const [notice,setNotice]=useState('');const [busy,setBusy]=useState(false);
   const [query,setQuery]=useDraftState('discover:query','');const [queryMarket,setQueryMarket]=useDraftState('discover:query-market','');const [results,setResults]=useState<Security[]|null>(null);
-  const [screen,setScreen]=useDraftState('discover:screen',{market:'KR',exchange:'NASD',kind:'volume',type:'stock'});const [screened,setScreened]=useState<ScreenResult|null>(null);const [screening,setScreening]=useState(false);const [screenError,setScreenError]=useState('');const screenSeq=useRef(0);
+  const [screen,setScreen]=useDraftState('discover:screen',{market:'KR',exchange:'NASD',kind:'volume',type:'stock'});
+  // The page's market: the overview, the search and the screener follow it.
+  const [market,setMarket]=useDraftState<'KR'|'US'>('discover:market',()=>screen.market==='US'?'US':'KR');
+  const switchMarket=(next:'KR'|'US')=>{setMarket(next);setScreen(s=>({...s,market:next}));setQueryMarket(next);};const [screened,setScreened]=useState<ScreenResult|null>(null);const [screening,setScreening]=useState(false);const [screenError,setScreenError]=useState('');const screenSeq=useRef(0);
   useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getDiscovery();if(alive&&reply)setState(reply.state);}catch{}};void load();const timer=setInterval(load,5000);return()=>{alive=false;clearInterval(timer);};},[]);
   const connected=Boolean(state?.connected);
   const [peek,setPeek]=useState<{symbol:string;name:string}|null>(null);const [filter,setFilter]=useState('');const [sort,setSort]=useState<{key:keyof ScreenRow|'';dir:1|-1}>({key:'',dir:-1});const [reload,setReload]=useState(0);
@@ -50,7 +53,8 @@ export function Discover({onOpenChart,onNavigate}:{onOpenChart(symbol:string):vo
   const changeCell=(v:number|null)=>v==null?'—':<span className={`change-cell ${v>0?'positive':v<0?'negative':''}`}><i className="change-bar"><i style={{width:`${Math.min(50,Math.abs(v)*5)}%`,[v>=0?'left':'right']:'50%'}}/></i>{`${v>0?'+':''}${v.toFixed(2)}%`}</span>;
   return <>
     {peek&&<QuickLook symbol={peek.symbol} name={peek.name} watching={listed.has(peek.symbol)} onClose={()=>setPeek(null)} onOpen={()=>onOpenChart(peek.symbol)} onWatch={()=>void run(()=>window.portfolio!.updateWatchlist('add',peek.symbol,''))}/>}
-    <MarketPulse onOpenChart={onOpenChart}/>
+    <div className="chart-options"><div className="segmented" role="tablist" aria-label="Discover market">{([['KR','Korea'],['US','U.S.']] as const).map(([k,l])=><button key={k} role="tab" aria-pressed={market===k} aria-selected={market===k} onClick={()=>switchMarket(k)}>{l}</button>)}</div></div>
+    {market==='US'?<USMarketPulse onOpenChart={onOpenChart}/>:<MarketPulse onOpenChart={onOpenChart}/>}
     <MarketNarrative/>
     <section aria-label="Find a listing"><div className="section-head"><h2>Find a listing</h2></div>
       <div className="search-row"><input aria-label="Search securities" placeholder="Company name, Korean code or U.S. ticker" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')void run(()=>window.portfolio!.searchSecurities(query,queryMarket||null),data=>setResults(data as Security[]));}}/><select aria-label="Search market" value={queryMarket} onChange={e=>setQueryMarket(e.target.value)}><option value="">All markets</option><option value="KR">Korea</option><option value="US">U.S.</option></select><button className="primary" disabled={busy||!query.trim()} onClick={()=>void run(()=>window.portfolio!.searchSecurities(query,queryMarket||null),data=>setResults(data as Security[]))}>Search</button></div>
@@ -61,7 +65,7 @@ export function Discover({onOpenChart,onNavigate}:{onOpenChart(symbol:string):vo
       {!state?.connected?<p>Connect your KIS account in Connections to keep a watchlist for it.</p>:state.watchlist.length?<table aria-label="Watchlist entries"><thead><tr><th>Symbol</th><th>Name</th><th>Price</th><th>Day</th><th>Added by</th><th>Reason</th><th/></tr></thead><tbody>{state.watchlist.map(row=>{const q=quotes[row.symbol];return <tr key={row.symbol} className={flash[row.symbol]?`flash-${flash[row.symbol]}`:''}><td><button className="link-button" onClick={()=>onOpenChart(row.symbol)}>{row.symbol}</button></td><td><button className="link-button" onClick={()=>setPeek({symbol:row.symbol,name:row.name})}>{row.name}</button><small> · {typeLabel[row.type]??row.type}</small></td><td className="live-price" title={q?.at?`Updated ${new Date(q.at).toLocaleTimeString()}`:'Not quoted yet'}>{q?price(q.price,row.symbol.includes(':')?'USD':'KRW'):'—'}</td><td>{changeCell(q?.changePct??null)}</td><td>{row.source==='ai'?(row.pinned?'AI · pinned':'AI'):'You'}<br/><small>{new Date(row.addedAt).toLocaleDateString()}</small></td><td>{row.reason||'—'}</td><td className="row-actions">{row.source==='ai'&&<button disabled={busy} onClick={()=>void run(()=>window.portfolio!.updateWatchlist('pin',row.symbol,!row.pinned))}>{row.pinned?'Unpin':'Pin'}</button>}<button disabled={busy} aria-label={`Remove ${row.symbol}`} onClick={()=>void run(()=>window.portfolio!.updateWatchlist('remove',row.symbol))}>Remove</button></td></tr>;})}</tbody></table>:<p>Add stocks from search or the screener.</p>}
     </section>
     <section aria-label="Market screener" aria-busy={screening}><div className="section-head"><h2>Market screener</h2>{screening?<small className="loading-label"><span className="spinner" aria-hidden="true"/>Loading…</small>:screened&&<small>Updated {new Date(screened.retrievedAt).toLocaleTimeString()} · next in {Math.max(0,Math.ceil((screened.retrievedAt+60000-clock)/1000))}s</small>}<button disabled={screening} onClick={()=>setReload(n=>n+1)}>Refresh</button></div>
-      <div className="settings-grid"><label>Market<select aria-label="Screener market" value={screen.market} onChange={e=>setScreen({...screen,market:e.target.value})}><option value="KR">Korea (KOSPI + KOSDAQ)</option><option value="US">U.S.</option></select></label>
+      <div className="settings-grid"><label>Market<select aria-label="Screener market" value={screen.market} onChange={e=>switchMarket(e.target.value==='US'?'US':'KR')}><option value="KR">Korea (KOSPI + KOSDAQ)</option><option value="US">U.S.</option></select></label>
         {screen.market==='US'&&<label>Exchange<select aria-label="Screener exchange" value={screen.exchange} onChange={e=>setScreen({...screen,exchange:e.target.value})}><option value="NASD">NASDAQ</option><option value="NYSE">NYSE</option><option value="AMEX">AMEX</option></select></label>}
         <label>Ranking<select aria-label="Screener ranking" value={screen.kind} onChange={e=>setScreen({...screen,kind:e.target.value})}><option value="volume">Trading volume</option><option value="gainers">Top gainers</option><option value="losers">Top losers</option><option value="market-cap">Market value</option></select></label>
         <label>Security type<select aria-label="Screener type" value={screen.type} onChange={e=>setScreen({...screen,type:e.target.value})}><option value="stock">Stocks</option><option value="etf">ETFs</option><option value="any">Any except warrants</option></select></label></div>

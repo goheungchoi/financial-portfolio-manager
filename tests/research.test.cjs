@@ -280,3 +280,13 @@ test('an announced results date replaces the estimated one in company events',as
   const e=(await s.section('005930','events')).data.upcoming.filter(x=>x.kind==='earnings');
   assert.deepEqual(e.map(x=>[x.date,x.title,x.announced]),[['2026-10-30','Results announcement (IR notice): 2026년 3분기 경영실적 발표 at 14:10 KST',true]]);
 });
+test('U.S. market today: index and sector ETFs from KIS quotes, ranked; missing quotes are skipped',async()=>{
+  const {usMarketOverview,US_SECTOR_ETFS}=require('../electron/kis-insights.cjs');
+  // 2026-10-25 read-only response values for SPY, QQQ and XLK.
+  const quotes={SPY:{base:'763.9600',last:'759.9700',rate:'-0.52',tamt:'25830568715'},QQQ:{base:'704.4700',last:'704.4000',rate:'-0.01'},XLK:{base:'182.3400',last:'183.2300',rate:'+0.49'},XLE:{base:'90',last:'88.2',rate:'-2.00'}};
+  const calls=[];const client={overseasRequest:async(path,tr,p)=>{calls.push([tr,p.EXCD,p.SYMB]);if(!quotes[p.SYMB])throw new Error('RATE_LIMITED');return {body:{output:quotes[p.SYMB]}};}};
+  const r=await usMarketOverview(client);assert.ok(calls.every(c=>c[0]==='HHDFS00000300'));assert.deepEqual(calls.find(c=>c[2]==='SPY').slice(1),['AMS','SPY']);assert.deepEqual(calls.find(c=>c[2]==='QQQ').slice(1),['NAS','QQQ']);
+  assert.deepEqual(r.indices.map(i=>[i.label,i.changePct]),[['S&P 500',-0.52],['Nasdaq-100',-0.01]]);assert.equal(r.indices[0].tradedValueUSD,25830568715);
+  assert.deepEqual(r.sectors.map(s=>s.label),['Technology','Energy'],'ranked strongest first');assert.equal(US_SECTOR_ETFS.length,11);
+  await assert.rejects(usMarketOverview({overseasRequest:async()=>{throw new Error('x');}}),/DATA_SOURCE_UNAVAILABLE/);
+});

@@ -28,3 +28,23 @@ export function MarketPulse({onOpenChart}:{onOpenChart(symbol:string):void}){
     </>}
   </section>;
 }
+// U.S. market today: index and sector ETFs (KIS has no U.S. breadth or flow feed) and the latest VIX close.
+type USRow={symbol:string;label:string;price:number;changePct:number|null;tradedValueUSD:number|null};
+export type USMarketReply={status:string;retrievedAt?:number;reason?:string;data?:{indices:USRow[];sectors:USRow[]};vix:{value:number;change:number|null;date:string}|null};
+export function USMarketPulse({onOpenChart}:{onOpenChart(symbol:string):void}){
+  const [state,setState]=useState<USMarketReply|null>(null);const [busy,setBusy]=useState(false);
+  const load=async(refresh=false)=>{setBusy(true);try{setState(await window.portfolio!.getUSMarketOverview(refresh));}catch{setState({status:'unavailable',vix:null});}finally{setBusy(false);}};
+  useEffect(()=>{if(window.portfolio)void load();},[]);
+  if(!window.portfolio)return null;
+  const d=state?.status==='ok'?state.data:null;const sectors=d?.sectors??[];
+  const usd=(v:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(v);
+  return <section className="market-pulse" aria-label="U.S. market today" aria-busy={busy}>
+    <div className="section-head"><div><h2>U.S. market today</h2><small className="muted">{busy?'Loading…':state?.retrievedAt?`Updated ${new Date(state.retrievedAt).toLocaleTimeString()}`:''}</small></div><button disabled={busy} onClick={()=>void load(true)}>Refresh</button></div>
+    {!state?<p className="muted">Loading…</p>:!d?<p className="muted">{state.reason==='KIS_NOT_CONNECTED'?'Connect your KIS account to see the market.':'Market data is not available right now.'}</p>:<>
+      <div className="pulse-breadth">{d.indices.map(r=><div key={r.symbol}><small>{r.label}</small><b><button className="link-button" onClick={()=>onOpenChart(r.symbol)}>{r.symbol.split(':')[1]}</button> {usd(r.price)} <span className={tone(r.changePct)}>{pct(r.changePct)}</span></b></div>)}
+        {state.vix&&<div><small>VIX volatility</small><b>{state.vix.value.toFixed(2)} <span className={tone(-(state.vix.change??0))}>{state.vix.change==null?'':`${state.vix.change>0?'+':''}${state.vix.change.toFixed(2)}`}</span></b><small className="muted">Close {state.vix.date}</small></div>}</div>
+      {sectors.length>0&&<><h3 className="research-sub">S&P sectors · strongest to weakest</h3><div className="pulse-sectors">{sectors.map(s=><div key={s.symbol} className={tone(s.changePct)} title={s.symbol}><span>{s.label}</span><b>{pct(s.changePct)}</b></div>)}</div></>}
+      <Note summary="About this data"><p>KIS quotes of ETFs that track each index and the Select Sector SPDR funds for the sectors; change is against the previous close. KIS does not provide U.S. advance/decline counts or investor flows. VIX is the latest daily close from FRED.</p></Note>
+    </>}
+  </section>;
+}

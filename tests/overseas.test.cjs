@@ -73,3 +73,14 @@ test('U.S. intents stay separate from domestic account, preserve approval and pr
   await assert.rejects(engine.submit(order.id,''),/APPROVAL_REQUIRED/);await engine.submit(order.id,'PLACE MOCK ORDER');await engine.submit(order.id,'PLACE MOCK ORDER');assert.equal(posts,1);await engine.reconcile();const filled=engine.orders()[0];assert.equal(filled.filled,1);assert.equal(filled.resultCosts.gross,201.12);assert.equal(filled.resultCosts.commission,.5);
   const domestic=new LiveEngine(db,broker,()=>({snapshot:{...balance,accountKey:'fixture'}}));assert.equal(domestic.orders().length,0);assert.equal(domestic.getState().enabled,false);assert.throws(()=>domestic.configure({symbols:['NASD:AAPL']},'ENABLE MOCK'),/INVALID_LIMITS/);db.close();
 });
+test('U.S. order history for Activity: KST order time, USD amounts, Korean-date range, every channel',async()=>{
+  // Shape of a read-only TTTS3035R response (account fields omitted).
+  const ctso={ord_dt:'20261016',ord_gno_brno:'00950',odno:'0040123456',sll_buy_dvsn_cd:'02',rvse_cncl_dvsn:'00',pdno:'CTSO',prdt_name:'콘토소 A',ft_ord_qty:'1',ft_ord_unpr3:'331.37000000',ft_ccld_qty:'1',ft_ccld_unpr3:'331.27000000',ft_ccld_amt3:'331.27000',nccs_qty:'0',ord_tmd:'001500',ovrs_excg_cd:'NASD',dmst_ord_dt:'20261017',thco_ord_tmd:'001500',mdia_dvsn_name:'OpenAPI'};
+  const old={...ctso,odno:'0030000001',dmst_ord_dt:'20261001',ord_dt:'20260930'};const canceled={...ctso,odno:'0030966999',pdno:'CNTS',rvse_cncl_dvsn:'02',ft_ccld_qty:'0',ft_ccld_amt3:'0',ft_ccld_unpr3:'0',nccs_qty:'0',mdia_dvsn_name:'MTS'};
+  let params;const client=new OverseasClient({overseasIdentity:()=>({environment:'live'}),overseasRequest:async(path,tr,p)=>{params={tr,...p};return {body:{output:[ctso,old,canceled]},continuation:'D'};}});
+  const rows=await client.orderHistory('2026-10-02','2026-10-18');assert.equal(params.tr,'TTTS3035R');assert.equal(params.ORD_STRT_DT,'20261001','a day early: U.S. dates trail Korean ones');
+  assert.equal(rows.length,2,'the Oct 1 (KST) order is outside the range');const g=rows.find(r=>r.symbol==='NASD:CTSO');
+  assert.equal(new Date(g.timestamp).toISOString(),'2026-10-16T15:15:00.000Z','00:15:00 KST on Oct 17');assert.equal(g.executionAmount,331.27);assert.equal(g.averagePrice,331.27);assert.equal(g.currency,'USD');assert.equal(g.status,'Filled');assert.equal(g.channel,'OpenAPI');
+  const c=rows.find(r=>r.symbol==='NASD:CNTS');assert.equal(c.status,'Canceled');assert.equal(c.executionAmount,0);assert.equal(c.channel,'MTS');
+  await assert.rejects(client.orderHistory('2026-10-18','2026-10-02'),/INVALID_DATE_RANGE/);
+});

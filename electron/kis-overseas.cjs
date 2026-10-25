@@ -45,6 +45,29 @@ class OverseasClient{
     if(!/^\d{4}-\d{2}-\d{2}$/.test(day))throw new Error('INVALID_DATE_RANGE');const mock=this.identity().environment==='mock';const rows=await this.pages('inquire-ccnl',this.tr('TTTS3035R','VTTS3035R'),{PDNO:mock?'':'%',ORD_STRT_DT:day.replaceAll('-',''),ORD_END_DT:day.replaceAll('-',''),SLL_BUY_DVSN:'00',CCLD_NCCS_DVSN:'00',OVRS_EXCG_CD:mock?'':'NASD',SORT_SQN:'DS',ORD_DT:'',ORD_GNO_BRNO:'',ODNO:''},'output');
     return {orders:rows.filter(row=>EXCHANGES[row.ovrs_excg_cd]).map(row=>{const quantity=numeric(row.ft_ord_qty),filled=numeric(row.ft_ccld_qty),remaining=numeric(row.nccs_qty);if(quantity<0||filled<0||remaining<0||filled>quantity)throw new Error('INVALID_RESPONSE');return {orderId:String(row.odno),symbol:row.ovrs_excg_cd+':'+row.pdno,side:row.sll_buy_dvsn_cd==='01'?'Sell':'Buy',quantity,filled,remaining,orderPrice:numeric(row.ft_ord_unpr3),fillPrice:filled?numeric(row.ft_ccld_unpr3):null,status:row.rjct_rson&&row.rjct_rson!=='0'?'Rejected':filled===quantity?'Filled':row.rvse_cncl_dvsn==='02'?'Canceled':filled?'Partially filled':'Pending'};})};
   }
+  // U.S. order history for the Activity report: orders placed on Korean dates start..end (any channel), with order time
+  // in KST (dmst_ord_dt + thco_ord_tmd; verified 2026-10-25), USD quantities, prices and executed amounts.
+  async orderHistory(start,end){
+    if(![start,end].every(d=>/^\d{4}-\d{2}-\d{2}$/.test(d))||start>end)throw new Error('INVALID_DATE_RANGE');const mock=this.identity().environment==='mock';
+    // U.S. order dates run a day behind Korean ones, so the query starts a day early and rows are kept by Korean date.
+    const before=new Date(Date.parse(start+'T00:00:00Z')-86400000).toISOString().slice(0,10);
+    const rows=await this.pages('inquire-ccnl',this.tr('TTTS3035R','VTTS3035R'),{PDNO:mock?'':'%',ORD_STRT_DT:before.replaceAll('-',''),ORD_END_DT:end.replaceAll('-',''),SLL_BUY_DVSN:'00',CCLD_NCCS_DVSN:'00',OVRS_EXCG_CD:mock?'':'%',SORT_SQN:'DS',ORD_DT:'',ORD_GNO_BRNO:'',ODNO:''},'output');
+    const out=new Map();
+    for(const row of rows){
+      if(!EXCHANGES[row.ovrs_excg_cd]||!/^[A-Z][A-Z0-9./-]{0,14}$/.test(String(row.pdno??''))||!/^\d{1,20}$/.test(String(row.odno??''))||!['01','02'].includes(row.sll_buy_dvsn_cd))throw new Error('INVALID_RESPONSE');
+      const date=/^\d{8}$/.test(row.dmst_ord_dt??'')?row.dmst_ord_dt:row.ord_dt,tmd=/^\d{6}$/.test(row.thco_ord_tmd??'')?row.thco_ord_tmd:row.ord_tmd;
+      if(!/^\d{8}$/.test(date??'')||!/^\d{6}$/.test(tmd??''))throw new Error('INVALID_RESPONSE');
+      const day=`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}`;if(day<start||day>end)continue;
+      const timestamp=Date.parse(`${day}T${tmd.slice(0,2)}:${tmd.slice(2,4)}:${tmd.slice(4,6)}+09:00`);
+      const quantity=numeric(row.ft_ord_qty),filled=numeric(row.ft_ccld_qty),remaining=numeric(row.nccs_qty);if(!Number.isFinite(timestamp)||quantity<0||filled<0||remaining<0||filled>quantity)throw new Error('INVALID_RESPONSE');
+      const rejected=Boolean(row.rjct_rson&&row.rjct_rson!=='0'),canceled=row.rvse_cncl_dvsn==='02';
+      const status=rejected?(filled?'Partially filled / rejected':'Rejected'):canceled?(filled?'Partially filled / canceled':'Canceled'):filled===quantity&&quantity>0?'Filled':filled?'Partially filled':remaining?'Pending':'Unfilled';
+      const original=/^0*$/.test(String(row.orgn_odno??''))?null:String(row.orgn_odno);
+      const record={id:`US:${row.ord_dt}:${row.ord_gno_brno??''}:${row.odno}`,orderId:String(row.odno),originalOrderId:original,symbol:row.ovrs_excg_cd+':'+row.pdno,name:String(row.prdt_name??row.pdno).slice(0,120),timestamp,side:row.sll_buy_dvsn_cd==='01'?'Sell':'Buy',quantity,filled,remaining,rejected:rejected?quantity-filled:0,executionAmount:filled?numeric(row.ft_ccld_amt3):0,averagePrice:filled?numeric(row.ft_ccld_unpr3):0,orderPrice:numeric(row.ft_ord_unpr3),status,market:'US',currency:'USD',channel:typeof row.mdia_dvsn_name==='string'?row.mdia_dvsn_name.slice(0,20):null};
+      out.set(record.id,record);
+    }
+    return [...out.values()].sort((a,b)=>b.timestamp-a.timestamp||b.orderId.localeCompare(a.orderId));
+  }
   // Settled trade history with broker fees, settlement date and the registered exchange rate (live accounts only).
   async trades(start,end){
     if(![start,end].every(d=>/^\d{4}-\d{2}-\d{2}$/.test(d))||start>end)throw new Error('INVALID_DATE_RANGE');if(this.identity().environment!=='live')throw new Error('FEATURE_UNAVAILABLE');

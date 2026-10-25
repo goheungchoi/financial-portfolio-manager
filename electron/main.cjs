@@ -263,6 +263,8 @@ app.whenReady().then(async () => {
   const research=new (require('./research-service.cjs').ResearchService)({db:store.db,master,kis:(operation,payload)=>kisService.request(operation,payload),provider:(operation,payload)=>providerService.request(operation,['sec-company','sec-filings'].includes(operation)?{...payload,contact:secContact()}:payload),kisReady:()=>Boolean(kisState.snapshot),dartReady:()=>Boolean(automation.providerStatus.dartConnected),secReady:()=>Boolean(automation.providerStatus.secConnected||secContact())});
   automation.discovery.marketOverview=async()=>{const m=await research.market();if(m.status!=='ok')return {status:'unavailable',reason:m.reason};const sectors=m.data.kospiSectors??[];return {asOf:new Date(m.retrievedAt).toISOString(),...m.data,kospiSectors:undefined,strongestSectors:sectors.slice(0,8),weakestSectors:sectors.length>8?sectors.slice(-6).reverse():[],foreignTopBuys:m.data.foreignTopBuys?.slice(0,6),institutionTopBuys:m.data.institutionTopBuys?.slice(0,6)};};
   ipcMain.handle('research:market',async(event,refresh)=>{authorize(event);return research.market(refresh===true);});
+  // U.S. market today, with the latest VIX close from the macro data.
+  ipcMain.handle('research:us-market',async(event,refresh)=>{authorize(event);const r=await research.usMarket(refresh===true);const v=macro.get()?.series?.find(s=>s.id==='US_VIX');return {...r,vix:v?{value:v.value,change:v.change,date:v.date}:null};});
   automation.discovery.research=args=>research.agent(args);
   // Daily closes for the agents' formulas, triggers and conditional orders, from the research cache.
   // Index closes and the cached market overview feed the market narrative and the episode library.
@@ -544,7 +546,10 @@ app.whenReady().then(async () => {
     const generation=kisGeneration;
     try {
       require('./kis-activity.cjs').validateRange(startDate,endDate);
-      const data=await kisService.request(kind,{startDate,endDate});
+      let data=await kisService.request(kind,{startDate,endDate});
+      // Orders cover both markets: U.S. orders join the Korean ones; if the U.S. part fails, the Korean report still shows.
+      if(kind==='orders'){let us=[],usError=null;try{const rows=await kisService.request('us-order-history',{startDate,endDate});if(Array.isArray(rows))us=rows;else usError='INVALID_RESPONSE';}catch(error){usError=kisErrorCode(error);}
+        data={...data,orders:[...(data.orders??[]).map(o=>({...o,market:'KR',currency:'KRW'})),...us].sort((a,b)=>b.timestamp-a.timestamp),...(usError?{usError}:{})};}
       if(generation!==kisGeneration)return {ok:false,error:'CONNECTION_CHANGED'};
       return {ok:true,data};
     }catch(error){return {ok:false,error:kisErrorCode(error)};}

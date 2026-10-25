@@ -144,6 +144,18 @@ async function marketOverview(client){
     foreignTopBuys:topBuyers(foreign?.output,'frgn_ntby_tr_pbmn'),institutionTopBuys:topBuyers(institution?.output,'orgn_ntby_tr_pbmn'),
     note:'Sector moves are today versus the previous close. Foreign and institutional buying are preliminary intraday tallies by value.'};
 }
+// U.S. market today. KIS offers no U.S. breadth or investor-flow data like Korea's, so widely traded ETFs stand in for
+// the indices and the eleven S&P sectors; each row names the ETF it is. Change is against the previous close.
+const US_INDEX_ETFS=[['AMEX:SPY','S&P 500'],['NASD:QQQ','Nasdaq-100'],['AMEX:DIA','Dow Jones Industrial'],['AMEX:IWM','Russell 2000']];
+const US_SECTOR_ETFS=[['AMEX:XLK','Technology'],['AMEX:XLC','Communication services'],['AMEX:XLY','Consumer discretionary'],['AMEX:XLP','Consumer staples'],['AMEX:XLE','Energy'],['AMEX:XLF','Financials'],['AMEX:XLV','Health care'],['AMEX:XLI','Industrials'],['AMEX:XLB','Materials'],['AMEX:XLRE','Real estate'],['AMEX:XLU','Utilities']];
+async function usMarketOverview(client){
+  const EXCD={NASD:'NAS',NYSE:'NYS',AMEX:'AMS'};
+  const quote=async([symbol,label])=>{try{const [ex,ticker]=symbol.split(':');const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/price','HHDFS00000300',{AUTH:'',EXCD:EXCD[ex],SYMB:ticker});
+    const o=body.output??{},last=positive(o.last),base=positive(o.base);return last?{symbol,label,price:last,changePct:base?round((last/base-1)*100,2):num(o.rate),tradedValueUSD:num(o.tamt)}:null;}catch{return null;}};
+  const indices=[],sectors=[];for(const row of US_INDEX_ETFS){const q=await quote(row);if(q)indices.push(q);}for(const row of US_SECTOR_ETFS){const q=await quote(row);if(q)sectors.push(q);}
+  if(!indices.length&&!sectors.length)throw new Error('DATA_SOURCE_UNAVAILABLE');
+  return {indices,sectors:sectors.filter(s=>s.changePct!=null).sort((a,b)=>b.changePct-a.changePct),note:'ETF prices from KIS stand in for the indices and sectors; change is against the previous close.'};
+}
 // ETFs and ETNs: fund facts, NAV and premium/discount, tracking, leverage factor and holdings with weights.
 function etfFund(o={},navRows=[]){
   const factor=num(o.etf_trc_ert_mltp);const nav=positive(o.nav),price=positive(o.stck_prpr);
@@ -167,6 +179,7 @@ const US=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/;
 async function fetchSection(client,symbol,section,today){
   const q=(endpoint,tr,params)=>client.quotation(endpoint,tr,params);
   if(section==='market')return marketOverview(client);
+  if(section==='us-market')return usMarketOverview(client);
   const us=US.exec(symbol);
   if(us){
     if(section==='overview'){const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/price-detail','HHDFS76200200',{AUTH:'',EXCD:{NASD:'NAS',NYSE:'NYS',AMEX:'AMS'}[us[1]],SYMB:us[2]});return usOverview(body.output);}
@@ -233,4 +246,4 @@ async function financials(client,symbol){
   if(Object.values(parts).every(v=>!v))throw new Error('DATA_SOURCE_UNAVAILABLE');
   return {periods:statements(parts),annualRatios:ratios(parts.ratio),units:'KRW amounts; ratios in %. Periods not ending in December are year to date.'};
 }
-module.exports={overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
+module.exports={usMarketOverview,US_INDEX_ETFS,US_SECTOR_ETFS,overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
