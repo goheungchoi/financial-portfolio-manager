@@ -11,7 +11,7 @@ function validateCosts(value){
   for(const key of ['krCommissionPct','usCommissionPct','usSellFeePct','usSellFeeMinimum'])if(!Number.isFinite(next[key])||next[key]<0||next[key]>100)throw new Error('INVALID_COST_SETTINGS');
   if(next.krSellTaxOverridePct!==null&&(!Number.isFinite(next.krSellTaxOverridePct)||next.krSellTaxOverridePct<0||next.krSellTaxOverridePct>100))throw new Error('INVALID_COST_SETTINGS');
   for(const key of ['usdKRW','annualRealizedKRW'])if(next[key]!==null&&(!Number.isFinite(next[key])||Math.abs(next[key])>1e13||key==='usdKRW'&&next[key]<=0))throw new Error('INVALID_COST_SETTINGS');
-  if(!Number.isInteger(next.taxYear)||next.taxYear<2020||next.taxYear>2100||!next.taxBasisKRW||typeof next.taxBasisKRW!=='object'||Array.isArray(next.taxBasisKRW)||Object.keys(next.taxBasisKRW).length>100)throw new Error('INVALID_COST_SETTINGS');
+  if(!Number.isInteger(next.taxYear)||next.taxYear<2023||next.taxYear>2100||!next.taxBasisKRW||typeof next.taxBasisKRW!=='object'||Array.isArray(next.taxBasisKRW)||Object.keys(next.taxBasisKRW).length>100)throw new Error('INVALID_COST_SETTINGS');
   for(const [key,value] of Object.entries(next.taxBasisKRW))if(!/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(key)||!Number.isFinite(value)||value<0||value>1e13)throw new Error('INVALID_COST_SETTINGS');
   if(!['moving-average','fifo'].includes(next.taxMethod))throw new Error('INVALID_COST_SETTINGS');
   return next;
@@ -98,7 +98,8 @@ class TradingCosts{
   // Estimates use the ledger's KRW cost per share where the app holds purchase records.
   get(){
     const settings=this.saved();let ledger;try{ledger=this.ledger(settings);}catch{return settings;}const year=annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US')});
-    const basis={...settings.taxBasisKRW};for(const [symbol,p] of Object.entries(ledger.positions))if(p.perShareKRW!=null)basis[symbol]=p.perShareKRW;
+    // The entered per-share basis (shares beyond the records) is kept as entered; the ledger average fills only the rest.
+    const basis={...settings.taxBasisKRW};for(const [symbol,p] of Object.entries(ledger.positions))if(p.perShareKRW!=null&&settings.taxBasisKRW[symbol]==null)basis[symbol]=p.perShareKRW;
     // The connected account's lots, so a quote for any quantity uses the ledger's own disposal rule; a symbol whose share
     // count differs from the broker's is marked, and its basis is not used.
     // Shares held beyond the records are covered by an entered per-share basis; more recorded than held never is.
@@ -148,15 +149,18 @@ class TradingCosts{
   // Imports the broker's U.S. trade history rows (kis-overseas.cjs trades()) for an account. A row's identity is its
   // trade and settlement dates, ticker, side, quantity, price and occurrence: re-imports and corrected fees replace the
   // stored row instead of adding a second trade.
-  importTrades(account,rows,now=Date.now()){
-    const {ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);const seen=new Map();let added=0;
+  // window {start,end}: the trade dates the rows cover; stored rows of those dates that KIS no longer returns (a corrected
+  // quantity, price or settlement date) are replaced, not kept beside the new ones.
+  importTrades(account,rows,now=Date.now(),window=null){
+    const {ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);const seen=new Map();let added=0;const kept=new Set();
     const known=ticker=>{const o=this.orders().find(x=>/^(NASD|NYSE|AMEX):/.test(x.symbol??'')&&x.symbol.split(':').pop()===ticker);if(o)return o.symbol;const h=(this.holdings()??[]).find(x=>String(x.symbol).split(':').pop()===ticker);if(h)return h.symbol;
       const m=this.table('securities')?this.db.prepare('SELECT symbol FROM securities WHERE symbol IN (?,?,?)').get('NASD:'+ticker,'NYSE:'+ticker,'AMEX:'+ticker):null;return m?.symbol??'US:'+ticker;};
     const put=this.db.prepare('INSERT INTO tax_events VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload');
     for(const r of rows??[]){if(!r?.tradeDate||!(r.quantity>0)||!/^[A-Z][A-Z0-9./-]{0,14}$/.test(r.ticker??'')||!['Buy','Sell'].includes(r.side))continue;
       const key=[owner,r.tradeDate,r.settlementDate,r.ticker,r.side,r.quantity,r.price].join('|');const n=(seen.get(key)??0)+1;seen.set(key,n);const id=require('node:crypto').createHash('sha256').update(key+'|'+n).digest('hex').slice(0,24);
-      if(!this.db.prepare('SELECT id FROM tax_events WHERE id=?').get(id))added++;
+      kept.add(id);if(!this.db.prepare('SELECT id FROM tax_events WHERE id=?').get(id))added++;
       put.run(id,owner,JSON.stringify({id,account:owner,source:'KIS trade history',symbol:known(r.ticker),side:r.side,quantity:r.quantity,price:r.price,feesUSD:r.feesUSD??null,tradeDate:r.tradeDate,timestamp:0,settlementDate:r.settlementDate,settlementKRW:r.settlementKRW??null,exchangeRate:r.exchangeRate??null,feesSource:'Broker',importedAt:now}));}
+    if(window)for(const r of this.db.prepare('SELECT id,payload FROM tax_events WHERE account=?').all(owner)){const d=JSON.parse(r.payload).tradeDate;if(d>=window.start&&d<=window.end&&!kept.has(r.id))this.db.prepare('DELETE FROM tax_events WHERE id=?').run(r.id);}
     return added;
   }
   // Shares acquired before the records, entered by the user: quantity, acquisition date and KRW cost.
@@ -187,7 +191,10 @@ class TradingCosts{
     return {method:settings.taxMethod,sales:all.flatMap(a=>pools[a].sales.map(s=>({...s,account:a}))).sort((x,y)=>x.settlementDate.localeCompare(y.settlementDate)),purchases:all.flatMap(a=>pools[a].purchases.map(p=>({...p,account:a}))),positions:own.positions,accounts:all};
   }
   // Settlement days whose reference rate is still missing, for the provider worker to fetch.
-  missingRateDays(){const {estimatedSettlement}=require('./tax-ledger.cjs');return [...new Set(this.fills().filter(f=>f.settlementKRW==null&&!f.exchangeRate).map(f=>f.settlementDate??estimatedSettlement(f.tradeDate)))].filter(day=>!this.db.prepare('SELECT day FROM fx_rates WHERE day=?').get(day)).slice(0,20);}
+  // Every settlement day of a recorded trade needs the reference rate, whatever the broker reported (its rate is only
+  // evidence); dates come from the ledger's calendar, future days are not yet published, newest first.
+  missingRateDays(){const {estimatedSettlement}=require('./tax-ledger.cjs');const krClosed=this.krClosed(),now=today();
+    return [...new Set(this.fills().map(f=>f.settlementDate??estimatedSettlement(f.tradeDate,{krClosed})))].filter(day=>day<=now&&!this.rateOn(day)).sort().reverse().slice(0,20);}
   taxSummary(){
     const settings=this.saved(),ledger=this.ledger(settings);
     const orders=this.orders().filter(o=>o.filled>0&&o.resultCosts).sort((a,b)=>(b.createdAt??0)-(a.createdAt??0)).slice(0,30).map(o=>({id:o.id,market:o.market,symbol:o.symbol,side:o.side,quantity:o.filled,day:o.day,currency:o.resultCosts.currency??(o.market==='US'?'USD':'KRW'),basis:o.resultCosts.basis,commission:o.resultCosts.commission,transactionTax:o.resultCosts.transactionTax,netCash:o.resultCosts.netCash,estimate:o.costEstimate?{commission:o.costEstimate.commission,transactionTax:o.costEstimate.transactionTax}:null,reportStatus:o.reportedCosts?.status??'pending'}));

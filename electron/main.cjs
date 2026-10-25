@@ -323,7 +323,7 @@ app.whenReady().then(async () => {
   // Deposits and withdrawals not recorded by the user, detected after each balance refresh (electron/flow-detector.cjs).
   const flowDetector=new (require('./flow-detector.cjs').FlowDetector)(store.db,performance);
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
-    for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash:null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
+    for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash:null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
@@ -364,7 +364,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('performance:confirm-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.confirmFlow(kisState.snapshot.accountKey,id);}));
   ipcMain.handle('performance:remove-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.removeFlow(kisState.snapshot.accountKey,id);}));
   // A detected inflow that was a dividend or interest becomes an income record, not a deposit: returns count it as income.
-  ipcMain.handle('performance:flow-is-income',performanceAction(id=>{const account=kisState.snapshot?.accountKey;if(!account||typeof id!=='string')throw new Error('INVALID_REQUEST');const flow=performance.flows(account).find(f=>f.id===id);if(!flow?.detected||!(flow.amount>0))throw new Error('INVALID_FLOW');
+  ipcMain.handle('performance:flow-is-income',performanceAction(id=>{const account=kisState.snapshot?.accountKey;if(!account||typeof id!=='string')throw new Error('INVALID_REQUEST');const flow=performance.flows(account).find(f=>f.id===id);if(!flow?.detected||flow.transfer||!(flow.amount>0))throw new Error('INVALID_FLOW');
     costs.addIncome({symbol:'UNSPECIFIED',category:'dividend',payDate:flow.day,currency:flow.market==='US'?'USD':'KRW',country:flow.market==='US'?'US':'KR',net:flow.amount,gross:null,source:'detected-flow'});performance.removeFlow(account,id);}));
   ipcMain.handle('performance:refresh-benchmarks',performanceAction(()=>refreshBenchmarks()));
   // Macro inputs (ECOS / FRED) through the provider worker, refreshed every 6 hours while the app is open.
@@ -402,13 +402,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('update:install',updateAction(()=>updates.install()));
   ipcMain.handle('update:settings',updateAction(value=>updates.saveSettings(value)));
   // Broker-reported fees and taxes for executed orders, and reference exchange rates for the overseas tax ledger, every 15 minutes.
-  let chargesTask=null,chargesAt=0,chargesError=null,taxImportDay=null;
+  let chargesTask=null,chargesAt=0,chargesError=null;const taxImportDay=new Map();
   // The broker's U.S. trade history (live accounts, read-only) is the tax record: from January of last year once a day,
   // in 90-day windows, and the last two weeks at every charges check.
   const importTaxTrades=async()=>{const s=kisState.snapshot;if(s?.environment!=='live'||!usLive)return;const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
-    const from=taxImportDay===today?seoulDate(Date.now()-14*86400000):`${Number(today.slice(0,4))-1}-01-01`;
-    for(let start=from;start<=today;){const end=[seoulDate(Date.parse(start+'T00:00:00Z')+89*86400000),today].sort()[0];costs.importTrades(s.accountKey,await usBroker.request('charges',{start,end}));start=seoulDate(Date.parse(end+'T00:00:00Z')+86400000+9*3600000);}
-    taxImportDay=today;};
+    const from=taxImportDay.get(s.accountKey)===today?seoulDate(Date.now()-14*86400000):`${Number(today.slice(0,4))-1}-01-01`;
+    for(let start=from;start<=today;){const end=[seoulDate(Date.parse(start+'T00:00:00Z')+89*86400000),today].sort()[0];costs.importTrades(s.accountKey,await usBroker.request('charges',{start,end}),Date.now(),{start,end});start=seoulDate(Date.parse(end+'T00:00:00Z')+86400000+9*3600000);}
+    taxImportDay.set(s.accountKey,today);};
   const refreshCharges=()=>{if(chargesTask)return chargesTask;chargesTask=(async()=>{
       if(kisState.snapshot){for(const engine of [live,usLive]){try{await engine.refreshCharges();}catch(error){chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'CHARGES_FAILED';}}try{await importTaxTrades();}catch(error){chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'TAX_IMPORT_FAILED';}}
       const days=costs.missingRateDays();if(days.length&&!process.env.PORTFOLIO_SMOKE_DATA)costs.saveRates(await providerService.request('fx-rates',{days}),'ECOS USD/KRW reference rate');

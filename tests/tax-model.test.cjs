@@ -178,3 +178,43 @@ test('a mock account has no tax reconciliation: its trades are never taxed',()=>
   const {db,costs}=ledgerDb();costs.holdings=()=>[{symbol:'NASD:TEST',quantity:2}];assert.equal(costs.reconciliation(costs.ledger()).length,1);
   costs.currentAccount=()=>({accountKey:'m',environment:'mock'});assert.equal(costs.reconciliation(costs.ledger()),null);db.close();
 });
+// Code review of the tax model (2026-10-25), findings 1-7 and 10.
+test('review fix: reference rates are requested for imported trades too, by the ledger calendar, never for future days',()=>{
+  const {db,costs}=ledgerDb();db.exec('DELETE FROM fx_rates');const RealDate=Date;
+  costs.importTrades('a',[row('Buy',1,100,'2025-03-04','2025-03-05'),row('Sell',1,110,'2026-02-03','2026-02-04'),row('Buy',1,100,'2099-01-02','2099-01-05')]);
+  assert.deepEqual(costs.missingRateDays(),['2026-02-04','2025-03-05'],'broker rows carry a rate, but it is evidence only; 2099 is not published yet');
+  costs.saveRates([{date:'2026-02-04',value:1450}],'test');assert.deepEqual(costs.missingRateDays(),['2025-03-05']);
+  db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('h','a:US',JSON.stringify({id:'h',accountKey:'a:US',environment:'live',market:'US',side:'Buy',symbol:'NASD:HOL',filled:1,fillPrice:10,day:'2026-10-02',createdAt:1}));
+  costs.krClosed=()=>new Set(['2026-10-05']);assert.ok(costs.missingRateDays().includes('2026-10-06'),'the settlement moved past a Korean holiday');assert.ok(!costs.missingRateDays().includes('2026-10-05'));db.close();
+});
+test('review fix: ISA, pension and corporate accounts stay out of the ordinary aggregate; a linked RIA makes it unsupported',()=>{
+  const {db,costs}=ledgerDb();costs.importTrades('isa',[row('Buy',1,100,'2026-03-02','2026-03-03'),row('Sell',1,200,'2026-10-15','2026-10-16')]);costs.importTrades('a',[row('Buy',1,100,'2026-03-02','2026-03-03')]);
+  costs.save({...DEFAULT_COSTS,annualRealizedKRW:0});costs.profile.save({accounts:{isa:{type:'isa',linked:true}}});
+  let s=costs.taxSummary();assert.deepEqual(s.ledger.accounts,['a'],'the ISA sale is not ordinary overseas gain');assert.equal(s.year.result.status,'estimated');assert.ok(s.year.result.assumptions.some(x=>/ISA account isa excluded: taxed separately/.test(x)));
+  costs.profile.save({accounts:{isa:{type:'ria',linked:true}}});s=costs.taxSummary();assert.equal(s.year.result.status,'unsupported');assert.equal(s.year.estimatedTaxKRW,null);assert.match(s.year.result.missingInputs.join(),/linked RIA account/);
+  costs.profile.save({accounts:{isa:{type:'isa',linked:true}}});costs.currentAccount=()=>({accountKey:'isa',environment:'live'});assert.deepEqual(costs.ledger().accounts,[],'connected to the ISA itself: nothing ordinary to add');db.close();
+});
+test('review fix: a tax year without rules is unsupported, never a crash, and cannot be saved',()=>{
+  const {db,costs}=ledgerDb();db.prepare('INSERT INTO trading_cost_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify({settings:{...DEFAULT_COSTS,taxYear:2022,annualRealizedKRW:0}}));
+  assert.doesNotThrow(()=>costs.get());const y=costs.taxSummary().year;assert.equal(y.result.status,'unsupported');assert.match(y.result.missingInputs.join(),/tax rules for 2022 are not implemented/);
+  assert.equal(marginalTax({year:2022,totalKRW:0},1000000),null);assert.throws(()=>costs.save({...DEFAULT_COSTS,taxYear:2022}),/INVALID_COST_SETTINGS/);db.close();
+});
+test('review fix: an entered per-share basis for shares beyond the records is kept, so the quote equals the booked sale',()=>{
+  const {db,costs}=ledgerDb();costs.save({...DEFAULT_COSTS,annualRealizedKRW:0,usdKRW:1400,taxBasisKRW:{'NASD:TEST':100000}});
+  costs.importTrades('a',[row('Buy',10,125,'2026-03-02','2026-03-03')]);costs.holdings=()=>[{symbol:'NASD:TEST',quantity:20}];
+  const settings=costs.get();assert.equal(settings.taxBasisKRW['NASD:TEST'],100000,'not replaced by the ledger average of 150,000');
+  const q=estimateCosts({market:'US',side:'Sell',quantity:20,price:200,symbol:'NASD:TEST',settings,classification:classify('NASD:TEST',{market:'NASD',type:'stock'})});
+  const booked=buildLedger({fills:[f('b','Buy',10,125,'2026-03-02'),f('s','Sell',20,q.netCash/20,'2026-10-15')],rateOn:d=>({rate:d==='2026-10-16'?1400:1200,source:'t'}),userBasis:{'NASD:TEST':100000}}).sales[0];
+  assert.equal(q.taxableGainKRW,booked.gainKRW);assert.equal(q.taxableGainKRW,Math.round(q.netCash*1400-1500000-1000000));db.close();
+});
+test('review fix: re-importing a window replaces rows KIS corrected instead of keeping both',()=>{
+  const {db,costs}=ledgerDb();const w={start:'2026-10-01',end:'2026-10-31'};
+  costs.importTrades('a',[row('Buy',5,100,'2026-10-20','2026-10-21')],0,w);costs.importTrades('a',[row('Buy',10,101,'2026-10-20','2026-10-21'),row('Buy',2,90,'2026-09-30','2026-10-01')],0,w);
+  assert.deepEqual(costs.fills().map(x=>x.quantity).sort((a,b)=>a-b),[2,10],'the 5-share partial row is gone; a row outside the window is untouched');
+  costs.importTrades('a',[],0,{start:'2026-09-30',end:'2026-09-30'});assert.deepEqual(costs.fills().map(x=>x.quantity),[10]);db.close();
+});
+test('review fix: same-day trades replay buys before sales, whatever order the broker lists them in',()=>{
+  const fills=[f('b0','Buy',10,100,'2026-03-02'),{...f('s','Sell',10,200,'2026-06-01'),timestamp:0},{...f('b1','Buy',10,200,'2026-06-01'),timestamp:0}];
+  const l=buildLedger({fills,rateOn:d=>({rate:1000,source:'t'})});assert.equal(l.sales[0].costKRW,1500000,'average of 100 and 200 after the buy');assert.notEqual(l.sales[0].basisSource,'Unknown basis');
+  const day=buildLedger({fills:[{...f('s','Sell',1,120,'2026-06-01'),timestamp:0},{...f('b','Buy',1,100,'2026-06-01'),timestamp:0}],rateOn:()=>({rate:1000,source:'t'})});assert.equal(day.sales[0].gainKRW,20000,'a day trade listed sale-first still has its basis');assert.deepEqual(day.positions,{});
+});

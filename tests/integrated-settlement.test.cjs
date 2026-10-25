@@ -78,3 +78,14 @@ test('review fix: settlement uncertainty reaches the equity reliability check th
   assert.deepEqual(usd.equityReliability.reasons,usd.equityUncertainty.reasons);assert.match(usd.markets.find(m=>m.market==='KR').cashNote,/equity may be understated by up to that amount/);
   const krw=await assemble(0,0);assert.equal(krw.equityReliability.reliable,true,'known KRW funding: reliable');assert.equal(krw.equityUncertainty,undefined);assert.equal(krw.cash.KRW,2000000-BUY);
 });
+test('review fix: when a USD-funded buy of unknown funding settles before a KRW-funded one, no deposit is invented',()=>{
+  const {FlowDetector}=require('../electron/flow-detector.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');let now=t0;
+  const db=new DatabaseSync(':memory:');const tracker=new FundingTracker(db,()=>now);const d=new FlowDetector(db,new PerformanceHistory(db,()=>now),()=>now);const found=[];
+  const observe=(krSettled,usCash,unsettled)=>{const bal=tracker.annotate({accountKey:'a:US',cash:usCash,unsettled:{buyKRW:unsettled,sellKRW:0}},RATE);const f=settlement(bal);
+    found.push(...d.observe('a',{krCash:krSettled-f.confirmedKRW,usCash,fx:RATE,provisionalKRW:f.uncertainKRW,unsettledKRW:f.unsettledKRW}));now+=60000;};
+  observe(3000000,740,0);observe(3000000,0,980000);// B: paid from the USD held, funding unknown
+  observe(3000000,0,2380000);// A: no USD left, known KRW-funded
+  observe(3000000,0,1400000);// B settles first; Korean cash does not move
+  observe(1600000,0,0);observe(1600000,0,0);// A settles in KRW
+  assert.deepEqual(found.filter(f=>f.detected),[],'the old rule recorded a ₩980,000 deposit at the third reading');
+});
