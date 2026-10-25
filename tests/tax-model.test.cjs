@@ -174,3 +174,7 @@ test('without a saved indicative rate, a quote uses the current market rate and 
   assert.deepEqual(sell().incomeTax.missingInputs,['USD/KRW exchange rate']);costs.marketRate=()=>1400;
   const q=sell();assert.equal(q.incomeTax.status,'estimated');assert.equal(q.taxableGainKRW,Math.round(q.netCash*1400-120000));assert.ok(q.incomeTax.assumptions.includes('exchange rate: the current market rate, not the settlement-date reference rate'));db.close();
 });
+test('a mock account has no tax reconciliation: its trades are never taxed',()=>{
+  const {db,costs}=ledgerDb();costs.holdings=()=>[{symbol:'NASD:TEST',quantity:2}];assert.equal(costs.reconciliation(costs.ledger()).length,1);
+  costs.currentAccount=()=>({accountKey:'m',environment:'mock'});assert.equal(costs.reconciliation(costs.ledger()),null);db.close();
+});
