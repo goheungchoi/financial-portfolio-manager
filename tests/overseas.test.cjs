@@ -24,10 +24,10 @@ test('tax estimates apply annual deduction once, include historical KRW basis an
   const args={market:'US',side:'Sell',symbol:'NASD:AAPL',quantity:10,price:200,costPerShare:150};
   const missing=estimateCosts(args);assert.equal(missing.capitalGainsTaxKRW,null);assert.equal(missing.gross,2000);assert.equal(missing.commission,5);assert.equal(missing.transactionTax,.04);assert.equal(missing.netCash,1994.96);assert.equal(missing.gainAfterFees,491.21);
   const settings={...DEFAULT_COSTS,usdKRW:1400,annualRealizedKRW:2400000,taxBasisKRW:{'NASD:AAPL':200000}};
-  const sale=estimateCosts({...args,settings});assert.equal(sale.taxableGainKRW,792944);assert.equal(sale.capitalGainsTaxKRW,152448);assert.equal(sale.gainAfterEstimatedTax,382.32);
+  const sale=estimateCosts({...args,settings});assert.equal(sale.taxableGainKRW,792944);assert.equal(sale.capitalGainsTaxKRW,152430,'national ₩138,580 + local ₩13,850, amounts below 10 won dropped');assert.equal(sale.gainAfterEstimatedTax,382.33);assert.equal(sale.incomeTax.status,'estimated');
   const sheltered=estimateCosts({...args,settings:{...settings,annualRealizedKRW:0}});assert.equal(sheltered.capitalGainsTaxKRW,0);
   assert.equal(estimateCosts({...args,price:100,settings:{...settings,annualRealizedKRW:3000000}}).capitalGainsTaxKRW,-110000);
-  assert.equal(estimateCosts({...args,settings:{...settings,taxYear:2020}}).capitalGainsTaxKRW,null);
+  assert.equal(estimateCosts({...args,settings:{...settings,taxYear:2020}}).capitalGainsTaxKRW,null);assert.deepEqual(missing.incomeTax.missingInputs,['USD/KRW exchange rate','KRW acquisition basis','gains realized this year']);assert.equal(missing.incomeTax.status,'incomplete');
   assert.equal(estimateCosts({market:'KR',side:'Sell',quantity:10,price:10000,costPerShare:9000}).netCash,99785);
   assert.throws(()=>validateCosts({usCommissionPct:-1}),/INVALID_COST/);assert.throws(()=>validateCosts({usdKRW:0}),/INVALID_COST/);
   const db=new DatabaseSync(':memory:'),costs=new TradingCosts(db);costs.save(settings);assert.equal(new TradingCosts(db).get().usdKRW,1400);db.close();
@@ -40,8 +40,8 @@ test('U.S. calendar uses Eastern DST, holidays, early closes and a ten-minute cl
   assert.deepEqual(instrument('NYSE:BRK.B'),{exchange:'NYSE',ticker:'BRK.B'});assert.throws(()=>instrument('AAPL'),/INVALID_ORDER/);
 });
 test('annual gains are the outside-app baseline plus app sales from the KRW ledger, and saving never double-counts',()=>{
-  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);const year=DEFAULT_COSTS.taxYear;costs.save({...DEFAULT_COSTS,annualRealizedKRW:2000000});
-  const put=order=>db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,'fake',JSON.stringify(order));
+  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'acct',environment:'live'});const year=DEFAULT_COSTS.taxYear;costs.save({...DEFAULT_COSTS,annualRealizedKRW:2000000});
+  const put=order=>db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,'acct:US',JSON.stringify({accountKey:'acct:US',environment:'live',...order}));
   put({id:'buy',market:'US',side:'Buy',symbol:'NASD:TEST',filled:10,fillPrice:100,day:`${year}-03-02`,createdAt:1,resultCosts:{commission:0,transactionTax:0}});
   put({id:'sale',market:'US',side:'Sell',symbol:'NASD:TEST',filled:10,fillPrice:110,day:`${year}-10-15`,createdAt:2,resultCosts:{commission:0,transactionTax:0}});
   costs.saveRates([{date:`${year}-03-03`,value:1300},{date:`${year}-10-16`,value:1400}],'test');

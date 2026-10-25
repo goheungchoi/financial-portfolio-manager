@@ -36,7 +36,7 @@ test('broker-reported costs: KR splits the statutory sale tax from the reported 
 test('TradingCosts flags domestic ETFs from the security master and fills missing settlement-day rates',()=>{
   const db=new DatabaseSync(':memory:');db.exec("CREATE TABLE securities(symbol TEXT PRIMARY KEY,name TEXT,englishName TEXT,market TEXT,type TEXT,isin TEXT,industry TEXT);INSERT INTO securities VALUES('069500','KODEX 200','','KOSPI','etf','',NULL),('005930','Samsung','','KOSPI','stock','',NULL);CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)");
   const costs=new TradingCosts(db);assert.equal(costs.exempt('069500'),true);assert.equal(costs.exempt('005930'),false);assert.equal(costs.exempt('NASD:SPY'),false);
-  db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('b','k',JSON.stringify({id:'b',market:'US',side:'Buy',symbol:'NASD:TEST',filled:1,fillPrice:10,day:'2026-10-16'}));
+  costs.currentAccount=()=>({accountKey:'k',environment:'live'});db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('b','k:US',JSON.stringify({id:'b',accountKey:'k:US',environment:'live',market:'US',side:'Buy',symbol:'NASD:TEST',filled:1,fillPrice:10,day:'2026-10-16'}));
   assert.deepEqual(costs.missingRateDays(),['2026-10-19']);costs.saveRates([{date:'2026-10-19',value:1400}],'ECOS');assert.deepEqual(costs.missingRateDays(),[]);
   assert.equal(costs.rateOn('2026-10-20').rate,1400,'falls back to the latest earlier rate');assert.equal(costs.rateOn('2026-11-30'),null,'but not more than a week');
 });

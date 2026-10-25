@@ -36,10 +36,26 @@ function buildLedger({fills,rateOn,userBasis={},method='moving-average'}){
   }
   return {method,sales,purchases,positions:Object.fromEntries([...positions].filter(([,p])=>p.quantity>0).map(([symbol,p])=>[symbol,{quantity:p.quantity,costKRW:p.unknown?null:round(p.costKRW),perShareKRW:p.unknown?null:Math.round(p.costKRW/p.quantity*100)/100}]))};
 }
-// Annual estimate: app gains in the year plus gains realized elsewhere (user-entered), 22% above the deduction.
-function annualTax(ledger,year,outsideKRW=null){
+// The year's overseas capital-gains tax for the taxpayer. The full liability needs every sale's basis and the gains
+// realized outside this app; when one is missing the liability is null (incomplete), and the known-record figures are
+// a labeled subtotal, not a bound (a missing sale may be a loss). The basic deduction is capped: losses beyond it are
+// reported separately as offset capacity for further gains in the same year, never as a refund or a carryforward.
+// applicability: from tax-profile.cjs, for the accounts in the ledger.
+function annualTax(ledger,year,outsideKRW=null,{applicability=null,asOf=Date.now()}={}){
+  const {overseasGainsTax,taxResult,ROUNDING}=require('./tax-rules.cjs');
   const yearSales=ledger.sales.filter(s=>s.year===year),known=yearSales.filter(s=>s.gainKRW!=null),appKRW=known.reduce((n,s)=>n+s.gainKRW,0);
-  const totalKRW=appKRW+(outsideKRW??0),taxableKRW=Math.max(0,totalKRW-DEDUCTION_KRW);
-  return {year,appRealizedKRW:appKRW,outsideKRW,totalKRW,deductionKRW:DEDUCTION_KRW,deductionRemainingKRW:Math.max(0,DEDUCTION_KRW-totalKRW),taxableKRW,estimatedTaxKRW:round(taxableKRW*RATE),rate:RATE,sales:yearSales.length,unknownSales:yearSales.length-known.length,complete:outsideKRW!=null&&known.length===yearSales.length};
+  const knownTotal=appKRW+(outsideKRW??0);const missing=[];if(outsideKRW==null)missing.push('gains realized outside this app this year');if(known.length<yearSales.length)missing.push(`acquisition basis or exchange rate for ${yearSales.length-known.length} sale(s)`);
+  const unsupported=applicability?.status==='unsupported';const complete=!missing.length&&!unsupported;
+  const assumptions=[...(applicability?.assumptions??[]),ROUNDING,...(yearSales.some(s=>s.settlementEstimated)?['settlement dates estimated where the broker has not reported them']:[])];
+  const tax=overseasGainsTax(complete?knownTotal:0,year),knownTax=overseasGainsTax(knownTotal,year);
+  const result=taxResult({status:unsupported?'unsupported':complete?'estimated':'incomplete',value:tax?.totalKRW??null,knownSubtotal:knownTax?.totalKRW??null,missingInputs:[...missing,...(applicability?.reasons??[])],assumptions,taxYear:year,asOf,sourceIds:tax?.sources??[]});
+  return {year,appRealizedKRW:appKRW,outsideKRW,knownTotalKRW:knownTotal,totalKRW:complete?knownTotal:null,deductionKRW:DEDUCTION_KRW,deductionRemainingKRW:complete?Math.max(0,DEDUCTION_KRW-Math.max(0,knownTotal)):null,lossOffsetKRW:complete?Math.max(0,-knownTotal):null,
+    taxableKRW:complete?tax.taxableKRW:null,nationalTaxKRW:complete?tax.nationalKRW:null,localTaxKRW:complete?tax.localKRW:null,estimatedTaxKRW:complete?tax.totalKRW:null,knownRecordsTaxKRW:knownTax?.totalKRW??null,rate:RATE,sales:yearSales.length,unknownSales:yearSales.length-known.length,complete,result};
 }
-module.exports={buildLedger,annualTax,estimatedSettlement,DEDUCTION_KRW,RATE};
+// The change in the year's liability if a further gain (negative: a loss) is realized in the same year; null when the
+// year is incomplete. A negative change is a possible reduction of the annual liability, not cash from the broker.
+function marginalTax(annual,gainKRW){
+  if(annual?.totalKRW==null||!Number.isFinite(gainKRW))return null;const {overseasGainsTax}=require('./tax-rules.cjs');
+  return overseasGainsTax(annual.totalKRW+gainKRW,annual.year).totalKRW-overseasGainsTax(annual.totalKRW,annual.year).totalKRW;
+}
+module.exports={buildLedger,annualTax,marginalTax,estimatedSettlement,DEDUCTION_KRW,RATE};
