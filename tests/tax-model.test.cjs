@@ -118,3 +118,36 @@ test('a share count that differs from the broker (split, transfer, missing recor
   costs.addOpeningLot({symbol:'NASD:OLD',quantity:3,acquiredOn:'2025-02-03',costKRW:450000,expensesIncluded:false});assert.equal(costs.get().taxLots['NASD:OLD'].invalid,undefined,'an opening lot reconciles it');
   assert.throws(()=>costs.addOpeningLot({symbol:'NASD:OLD',quantity:3,acquiredOn:'2999-01-01',costKRW:1,expensesIncluded:true}),/INVALID_OPENING_LOT/);db.close();
 });
+// PR 3: Korean fund taxes and investment-income events.
+const income=require('../electron/income-events.cjs');
+test('taxable ETF: gain 100,000 and taxable-NAV increase 60,000 give 9,240 withholding; without the NAVs it is unknown',()=>{
+  const r=income.etfSaleWithholding({gainKRW:100000,quantity:10,taxableNavBuy:10000,taxableNavSell:16000,day:'2026-10-26'});assert.equal(r.status,'estimated');assert.equal(r.value,9240);
+  const lowerGain=income.etfSaleWithholding({gainKRW:30000,quantity:10,taxableNavBuy:10000,taxableNavSell:16000,day:'2026-10-26'});assert.equal(lowerGain.value,4620,'the lower of the two');
+  const none=income.etfSaleWithholding({gainKRW:100000,quantity:10,day:'2026-10-26'});assert.equal(none.status,'incomplete');assert.equal(none.value,null);
+});
+test('a domestic-equity ETF and a taxable ETF both pay no sale tax, but their income tax differs',()=>{
+  const db=new DatabaseSync(':memory:');db.exec("CREATE TABLE securities(symbol TEXT PRIMARY KEY,name TEXT,englishName TEXT,market TEXT,type TEXT,isin TEXT,industry TEXT);INSERT INTO securities VALUES('069500','KODEX 200','','KOSPI','etf','',NULL),('360750','TIGER S&P500','','KOSPI','etf','',NULL)");
+  const costs=new TradingCosts(db);costs.setFundClass('069500','domestic-equity');costs.setFundClass('360750','taxable');assert.throws(()=>costs.setFundClass('360750','tax-free'),/INVALID_FUND_CLASS/);
+  const sale=s=>estimateCosts({market:'KR',side:'Sell',quantity:10,price:20000,costPerShare:15000,classification:costs.classify(s),day:'2026-10-26'});
+  assert.equal(sale('069500').transactionTax,0);assert.equal(sale('360750').transactionTax,0);
+  assert.equal(sale('069500').capitalGainsTaxKRW,0);assert.equal(sale('069500').incomeTax.status,'estimated');assert.ok(sale('069500').incomeTax.assumptions.includes('domestic-equity ETF (classified by you)'));
+  assert.equal(sale('360750').capitalGainsTaxKRW,null);assert.deepEqual(sale('360750').incomeTax.missingInputs,['taxable NAV (과표기준가격) at purchase and sale']);
+  costs.setFundClass('360750',null);assert.equal(costs.classify('360750').incomeTax,'unknown');db.close();
+});
+test('a foreign dividend: gross and net reconcile, and the foreign tax is credited rather than adding 15.4%',()=>{
+  const usd=income.validate({symbol:'NASD:AAPL',category:'dividend',payDate:'2026-11-13',currency:'USD',country:'US',gross:100,foreignWithholding:15,krNational:0,krLocal:0,net:85});assert.deepEqual(income.reconcile(usd),{status:'reconciled',difference:0});
+  assert.deepEqual(income.reconcile({...usd,net:72.4}),{status:'differs',difference:12.6},'a difference is reported, not forced');
+  assert.equal(income.expectedWithholding({gross:132460,foreignWithholding:19869,country:'US',day:'2026-11-13'}).total,0,'15% U.S. tax exceeds the 14% Korean rate');
+  assert.equal(income.expectedWithholding({gross:100000,country:'KR',day:'2026-11-13'}).total,15400,'domestic 14% + 1.4%');
+  assert.equal(income.expectedWithholding({gross:100000,foreignWithholding:10000,country:'JP',day:'2026-11-13'}).total,4400,'10% abroad: 4% national + 0.4% local here');
+});
+test('financial income is its own annual summary: incomplete until declared, flagged above 20m, never netted with gains',()=>{
+  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});
+  costs.addIncome({symbol:'005930',category:'dividend',payDate:'2026-04-17',currency:'KRW',country:'KR',gross:100000,foreignWithholding:0,krNational:14000,krLocal:1400,net:84600});
+  let s=costs.incomeSummary(2026);assert.equal(s.grossKRW,100000);assert.equal(s.withheldKRW,15400);assert.equal(s.totalKRW,null);assert.equal(s.result.status,'incomplete');assert.deepEqual(s.result.missingInputs,['interest and dividends received outside these records']);
+  assert.ok(s.result.assumptions[0].includes('high-dividend separate-tax regime is not applied'),'no preferential rate is assumed');
+  costs.income.declare(2026,25000000);s=costs.incomeSummary(2026);assert.equal(s.totalKRW,25100000);assert.match(s.comprehensiveReview,/comprehensive taxation applies/);
+  assert.equal(costs.taxSummary().year.knownTotalKRW,0,'dividends are not capital gains');
+  costs.currentAccount=()=>({accountKey:'m',environment:'mock'});assert.throws(()=>costs.addIncome({symbol:'005930',category:'dividend',payDate:'2026-04-17',currency:'KRW',country:'KR',net:1}),/KIS_NOT_CONNECTED/,'mock accounts keep no income records');
+  assert.throws(()=>income.validate({symbol:'005930',category:'gift',payDate:'2026-04-17',currency:'KRW',country:'KR',net:1}),/INVALID_INCOME_EVENT/);db.close();
+});

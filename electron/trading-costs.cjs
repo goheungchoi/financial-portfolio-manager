@@ -65,6 +65,8 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
     const profile=settings.krTaxStatus;
     if(profile?.status==='unsupported'){status='unsupported';missing.push(...profile.reasons);}
     else if(cls.incomeTax==='minority-listed-exempt'){capitalGainsTaxKRW=0;status='estimated';assumptions.push('exchange sale by a minority shareholder: no income tax',...(profile?.assumptions??[]));}
+    else if(cls.incomeTax==='domestic-equity-fund-exempt'){capitalGainsTaxKRW=0;status='estimated';assumptions.push('domestic-equity ETF: no tax on sale gains');}
+    else if(cls.incomeTax==='taxable-fund-dividend'){status='incomplete';missing.push('taxable NAV (과표기준가격) at purchase and sale');}
     else{status='incomplete';missing.push(cls.instrument==='kr-etf'?'ETF income-tax classification and taxable NAV':cls.instrument==='kr-etn'?'ETN income-tax rules':'income-tax classification');}
   }else if(cls.incomeTax!=='overseas-capital-gains'){status='unsupported';missing.push('income-tax classification');}
   else{
@@ -84,7 +86,7 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
   return {...costs,gainAfterFees:gain,taxableGainKRW,capitalGainsTaxKRW,gainAfterEstimatedTax:gain==null||capitalGainsTaxKRW==null?null:!us?gain:round(gain-capitalGainsTaxKRW/(costs.exchangeRate??settings.usdKRW),2),incomeTax};
 }
 class TradingCosts{
-  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL)');this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);
+  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);
     // Injected by the app: the connected account, Korean non-trading days and the broker's U.S. holdings.
     this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
@@ -107,7 +109,15 @@ class TradingCosts{
   }
   save(value){const next=validateCosts(value);this.db.prepare('INSERT INTO trading_cost_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify({settings:next}));return this.saved();}
   // How a symbol is taxed, from the security master (security-tax-classification.cjs).
-  classify(symbol){const row=this.table('securities')?this.db.prepare('SELECT market,type FROM securities WHERE symbol=?').get(symbol)??null:null;return classify(symbol,row);}
+  classify(symbol){const row=this.table('securities')?this.db.prepare('SELECT market,type FROM securities WHERE symbol=?').get(symbol)??null:null;return classify(symbol,row,this.fundClass(symbol));}
+  // A Korean ETF's income-tax class as the user set it from the issuer's documents; the security master cannot tell.
+  fundClass(symbol){const r=this.db.prepare('SELECT payload FROM fund_tax_class WHERE symbol=?').get(String(symbol));return r?JSON.parse(r.payload):null;}
+  setFundClass(symbol,value){if(!/^[0-9][0-9A-Z]{5}$/.test(symbol??''))throw new Error('INVALID_FUND_CLASS');if(value==null){this.db.prepare('DELETE FROM fund_tax_class WHERE symbol=?').run(symbol);return null;}
+    if(!['domestic-equity','taxable'].includes(value))throw new Error('INVALID_FUND_CLASS');const row={class:value,source:'entered by you',setAt:new Date().toISOString()};this.db.prepare('INSERT INTO fund_tax_class VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET payload=excluded.payload').run(symbol,JSON.stringify(row));return row;}
+  fundClasses(){return Object.fromEntries(this.db.prepare('SELECT symbol,payload FROM fund_tax_class').all().map(r=>[r.symbol,JSON.parse(r.payload)]));}
+  // Dividends, distributions and interest of this taxpayer's live accounts (income-events.cjs).
+  incomeSummary(year=this.saved().taxYear){const {taxpayerAccounts}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());return {...this.income.summary(year,accounts,day=>this.rateOn(day)),events:this.income.list(accounts).filter(e=>e.payDate.startsWith(String(year)))};}
+  addIncome(value){const {ownerAccount}=require('./tax-profile.cjs');const c=this.currentAccount();if(c?.environment!=='live')throw new Error('KIS_NOT_CONNECTED');return this.income.add(ownerAccount(c.accountKey),value);}
   // Domestic ETFs and ETNs pay no securities transaction tax on sale.
   exempt(symbol){return /^\d{6}$/.test(symbol??'')&&this.classify(symbol).transactionTax==='exempt';}
   saveRates(rows,source){const insert=this.db.prepare('INSERT INTO fx_rates VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET rate=excluded.rate,source=excluded.source');for(const row of rows??[])if(/^\d{4}-\d{2}-\d{2}$/.test(row.date)&&Number.isFinite(row.value)&&row.value>0)insert.run(row.date,row.value,source);}
@@ -181,7 +191,7 @@ class TradingCosts{
   taxSummary(){
     const settings=this.saved(),ledger=this.ledger(settings);
     const orders=this.orders().filter(o=>o.filled>0&&o.resultCosts).sort((a,b)=>(b.createdAt??0)-(a.createdAt??0)).slice(0,30).map(o=>({id:o.id,market:o.market,symbol:o.symbol,side:o.side,quantity:o.filled,day:o.day,currency:o.resultCosts.currency??(o.market==='US'?'USD':'KRW'),basis:o.resultCosts.basis,commission:o.resultCosts.commission,transactionTax:o.resultCosts.transactionTax,netCash:o.resultCosts.netCash,estimate:o.costEstimate?{commission:o.costEstimate.commission,transactionTax:o.costEstimate.transactionTax}:null,reportStatus:o.reportedCosts?.status??'pending'}));
-    return {settings,year:annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US')}),ledger,orders,openingLots:this.openingLots(require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey)),reconciliation:this.reconciliation(ledger),profile:this.profile.get(),applicability:{KR:this.applicability('KR'),US:this.applicability('US')},ruleVersion:rules.RULE_VERSION};
+    return {settings,year:annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US')}),ledger,orders,openingLots:this.openingLots(require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey)),income:this.incomeSummary(settings.taxYear),fundClasses:this.fundClasses(),reconciliation:this.reconciliation(ledger),profile:this.profile.get(),applicability:{KR:this.applicability('KR'),US:this.applicability('US')},ruleVersion:rules.RULE_VERSION};
   }
   // The statutory sale-tax rate of a Korean sale today: the override, or the higher of the KOSPI and KOSDAQ rates.
   krSaleTaxPct(settings=this.saved()){return settings.krSellTaxOverridePct??Math.max(...['KOSPI','KOSDAQ'].map(m=>rules.krSaleTax(m,1e6,today())?.ratePct??0));}
