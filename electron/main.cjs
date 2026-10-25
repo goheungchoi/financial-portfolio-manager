@@ -216,6 +216,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('exposure:set-override',exposureAction((symbol,factor)=>exposure.setOverride(symbol,factor)));
   ipcMain.handle('costs:get',event=>{authorize(event);return costs.saved();});
   ipcMain.handle('costs:save',(event,value)=>{authorize(event);return costs.save(value);});
+  ipcMain.handle('costs:add-income',(event,value)=>{authorize(event);costs.addIncome(value);return costs.taxSummary();});
+  ipcMain.handle('costs:remove-income',(event,id)=>{authorize(event);costs.income.remove(id);return costs.taxSummary();});
+  ipcMain.handle('costs:declare-income',(event,year,value)=>{authorize(event);costs.income.declare(year,value);return costs.taxSummary();});
+  ipcMain.handle('costs:fund-class',(event,symbol,value)=>{authorize(event);costs.setFundClass(symbol,value);return costs.taxSummary();});
   ipcMain.handle('costs:add-opening-lot',(event,value)=>{authorize(event);costs.addOpeningLot(value);return costs.taxSummary();});
   ipcMain.handle('costs:remove-opening-lot',(event,id)=>{authorize(event);costs.removeOpeningLot(id);return costs.taxSummary();});
   ipcMain.handle('costs:tax-profile',event=>{authorize(event);return {profile:costs.profile.get(),account:costs.currentAccount()?{accountKey:require('./tax-profile.cjs').ownerAccount(costs.currentAccount().accountKey),environment:costs.currentAccount().environment}:null};});
@@ -359,6 +363,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('performance:add-flow',performanceAction(value=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');performance.addFlow(kisState.snapshot.accountKey,value);}));
   ipcMain.handle('performance:confirm-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.confirmFlow(kisState.snapshot.accountKey,id);}));
   ipcMain.handle('performance:remove-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.removeFlow(kisState.snapshot.accountKey,id);}));
+  // A detected inflow that was a dividend or interest becomes an income record, not a deposit: returns count it as income.
+  ipcMain.handle('performance:flow-is-income',performanceAction(id=>{const account=kisState.snapshot?.accountKey;if(!account||typeof id!=='string')throw new Error('INVALID_REQUEST');const flow=performance.flows(account).find(f=>f.id===id);if(!flow?.detected||!(flow.amount>0))throw new Error('INVALID_FLOW');
+    costs.addIncome({symbol:'UNSPECIFIED',category:'dividend',payDate:flow.day,currency:flow.market==='US'?'USD':'KRW',country:flow.market==='US'?'US':'KR',net:flow.amount,gross:null,source:'detected-flow'});performance.removeFlow(account,id);}));
   ipcMain.handle('performance:refresh-benchmarks',performanceAction(()=>refreshBenchmarks()));
   // Macro inputs (ECOS / FRED) through the provider worker, refreshed every 6 hours while the app is open.
   // UI tests seed a snapshot and never reach the network.
