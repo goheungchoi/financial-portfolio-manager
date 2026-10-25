@@ -55,7 +55,7 @@ function brokerCosts({market,side,quantity,price,costPerShare=null,symbol='',set
 // KRW basis for the shares and an exchange rate.
 function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
   if(side!=='Sell')return {...costs,gainAfterFees:null,taxableGainKRW:null,capitalGainsTaxKRW:null,gainAfterEstimatedTax:null};
-  const assumptions=[...(costs.saleTax?.assumptions??[]),...(cls.assumption?[cls.assumption]:[])];const missing=[];let taxableGainKRW=null,capitalGainsTaxKRW=null,status;
+  const assumptions=[...(costs.saleTax?.assumptions??[]),...(cls.assumption?[cls.assumption]:[])];const missing=[];let taxableGainKRW=null,capitalGainsTaxKRW=null,status,rate=null;
   // U.S. shares with recorded lots: the basis of exactly these shares by the ledger's own disposal rule (tax-lots.cjs);
   // the economic gain uses their recorded USD cost including fees rather than re-estimating the commission.
   const held=us?settings.taxLots?.[symbol]:null;const quote=held?require('./tax-lots.cjs').dispose(held.lots,quantity,held.method):null;
@@ -70,12 +70,12 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
     else{status='incomplete';missing.push(cls.instrument==='kr-etf'?'ETF income-tax classification and taxable NAV':cls.instrument==='kr-etn'?'ETN income-tax rules':'income-tax classification');}
   }else if(cls.incomeTax!=='overseas-capital-gains'){status='unsupported';missing.push('income-tax classification');}
   else{
-    const rate=costs.exchangeRate??settings.usdKRW,perShare=settings.taxBasisKRW?.[symbol];
+    rate=costs.exchangeRate??settings.usdKRW??settings.marketUsdKRW??null;const perShare=settings.taxBasisKRW?.[symbol];
     // KRW basis: the lots' cost for the shares they hold, the entered per-share basis for any beyond them.
     const basis=held?.invalid?null:quote?(quote.known&&(!quote.outside||perShare!=null)?quote.costKRW+quote.outside*(perShare??0):null):perShare!=null?quantity*perShare:null;
     if(held?.invalid)missing.push(held.invalid);
     else if(basis==null)missing.push(quote&&!quote.known?'KRW acquisition basis of recorded lots':'KRW acquisition basis');
-    if(rate==null)missing.push('USD/KRW exchange rate');else if(!costs.exchangeRate)assumptions.push('exchange rate: your indicative rate, not the settlement-date reference rate');if(settings.annualRealizedKRW==null)missing.push(...(settings.taxStatus?.missingInputs?.length?settings.taxStatus.missingInputs:['gains realized this year']));
+    if(rate==null)missing.push('USD/KRW exchange rate');else if(!costs.exchangeRate)assumptions.push(settings.usdKRW!=null?'exchange rate: your indicative rate, not the settlement-date reference rate':'exchange rate: the current market rate, not the settlement-date reference rate');if(settings.annualRealizedKRW==null)missing.push(...(settings.taxStatus?.missingInputs?.length?settings.taxStatus.missingInputs:['gains realized this year']));
     if(settings.taxYear!==new Date().getFullYear())missing.push(`tax inputs for ${new Date().getFullYear()} (saved for ${settings.taxYear})`);
     if(rate!=null&&basis!=null)taxableGainKRW=round(costs.netCash*rate-basis,0);
     if(!missing.length){capitalGainsTaxKRW=marginalTax({year:settings.taxYear,totalKRW:settings.annualRealizedKRW},taxableGainKRW);assumptions.push(...(settings.taxStatus?.assumptions??[]));}
@@ -83,12 +83,12 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
   }
   const incomeTax=rules.taxResult({status,value:capitalGainsTaxKRW,missingInputs:missing,assumptions,taxYear:us?settings.taxYear:null,sourceIds:us?['nts-stock-tax','kis-tax-guide']:[]});
   if(incomeTax.value==null)capitalGainsTaxKRW=null;
-  return {...costs,gainAfterFees:gain,taxableGainKRW,capitalGainsTaxKRW,gainAfterEstimatedTax:gain==null||capitalGainsTaxKRW==null?null:!us?gain:round(gain-capitalGainsTaxKRW/(costs.exchangeRate??settings.usdKRW),2),incomeTax};
+  return {...costs,gainAfterFees:gain,taxableGainKRW,capitalGainsTaxKRW,gainAfterEstimatedTax:gain==null||capitalGainsTaxKRW==null?null:!us?gain:round(gain-capitalGainsTaxKRW/rate,2),incomeTax};
 }
 class TradingCosts{
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);
     // Injected by the app: the connected account, Korean non-trading days and the broker's U.S. holdings.
-    this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;}
+    this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;this.marketRate=()=>null;}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
   saved(){const row=this.db.prepare('SELECT payload FROM trading_cost_settings WHERE id=1').get();const saved=row?JSON.parse(row.payload):{};return {...DEFAULT_COSTS,...migrate(saved.settings??saved)};}
   // Whether the ordinary rules apply to the connected account's market; without a connected account nothing is decided.
@@ -105,7 +105,7 @@ class TradingCosts{
     const differs=new Map((this.reconciliation(ledger)??[]).filter(d=>d.ledgerQuantity>d.brokerQuantity||settings.taxBasisKRW[d.symbol]==null).map(d=>[d.symbol.split(':').pop(),d]));const taxLots=Object.fromEntries(Object.entries(ledger.positions).map(([symbol,p])=>{const d=differs.get(symbol.split(':').pop());
       return [symbol,{method:settings.taxMethod,lots:p.lots,...(d?{invalid:`share count differs from the broker (${d.ledgerQuantity} recorded, ${d.brokerQuantity} held): a missing record, opening lot or corporate action`}:{})}];}));
     for(const [t,d] of differs)if(d.brokerQuantity>0&&!Object.keys(taxLots).some(s=>s.split(':').pop()===t)){taxLots[d.symbol]={method:settings.taxMethod,lots:[],invalid:`${d.brokerQuantity} shares held with no acquisition record or opening lot`};}
-    return {...settings,taxBasisKRW:basis,taxLots,annualRealizedKRW:year.totalKRW,taxStatus:{status:year.result.status,missingInputs:year.result.missingInputs,assumptions:year.result.assumptions,ruleVersion:year.result.ruleVersion},krTaxStatus:this.applicability('KR')};
+    return {...settings,taxBasisKRW:basis,taxLots,annualRealizedKRW:year.totalKRW,taxStatus:{status:year.result.status,missingInputs:year.result.missingInputs,assumptions:year.result.assumptions,ruleVersion:year.result.ruleVersion},krTaxStatus:this.applicability('KR'),marketUsdKRW:Number(this.marketRate())>0?Number(this.marketRate()):null};
   }
   save(value){const next=validateCosts(value);this.db.prepare('INSERT INTO trading_cost_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify({settings:next}));return this.saved();}
   // How a symbol is taxed, from the security master (security-tax-classification.cjs).
@@ -200,6 +200,13 @@ class TradingCosts{
     return {market,settings:relevant,krSaleTaxPct:this.krSaleTaxPct(settings),acquisitionFeeAssumption:'Broker average acquisition prices treated as excluding acquisition commissions; these are estimated using the saved commission plan. Executed orders use broker-reported fees where available.',
       tax:{ruleVersion:rules.RULE_VERSION,applicability:applicable,annual:market==='US'?settings.taxStatus??null:null,classification:Object.fromEntries(universe.map(row=>{const c=this.classify(row.symbol);return [row.symbol,{instrument:c.instrument,transactionTax:c.transactionTax,incomeTax:c.incomeTax}];}))},
       taxModel:`Korean taxes are calculated by the app (rules ${rules.RULE_VERSION}); use its figures and their status, never apply a flat rate yourself. Each sell estimate has incomeTax {status, value, missingInputs, assumptions}: estimated means complete inputs with the stated assumptions; incomplete means a required input is missing and the tax is unknown (not zero); unsupported means the account or instrument is outside the implemented rules. Korean exchange-listed shares: sale taxes by market (KOSPI 0.05% + 0.15% rural special tax, KOSDAQ 0.20% in 2026), no income tax for a minority shareholder. Korean-listed ETFs and ETNs: no sale tax, but income tax on gains depends on the fund and is unknown here. U.S. shares: the change in the year's overseas-gains tax (20% + 2% local above the shared KRW 2,500,000 deduction), known only when the year's realized total is complete. Annual tax is payable in May of the next year, not deducted from proceeds; a loss can reduce the year's tax but is not a refund and does not carry forward.`,
+      // Quotes for selling each whole holding (one share is not enough for lots, ETFs or the annual deduction), and for
+      // selling every U.S. holding together, where the shared deduction is used once.
+      heldSale:universe.filter(row=>positions[row.symbol]?.quantity>0).map(row=>{const p=positions[row.symbol];const e=estimateCosts({market,side:'Sell',quantity:p.quantity,price:row.price,costPerShare:p.costTotal/p.quantity,symbol:row.symbol,settings,classification:this.classify(row.symbol)});
+        return {symbol:row.symbol,quantity:p.quantity,netCash:e.netCash,taxableGainKRW:e.taxableGainKRW,annualTaxChangeKRW:e.capitalGainsTaxKRW,gainAfterEstimatedTax:e.gainAfterEstimatedTax,incomeTax:{status:e.incomeTax.status,missingInputs:e.incomeTax.missingInputs}};}),
+      ...(market==='US'?{allUSHoldingsSale:(()=>{const rows=universe.filter(row=>positions[row.symbol]?.quantity>0).map(row=>estimateCosts({market,side:'Sell',quantity:positions[row.symbol].quantity,price:row.price,symbol:row.symbol,settings,classification:this.classify(row.symbol)}));
+        if(!rows.length)return null;const missing=[...new Set(rows.flatMap(e=>e.incomeTax.missingInputs))];if(missing.length||rows.some(e=>e.taxableGainKRW==null))return {status:'incomplete',missingInputs:missing,annualTaxChangeKRW:null};
+        const gain=rows.reduce((n,e)=>n+e.taxableGainKRW,0);return {status:'estimated',taxableGainKRW:gain,annualTaxChangeKRW:require('./tax-ledger.cjs').marginalTax({year:settings.taxYear,totalKRW:settings.annualRealizedKRW},gain),separateQuotesSumKRW:rows.reduce((n,e)=>n+e.capitalGainsTaxKRW,0)};})()}:{}),
       oneShare:universe.map(row=>{const classification=this.classify(row.symbol);return {symbol:row.symbol,buy:estimateCosts({market,side:'Buy',quantity:1,price:row.price,symbol:row.symbol,settings,classification}),sell:estimateCosts({market,side:'Sell',quantity:1,price:row.price,costPerShare:positions[row.symbol]?.quantity?positions[row.symbol].costTotal/positions[row.symbol].quantity:null,symbol:row.symbol,settings,classification})};})};
   }
 }

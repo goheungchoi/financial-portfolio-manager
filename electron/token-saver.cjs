@@ -40,9 +40,10 @@ function shouldSkip({trigger,config,fingerprint:next,last,now=Date.now()}){
   return now-last.completedAt<config.maxSkipMinutes*60000&&within(last.state,next.state,Math.max(0.1,(config.eventTolerancePct??3)/2));
 }
 // Removes null/empty values, rounds long decimals and puts stable parts first so repeated prompts share a cacheable prefix.
-// Ordered from least to most frequently changing. tradingCosts ends with its price-dependent oneShare examples.
+// Ordered from least to most frequently changing. tradingCosts ends with its price-dependent quotes (heldSale,
+// allUSHoldingsSale, oneShare).
 const STABLE_FIRST=['environment','market','currency','baseCurrency','objective','userGuidelines','reviewedLessons','lessonConflicts','discovery','reviewInterval','reviewWatches','decisionScoreboard','macro','tradingCosts'];
-const lastKey=(value,key)=>{if(Array.isArray(value))return value.map(v=>lastKey(v,key));if(!value||typeof value!=='object')return value;const {[key]:tail,...rest}=value;const out=Object.fromEntries(Object.entries(rest).map(([k,v])=>[k,lastKey(v,key)]));if(tail!==undefined)out[key]=tail;return out;};
+const lastKey=(value,keys)=>{if(Array.isArray(value))return value.map(v=>lastKey(v,keys));if(!value||typeof value!=='object')return value;const out=Object.fromEntries(Object.entries(value).filter(([k])=>!keys.includes(k)).map(([k,v])=>[k,lastKey(v,keys)]));for(const k of keys)if(value[k]!==undefined)out[k]=value[k];return out;};
 function prune(value){
   if(Array.isArray(value)){const items=value.map(prune).filter(v=>v!==undefined);return items.length?items:undefined;}
   if(value&&typeof value==='object'){const entries=Object.entries(value).map(([k,v])=>[k,prune(v)]).filter(([,v])=>v!==undefined);return entries.length?Object.fromEntries(entries):undefined;}
@@ -53,7 +54,7 @@ function prune(value){
 // Keys the provider-side validation relies on are always kept, even when empty.
 function compact(context){
   const pruned=prune(context)??{};const ordered={};
-  for(const key of STABLE_FIRST)if(key in pruned)ordered[key]=key==='tradingCosts'?lastKey(pruned[key],'oneShare'):pruned[key];
+  for(const key of STABLE_FIRST)if(key in pruned)ordered[key]=key==='tradingCosts'?lastKey(pruned[key],['heldSale','allUSHoldingsSale','oneShare']):pruned[key];
   for(const [key,value] of Object.entries(pruned))if(!(key in ordered))ordered[key]=value;
   ordered.universe=pruned.universe??[];
   if(Array.isArray(ordered.news))ordered.news=ordered.news.map(({title,published,symbols,importance})=>prune({title:String(title??'').slice(0,160),published,symbols,importance})).filter(Boolean);
