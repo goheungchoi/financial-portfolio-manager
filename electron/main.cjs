@@ -179,6 +179,8 @@ app.whenReady().then(async () => {
   automation=new Automation(store.db,paper,providerService,interaction);
   live=new LiveEngine(store.db,kisService,()=>kisState);automation.live=live;
   costs=new TradingCosts(store.db);live.costs=costs;automation.costs=costs;
+  // Tax figures cover the connected live account (and accounts the user links as the same owner).
+  costs.currentAccount=()=>kisState.snapshot?.accountKey?{accountKey:kisState.snapshot.accountKey,environment:kisState.snapshot.environment}:null;
   // Leveraged/inverse products, margin and short policy per account.
   const exposure=new (require("./exposure.cjs").Exposure)(store.db);live.exposure=exposure;
   const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload)};
@@ -213,6 +215,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('exposure:set-override',exposureAction((symbol,factor)=>exposure.setOverride(symbol,factor)));
   ipcMain.handle('costs:get',event=>{authorize(event);return costs.saved();});
   ipcMain.handle('costs:save',(event,value)=>{authorize(event);return costs.save(value);});
+  ipcMain.handle('costs:tax-profile',event=>{authorize(event);return {profile:costs.profile.get(),account:costs.currentAccount()?{accountKey:require('./tax-profile.cjs').ownerAccount(costs.currentAccount().accountKey),environment:costs.currentAccount().environment}:null};});
+  ipcMain.handle('costs:save-tax-profile',(event,value)=>{authorize(event);costs.profile.save(value);return {profile:costs.profile.get(),account:costs.currentAccount()?{accountKey:require('./tax-profile.cjs').ownerAccount(costs.currentAccount().accountKey),environment:costs.currentAccount().environment}:null};});
   for(const name of ['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'])ipcMain.handle('us:'+name,async(event,...args)=>{authorize(event);try{let data;if(name==='get')data=null;else if(name==='refresh'){if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');await automation.refreshUS();data=null;}else if(name==='auto-off'){usLive.autoEnabled=false;}else if(name==='auto')data=usLive.enableAuto(...args);else if(name==='link')data=await usLive.linkUncertain(...args);else data=await usLive[name](...args);return {ok:true,data,state:usLive.getState()};}catch(error){if(name==='refresh'){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}const allowed=['NO_FUNDED_BALANCE','LEVERAGED_NOT_ENABLED','LEVERAGED_EXPOSURE_LIMIT','KIS_NOT_CONNECTED','ACTIVATION_REQUIRED','INVALID_LIMITS','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','RECONCILIATION_REQUIRED','KIS_TRADING_DISABLED','DISABLED_OR_EXPIRED','BROKER_REJECTED','ORDER_UNCERTAIN','ACCOUNT_CHANGED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:require('./us-errors.cjs').publicUSCode(error.message),state:usLive.getState()};}});
   
   notifier=new Notifications(store.db,providerService,()=>({...automation.config,pushConnected:automation.providerStatus.pushConnected}),message=>{if(Notification.isSupported())new Notification({title:'Financial Portfolio Manager',body:message}).show();});
