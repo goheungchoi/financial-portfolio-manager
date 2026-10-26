@@ -12,7 +12,8 @@ const ROUNDS=4,MAX_CALLS=4;
 async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions,compact,wrap=null,detail=null}){
   const via=(name,fn)=>wrap?wrap(name,fn):fn;
   let continuation,keepFrom=0;const usage={inputTokens:0,outputTokens:0};const cache=new Map();
-  const answer=(call,value)=>continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(require('./review-context.cjs').bound(value))});
+  // Each response is bounded by the round's budget: what the request may still grow by, shared by the round's calls.
+  let perCall=16000;const answer=(call,value)=>continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(require('./review-context.cjs').bound(value,perCall))});
   for(let round=0;round<ROUNDS;round++){
     // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
     if(round>0){const fitted=await require('./context-fit.cjs').fit(continuation,{keepFrom,compact});if(fitted.steps.length){continuation=fitted.items;log('System','Research context condensed',JSON.stringify(fitted.steps));}}
@@ -34,9 +35,13 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
     }
     if(!evidence||round===ROUNDS-1||result.toolCalls.length>MAX_CALLS||!Array.isArray(result.continuation))throw new Error('INVALID_AI_RESPONSE');
     keepFrom=Array.isArray(continuation)?continuation.length:0;continuation=result.continuation;
+    // Before this round's results are added: older results are condensed or referenced first, then the space left
+    // (below the follow-up limit, with room for the model's reply) is shared by the round's calls, at most 16 KB each.
+    {const cf=require('./context-fit.cjs');const calls=Math.max(1,result.toolCalls.length);const fitted=await cf.fit(continuation,{keepFrom:continuation.length,compact,targetBytes:cf.LIMIT*cf.TARGET-calls*8000});if(fitted.steps.length){continuation=fitted.items;log('System','Research context condensed',JSON.stringify(fitted.steps));}
+      perCall=Math.max(1500,Math.min(16000,Math.floor((cf.LIMIT*cf.TARGET-cf.size(continuation))/calls)-200));}
     for(const call of result.toolCalls){
       // Summarized sections are read in full on request (review-context.cjs).
-      if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=detail&&Object.hasOwn(detail,section)?{section,data:detail[section]}:{status:'rejected',reason:`No detail for ${JSON.stringify(section)}; available: ${Object.keys(detail??{}).join(', ')||'none'}.`};log('Tool','Context detail · '+section,value.status??'returned');answer(call,value);continue;}
+      if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=require('./review-context.cjs').detailPart(detail,{section,part:String(call.args?.part??''),page:call.args?.page},Math.min(8000,perCall));log('Tool','Context detail · '+section+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));answer(call,value);continue;}
       if(call.name==='set_review_interval'&&setInterval){const value=await via('set_review_interval',setInterval)(call.args);log('Tool','Review interval updated',JSON.stringify(value));answer(call,value);continue;}
       if(call.name==='set_review_watch'&&setWatch){const value=await via('set_review_watch',setWatch)(call.args);log('Tool','Review watch updated',JSON.stringify(value));answer(call,value);continue;}
       // Desk tools: formulas, triggers, notes and conditional orders. A refused request is answered, not fatal; a changed account still stops the review.

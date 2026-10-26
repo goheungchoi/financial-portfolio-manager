@@ -341,10 +341,10 @@ class Automation {
       // A review that failed for its size is not retried on materially the same inputs; a material change (prices beyond
       // the tolerance, holdings, cash, sessions, important news), an emergency or the user's own request runs again.
       const failed=this.failedInput?.scope===watchScope?this.failedInput:null;
-      if(failed&&!emergency.active&&!['User request','Emergency loss response','Auto trading started'].includes(trigger)&&failed.exact===hash.exact&&saver.within(failed.state,hash.state,Math.max(0.1,(this.config.eventTolerancePct??3)/2))){
+      if(failed&&!emergency.active&&!['User request','Emergency loss response','Auto trading started'].includes(trigger)&&require('./review-context.cjs').sameInputs(failed,{...hash,cash:require('./review-context.cjs').cashOf(context)},this.config.eventTolerancePct??3)){
         this.lastRun=Date.now();this.log(id,'System','Review skipped · same inputs as a failed review',`The review at ${new Date(failed.at).toLocaleTimeString()} failed (${failed.code}) and nothing material has changed since. No AI call was made; a material change, an emergency or your own request runs a review.`);return {skipped:true,id};
       }
-      this.pendingInput={...hash,scope:watchScope};
+      this.pendingInput={...hash,cash:require('./review-context.cjs').cashOf(context),scope:watchScope};
       this.log(id,'Program',trigger,context.environment!=='local-paper'?'Reviewing permitted KIS portfolio data. Credentials are excluded.':'Reviewing the local paper portfolio. KIS account data and credentials are excluded.');
       this.log(id,'Context','Supplied context',loggableContext(context));
       let result,routing=null,assessed=null,anchor=null,shadowRun=null;

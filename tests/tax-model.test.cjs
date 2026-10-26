@@ -213,16 +213,25 @@ test('review fix: re-importing a window replaces rows KIS corrected instead of k
   assert.deepEqual(costs.fills().map(x=>x.quantity).sort((a,b)=>a-b),[2,10],'the 5-share partial row is gone; a row outside the window is untouched');
   costs.importTrades('a',[],0,{start:'2026-09-30',end:'2026-09-30'});assert.deepEqual(costs.fills().map(x=>x.quantity),[10]);db.close();
 });
-test('review fix 2: trades replay in execution order; a same-day order that is not known makes the result unknown, not assumed',()=>{
+test('review 22fdc4f: order time is not fill time; trades are ordered only when one was seen filled before the other was placed',()=>{
+  const r=()=>({rate:1000,source:'t'});const at=(o,placedAt,filledBy=null)=>({...o,placedAt,filledBy});
+  // One share at 100,000, sold at 150,000, then another bought at 200,000 the same day.
+  const known=buildLedger({fills:[at(f('b0','Buy',1,100,'2026-10-01'),1,2),at(f('s','Sell',1,150,'2026-10-20'),10,20),at(f('b1','Buy',1,200,'2026-10-20'),30,40)],rateOn:r});
+  assert.equal(known.sales[0].gainKRW,50000,'the sale was seen filled before the purchase was placed');assert.equal(known.positions['NASD:TEST'].costKRW,200000);
+  const placedOnly=buildLedger({fills:[at(f('b0','Buy',1,100,'2026-10-01'),1,2),at(f('s','Sell',1,150,'2026-10-20'),10),at(f('b1','Buy',1,200,'2026-10-20'),30)],rateOn:r});
+  assert.equal(placedOnly.sales[0].gainKRW,null,'placing the sale first does not prove it filled first');assert.deepEqual(placedOnly.sales[0].missing,['order of same-day buys and sales on 2026-10-20']);
+  const overlap=buildLedger({fills:[at(f('b0','Buy',1,100,'2026-10-01'),1,2),at(f('s','Sell',1,150,'2026-10-20'),10,35),at(f('b1','Buy',1,200,'2026-10-20'),30,40)],rateOn:r});assert.equal(overlap.sales[0].gainKRW,null,'the sale may have filled after the purchase was placed');
+  const later=buildLedger({fills:[at(f('b0','Buy',1,100,'2026-10-01'),1,2),at(f('s','Sell',1,150,'2026-10-20'),10),at(f('b1','Buy',1,200,'2026-10-20'),30),at(f('s2','Sell',1,300,'2026-11-02'),50,60)],rateOn:r});
+  assert.equal(later.sales[1].gainKRW,null,'a later sale from the same pool depends on that order too');const y=annualTax(later,2026,0);assert.equal(y.complete,false);assert.deepEqual(y.result.missingInputs,['order of same-day buys and sales on 2026-10-20']);
+  const oneSide=buildLedger({fills:[f('b0','Buy',1,100,'2026-10-20'),f('b1','Buy',1,200,'2026-10-20'),f('s','Sell',2,150,'2026-10-21')],rateOn:r});assert.equal(oneSide.sales[0].gainKRW,0,'purchases alone on a day need no order');
+});
+test('review 22fdc4f: an unknown same-day order leaves no phantom shares; the count is start + bought - sold',()=>{
   const r=()=>({rate:1000,source:'t'});
-  // Reproduced: one share at 100,000, sold at 150,000, then another bought at 200,000 the same day.
-  const timed=buildLedger({fills:[{...f('b0','Buy',1,100,'2026-10-01'),timestamp:1},{...f('s','Sell',1,150,'2026-10-20'),timestamp:2},{...f('b1','Buy',1,200,'2026-10-20'),timestamp:3}],rateOn:r});
-  assert.equal(timed.sales[0].gainKRW,50000,'not averaged with the later purchase');assert.equal(timed.positions['NASD:TEST'].costKRW,200000);
-  const untimed=buildLedger({fills:[{...f('b0','Buy',1,100,'2026-10-01'),timestamp:1},{...f('s','Sell',1,150,'2026-10-20'),timestamp:0},{...f('b1','Buy',1,200,'2026-10-20'),timestamp:0},{...f('s2','Sell',1,300,'2026-11-02'),timestamp:0}],rateOn:r});
-  assert.equal(untimed.sales[0].gainKRW,null);assert.deepEqual(untimed.sales[0].missing,['order of same-day buys and sales on 2026-10-20']);
-  assert.equal(untimed.sales[1].gainKRW,null,'a later sale from the same pool depends on that order too');assert.deepEqual(untimed.sales[1].missing,['order of same-day buys and sales on 2026-10-20']);
-  const y=annualTax(untimed,2026,0);assert.equal(y.complete,false);assert.deepEqual(y.result.missingInputs,['order of same-day buys and sales on 2026-10-20']);
-  const oneSide=buildLedger({fills:[{...f('b0','Buy',1,100,'2026-10-20'),timestamp:0},{...f('b1','Buy',1,200,'2026-10-20'),timestamp:0},{...f('s','Sell',2,150,'2026-10-21'),timestamp:0}],rateOn:r});assert.equal(oneSide.sales[0].gainKRW,0,'purchases alone on a day need no order');
+  // Reproduced: from zero shares, an untimed sale listed before its purchase left one share.
+  const l=buildLedger({fills:[f('s','Sell',1,150,'2026-10-20'),f('b','Buy',1,100,'2026-10-20')],rateOn:r});
+  assert.deepEqual(l.positions,{},'net zero');assert.equal(l.sales[0].gainKRW,null);assert.notEqual(l.sales[0].basisSource,'Unknown basis','the purchase that day supplies the shares');
+  const held=buildLedger({fills:[f('b0','Buy',2,100,'2026-10-01'),f('s','Sell',3,150,'2026-10-20'),f('b','Buy',2,120,'2026-10-20')],rateOn:r});assert.equal(held.positions['NASD:TEST'].quantity,1,'2 + 2 - 3');assert.equal(held.positions['NASD:TEST'].costKRW,null,'its cost depends on the order');
+  const {LiveEngine}=require('../electron/live-engine.cjs');const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','live-engine.cjs'),'utf8');assert.match(src,/found\.status==='Filled'&&!order\.filledObservedAt\?\{filledObservedAt:Date\.now\(\)\}/,'the first full fill observation is recorded once');
 });
 test('review fix 1: broker rows and app fills match one to one by U.S. trade date, quantity and price; a mismatch is reported',()=>{
   const {db,costs}=ledgerDb();const app=(id,side,qty,price,at)=>db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run(id,'a:US',JSON.stringify({id,accountKey:'a:US',environment:'live',market:'US',side,symbol:'NASD:TEST',filled:qty,fillPrice:price,day:new Date(Date.parse(at)+9*3600000).toISOString().slice(0,10),createdAt:Date.parse(at),resultCosts:{commission:0.25,transactionTax:0}}));
@@ -231,7 +240,7 @@ test('review fix 1: broker rows and app fills match one to one by U.S. trade dat
   assert.deepEqual(costs.fills().map(x=>[x.source,x.tradeDate,x.price]).sort(),[['App order','2026-10-21',110],['KIS trade history','2026-10-20',100]],'both purchases kept');
   costs.importTrades('a',[row('Buy',1,110,'2026-10-21','2026-10-22')]);let m=costs.matchedFills();
   assert.deepEqual(m.fills.map(x=>[x.source,x.tradeDate,x.price]).sort(),[['KIS trade history','2026-10-20',100],['KIS trade history','2026-10-21',110]],'once listed, the broker row replaces the app fill');
-  const matched=m.fills.find(x=>x.price===110);assert.equal(matched.timeKnown,true);assert.equal(matched.appOrderId,'app21');assert.deepEqual(m.issues,[]);
+  const matched=m.fills.find(x=>x.price===110);assert.equal(matched.placedAt,Date.parse('2026-10-21T15:30:00Z'),'the order time, not a fill time');assert.equal(matched.filledBy,null);assert.equal(matched.appOrderId,'app21');assert.deepEqual(m.issues,[]);
   // One order filled in two executions matches the rows that make it up.
   app('split','Sell',3,120,'2026-10-22T15:00:00Z');costs.importTrades('a',[row('Sell',1,119,'2026-10-22','2026-10-23'),row('Sell',2,120.5,'2026-10-22','2026-10-23')]);
   m=costs.matchedFills();assert.deepEqual(m.issues,[]);assert.equal(m.fills.filter(x=>x.side==='Sell').length,2);assert.ok(m.fills.filter(x=>x.side==='Sell').every(x=>x.appOrderId==='split'));

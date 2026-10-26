@@ -9,8 +9,9 @@ const outputs=(items,keepFrom)=>items.map((item,i)=>({item,i})).filter(({item,i}
 const settled=item=>{try{const v=JSON.parse(item.output);return Boolean(v?.compacted||v?.reference);}catch{return false;}};
 // items: the continuation; keepFrom: index of the first item from the latest round (kept in full).
 // compact({results:[{callId,tool,output}]}) → {summaries:[{callId,summary}]}; returns {items,steps}.
-async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null}={}){
-  if(!Array.isArray(items)||size(items)<=limit*TARGET)return {items,steps:[]};
+// targetBytes: the size to reach (default: the limit's fitting point); before a round it leaves room for its results.
+async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null,targetBytes=limit*TARGET}={}){
+  if(!Array.isArray(items)||size(items)<=targetBytes)return {items,steps:[]};
   const next=items.map(item=>({...item}));const steps=[];const calls=new Map(next.filter(i=>i?.type==='function_call').map(i=>[i.call_id,{name:i.name,args:i.arguments}]));
   const older=()=>outputs(next,keepFrom).filter(({item})=>!settled(item)).sort((a,b)=>b.item.output.length-a.item.output.length);
   if(compact&&older().length){
@@ -22,11 +23,11 @@ async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null}={}){
       steps.push({step:'compact',bytes:size(next),usage:result.usage??null});}
   }
   for(const {item} of outputs(next,keepFrom).sort((a,b)=>b.item.output.length-a.item.output.length)){
-    if(size(next)<=limit*TARGET)break;if(JSON.parse(item.output)?.reference)continue;
+    if(size(next)<=targetBytes)break;if(JSON.parse(item.output)?.reference)continue;
     item.output=JSON.stringify({reference:true,request:calls.get(item.call_id)??null,note:'Read earlier in this review; call the same tool with the same arguments to read it again in full.'});}
   if(steps.at(-1)?.step!=='compact'||size(next)!==steps.at(-1).bytes)steps.push({step:'reference',bytes:size(next)});
   return {items:next,steps};
 }
 const COMPACT_SCHEMA={type:'object',properties:{summaries:{type:'array',items:{type:'object',properties:{callId:{type:'string'},summary:{type:'string'}},required:['callId','summary'],additionalProperties:false}}},required:['summaries'],additionalProperties:false};
 const COMPACT_INSTRUCTIONS='You condense research results that a trading agent requested earlier in its review, so it can keep working within its context limit. For each result, write one summary of at most 900 characters for the same callId. Keep every figure the agent could use to decide: prices, changes, valuation multiples, targets and upside, estimates, ratings and counts, flows, dates and earnings timing, risk and technical readings, holdings weights, and any status or refusal reason. Keep tickers and company names. Drop repetition and formatting. Do not add opinions, recommendations or facts that are not in the result. Return one entry per callId given.';
-module.exports={fit,size,LIMIT,COMPACT_SCHEMA,COMPACT_INSTRUCTIONS};
+module.exports={fit,size,LIMIT,TARGET,COMPACT_SCHEMA,COMPACT_INSTRUCTIONS};
