@@ -217,11 +217,25 @@ class TradingCosts{
   }
   // The statutory sale-tax rate of a Korean sale today: the override, or the higher of the KOSPI and KOSDAQ rates.
   krSaleTaxPct(settings=this.saved()){return settings.krSellTaxOverridePct??Math.max(...['KOSPI','KOSDAQ'].map(m=>rules.krSaleTax(m,1e6,today())?.ratePct??0));}
+  // What reviews read: figures and their status, without internal fields (lots, per-estimate rule versions and sources,
+  // repeated assumptions), so the tax model does not crowd the review out of its size limit (2026-10-26: reviews failed
+  // with CONTEXT_TOO_LARGE once the full estimates were included).
   context(market,universe,positions){
+    const full=this.fullContext(market,universe,positions);const pick=(o,keys)=>Object.fromEntries(keys.filter(k=>o?.[k]!==undefined).map(k=>[k,o[k]]));
+    const status=t=>t?{status:t.status,...(t.missingInputs?.length?{missingInputs:t.missingInputs}:{})}:undefined;
+    const sell=e=>({...pick(e,['gross','commission','transactionTax','netCash','gainAfterFees','taxableGainKRW','capitalGainsTaxKRW','gainAfterEstimatedTax']),incomeTax:status(e.incomeTax)});
+    const t=full.tax;const assumptions=[...new Set([...(t.applicability?.assumptions??[]),...(t.annual?.assumptions??[]),...full.oneShare.flatMap(r=>r.sell.incomeTax?.assumptions??[])])];
+    return {market,currency:market==='US'?'USD':'KRW',settings:pick(full.settings,['krCommissionPct','usCommissionPct','usSellFeePct','usSellFeeMinimum','krSellTaxOverridePct','usdKRW','annualRealizedKRW','taxYear','taxMethod','taxBasisKRW']),krSaleTaxPct:full.krSaleTaxPct,
+      acquisitionFeeAssumption:'Broker average prices exclude acquisition commissions; where no recorded lot cost exists, the commission is estimated from the fee plan.',
+      tax:{ruleVersion:t.ruleVersion,applicability:{status:t.applicability.status,...(t.applicability.reasons?.length?{reasons:t.applicability.reasons}:{})},...(t.annual?{annual:status(t.annual)}:{}),assumptions,classification:t.classification},
+      taxModel:full.taxModel,heldSale:full.heldSale,...(full.allUSHoldingsSale!==undefined?{allUSHoldingsSale:full.allUSHoldingsSale}:{}),
+      oneShare:full.oneShare.map(r=>({symbol:r.symbol,buy:pick(r.buy,['gross','commission','netCash']),sell:sell(r.sell)}))};
+  }
+  fullContext(market,universe,positions){
     const settings=this.get();const relevant={...settings,taxBasisKRW:Object.fromEntries(Object.entries(settings.taxBasisKRW).filter(([symbol])=>universe.some(row=>row.symbol===symbol)))};const applicable=this.applicability(market);
     return {market,settings:relevant,krSaleTaxPct:this.krSaleTaxPct(settings),acquisitionFeeAssumption:'Broker average acquisition prices treated as excluding acquisition commissions; these are estimated using the saved commission plan. Executed orders use broker-reported fees where available.',
       tax:{ruleVersion:rules.RULE_VERSION,applicability:applicable,annual:market==='US'?settings.taxStatus??null:null,classification:Object.fromEntries(universe.map(row=>{const c=this.classify(row.symbol);return [row.symbol,{instrument:c.instrument,transactionTax:c.transactionTax,incomeTax:c.incomeTax}];}))},
-      taxModel:`Korean taxes are calculated by the app (rules ${rules.RULE_VERSION}); use its figures and their status, never apply a flat rate yourself. Each sell estimate has incomeTax {status, value, missingInputs, assumptions}: estimated means complete inputs with the stated assumptions; incomplete means a required input is missing and the tax is unknown (not zero); unsupported means the account or instrument is outside the implemented rules. Korean exchange-listed shares: sale taxes by market (KOSPI 0.05% + 0.15% rural special tax, KOSDAQ 0.20% in 2026), no income tax for a minority shareholder. Korean-listed ETFs and ETNs: no sale tax, but income tax on gains depends on the fund and is unknown here. U.S. shares: the change in the year's overseas-gains tax (20% + 2% local above the shared KRW 2,500,000 deduction), known only when the year's realized total is complete. Annual tax is payable in May of the next year, not deducted from proceeds; a loss can reduce the year's tax but is not a refund and does not carry forward.`,
+      taxModel:`Taxes come from the app (rules ${rules.RULE_VERSION}); use its figures and status, never a flat rate. incomeTax.status: estimated (complete inputs, tax.assumptions apply), incomplete (an input in missingInputs is missing: the tax is unknown (not zero)), unsupported (outside the implemented rules). Korean listed shares: sale tax by market (0.20% in 2026), no income tax for a minority shareholder. Korean ETFs and ETNs: no sale tax, income tax depends on the fund. U.S. shares: the change in the year's overseas-gains tax (22% above the shared KRW 2.5m deduction), paid the next May.`,
       // Quotes for selling each whole holding (one share is not enough for lots, ETFs or the annual deduction), and for
       // selling every U.S. holding together, where the shared deduction is used once.
       heldSale:universe.filter(row=>positions[row.symbol]?.quantity>0).map(row=>{const p=positions[row.symbol];const e=estimateCosts({market,side:'Sell',quantity:p.quantity,price:row.price,costPerShare:p.costTotal/p.quantity,symbol:row.symbol,settings,classification:this.classify(row.symbol)});

@@ -42,4 +42,14 @@ async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null}={}){
 }
 const COMPACT_SCHEMA={type:'object',properties:{summaries:{type:'array',items:{type:'object',properties:{callId:{type:'string'},summary:{type:'string'}},required:['callId','summary'],additionalProperties:false}}},required:['summaries'],additionalProperties:false};
 const COMPACT_INSTRUCTIONS='You condense research results that a trading agent requested earlier in its review, so it can keep working within its context limit. For each result, write one summary of at most 900 characters for the same callId. Keep every figure the agent could use to decide: prices, changes, valuation multiples, targets and upside, estimates, ratings and counts, flows, dates and earnings timing, risk and technical readings, holdings weights, and any status or refusal reason. Keep tickers and company names. Drop repetition and formatting. Do not add opinions, recommendations or facts that are not in the result. Return one entry per callId given.';
-module.exports={fit,digest,size,LIMIT,COMPACT_SCHEMA,COMPACT_INSTRUCTIONS};
+// The first request of a review, if it is over its size limit: background sections are digested, largest first,
+// until it fits; holdings, cash, prices, orders, risk and notes are never touched. Returns the steps taken.
+const BACKGROUND_FIRST=['similarEpisodes','marketNarrative','macro','eventCalendar','topStories','news','performance','reviewWatches','scoutPlan','planGap','portfolioExposure','orderBooks','previousReview','research','positionSizing'];
+function fitInitial(context,limit=require('./ai-models.cjs').reviewByteLimit({}),target=0.95){
+  const wire=c=>size([{role:'user',content:JSON.stringify(c)}]);const steps=[];let out=context;
+  if(wire(out)<=limit*target)return {context:out,steps};
+  for(const key of BACKGROUND_FIRST.filter(k=>out[k]!=null).sort((a,b)=>size(out[b])-size(out[a]))){
+    const before=wire(out);out={...out,[key]:digest(out[key])};steps.push({section:key,bytesSaved:before-wire(out)});if(wire(out)<=limit*target)break;}
+  return {context:out,steps};
+}
+module.exports={fit,fitInitial,digest,size,LIMIT,COMPACT_SCHEMA,COMPACT_INSTRUCTIONS};

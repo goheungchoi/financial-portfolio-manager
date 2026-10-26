@@ -46,9 +46,11 @@ test('in the app, observation records only: no AI or broker calls, no schedule c
   const supplied=[];const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:1}],()=>[]),{request:async(op,p)=>{supplied.push(op);return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}},()=>{});
   a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now()}];
   a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',enabled:true,narrativeEnabled:false,scoutEnabled:false});a.sessionArmed=true;
-  const lastRun=a.lastRun,next=a.nextReviewAt();a.tick();
+  // A review just ran, so the tick schedules nothing whatever the time of day; the observation still records.
+  a.lastRun=Date.now();const lastRun=a.lastRun,next=a.nextReviewAt();a.tick();
   assert.equal(db.prepare("SELECT COUNT(*) n FROM schedule_observations WHERE kind='proposed-run'").get().n,1,'first observation recorded');
-  assert.equal(supplied.length,0,'no AI call');assert.equal(brokerCalls,0,'no broker call');assert.equal(a.lastRun,lastRun);assert.equal(a.nextReviewAt(),next,'the schedule is unchanged');
+  assert.equal(supplied.length,0,'no AI call');assert.equal(brokerCalls,0,'no broker call');assert.equal(a.lastRun,lastRun);// With no earlier review, the next review during an open session is "now", which moves between two reads: compare within a second.
+  const after=a.nextReviewAt();assert.ok(next==null?after==null:Math.abs(after-next)<1000,'the schedule is unchanged');
   await a.review('User request');assert.equal(db.prepare("SELECT COUNT(*) n FROM schedule_observations WHERE kind='proposed-run'").get().n,2,'an event-triggered review is a proposed run');
   assert.equal(db.prepare("SELECT COUNT(*) n FROM schedule_observations WHERE kind='review'").get().n,1,'the actual review is logged');
   const ctx=JSON.parse(db.prepare('SELECT payload FROM review_contexts').get()?.payload??'{}');assert.ok(!/schedule_observation|proposed-run|scheduleObserver/.test(JSON.stringify(ctx)),'nothing reaches review inputs');
