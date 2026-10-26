@@ -56,13 +56,59 @@ test('if the mandatory snapshot alone cannot fit, the review is not sent and not
   assert.equal(s.fits,false);assert.ok(s.mandatoryBytes>0);for(const k of MANDATORY_SAME)assert.deepEqual(s.context[k],huge[k]);
   assert.match(require('../electron/ai-errors.cjs').messages.CONTEXT_OVER_BUDGET,/mandatory review data alone exceeds/);
 });
-test('the agent reads a summarized section in full with get_context_detail; unknown sections are refused',async()=>{
-  const {researchReview}=require('../electron/research-review.cjs');let round=0,outputs=[];
-  const request=async({continuation})=>{round++;if(round===1)return {toolCalls:[{name:'get_context_detail',callId:'d1',args:{section:'scoutPlan.briefAnswers'}},{name:'get_context_detail',callId:'d2',args:{section:'secrets'}}],continuation:[{role:'user',content:'{}'},{type:'function_call',call_id:'d1',name:'get_context_detail',arguments:'{}'},{type:'function_call',call_id:'d2',name:'get_context_detail',arguments:'{}'}],usage:{}};
-    outputs=continuation.filter(i=>i.type==='function_call_output').map(i=>JSON.parse(i.output));return {decision:{action:'Hold'},usage:{}};};
-  await researchReview({context:{universe:[]},detail:{'scoutPlan.briefAnswers':[{briefId:'B-1',answer:'full answer'}]},evidence:{get:async()=>({})},request,log:()=>{}});
-  assert.deepEqual(outputs[0],{section:'scoutPlan.briefAnswers',data:[{briefId:'B-1',answer:'full answer'}]});assert.equal(outputs[1].status,'rejected');assert.match(outputs[1].reason,/available: scoutPlan.briefAnswers/);
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');assert.match(src,/detailAvailable lists sections given as summaries/);assert.match(src,/get_context_detail'\.split/);
+test('point 1: detail is read in bounded, selectable parts; a large section never brings the overflow back',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
+  const big=failedLike(20);const combined={...big,...rc.combineTradingCosts(big.markets)};const shaped=rc.shape(combined,{limit:Math.round(rc.wire(combined)*0.6)});
+  assert.ok(rc.bytes(shaped.detail.positionSizing)>4*8000,`a section larger than a round of detail replies (${rc.bytes(shaped.detail.positionSizing)})`);
+  const d=rc.detailPart(shaped.detail,{section:'positionSizing',part:'',page:1});assert.equal(d.complete,false);assert.deepEqual(d.parts.map(p=>p.part),['riskPerTradePct','rows'],'a large object lists its parts');
+  const p1=rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',page:1});assert.ok(rc.bytes(p1)<=8000);assert.ok(p1.pages>1);assert.equal(p1.totalItems,big.positionSizing.rows.length);assert.equal(p1.complete,false);
+  const pages=Array.from({length:p1.pages},(_,k)=>rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',page:k+1}));assert.deepEqual(pages.flatMap(x=>x.data).map(r=>r.symbol),big.positionSizing.rows.map(r=>r.symbol),'every row reachable, none twice');
+  const one=rc.detailPart(shaped.detail,{section:'positionSizing',part:'NASD:T3',page:1});assert.equal(one.complete,true);assert.deepEqual(one.data,big.positionSizing.rows.filter(r=>r.symbol==='NASD:T3'),'rows about one symbol');
+  assert.equal(rc.detailPart(shaped.detail,{section:'secrets',part:'',page:1}).status,'rejected');
+  // Through a review: four detail requests in one round on top of a first request at the limit stay under the follow-up limit.
+  const sent=[];let round=0;const base='c'.repeat(69000);
+  const request=async({continuation})=>{if(continuation)sent.push(cf.size(continuation));round++;if(round===1){const calls=[1,2,3,4].map(k=>({name:'get_context_detail',callId:'d'+k,args:{section:'positionSizing',part:'rows',page:k}}));
+    return {toolCalls:calls,continuation:[{role:'user',content:base},...calls.map(c=>({type:'function_call',call_id:c.callId,name:c.name,arguments:JSON.stringify(c.args)}))],usage:{}};}
+    return {decision:{action:'Hold'},usage:{}};};
+  await researchReview({context:{universe:[]},detail:shaped.detail,evidence:{get:async()=>({})},request,log:()=>{}});assert.ok(sent.every(n=>n<=cf.LIMIT*cf.TARGET),'within the budget: '+sent.join(','));
+});
+test('point 2: three research rounds of four maximum-size responses fit on top of a first request at the limit',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
+  const huge=k=>({overview:{price:216000+k},a:'a'.repeat(15000),b:'b'.repeat(15000),c:'c'.repeat(15000)});const sent=[];let round=0;let fetched=0;
+  const request=async({continuation})=>{if(continuation)sent.push(cf.size(continuation));round++;const prior=continuation??[{role:'user',content:'x'.repeat(69500)}];
+    if(round<4){const calls=[0,1,2,3].map(k=>({name:'get_company_research',callId:`r${round}${k}`,args:{symbol:'005930',sections:['s'+round+k]}}));return {toolCalls:calls,continuation:[...prior,...calls.map(c=>({type:'function_call',call_id:c.callId,name:c.name,arguments:JSON.stringify(c.args)}))],usage:{}};}
+    return {decision:{action:'Hold'},usage:{}};};
+  const r=await researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async a=>{fetched++;return huge(fetched);}}});
+  assert.equal(r.decision.action,'Hold');assert.equal(sent.length,3);assert.ok(sent.every(n=>n<=cf.LIMIT),'every follow-up within the limit: '+sent.join(','));
+  const top=sent.map(n=>n<=cf.LIMIT*cf.TARGET);assert.ok(top.every(Boolean),'and within the fitting point: '+sent.join(','));
+});
+test('point 3: compacted evidence stays reachable in the same review, and what was left out stays marked',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
+  let round=0,fetched=0;const seen=[];const big={overview:{price:216000},closes:'c'.repeat(13000)};
+  const request=async({continuation})=>{round++;const prior=continuation??[{role:'user',content:'x'.repeat(69500)}];if(continuation)seen.push(continuation.filter(i=>i.type==='function_call_output').map(i=>JSON.parse(i.output)));
+    const mk=(id,sym)=>({name:'get_company_research',callId:id,args:{symbol:sym,sections:['all']}});
+    const calls=round===1?[0,1,2,3].map(k=>mk('a'+k,'00593'+k)):round===2?[0,1,2,3].map(k=>mk('b'+k,'00594'+k)):round===3?[mk('again','005930')]:null;
+    if(calls)return {toolCalls:calls,continuation:[...prior,...calls.map(c=>({type:'function_call',call_id:c.callId,name:c.name,arguments:JSON.stringify(c.args)}))],usage:{}};return {decision:{action:'Hold'},usage:{}};};
+  await researchReview({context:{universe:['005930','005931','005932','005933','005940','005941','005942','005943'].map(s=>({symbol:s})),discovery:{enabled:true}},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async()=>{fetched++;return {...big,extra:'e'.repeat(20000)};}}});
+  const afterTwo=seen[1];assert.ok(afterTwo.some(o=>o.reference===true&&o.request.name==='get_company_research'),'older results became references naming their request');
+  assert.ok(afterTwo.filter(o=>!o.reference).every(o=>Array.isArray(o.omittedParts)&&o.omittedParts.includes('extra')),'parts left out are named on every bounded result');
+  const again=seen[2].at(-1);assert.equal(again.overview.price,216000,'the referenced result is read again');assert.equal(fetched,8,'from the review cache, not fetched again');
+});
+test('point 4: a size failure is not retried on the same inputs, but fills, cancellations, cash, important news and sessions are material',()=>{
+  const saver=require('../electron/token-saver.cjs');const base=failedLike();const mk=c=>({...saver.fingerprint(c),cash:rc.cashOf(c)});const failed=mk(base);
+  assert.equal(rc.sameInputs(failed,mk(structuredClone(base)),3),true,'identical inputs are suppressed');
+  const priceWithin=structuredClone(base);priceWithin.quotes[0].price=100.5;assert.equal(rc.sameInputs(failed,mk(priceWithin),3),true,'a price move within the tolerance');
+  const changes={
+    'a fill':c=>{c.positions[Object.keys(c.positions)[0]].quantity=2;},
+    'a cancellation':c=>{c.orders[0].status='Canceled';},
+    'changed cash':c=>{c.cash.KRW+=1000;},
+    'changed market cash':c=>{c.markets[0].cash+=1000;},
+    'fresh important news':c=>{c.news=[...c.news,{title:'Earnings warning',published:'Mon',symbols:['100000'],importance:'high'}];},
+    'a session transition':c=>{c.marketSession={open:false,status:'closed'};},
+    'a price move beyond the tolerance':c=>{c.quotes[0].price=110;},
+    'new trigger evidence':c=>{c.triggerEvidence={kind:'news',events:[{title:'x'}]};},
+    'settlement clearing uncertainty':c=>{c.equityReliability={reliable:true};delete c.equityUncertainty;}};
+  for(const [name,change] of Object.entries(changes)){const c=structuredClone(base);change(c);assert.equal(rc.sameInputs(failed,mk(c),3),false,name+' runs again');}
 });
 test('a size failure is not retried on the same inputs; the user, an emergency or a material change still runs',async()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {DatabaseSync}=require('node:sqlite');

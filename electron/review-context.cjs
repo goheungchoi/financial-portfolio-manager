@@ -55,7 +55,23 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
 function report(context,limit){return {wireBytes:wire(context),limitBytes:limit,largest:Object.entries(context).map(([k,v])=>[k,bytes(v)]).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,b])=>`${k}:${b}`)};}
-const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read in full a context section that was given as a summary (listed in detailAvailable).',strict:true,parameters:{type:'object',properties:{section:{type:'string'}},required:['section'],additionalProperties:false}};
+const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), in bounded parts. part: empty for the section (or its list of parts when large), a part name, or a symbol to select rows about it. page: 1 or more for long lists.',strict:true,
+  parameters:{type:'object',properties:{section:{type:'string'},part:{type:'string'},page:{type:'integer'}},required:['section','part','page'],additionalProperties:false}};
+// One bounded, selectable piece of a summarized section: a named part, the rows about one symbol, or a page of a list.
+// Every reply says what else exists (parts, pages), so nothing left out is implied to be complete.
+function detailPart(detail,{section,part='',page=1},limit=8000){
+  if(!detail||!Object.hasOwn(detail,section))return {status:'rejected',reason:`No detail for ${JSON.stringify(section)}; available: ${Object.keys(detail??{}).join(', ')||'none'}.`};
+  let value=detail[section],selected=part||null;
+  if(part&&value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,part))value=value[part];
+  else if(part&&value&&typeof value==='object'){const rows=(Array.isArray(value)?value:value.rows??value.books??value.targets??[]).filter(r=>r?.symbol===part);if(!rows.length)return {status:'rejected',reason:`No part or symbol ${JSON.stringify(part)} in ${section}.`,parts:Array.isArray(value)?undefined:Object.keys(value)};value=rows;}
+  else selected=null;
+  if(bytes(value)<=limit)return {section,...(selected?{part:selected}:{}),data:value,complete:true};
+  if(Array.isArray(value)){const pages=[];let cur=[];for(const row of value){if(cur.length&&bytes([...cur,row])>limit-400){pages.push(cur);cur=[];}cur.push(row);}if(cur.length)pages.push(cur);
+    const n=Math.min(Math.max(1,Number.isInteger(page)?page:1),pages.length);const rows=pages[n-1].map(r=>bytes(r)>limit-400?{tooLarge:true,bytes:bytes(r),...(r?.symbol?{symbol:r.symbol}:{})}:r);
+    return {section,...(selected?{part:selected}:{}),page:n,pages:pages.length,totalItems:value.length,data:rows,complete:pages.length===1};}
+  if(value&&typeof value==='object')return {section,...(selected?{part:selected}:{}),parts:Object.entries(value).map(([k,v])=>({part:k,bytes:bytes(v)})),note:'Too large to return at once: ask for one part by name.',complete:false};
+  return {section,status:'too_large',bytes:bytes(value),complete:false};
+}
 // Bounds a tool response before it joins the conversation: whole top-level parts are kept in order while they fit,
 // and the parts left out are named so the agent can ask for them; nothing is cut inside a part.
 // 16 KB each: four responses in a round plus the review's first request stay within the follow-up limit.
@@ -71,4 +87,14 @@ function combineTradingCosts(markets){
   return {markets:markets.map(({tradingCosts,...row})=>row),tradingCosts:{...(shared.taxModel?{taxModel:shared.taxModel,acquisitionFeeAssumption:shared.acquisitionFeeAssumption,ruleVersion:shared.tax?.ruleVersion}:{}),
     markets:per.map(({taxModel,acquisitionFeeAssumption,...t},i)=>({market:t.market??markets[i].market,...t,...(t.tax?{tax:(({ruleVersion,...x})=>x)(t.tax)}:{})}))}};
 }
-module.exports={combineTradingCosts,shape,report,bound,wire,bytes,MANDATORY,SUMMARIES,COMPRESS,DETAIL_TOOL};
+// Whether a review would repeat inputs that already failed for size: the same structure (holdings, orders, sessions,
+// important news) and prices within the tolerance, with cash and trigger evidence exactly equal; any fill,
+// cancellation, cash change, important headline, session change or new trigger is a material change that runs again.
+function sameInputs(failed,next,tolerancePct){
+  const saver=require('./token-saver.cjs');if(!failed||!next||failed.exact!==next.exact)return false;
+  return JSON.stringify(failed.cash??null)===JSON.stringify(next.cash??null)&&saver.within(failed.state,next.state,Math.max(0.1,tolerancePct/2));
+}
+// Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
+// market and what set this review off (a new agent trigger, news event or price watch is material).
+const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
+module.exports={sameInputs,cashOf,detailPart,combineTradingCosts,shape,report,bound,wire,bytes,MANDATORY,SUMMARIES,COMPRESS,DETAIL_TOOL};

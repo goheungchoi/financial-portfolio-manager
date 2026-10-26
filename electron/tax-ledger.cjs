@@ -19,18 +19,21 @@ function estimatedSettlement(tradeDate,{krClosed=new Set()}={}){
 // openingLots: [{id,symbol,quantity,acquiredOn,costKRW,costUSD?,expensesIncluded,source}] for shares acquired before
 // the records (entered by the user); they join the pool in date order. userBasis: {symbol: KRW per share}, the older
 // per-share fallback for shares sold beyond the pool. today: dates on or after it may use the provisional broker rate.
-// Trades replay in execution order: by trade date, opening lots first, then by time where it is known (timeKnown:
-// the app's own orders, and broker rows matched to them). When a day holds both buys and sales of a symbol and their
-// order is not known, the result depends on that order: those sales, and the pool's cost from then on, are unknown
-// rather than computed under an assumed order. Fees: null means unknown (the amounts are then unknown); an estimated
-// fee (feesSource other than Broker) is used and reported as an assumption.
+// Trades replay in execution order. No source gives fill times: an app order executed between its placement (placedAt)
+// and the first time it was seen fully filled (filledBy), and broker rows not matched to an app order carry neither.
+// Two trades are ordered only when one was seen filled before the other was placed. On a day with both buys and sales
+// of a symbol whose order is not established that way, those sales and the pool's cost from then on are unknown; the
+// buys are still counted before the sales so that the share count stays right (start + bought - sold). Fees: null means
+// unknown (the amounts are then unknown); an estimated fee (feesSource other than Broker) is used and named.
 function buildLedger({fills,rateOn,userBasis={},method='moving-average',openingLots=[],today=null,krClosed=new Set()}){
   if(!['moving-average','fifo'].includes(method))throw new Error('INVALID_METHOD');
   const pools=new Map(),sales=[],purchases=[];const pool=symbol=>{if(!pools.has(symbol))pools.set(symbol,{lots:[]});return pools.get(symbol);};
-  const timeKnown=f=>f.timeKnown??(Number.isFinite(f.timestamp)&&f.timestamp>0);
+  const placed=f=>Number.isFinite(f.placedAt)&&f.placedAt>0?f.placedAt:null,filledBy=f=>Number.isFinite(f.filledBy)&&f.filledBy>0?f.filledBy:null;
+  const before=(a,b)=>filledBy(a)!=null&&placed(b)!=null&&filledBy(a)<=placed(b);
   const unordered=new Set();const byDay=new Map();for(const f of fills){const k=f.symbol+'|'+f.tradeDate;if(!byDay.has(k))byDay.set(k,[]);byDay.get(k).push(f);}
-  for(const [k,rows] of byDay)if(rows.some(r=>r.side==='Buy')&&rows.some(r=>r.side==='Sell')&&rows.some(r=>!timeKnown(r)))unordered.add(k);
-  const entries=[...openingLots.map(l=>({kind:'opening',day:l.acquiredOn,rank:0,order:0,lot:l})),...fills.map((f,n)=>({kind:'fill',day:f.tradeDate,rank:1,order:timeKnown(f)?f.timestamp:0,n,fill:f}))]
+  for(const [k,rows] of byDay){const buys=rows.filter(r=>r.side==='Buy'),sells=rows.filter(r=>r.side==='Sell');if(buys.length&&sells.length&&!buys.every(b=>sells.every(s=>before(b,s)||before(s,b))))unordered.add(k);}
+  const orderOf=f=>unordered.has(f.symbol+'|'+f.tradeDate)?(f.side==='Buy'?0:1):(placed(f)??0);
+  const entries=[...openingLots.map(l=>({kind:'opening',day:l.acquiredOn,rank:0,order:0,lot:l})),...fills.map((f,n)=>({kind:'fill',day:f.tradeDate,rank:1,order:orderOf(f),n,fill:f}))]
     .sort((a,b)=>a.day.localeCompare(b.day)||a.rank-b.rank||a.order-b.order||(a.n??0)-(b.n??0));
   const lastOf=new Map();entries.forEach((e,n)=>{if(e.fill)lastOf.set(e.fill.symbol+'|'+e.fill.tradeDate,n);});
   for(const [index,entry] of entries.entries()){

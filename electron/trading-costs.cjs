@@ -144,11 +144,11 @@ class TradingCosts{
     // The order time gives the U.S. trade date; an order day far from it (old or test records) is used as it is.
     const tradeDate=o=>{if(Number.isFinite(o.createdAt)&&o.createdAt>0){const d=nyDate(o.createdAt);if(Math.abs(Date.parse(d)-Date.parse(o.day))<=2*86400000)return d;}return o.day;};
     const app=this.orders().filter(o=>o.environment==='live'&&accounts.has(ownerAccount(o.accountKey))&&o.market==='US'&&o.filled>0&&o.fillPrice>0&&['Buy','Sell'].includes(o.side)&&/^\d{4}-\d{2}-\d{2}$/.test(o.day??'')&&/^(NASD|NYSE|AMEX):/.test(o.symbol??'')).map(o=>{const r=o.reportedCosts?.status==='reported'?o.reportedCosts:null;
-      return {id:o.id,account:ownerAccount(o.accountKey),symbol:o.symbol,side:o.side,quantity:o.filled,price:o.fillPrice,feesUSD:r?r.feesUSD:o.resultCosts?(o.resultCosts.commission+o.resultCosts.transactionTax):null,tradeDate:tradeDate(o),timestamp:o.createdAt,timeKnown:Number.isFinite(o.createdAt)&&o.createdAt>0,settlementDate:r?.settlementDate??null,settlementKRW:r?.settlementKRW??null,exchangeRate:r?.exchangeRate??null,feesSource:r?'Broker':'Estimated',source:'App order'};});
-    const broker=this.db.prepare('SELECT payload FROM tax_events').all().map(r=>({...JSON.parse(r.payload),timeKnown:false})).filter(e=>accounts.has(e.account));
+      return {id:o.id,account:ownerAccount(o.accountKey),symbol:o.symbol,side:o.side,quantity:o.filled,price:o.fillPrice,feesUSD:r?r.feesUSD:o.resultCosts?(o.resultCosts.commission+o.resultCosts.transactionTax):null,tradeDate:tradeDate(o),placedAt:o.createdAt,filledBy:o.filledObservedAt??null,settlementDate:r?.settlementDate??null,settlementKRW:r?.settlementKRW??null,exchangeRate:r?.exchangeRate??null,feesSource:r?'Broker':'Estimated',source:'App order'};});
+    const broker=this.db.prepare('SELECT payload FROM tax_events').all().map(r=>JSON.parse(r.payload)).filter(e=>accounts.has(e.account));
     const ticker=s=>String(s).split(':').pop();const sameDay=(x,f)=>x.account===f.account&&ticker(x.symbol)===ticker(f.symbol)&&x.side===f.side&&x.tradeDate===f.tradeDate;
     const used=new Map(),appOnly=[],issues=[];
-    for(const f of [...app].sort((a,b)=>(a.timestamp??0)-(b.timestamp??0))){
+    for(const f of [...app].sort((a,b)=>(a.placedAt??0)-(b.placedAt??0))){
       const open=broker.filter(b=>!used.has(b.id)&&sameDay(b,f));
       const exact=open.find(b=>b.quantity===f.quantity&&Math.abs(b.price-f.price)<=0.005);
       const parts=exact?[exact]:open.length>1&&open.reduce((n,b)=>n+b.quantity,0)===f.quantity&&Math.abs(open.reduce((n,b)=>n+b.quantity*b.price,0)/f.quantity-f.price)<=0.005?open:null;
@@ -157,7 +157,7 @@ class TradingCosts{
       appOnly.push(f);
     }
     const symbolOf=new Map([...app,...broker,...(this.holdings()??[])].filter(x=>/^(NASD|NYSE|AMEX):/.test(x.symbol)).map(x=>[ticker(x.symbol),x.symbol]));
-    const fills=[...broker.map(b=>used.has(b.id)?{...b,timestamp:used.get(b.id).timestamp,timeKnown:used.get(b.id).timeKnown,appOrderId:used.get(b.id).id}:b),...appOnly].map(x=>({...x,symbol:symbolOf.get(ticker(x.symbol))??x.symbol}));
+    const fills=[...broker.map(b=>used.has(b.id)?{...b,placedAt:used.get(b.id).placedAt,filledBy:used.get(b.id).filledBy,appOrderId:used.get(b.id).id}:b),...appOnly].map(x=>({...x,symbol:symbolOf.get(ticker(x.symbol))??x.symbol}));
     return {fills,issues:[...new Set(issues)]};
   }
   // Imports the broker's U.S. trade history rows (kis-overseas.cjs trades()) for an account. A row's identity is its
