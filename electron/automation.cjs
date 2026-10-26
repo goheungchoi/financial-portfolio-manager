@@ -224,7 +224,7 @@ class Automation {
       const snapshot=require('./token-saver.cjs').compact(context);
       let review=null;
       if(mode==='review'){
-        const providerContext=require('./token-saver.cjs').compact(context);const transcript=[];
+        const providerContext=require('./context-fit.cjs').fitInitial(require('./token-saver.cjs').compact(context)).context;const transcript=[];
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
         const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
         // Every desk tool is a no-op except compute, which only reads prices.
@@ -347,7 +347,9 @@ class Automation {
         assessed=this.config.modelRouting==='complexity'||this.config.shadowEvaluation?this.routingInputs(context,trigger):null;const inputs=this.config.modelRouting==='complexity'?assessed:null;
         let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today),complexity:inputs?.complexity,hardRule:inputs?.hardRule,eligible:this.routingEligibility().eligible});
         if(assessed)assessed.routeInputs={emergencyActive:Boolean(emergency.active),triggerEvidence:context.triggerEvidence?{kind:context.triggerEvidence.kind??null,events:(context.triggerEvidence.events??[]).map(e=>({importance:e.importance??null}))}:null,nearBudget:saver.nearBudget(this.config,today)};
-        let providerContext=saver.compact(context);this.replays.saveContext(id,providerContext);
+        let providerContext=saver.compact(context);
+        {const fitted=require('./context-fit.cjs').fitInitial(providerContext);if(fitted.steps.length){providerContext=fitted.context;this.log(id,'System','Review context condensed',JSON.stringify(fitted.steps));}}
+        this.replays.saveContext(id,providerContext);
         // Shadow evaluation runs alongside this review, on a copy of the same context and with shared evidence.
         if(assessed&&this.config.shadowEvaluation&&!this.shadowing&&selected.openaiModel===this.config.openaiModel&&selected.reasoningEffort===this.config.reasoningEffort&&Math.random()*100<this.config.shadowPct){anchor=require('./evidence-anchor.cjs').createAnchor();shadowRun=this.shadowRun(id,structuredClone(providerContext),anchor);}
         if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`+(inputs?` · complexity ${inputs.complexity.score}/100${inputs.complexity.reasons.length?': '+inputs.complexity.reasons.join('; '):''}`:''));
@@ -764,7 +766,10 @@ class Automation {
     if(!drift&&this.config.newsTrigger!=='off'&&Date.now()-(this.lastNewsTrigger??0)>=600000){const pending=this.newsEvents.pending(this.config.newsTrigger);if(pending.length){this.lastNewsTrigger=Date.now();this.newsEvents.markTriggered(pending.map(event=>event.id));this.triggerEvidence={kind:'news',events:pending.slice(0,5).map(({title,source,published,symbols,importance})=>({title,source,published,symbols,importance}))};void this.review('News event trigger').catch(()=>{});return;}}
     // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping.
     const slow=this.config.provider==='openai'&&this.config.degradeNearBudget&&require('./token-saver.cjs').nearBudget(this.config,this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0})?2:1;
-    if(elapsed>=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*slow||drift)void this.review(drift?'Price movement trigger':'Scheduled review').catch(()=>{});
+    const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*slow;
+    // A failed review leaves the price baseline unchanged, so drift would retry every minute: it waits for the interval.
+    if(drift&&this.lastError&&elapsed<interval)return;
+    if(elapsed>=interval||drift)void this.review(drift?'Price movement trigger':'Scheduled review').catch(()=>{});
   }
   approveLesson(id,approved){if(typeof id!=='string'||typeof approved!=='boolean')throw new Error('INVALID_REQUEST');this.syncLearning();if(this.learningError)throw new Error('LESSON_REVIEW_FAILED');const lifecycle=this.memory.lifecycle(id);if(lifecycle)this.memory.review(id,{expectedSignature:lifecycle.signature,action:approved?'approve':'retire'});else this.db.prepare('UPDATE lessons SET approved=? WHERE id=?').run(approved?1:0,id);return this.getState();}
 }
