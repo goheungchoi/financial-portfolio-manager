@@ -267,15 +267,12 @@ test('live check fix: trade rows imported by the old parser are dropped at start
   const costs=new TradingCosts(db);assert.equal(db.prepare('SELECT count(*) n FROM tax_events').get().n,0);
   costs.importTrades('a',[row('Buy',1,100,'2026-10-23','2026-10-26')]);new TradingCosts(db);assert.equal(db.prepare('SELECT count(*) n FROM tax_events').get().n,1,'current rows survive a restart');db.close();
 });
-test('reviews read compact tax figures, and an oversized first request is condensed instead of failing (2026-10-26 outage)',()=>{
+test('reviews read compact tax figures (2026-10-26 outage)',()=>{
   const {db,costs}=ledgerDb();costs.save({...DEFAULT_COSTS,annualRealizedKRW:0,usdKRW:1400});costs.importTrades('a',[{...row('Buy',2,100,'2026-03-02','2026-03-03'),ticker:'AAA'}]);costs.holdings=()=>[{symbol:'NASD:AAA',quantity:2}];
   const u=[{symbol:'NASD:AAA',price:120},{symbol:'NASD:BBB',price:50}],pos={'NASD:AAA':{quantity:2,costTotal:200}};
   const full=costs.fullContext('US',u,pos),c=costs.context('US',u,pos);const size=x=>Buffer.byteLength(JSON.stringify(x));
   assert.ok(size(c)<size(full)*0.75,`compact ${size(c)} vs full ${size(full)}`);assert.equal(c.settings.taxLots,undefined,'no internal lots');assert.equal(JSON.stringify(c).includes('sourceIds'),false);
   assert.deepEqual(c.oneShare[0].sell.incomeTax,{status:full.oneShare[0].sell.incomeTax.status,...(full.oneShare[0].sell.incomeTax.missingInputs.length?{missingInputs:full.oneShare[0].sell.incomeTax.missingInputs}:{})});
   assert.equal(c.oneShare[0].sell.capitalGainsTaxKRW,full.oneShare[0].sell.capitalGainsTaxKRW,'same figures');assert.ok(c.tax.assumptions.length>0,'assumptions listed once');db.close();
-  const fit=require('../electron/context-fit.cjs');const wire=x=>Buffer.byteLength(JSON.stringify([{role:'user',content:JSON.stringify(x)}]));
-  const ctx={positions:{'005930':{quantity:1}},quotes:[{symbol:'005930',price:1}],marketNarrative:{drivers:Array.from({length:400},(_,i)=>({name:'driver '+i,signals:['a long signal description '+i]}))},similarEpisodes:Array.from({length:200},(_,i)=>({id:i,text:'episode '+i}))};
-  const r=fit.fitInitial(ctx,20000);assert.ok(wire(r.context)<=19000);assert.deepEqual(r.context.positions,ctx.positions,'decision data untouched');assert.deepEqual(r.context.quotes,ctx.quotes);assert.ok(r.steps.length>=1);
-  assert.equal(fit.fitInitial({positions:{}},20000).steps.length,0,'a request that fits is unchanged');
+  // The first-request fallback is review-context.cjs shape(), tested in review-context.test.cjs.
 });
