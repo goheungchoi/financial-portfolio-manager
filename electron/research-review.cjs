@@ -7,6 +7,21 @@ function refusal(args,symbols){
 }
 // Up to three research rounds of up to four tool requests each; the fourth request must answer.
 const ROUNDS=4,MAX_CALLS=4;
+// Before every model call the complete request is measured as it will be sent. Older results are condensed or become
+// references first; if the latest round is still too large, its results are bounded again to the space left (whole
+// parts kept, the rest named so the agent can ask for them), and then become references. A request that still does not
+// fit is not sent. keepFrom: index of the latest round's first item.
+async function fitRequest(items,{keepFrom,compact,log}){
+  const cf=require('./context-fit.cjs'),rc=require('./review-context.cjs'),target=cf.LIMIT*cf.TARGET;
+  const first=await cf.fit(items,{keepFrom,compact});let out=first.items;const steps=[...first.steps];
+  const latest=out.map((item,i)=>({item,i})).filter(({item,i})=>i>=keepFrom&&item?.type==='function_call_output');
+  if(cf.size(out)>target&&latest.length){const room=Math.floor((target-cf.size(out)+latest.reduce((sum,{item})=>sum+cf.size(item),0))/latest.length)-300;
+    out=out.map((item,i)=>i>=keepFrom&&item?.type==='function_call_output'?{...item,output:JSON.stringify(rc.bound(JSON.parse(item.output),Math.max(800,room)))}:item);steps.push({step:'rebound',perCall:room,bytes:cf.size(out)});}
+  if(cf.size(out)>target){const last=await cf.fit(out,{keepFrom:out.length});out=last.items;steps.push(...last.steps);}
+  if(steps.length)log('System','Research context condensed',JSON.stringify(steps));
+  if(cf.size(out)>cf.LIMIT){const e=new Error('CONTEXT_OVER_BUDGET');e.detail={limit:'app bytes',wireBytes:cf.size(out),limitBytes:cf.LIMIT};throw e;}
+  return out;
+}
 // wrap, when given, sees every tool call (name, function) and returns the function to run: the shadow evaluation uses it
 // to share evidence between the live and shadow runs and to keep both tool transcripts.
 async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions,compact,wrap=null,detail=null}){
@@ -16,7 +31,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   let perCall=16000;const answer=(call,value)=>continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(require('./review-context.cjs').bound(value,perCall))});
   for(let round=0;round<ROUNDS;round++){
     // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
-    if(round>0){const fitted=await require('./context-fit.cjs').fit(continuation,{keepFrom,compact});if(fitted.steps.length){continuation=fitted.items;log('System','Research context condensed',JSON.stringify(fitted.steps));}}
+    if(round>0)continuation=await fitRequest(continuation,{keepFrom,compact,log});
     const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});
     usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;
     if(!result.toolCalls){
@@ -25,7 +40,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
       if(result.decision?.withheld&&Array.isArray(result.continuation)){
         const w=result.decision.withheld;log('System','Plan correction requested',`${w.quantity} ${w.symbol}: ${w.reason}`);
         const ask={role:'user',content:`The app held back your Buy of ${w.quantity} ${w.symbol} because its plan is incomplete: ${w.reason}. Return your decision again with every plan field filled from your own analysis (thesis, invalidation, stopPrice below the current price, horizonDays, confidence). If you cannot justify a complete plan, return Hold. Do not change the trade only to satisfy the format.`};
-        try{const again=await request({research:false,final:true,continuation:[...result.continuation,ask]});usage.inputTokens+=again.usage?.inputTokens??0;usage.outputTokens+=again.usage?.outputTokens??0;
+        try{const items=[...result.continuation,ask];const again=await request({research:false,final:true,continuation:await fitRequest(items,{keepFrom:items.length,compact,log})});usage.inputTokens+=again.usage?.inputTokens??0;usage.outputTokens+=again.usage?.outputTokens??0;
           if(again.decision&&!again.decision.withheld){log('System','Plan correction accepted',`${again.decision.action} ${again.decision.symbol??''} ${again.decision.quantity??''}`.trim());return {...again,usage,decision:{...again.decision,planCorrected:{missing:w.reason}}};}
           log('System','Plan correction not accepted',again.decision?.withheld?.reason??'no decision');}
         catch(error){log('System','Plan correction failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED');}
@@ -57,4 +72,4 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   }
   throw new Error('INVALID_AI_RESPONSE');
 }
-module.exports={researchReview,ROUNDS,MAX_CALLS};
+module.exports={researchReview,fitRequest,ROUNDS,MAX_CALLS};

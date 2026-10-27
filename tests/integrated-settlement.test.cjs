@@ -57,9 +57,9 @@ test('review fix: no deposit, withdrawal or transfer is inferred from an uncerta
     observe(2000000,prevUSD,0);now+=60000;observe(2000000,nowUSD,BUY,[order]);now+=60000;observe(2000000,nowUSD,BUY,[order]);
     now+=60000;observe(2500000,nowUSD,BUY,[order]);now+=86400000;observe(settledKRWAfter,nowUSD,0,[order]);now+=60000;observe(settledKRWAfter,nowUSD,0,[order]);return flows;};
   const usd=run(1000,100,2500000);assert.deepEqual(usd[1],[],'USD-funded: the old calculation invented a ₩1,192,140 withdrawal here');
-  assert.deepEqual(usd[3],[['KR',500000,false]],'a real deposit during a stable uncertain window is still detected');assert.deepEqual(usd.slice(4),[[],[]],'settlement is not a flow');
-  const krw=run(0,0,2500000-BUY);assert.deepEqual(krw[1],[['KR',-BUY,true],['US',900,true]],'KRW-funded: a known transfer between markets');assert.deepEqual(krw.slice(4),[[],[]],'settlement is not a withdrawal');
-  const mixed=run(100,0,2500000-(BUY-Math.ceil(100*RATE))),flat=mixed.flat();assert.deepEqual(mixed[1],[],'mixed: nothing inferred at the purchase');assert.deepEqual(mixed[3],[['KR',500000,false]]);assert.deepEqual(mixed.slice(4),[[],[]],'nor at settlement');assert.ok(flat.length===1);
+  assert.deepEqual(usd[3],[],'held first');assert.deepEqual(usd[4],[['KR',500000,false]],'a real deposit during a stable uncertain window is still detected');assert.deepEqual(usd[5],[],'settlement is not a flow');
+  const krw=run(0,0,2500000-BUY);assert.deepEqual(krw[1],[['KR',-BUY,true],['US',900,true]],'KRW-funded: a known transfer between markets');assert.deepEqual(krw.slice(3),[[],[['KR',500000,false]],[]],'the deposit after its hold; settlement is not a withdrawal');
+  const mixed=run(100,0,2500000-(BUY-Math.ceil(100*RATE))),flat=mixed.flat();assert.deepEqual(mixed[1],[],'mixed: nothing inferred at the purchase');assert.deepEqual(mixed[4],[['KR',500000,false]]);assert.deepEqual(mixed[5],[],'nor at settlement');assert.ok(flat.length===1);
 });
 test('review fix: settlement uncertainty reaches the equity reliability check through the full assembly path',async()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');
