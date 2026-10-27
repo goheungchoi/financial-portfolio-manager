@@ -459,3 +459,16 @@ main>.engine-settings{margin-bottom:18px}
 
 /* Dry run: the assembled review inputs, scrollable. */
 .dry-run-inputs{max-height:320px;overflow:auto;font-size:12px;line-height:1.4;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
+
+/* Last change beside a live total: a muted label, a tinted pill (arrow, signed amount, percent) and the time. */
+.tick-delta,.metrics .tick-delta,.equity-meta .tick-delta,.us-account-value .tick-delta{display:inline-flex;flex-direction:row;align-items:center;gap:7px;margin:0;font-size:12px;line-height:1.2;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tick-delta .tick-label,.tick-delta time,.us-account-value .tick-delta time{color:var(--muted);font-size:11px;font-weight:400}
+.tick-delta .tick-pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px 2px 7px;border-radius:999px;background:color-mix(in srgb,currentColor 12%,transparent);border:1px solid color-mix(in srgb,currentColor 30%,transparent);animation:tick-pop .7s ease-out}
+.tick-delta .tick-pill i{font-style:normal;font-size:9px;line-height:1}
+.tick-delta .tick-pill b,.metric-foot .tick-delta b{font-size:12.5px;font-weight:650}
+.tick-delta .tick-pct{font-size:11px;font-weight:500;opacity:.85}
+.tick-delta.unchanged .tick-label{font-style:normal}
+@keyframes tick-pop{0%{background:color-mix(in srgb,currentColor 32%,transparent);transform:scale(1.06)}100%{background:color-mix(in srgb,currentColor 12%,transparent);transform:none}}
+.tick-delta.increase .tick-pill{color:var(--accent)}
+.tick-delta.decrease .tick-pill{color:var(--danger,#d96c6c)}
+.metric-foot>.tick-delta{flex-basis:100%}

@@ -2,13 +2,19 @@ import {useEffect,useRef,useState} from 'react';
 import {nextChange} from './live-change.mjs';
 export const formatMoney=(value:number)=>new Intl.NumberFormat('ko-KR',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(value);
 // basis names where the value comes from; a change of basis (loading, a price source settling) is not shown as a move.
+// The last change in a live total: labeled, with an arrow, the signed amount, the percent and when it happened. It stays
+// until the next change (an update with no change does not clear it), so it reads as a fact rather than a flicker.
 export function TickDelta({value,sample,currency='KRW',basis=''}:{value:number;sample:number;currency?:string;basis?:string}){
-  const previous=useRef<{value:number;basis:string}|null>({value,basis});const lastSample=useRef(sample);const [delta,setDelta]=useState<number|null>(null);
-  useEffect(()=>{if(lastSample.current===sample&&previous.current?.value===value&&previous.current?.basis===basis)return;lastSample.current=sample;const next=nextChange(previous.current,value,basis);previous.current=next.state;setDelta(next.delta);},[value,sample,basis]);
+  const previous=useRef<{value:number;basis:string}|null>({value,basis});const lastSample=useRef(sample);
+  const [move,setMove]=useState<{delta:number;from:number;at:number;sequence:number}|null>(null);
+  useEffect(()=>{if(lastSample.current===sample&&previous.current?.value===value&&previous.current?.basis===basis)return;lastSample.current=sample;const from=previous.current?.value;const next=nextChange(previous.current,value,basis);previous.current=next.state;
+    if(next.delta)setMove(current=>({delta:next.delta!,from:from??value-next.delta!,at:Date.now(),sequence:(current?.sequence??0)+1}));},[value,sample,basis]);
   const format=(amount:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(amount);
-  // A signed, colored amount; no change shows a quiet dash. The meaning lives in the tooltip.
-  const text=delta===null||delta===0?'—':`${delta>0?'+':'−'}${format(Math.abs(delta))}`;
-  return <span className={`tick-delta ${delta!==null&&delta>0?'increase':delta!==null&&delta<0?'decrease':'unchanged'}`} data-delta={delta??''} title={delta===null?'Waiting for the next price update':'Change since the last price update, including fills, fees and cash changes'}><b>{text}</b></span>;
+  if(!move)return <span className="tick-delta unchanged" data-delta="" title="Shows the next change in this total as prices, fills or cash update"><span className="tick-label">No change yet</span></span>;
+  const up=move.delta>0,pct=move.from?Math.abs(move.delta/move.from*100):null,time=new Date(move.at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const sign=up?'+':'−',amount=`${sign}${format(Math.abs(move.delta))}`,percent=pct==null?null:pct<0.01?`${sign}<0.01%`:`${sign}${pct.toFixed(2)}%`;
+  return <span className={`tick-delta ${up?'increase':'decrease'}`} data-delta={move.delta} title={`Last change at ${time}: ${amount}${percent?` (${percent})`:''}, from prices, fills, fees or cash`}>
+    <span className="tick-label">Last change</span><span key={move.sequence} className="tick-pill"><i aria-hidden="true">{up?'▲':'▼'}</i><b>{amount}</b>{percent&&<span className="tick-pct">{percent}</span>}</span><time>{time}</time></span>;
 }
 export function LiveValue({value,format=formatMoney,basis=''}:{value:number;format?(value:number):string;basis?:string}){
   const previous=useRef<{value:number;basis:string}|null>({value,basis});const [change,setChange]=useState({delta:0,sequence:0});
