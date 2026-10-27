@@ -49,10 +49,10 @@ test('annual gains are the outside-app baseline plus app sales from the KRW ledg
   costs.save(costs.saved());assert.equal(costs.saved().annualRealizedKRW,2000000,'the saved value stays the outside-app figure');assert.equal(costs.get().annualRealizedKRW,2240000);
   db.close();
 });
-function fixture(){const calls=[];const raw=new KisReadOnlyClient({environment:'mock',appKey:'fixture-key',appSecret:'fixture-secret',accountNumber:'12345678',accountProductCode:'01'},async(url,options)=>{calls.push({url,options});const params=new URL(url).searchParams;let body={rt_cd:'0'};
+function fixture(present=null){const calls=[];const raw=new KisReadOnlyClient({environment:'mock',appKey:'fixture-key',appSecret:'fixture-secret',accountNumber:'12345678',accountProductCode:'01'},async(url,options)=>{calls.push({url,options});const params=new URL(url).searchParams;let body={rt_cd:'0'};
   if(url.endsWith('/oauth2/tokenP'))body={access_token:'fixture-token',expires_in:3600};
   else if(url.includes('inquire-balance'))body.output1=params.get('OVRS_EXCG_CD')==='NASD'?[{ovrs_pdno:'AAPL',ovrs_excg_cd:'NASD',tr_crcy_cd:'USD',ovrs_cblc_qty:'10',ord_psbl_qty:'10',pchs_avg_pric:'150',now_pric2:'200',ovrs_stck_evlu_amt:'2000'}]:[];
-  else if(url.includes('inquire-present-balance'))body.output2=[{crcy_cd:'USD',frcr_dncl_amt_2:'1000',account:'private'}];
+  else if(url.includes('inquire-present-balance'))Object.assign(body,present??{output2:[{crcy_cd:'USD',frcr_dncl_amt_2:'1000',account:'private'}]});
   else if(url.includes('/price?'))body.output={last:'200',private:'excluded'};
   else if(url.includes('inquire-psamount'))body.output={ord_psbl_qty:'5',ord_psbl_frcr_amt:'1000',echm_af_ord_psbl_qty:'99999'};
   else if(url.includes('inquire-ccnl'))body.output=[];
@@ -83,4 +83,12 @@ test('U.S. order history for Activity: KST order time, USD amounts, Korean-date 
   assert.equal(new Date(g.timestamp).toISOString(),'2026-10-23T15:07:34.000Z','00:07:34 KST on Oct 24');assert.equal(g.executionAmount,323.64);assert.equal(g.averagePrice,323.64);assert.equal(g.currency,'USD');assert.equal(g.status,'Filled');assert.equal(g.channel,'OpenAPI');
   const c=rows.find(r=>r.symbol==='NASD:NVDA');assert.equal(c.status,'Canceled');assert.equal(c.executionAmount,0);assert.equal(c.channel,'MTS');
   await assert.rejects(client.orderHistory('2026-10-25','2026-10-02'),/INVALID_DATE_RANGE/);
+});
+// 2026-10-27: after the Oct 23 U.S. buys settled the account held no USD, KIS returned no cash row, the rate was lost and
+// Home valued the account without its U.S. holdings (₩791,131 instead of about ₩1.5m).
+test('the USD/KRW rate falls back to the holdings base rate when KIS returns no USD cash row',async()=>{
+  const rate=async present=>(await fixture(present).client.balance()).fx;
+  assert.deepEqual(await rate({output1:[{pdno:'GOOGL',bass_exrt:'1322.60000000'}],output2:[]}).then(f=>[f.usdKRW,f.source]),[1322.6,'KIS base rate (holdings)']);
+  assert.deepEqual(await rate({output1:[{pdno:'GOOGL',bass_exrt:'1322.6'}],output2:[{crcy_cd:'USD',frcr_dncl_amt_2:'0',frst_bltn_exrt:'1331.3'}]}).then(f=>[f.usdKRW,f.source]),[1331.3,'KIS first published rate'],'the cash row rate when present');
+  assert.equal(await rate({output1:[],output2:[]}),null,'unknown without either');
 });

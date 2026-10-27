@@ -19,6 +19,13 @@ function usSession(date=new Date()){
   return {open,status:open?'open':'closed',timeZone:'America/New_York',basis:'regular-session calendar; broker validates holidays, halts and eligibility',day};
 }
 const DAYTIME={NASD:'BAQ',NYSE:'BAY',AMEX:'BAA'};
+// The USD/KRW rate from the present balance: the USD cash row's first published rate. With no USD held, KIS returns no
+// cash row, so the base rate on the U.S. holding rows (bass_exrt) is used; without either the rate is unknown.
+function usdRate(usd,holdingRows){
+  if(usd&&Number(usd.frst_bltn_exrt)>0)return {usdKRW:Number(usd.frst_bltn_exrt),source:'KIS first published rate',timestamp:Date.now()};
+  const base=records(holdingRows).map(row=>Number(row?.bass_exrt)).find(rate=>rate>0);
+  return base?{usdKRW:base,source:'KIS base rate (holdings)',timestamp:Date.now()}:null;
+}
 class OverseasClient{
   constructor(client,clock=()=>new Date()){this.client=client;this.clock=clock;}
   identity(){return this.client.overseasIdentity();}
@@ -35,7 +42,7 @@ class OverseasClient{
     const usd=await stage('CASH',async()=>{if(!Object.hasOwn(present.body,'output2'))throw new Error('INVALID_RESPONSE');return records(present.body.output2).find(row=>row.crcy_cd?.trim()==='USD');});const cash=await stage('CASH',async()=>usd?numeric(usd.frcr_dncl_amt_2):0);
     // Broker buying power (foreign-only and integrated) for one reference stock; a failure leaves it unknown, not zero.
     let brokerBuyingPower=null;try{const ref=holdings[0]??null;const {exchange:ex,ticker:tk}=instrument(ref?.symbol??'NASD:AAPL');const {body}=await this.query('inquire-psamount',this.tr('TTTS3007R','VTTS3007R'),{OVRS_EXCG_CD:ex,OVRS_ORD_UNPR:(ref?.price>0?ref.price:100).toFixed(2),ITEM_CD:tk});brokerBuyingPower=require('./buying-power.cjs').brokerFigures(body.output);}catch{}
-    return {...this.identity(),source:'kis-us',currency:'USD',...(brokerBuyingPower?{brokerBuyingPower}:{}),fx:usd&&Number(usd.frst_bltn_exrt)>0?{usdKRW:numeric(usd.frst_bltn_exrt),source:'KIS first published rate',timestamp:Date.now()}:null,timestamp:new Date().toISOString(),cash,reportedTotal:Math.round((cash+holdings.reduce((sum,row)=>sum+row.marketValue,0))*100)/100,holdings,
+    return {...this.identity(),source:'kis-us',currency:'USD',...(brokerBuyingPower?{brokerBuyingPower}:{}),fx:usdRate(usd,present.body.output1),timestamp:new Date().toISOString(),cash,reportedTotal:Math.round((cash+holdings.reduce((sum,row)=>sum+row.marketValue,0))*100)/100,holdings,
       // Unsettled U.S. buys and sales in KRW (electron/integrated-settlement.cjs); absent when KIS does not report them.
       ...(present.body.output3&&typeof present.body.output3==='object'&&!Array.isArray(present.body.output3)?{unsettled:{buyKRW:numeric(present.body.output3.ustl_buy_amt_smtl)||0,sellKRW:numeric(present.body.output3.ustl_sll_amt_smtl)||0}}:{})};
   }
