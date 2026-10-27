@@ -1,6 +1,6 @@
 {
   "name": "financial-portfolio-manager",
-  "version": "1.5.37",
+  "version": "1.5.38",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
