@@ -44,7 +44,7 @@ app.once('browser-window-created',(_event,win)=>{
       assert.equal(await win.webContents.executeJavaScript('document.querySelector(".tick-delta").classList.contains("increase")'),true);
       fixtureService.onQuote({symbol:'005380',price:220,timestamp:Date.now(),receivedAt:Date.now(),cumulativeVolume:102});await waitDelta(-10);
       assert.ok((await win.webContents.executeJavaScript('document.querySelector(".tick-delta").textContent')).includes('−₩10'));
-      assert.equal(await win.webContents.executeJavaScript('document.querySelector(".tick-delta").classList.contains("decrease")'),true);await waitDelta(0);
+      assert.equal(await win.webContents.executeJavaScript('document.querySelector(".tick-delta").classList.contains("decrease")'),true);await new Promise(resolve=>setTimeout(resolve,400));assert.equal(await win.webContents.executeJavaScript('document.querySelector(".tick-delta").dataset.delta'),'-10','the last change stays until the next one');assert.match(await win.webContents.executeJavaScript('document.querySelector(".tick-delta").textContent'),/Last change.*\d{2}:\d{2}:\d{2}/);
       const saved=await win.webContents.executeJavaScript('window.portfolio.getSnapshot()');
       assert.equal(saved.environment,'synthetic');assert.notEqual(saved.cash,500);
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Charts').click()");
