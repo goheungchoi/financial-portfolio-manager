@@ -27,9 +27,13 @@ class PerformanceHistory {
   addFlow(account,value){
     const today=seoulDate(this.clock());
     if(typeof account!=='string'||!account||!value||!isDay(value.day)||value.day>today||!['KR','US'].includes(value.market)||!Number.isFinite(value.amount)||value.amount===0||Math.abs(value.amount)>1e12||typeof(value.note??'')!=='string'||String(value.note??'').length>200)throw new Error('INVALID_FLOW');
-    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{}),...(value.transfer?{transfer:true}:{})};
+    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{}),...(value.transfer?{transfer:true}:{}),
+      ...(value.transfer&&value.awaitingExchange?{awaitingExchange:true}:{}),...(value.transfer&&value.source==='exchange'?{source:'exchange'}:{})};
     this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(flow.id,account,JSON.stringify(flow));return flow;
   }
+  // A recorded transfer whose currency exchange has now been seen: kept as it is, marked so it is not matched again.
+  markExchanged(account,ids,exchange){for(const id of ids){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)continue;
+    this.db.prepare('UPDATE cash_flows SET payload=? WHERE id=? AND account=?').run(JSON.stringify({...JSON.parse(row.payload),exchangedAt:exchange.at,exchange:{KRW:exchange.KRW,USD:exchange.USD}}),id,account);}}
   removeFlow(account,id){this.db.prepare('DELETE FROM cash_flows WHERE id=? AND account=?').run(id,account);}
   // A detected flow the user confirmed keeps its amount and stops being flagged.
   confirmFlow(account,id){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)throw new Error('INVALID_FLOW');

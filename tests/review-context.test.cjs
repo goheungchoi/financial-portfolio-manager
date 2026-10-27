@@ -60,7 +60,7 @@ test('point 1: detail is read in bounded, selectable parts; a large section neve
   const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
   const big=failedLike(20);const combined={...big,...rc.combineTradingCosts(big.markets)};const shaped=rc.shape(combined,{limit:Math.round(rc.wire(combined)*0.6)});
   assert.ok(rc.bytes(shaped.detail.positionSizing)>4*8000,`a section larger than a round of detail replies (${rc.bytes(shaped.detail.positionSizing)})`);
-  const d=rc.detailPart(shaped.detail,{section:'positionSizing',part:'',page:1});assert.equal(d.complete,false);assert.deepEqual(d.parts.map(p=>p.part),['riskPerTradePct','rows'],'a large object lists its parts');
+  const d=rc.detailPart(shaped.detail,{section:'positionSizing',part:'',page:1});assert.equal(d.complete,false);assert.equal(d.data.riskPerTradePct,10,'small parts come inline');assert.deepEqual(d.omittedParts.map(p=>p.part),['rows'],'a large part is named by its path');
   const p1=rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',page:1});assert.ok(rc.bytes(p1)<=8000);assert.ok(p1.pages>1);assert.equal(p1.totalItems,big.positionSizing.rows.length);assert.equal(p1.complete,false);
   const pages=Array.from({length:p1.pages},(_,k)=>rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',page:k+1}));assert.deepEqual(pages.flatMap(x=>x.data).map(r=>r.symbol),big.positionSizing.rows.map(r=>r.symbol),'every row reachable, none twice');
   const one=rc.detailPart(shaped.detail,{section:'positionSizing',part:'NASD:T3',page:1});assert.equal(one.complete,true);assert.deepEqual(one.data,big.positionSizing.rows.filter(r=>r.symbol==='NASD:T3'),'rows about one symbol');
@@ -129,4 +129,53 @@ test('an over-limit request reports which limit rejected it and its largest sect
   const e=await client.decide(ctx,{openaiModel:'gpt-6-sol',reasoningEffort:'low'}).catch(x=>x);assert.equal(e.message,'CONTEXT_TOO_LARGE');assert.equal(e.detail.limit,'app bytes');assert.match(e.detail.largest[0],/^scoutPlan:/);assert.equal(sent,null,'nothing was sent');
   const m=await client.decide({universe:[],quotes:[],positions:{}},{openaiModel:'gpt-6-sol',reasoningEffort:'low'}).catch(x=>x);assert.equal(m.message,'AI_CONTEXT_LIMIT');assert.equal(m.detail.limit,'model context window');
   assert.ok(client.lastRequestSizes.instructionsBytes>1000&&client.lastRequestSizes.inputBytes>0,'instructions and input measured apart');
+});
+// Review of 22fdc4f..4b05851, finding 1: budgets were measured before results became JSON strings inside the request,
+// so quotes and backslashes (escaped twice there) made follow-ups larger than planned (174,362 bytes against 140,000).
+const escaped=n=>{const unit='{"a":"\\"quoted\\" C:\\\\path\\\\x","k":"한국어 \"따옴표\""}\n\t';return unit.repeat(Math.ceil(n/unit.length)).slice(0,n);};
+test('wire 1: tool results are measured as sent; four quote-heavy results on a 69.5 KB first request stay within the follow-up budget',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
+  assert.equal(rc.outBytes('"'.repeat(100)),406,'a quote costs four bytes in the request');
+  // The first request: context JSON (full of quotes) inside a user message, 69.5 KB as sent.
+  let ctx={notes:''};while(rc.wire(ctx)<69500)ctx.notes+='"q" \\ ';const first=[{role:'user',content:JSON.stringify(ctx)}];
+  // Parts small enough for the old measure to keep, each about twice as large once sent.
+  const heavy=k=>({a:'"'.repeat(3000+k),b:'\\'.repeat(3000),c:escaped(4000),d:'"'.repeat(3000),e:escaped(4000),f:'plain '.repeat(500)});
+  const sent=[];let round=0;
+  const request=async({continuation})=>{if(continuation)sent.push(cf.size(continuation));round++;const prior=continuation??first;
+    if(round<4){const calls=[0,1,2,3].map(k=>({name:'get_company_research',callId:`w${round}${k}`,args:{symbol:'005930',sections:['s'+round+k]}}));return {toolCalls:calls,continuation:[...prior,...calls.map(c=>({type:'function_call',call_id:c.callId,name:c.name,arguments:JSON.stringify(c.args)}))],usage:{}};}
+    return {decision:{action:'Hold'},usage:{}};};
+  let n=0;const r=await researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async()=>heavy(n++)}});
+  assert.equal(r.decision.action,'Hold');assert.equal(sent.length,3);assert.ok(sent.every(b=>b<=cf.LIMIT*cf.TARGET),'every follow-up within the budget: '+sent.join(','));
+  for(const v of [heavy(0),{only:escaped(40000)}]){const b=rc.bound(v,14000);assert.ok(rc.outBytes(b)<=14000,'bounded as sent');}
+});
+test('wire 2: the complete request is checked before every call; results are reduced to retrievable pieces, and a request that cannot fit is not sent',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
+  const {fitRequest}=require('../electron/research-review.cjs');const logs=[];
+  const call=k=>({type:'function_call',call_id:'g'+k,name:'get_company_research',arguments:JSON.stringify({symbol:'005930',sections:['s'+k]})});
+  const out=k=>({type:'function_call_output',call_id:'g'+k,output:JSON.stringify(Object.fromEntries(Array.from({length:6},(_,i)=>['part'+i,escaped(1800)])))});
+  const items=[{role:'user',content:'x'.repeat(60000)},...[0,1,2,3].map(call),...[0,1,2,3].map(out)];assert.ok(cf.size(items)>cf.LIMIT*cf.TARGET,'over budget as given: '+cf.size(items));
+  const fitted=await fitRequest(items,{keepFrom:1,compact:null,log:(...a)=>logs.push(a.join(' '))});assert.ok(cf.size(fitted)<=cf.LIMIT*cf.TARGET,'reduced: '+cf.size(fitted));
+  const outs=fitted.filter(i=>i.type==='function_call_output').map(i=>JSON.parse(i.output));assert.ok(outs.every(o=>o.reference===true||o.omittedParts?.length>0),'what was left out is named or referenced');
+  assert.ok(outs.some(o=>o.part0),'whole parts are kept where they fit');assert.ok(logs.some(l=>/rebound/.test(l)));
+  // A first request that is already over the limit with the model's items: not sent.
+  let calls=0;const tooBig=async({continuation})=>{calls++;if(!continuation)return {toolCalls:[{name:'get_company_research',callId:'z',args:{symbol:'005930',sections:['a']}}],continuation:[{role:'user',content:'"'.repeat(80000)},{type:'function_call',call_id:'z',name:'get_company_research',arguments:'{}'}],usage:{}};return {decision:{action:'Hold'},usage:{}};};
+  await assert.rejects(researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request:tooBig,log:()=>{},discovery:{get_company_research:async()=>({a:1})}}),/CONTEXT_OVER_BUDGET/);assert.equal(calls,1,'the follow-up was not sent');
+});
+// Finding 2: a row larger than one reply became a placeholder marked complete, with no way to read it.
+test('detail: an oversized row is read in full through nested paths and pages of text; complete only when nothing is left out',()=>{
+  const notes='투자 메모 "인용" C:\\data\\x — '+escaped(9000);const row={symbol:'005930',name:'Samsung Electronics',price:216000,targets:{low:180000,high:260000},notes,history:Array.from({length:60},(_,i)=>({day:'2026-08-'+String(i%30+1).padStart(2,'0'),close:200000+i,note:'"'+i+'"'}))};
+  const detail={research:[{symbol:'000660',price:1},row]};
+  const top=rc.detailPart(detail,{section:'research',part:'005930',page:1});assert.equal(top.complete,false,'a row was left out');assert.ok(rc.outBytes(top)<=8000);
+  const ph=top.data.find(r=>r.omitted);assert.equal(ph.path,'005930/0');assert.equal(ph.symbol,'005930');
+  const inside=rc.detailPart(detail,{section:'research',part:ph.path,page:1});assert.equal(inside.complete,false);assert.ok(rc.outBytes(inside)<=8000);
+  assert.equal(inside.data.price,216000);assert.deepEqual(inside.data.targets,{low:180000,high:260000},'small fields inline');
+  const paths=inside.omittedParts.map(p=>p.part);assert.ok(paths.includes('005930/0/notes'));
+  const first=rc.detailPart(detail,{section:'research',part:'005930/0/notes',page:1});assert.ok(first.pages>1);
+  const text=Array.from({length:first.pages},(_,k)=>rc.detailPart(detail,{section:'research',part:'005930/0/notes',page:k+1})).map(r=>{assert.ok(rc.outBytes(r)<=8000,'each page within the reply limit');return r.text;}).join('');
+  assert.equal(text,notes,'the oversized text, read back exactly');
+  // A long list inside the row: pages, then every row equal to the original.
+  if(paths.includes('005930/0/history')){const h=rc.detailPart(detail,{section:'research',part:'005930/0/history',page:1});const all=Array.from({length:h.pages??1},(_,k)=>rc.detailPart(detail,{section:'research',part:'005930/0/history',page:k+1}).data).flat();assert.deepEqual(all,row.history);}
+  else assert.deepEqual(inside.data.history,row.history);
+  assert.equal(rc.detailPart(detail,{section:'research',part:'005930/0/nothing',page:1}).status,'rejected');
+  assert.deepEqual(rc.detailPart(detail,{section:'research',part:'000660',page:1}),{section:'research',part:'000660',data:[{symbol:'000660',price:1}],complete:true});
 });

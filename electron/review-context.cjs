@@ -55,29 +55,51 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
 function report(context,limit){return {wireBytes:wire(context),limitBytes:limit,largest:Object.entries(context).map(([k,v])=>[k,bytes(v)]).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,b])=>`${k}:${b}`)};}
-const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), in bounded parts. part: empty for the section (or its list of parts when large), a part name, or a symbol to select rows about it. page: 1 or more for long lists.',strict:true,
+const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), in bounded parts. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. page: 1 or more for long lists and long text. A reply with complete false names the paths or pages still to read.',strict:true,
   parameters:{type:'object',properties:{section:{type:'string'},part:{type:'string'},page:{type:'integer'}},required:['section','part','page'],additionalProperties:false}};
-// One bounded, selectable piece of a summarized section: a named part, the rows about one symbol, or a page of a list.
-// Every reply says what else exists (parts, pages), so nothing left out is implied to be complete.
+// Size of a value once it is a tool result in the request: the result travels as a JSON string inside the JSON
+// request, so every quote, backslash and control character is escaped twice. All tool budgets are in these bytes.
+const outBytes=value=>Buffer.byteLength(JSON.stringify(JSON.stringify(value??null)));
+// A long text in pieces of at most limit bytes each (as sent), split between characters.
+function chunks(text,limit){
+  const out=[];let cur='',size=0;for(const ch of text){const c=outBytes(ch)-6;if(cur&&size+c>limit){out.push(cur);cur='';size=0;}cur+=ch;size+=c;}
+  out.push(cur);return out;
+}
+// One bounded piece of a summarized section. part is a path of names, list indexes and symbols separated by '/'
+// (for example "rows/3/thesis" or "NASD:NVDA/0/notes"; a symbol selects the rows about it). A list too long for one
+// reply comes in pages; a row, field or text too large for one reply is replaced by its path (or comes in pages of
+// text), so everything can be read, and complete is true only when nothing was left out of this reply.
 function detailPart(detail,{section,part='',page=1},limit=8000){
   if(!detail||!Object.hasOwn(detail,section))return {status:'rejected',reason:`No detail for ${JSON.stringify(section)}; available: ${Object.keys(detail??{}).join(', ')||'none'}.`};
-  let value=detail[section],selected=part||null;
-  if(part&&value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,part))value=value[part];
-  else if(part&&value&&typeof value==='object'){const rows=(Array.isArray(value)?value:value.rows??value.books??value.targets??[]).filter(r=>r?.symbol===part);if(!rows.length)return {status:'rejected',reason:`No part or symbol ${JSON.stringify(part)} in ${section}.`,parts:Array.isArray(value)?undefined:Object.keys(value)};value=rows;}
-  else selected=null;
-  if(bytes(value)<=limit)return {section,...(selected?{part:selected}:{}),data:value,complete:true};
-  if(Array.isArray(value)){const pages=[];let cur=[];for(const row of value){if(cur.length&&bytes([...cur,row])>limit-400){pages.push(cur);cur=[];}cur.push(row);}if(cur.length)pages.push(cur);
-    const n=Math.min(Math.max(1,Number.isInteger(page)?page:1),pages.length);const rows=pages[n-1].map(r=>bytes(r)>limit-400?{tooLarge:true,bytes:bytes(r),...(r?.symbol?{symbol:r.symbol}:{})}:r);
-    return {section,...(selected?{part:selected}:{}),page:n,pages:pages.length,totalItems:value.length,data:rows,complete:pages.length===1};}
-  if(value&&typeof value==='object')return {section,...(selected?{part:selected}:{}),parts:Object.entries(value).map(([k,v])=>({part:k,bytes:bytes(v)})),note:'Too large to return at once: ask for one part by name.',complete:false};
-  return {section,status:'too_large',bytes:bytes(value),complete:false};
+  let value=detail[section];const at=[];
+  for(const step of String(part??'').split('/').filter(Boolean)){
+    if(Array.isArray(value)&&/^\d+$/.test(step)&&Number(step)<value.length){value=value[Number(step)];at.push(step);continue;}
+    if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,step)){value=value[step];at.push(step);continue;}
+    const rows=Array.isArray(value)?value:value&&typeof value==='object'?value.rows??value.books??value.targets??null:null;const matched=Array.isArray(rows)?rows.filter(r=>r?.symbol===step):[];
+    if(matched.length){value=matched;at.push(step);continue;}
+    return {status:'rejected',reason:`No part, index or symbol ${JSON.stringify(step)} in ${[section,...at].join('/')}.`,...(value&&typeof value==='object'?{parts:Array.isArray(value)?`indexes 0 to ${value.length-1}`:Object.keys(value)}:{})};
+  }
+  const path=at.join('/'),head={section,...(path?{part:path}:{})},sub=k=>path?`${path}/${k}`:String(k),room=limit-500;
+  const pageOf=count=>Math.min(Math.max(1,Number.isInteger(page)?page:1),count);
+  if(outBytes(value)<=limit)return {...head,data:value,complete:true};
+  if(typeof value==='string'){const pieces=chunks(value,room);const n=pageOf(pieces.length);return {...head,page:n,pages:pieces.length,text:pieces[n-1],complete:false,note:'Long text: read every page with the same part to have all of it.'};}
+  if(Array.isArray(value)){
+    const items=value.map((row,i)=>outBytes(row)>room-200?{omitted:true,path:sub(i),bytes:outBytes(row),...(row?.symbol?{symbol:row.symbol}:{})}:row);
+    const pages=[];let cur=[];for(const item of items){if(cur.length&&outBytes([...cur,item])>room){pages.push(cur);cur=[];}cur.push(item);}pages.push(cur);
+    const n=pageOf(pages.length),omitted=pages[n-1].filter(r=>r?.omitted===true&&typeof r.path==='string').map(r=>r.path);
+    return {...head,page:n,pages:pages.length,totalItems:value.length,data:pages[n-1],complete:pages.length===1&&!omitted.length,...(omitted.length?{note:'Rows too large for one reply are given by path: read each with that path as part.'}:{})};}
+  if(value&&typeof value==='object'){
+    const data={},omittedParts=[];for(const [k,v] of Object.entries(value)){if(outBytes({...data,[k]:v})+120*(omittedParts.length+1)<=room)data[k]=v;else omittedParts.push({part:sub(k),bytes:outBytes(v)});}
+    return {...head,data,omittedParts,complete:false,note:'Parts too large for this reply are listed by path: read each with that path as part.'};}
+  return {...head,status:'too_large',bytes:outBytes(value),complete:false};
 }
-// Bounds a tool response before it joins the conversation: whole top-level parts are kept in order while they fit,
-// and the parts left out are named so the agent can ask for them; nothing is cut inside a part.
-// 16 KB each: four responses in a round plus the review's first request stay within the follow-up limit.
+// Bounds a tool response before it joins the conversation, in bytes as sent (outBytes): whole top-level parts are
+// kept in order while they fit, and the parts left out are named so the agent can ask for them; nothing is cut inside
+// a part. 16 KB each: four responses in a round plus the review's first request stay within the follow-up limit.
 function bound(value,limit=16000){
-  if(bytes(value)<=limit||!value||typeof value!=='object'||Array.isArray(value))return bytes(value)<=limit?value:{status:'too_large',bytes:bytes(value),note:'Ask for a narrower request (fewer sections or one symbol).'};
-  const out={},omitted=[];for(const [k,v] of Object.entries(value)){if(bytes({...out,[k]:v})<=limit-300)out[k]=v;else omitted.push(k);}
+  if(outBytes(value)<=limit)return value;
+  if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),note:'Ask for a narrower request (fewer sections or one symbol).'};
+  const out={},omitted=[];for(const [k,v] of Object.entries(value)){if(outBytes({...out,[k]:v})<=limit-400)out[k]=v;else omitted.push(k);}
   return {...out,omittedParts:omitted,note:'These parts were left out to fit; request them separately.'};
 }
 // Combined reviews: each market's trading costs move out of markets[] into one tradingCosts, with the tax model, fee
@@ -97,4 +119,4 @@ function sameInputs(failed,next,tolerancePct){
 // Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
 // market and what set this review off (a new agent trigger, news event or price watch is material).
 const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
-module.exports={sameInputs,cashOf,detailPart,combineTradingCosts,shape,report,bound,wire,bytes,MANDATORY,SUMMARIES,COMPRESS,DETAIL_TOOL};
+module.exports={sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,DETAIL_TOOL};
