@@ -92,3 +92,38 @@ test('fix: deposits and withdrawals that coincide are still recorded; an exchang
   assert.deepEqual(again.map(f=>[f.market,f.amount,f.transfer]),[['KR',-139000,true],['US',104.4,true]]);
   assert.equal(perf.flows('acct').filter(f=>f.transfer).length,4);
 });
+// Review of 4b05851..77a5c4f.
+test('review P1: a settlement paid in the reading where it settles leaves no evidence to hide a later withdrawal',()=>{
+  const {perf,read}=settling();const due={provisionalKRW:100000,unsettledKRW:100000},done={provisionalKRW:0,unsettledKRW:0};
+  read('2026-10-28T08:00:00+09:00',{krCash:1000000,usCash:0,...due});
+  assert.deepEqual(read('2026-10-28T09:00:00+09:00',{krCash:900000,usCash:0,...done}),[],'the ₩100,000 settlement');
+  assert.deepEqual(read('2026-10-28T10:00:00+09:00',{krCash:800000,usCash:0,...done}),[],'a real withdrawal, held first');
+  const [w]=read('2026-10-28T12:30:00+09:00',{krCash:800000,usCash:0,...done});assert.deepEqual([w.market,w.amount,w.detected],['KR',-100000,true],'and recorded: the old code discarded it as settlement');
+});
+test('review P1: a payment seen after its settlement uses the outstanding amount once; a fall that does not match is kept',()=>{
+  const due={provisionalKRW:100000,unsettledKRW:100000},done={provisionalKRW:0,unsettledKRW:0};
+  {const {perf,read,notes}=settling();read('2026-10-28T08:00:00+09:00',{krCash:1000000,usCash:0,...due});read('2026-10-28T09:00:00+09:00',{krCash:1000000,usCash:0,...done});
+    read('2026-10-28T09:05:00+09:00',{krCash:900000,usCash:0,...done});assert.ok(notes.includes('Settlement matched'));
+    read('2026-10-28T10:00:00+09:00',{krCash:800000,usCash:0,...done});const [w]=read('2026-10-28T12:30:00+09:00',{krCash:800000,usCash:0,...done});assert.equal(w.amount,-100000,'the record was used up');assert.equal(perf.flows('acct').length,1);}
+  {const {perf,read,notes}=settling();read('2026-10-28T08:00:00+09:00',{krCash:1000000,usCash:0,...due});read('2026-10-28T09:00:00+09:00',{krCash:1000000,usCash:0,...done});
+    read('2026-10-28T09:05:00+09:00',{krCash:700000,usCash:0,...done});const [w]=read('2026-10-28T11:30:00+09:00',{krCash:700000,usCash:0,...done});
+    assert.equal(w.amount,-300000,'₩300,000 does not match ₩100,000 outstanding: kept, not deleted');assert.ok(!notes.includes('Settlement matched'));}
+  {const {perf,read}=settling();read('2026-10-28T08:00:00+09:00',{krCash:1000000,usCash:0,...due});read('2026-10-28T09:00:00+09:00',{krCash:1000000,usCash:0,...done});
+    read('2026-10-29T10:00:00+09:00',{krCash:900000,usCash:0,...done});const [w]=read('2026-10-29T12:30:00+09:00',{krCash:900000,usCash:0,...done});assert.equal(w.amount,-100000,'evidence older than a day explains nothing');}
+});
+test('review P1: dollars from an exchange spent at settlement reverse the held U.S. rise; the Korean side is the payment',()=>{
+  const {perf,read}=settling();const base={provisionalKRW:UNKNOWN,unsettledKRW:UNSETTLED};
+  read('2026-10-27T08:20:00+09:00',{krCash:1213071,usCash:0,...base});read('2026-10-27T08:24:52+09:00',{krCash:1213071,usCash:537.7,...base});
+  assert.deepEqual(read('2026-10-27T08:25:37+09:00',{krCash:497231,usCash:0,provisionalKRW:0,unsettledKRW:0}),[]);
+  read('2026-10-27T12:00:00+09:00',{krCash:497231,usCash:0});read('2026-10-27T13:00:00+09:00',{krCash:400000,usCash:0});const [w]=read('2026-10-27T15:30:00+09:00',{krCash:400000,usCash:0});
+  assert.equal(perf.flows('acct').filter(f=>f.amount!==-97231).length,0,'nothing recorded for the exchange or the settlement');assert.equal(w.amount,-97231,'and no evidence left to hide a later withdrawal');
+});
+test('review P2: a held change returned gradually in small steps leaves nothing, in both currencies; a partial return is recorded net',()=>{
+  const {perf,read,notes}=settling();const at=(h,m)=>`2026-10-28T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+09:00`;
+  read(at(9,0),{krCash:500000,usCash:100});read(at(9,1),{krCash:600000,usCash:200});
+  for(let k=1;k<=20;k++)read(at(9,1+k*3),{krCash:600000-k*5000,usCash:200-k*5});
+  assert.deepEqual(read(at(12,0),{krCash:500000,usCash:100}),[],'₩100,000 and $100 returned in ₩5,000 and $5 steps');assert.equal(perf.flows('acct').length,0);assert.ok(notes.includes('Cash change reversed'));
+  const half=settling();half.read(at(9,0),{krCash:500000,usCash:100});half.read(at(9,1),{krCash:600000,usCash:200});
+  for(let k=1;k<=10;k++)half.read(at(9,1+k*3),{krCash:600000-k*5000,usCash:200-k*5});
+  assert.deepEqual(half.read(at(12,0),{krCash:550000,usCash:150}).map(f=>[f.market,f.amount]),[['KR',50000],['US',50]],'the accumulated difference, not the first jump');
+});
