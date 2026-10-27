@@ -83,3 +83,35 @@ test('checking inputs reports the assembled snapshot and keeps the full inputs f
   db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('c','2026-10-23',JSON.stringify({reviewId:'r2',model:'gpt-6-sol',status:'completed',accountedMicro:80000,timestamp:3,kind:'shadow'}));
   const e=automation.dryRunEstimate();assert.equal(e.estimateUSD,0.1,'one review of two requests; shadow calls excluded');assert.deepEqual(e.requests,{min:2,max:2});assert.equal(e.today.maxCalls,automation.config.maxCallsPerDay);assert.match(e.note,/same daily AI limits/);
 });
+// 1.5.37 validation: the dry run did not log Review size and kept only tool titles containing "request", so detail
+// reads and condensing could not be checked afterwards.
+const fcall=(name,args,id)=>({type:'function_call',call_id:id,name,arguments:JSON.stringify(args)});
+test('a dry-run review logs Review size and keeps every request size and detail read with its record',async()=>{
+  const {automation,events,queue,db}=harness();
+  const ask={section:'performance',part:'',page:1};
+  queue.push(()=>({toolCalls:[call('get_context_detail',ask,'d1')],continuation:[{role:'user',content:'x'},fcall('get_context_detail',ask,'d1')],usage:{inputTokens:1,outputTokens:1}}));
+  const r=await automation.dryRun('review');
+  const size=events.find(e=>e.title==='Review size');assert.ok(size,'logged as a live review is');const logged=JSON.parse(size.body);assert.equal(logged.dryRun,true);assert.equal(logged.limitBytes,70000);assert.ok(logged.wireBytes>0);
+  assert.deepEqual(r.review.requests.map(q=>[q.call,q.followUp,q.limitBytes]),[[1,false,70000],[2,true,140000]]);assert.ok(r.review.requests.every(q=>q.bytes>0&&q.bytes<=q.limitBytes));
+  assert.equal(r.review.size.wireBytes,logged.wireBytes);assert.equal(r.review.detailReads.length,1);assert.match(r.review.detailReads[0],/^performance → /);
+  assert.ok(r.review.transcript.some(t=>t.title.startsWith('Context detail')),'the full transcript, not only titles with "request"');
+  const stored=JSON.parse(db.prepare('SELECT payload FROM dry_runs WHERE id=?').get(r.id).payload);assert.deepEqual(stored.review.requests,r.review.requests);
+  assert.ok(events.some(e=>e.id===r.id&&e.title.startsWith('Context detail')),'tool steps also reach the Console');
+});
+test('a dry-run review condenses older results like a live review, accounts that call, and records it',async()=>{
+  const {automation,queue,db}=harness();const old='{"q":"'+'"'.repeat(10000)+'"}';
+  queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',page:1},'d2')],continuation:[{role:'user',content:'x'.repeat(110000)},fcall('get_company_research',{symbol:'005930',sections:['a']},'old'),{type:'function_call_output',call_id:'old',output:old},fcall('get_context_detail',{section:'x',part:'',page:1},'d2')],usage:{inputTokens:1,outputTokens:1}}));
+  queue.push(()=>({summaries:[{callId:'old',summary:'Samsung research, condensed.'}],usage:{inputTokens:1,outputTokens:1}}));
+  const r=await automation.dryRun('review');
+  assert.ok(r.review.condensed.length>=1,'condensing recorded');assert.match(r.review.condensed[0],/compact/);
+  assert.ok(r.review.requests.filter(q=>q.followUp).every(q=>q.bytes<=140000*0.9),'follow-ups within the fitting point: '+r.review.requests.map(q=>q.bytes).join(','));
+  const kinds=db.prepare('SELECT payload FROM ai_calls').all().map(x=>JSON.parse(x.payload)).filter(c=>c.reviewId===r.id).map(c=>c.kind);assert.deepEqual(kinds.sort(),['compact','dry-run','dry-run']);
+});
+test('a failed dry-run review keeps its diagnostics: sizes, transcript and the reason',async()=>{
+  const {automation,queue,db}=harness();
+  queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',page:1},'d3')],continuation:[{role:'user',content:'"'.repeat(80000)},fcall('get_context_detail',{section:'x',part:'',page:1},'d3')],usage:{inputTokens:1,outputTokens:1}}));
+  await assert.rejects(automation.dryRun('review'),/CONTEXT_OVER_BUDGET/);
+  const stored=db.prepare('SELECT payload FROM dry_runs').all().map(x=>JSON.parse(x.payload)).at(-1);assert.equal(stored.review.failed,'CONTEXT_OVER_BUDGET');
+  assert.equal(stored.review.requests.length,1,'the follow-up was not sent');assert.ok(stored.review.transcript.some(t=>t.title.startsWith('Context detail')));assert.ok(stored.review.size.wireBytes>0);
+  assert.equal(automation.busy,false);
+});

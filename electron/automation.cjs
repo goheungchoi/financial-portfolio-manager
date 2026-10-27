@@ -224,24 +224,38 @@ class Automation {
       const snapshot=require('./token-saver.cjs').compact(context);
       let review=null;
       if(mode==='review'){
-        const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context));if(!shapedDry.fits)throw new Error('CONTEXT_OVER_BUDGET');const providerContext=shapedDry.context;const transcript=[];
+        // Shaped and logged as a live review is ("Review size"); the size, every request's bytes and the full research
+        // transcript (detail reads, condensing, refusals) are kept with the record, also when the review fails.
+        const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context));
+        const size={...shapedDry.report,mandatoryBytes:shapedDry.mandatoryBytes,steps:shapedDry.steps,detailAvailable:shapedDry.context.detailAvailable??[]};
+        this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
+        const providerContext=shapedDry.context;const transcript=[],requests=[];
+        const trace=()=>({size,requests,transcript,detailReads:transcript.filter(t=>t.title.startsWith('Context detail')).map(t=>t.title.replace(/^Context detail · /,'')+' → '+t.body),condensed:transcript.filter(t=>t.title==='Research context condensed').map(t=>t.body)});
+        const failed=error=>{const at=Date.now();const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...trace()}};
+          try{this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,at,JSON.stringify({...record,snapshot}));}catch{}return error;};
+        if(!shapedDry.fits){const e=new Error('CONTEXT_OVER_BUDGET');e.detail=shapedDry.report;throw failed(e);}
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
         const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
         // Every desk tool is a no-op except compute, which only reads prices.
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
         const model={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');let calls=0;const callIds=[];
-        const request=async options=>{options={...options,...model};const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
+        const request=async options=>{options={...options,...model};
+          requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options)});
+          const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
           const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
           const callId=randomUUID();callIds.push(callId);this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('INSERT INTO ai_usage VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(day,usage.calls+1,usage.reservedMicro+reserve);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,JSON.stringify({reviewId:id,model:model.openaiModel,reasoningEffort:model.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'dry-run'}));this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}
           calls++;try{const r=await this.decisionWithRetry(providerContext,options);require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,r,'completed');return r;}
           catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}};
-        const r=await require('./research-review.cjs').researchReview({context:providerContext,detail:shapedDry.detail,wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log:(kind,title,body)=>transcript.push({kind,title,body:String(body).slice(0,400)}),compact:null,request});
-        const micro=callIds.reduce((sum,cid)=>{const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(cid);const p=row?JSON.parse(row.payload):{};return sum+(p.accountedMicro??p.estimatedMicro??0);},0);
-        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120))};
+        // Condensing uses the routine model as a live review does (accounted as kind compact under this dry run's id).
+        const log=(kind,title,body)=>{transcript.push({at:new Date().toISOString(),kind,title,body:String(body).slice(0,4000)});this.log(id,kind,title,String(body));};
+        let r;try{r=await require('./research-review.cjs').researchReview({context:providerContext,detail:shapedDry.detail,wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log,compact:this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request});}
+        catch(error){throw failed(error);}
+        const micro=this.db.prepare('SELECT payload FROM ai_calls').all().map(row=>JSON.parse(row.payload)).filter(p=>p.reviewId===id).reduce((sum,p)=>sum+(p.accountedMicro??p.estimatedMicro??0),0);
+        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
       }
       const record={id,timestamp:Date.now(),mode,summary,...(review?{review}:{})};
       this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify({...record,snapshot}));
-      this.log(id,'System',mode==='review'?'Dry-run review · nothing applied':'Dry run · inputs checked',JSON.stringify(review?{summary,decision:{action:review.decision.action,symbol:review.decision.symbol,quantity:review.decision.quantity,explanation:review.decision.explanation},calls:review.calls,costUSD:review.costUSD}:{summary}));
+      this.log(id,'System',mode==='review'?'Dry-run review · nothing applied':'Dry run · inputs checked',JSON.stringify(review?{summary,decision:{action:review.decision.action,symbol:review.decision.symbol,quantity:review.decision.quantity,explanation:review.decision.explanation},calls:review.calls,costUSD:review.costUSD,requestBytes:review.requests.map(q=>q.bytes),detailReads:review.detailReads.length,condensed:review.condensed.length}:{summary}));
       return record;
     }finally{this.busy=false;}
   }
