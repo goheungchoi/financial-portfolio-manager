@@ -88,3 +88,22 @@ test('KIS scope blocks AI buys after the broker daily loss limit without any ord
     assert.equal(live.orders().length,0);assert.deepEqual([...new Set(calls)],['live-context']);
   }finally{db.close();}
 });
+// Starting auto trading resumed nothing: it always ran a review, and after a restart the last review time was lost, so
+// a review that had run minutes before ran again. The review clock is kept and Start follows the schedule.
+test('Start auto trading resumes the schedule from the last review, also after a restart, instead of reviewing again',async()=>{
+  const {db,paper,automation}=fixture({breached:false});try{
+    automation.configure({provider:'openai',intervalMinutes:60,closedMarketReviews:'keep'});let calls=0;const request=automation.provider.request;automation.provider.request=async(...a)=>{calls++;return request(...a);};
+    await automation.review('User request');const reviewedAt=automation.lastRun;assert.equal(calls,1);
+    // A restart: a new engine on the same database.
+    const b=new Automation(db,paper,automation.provider,()=>{});b.providerStatus.aiConnected=true;b.notify=()=>{};assert.equal(b.lastRun,0);
+    const message=await autoLaunch.start(b,autoLaunch.launchState(b).token);
+    assert.equal(calls,1,'Start does not run a review');assert.match(message,/Next review at \d\d:\d\d KST, on schedule/);assert.equal(b.lastRun,reviewedAt,'the last review time survives the restart');
+    assert.ok(Math.abs(b.nextReviewAt()-(reviewedAt+3600000))<1000,'the next review is an interval after the last one');
+    b.tick();await settle(b);assert.equal(calls,1,'nor does the scheduler before the interval');autoLaunch.stop(b);
+    // A review already due starts from the scheduler, under the start name.
+    db.prepare('UPDATE review_clock SET payload=?').run(JSON.stringify({lastRun:reviewedAt-2*3600000}));
+    const c=new Automation(db,paper,automation.provider,()=>{});c.providerStatus.aiConnected=true;c.notify=()=>{};
+    assert.match(await autoLaunch.start(c,autoLaunch.launchState(c).token),/review is due and starts shortly/);assert.equal(calls,1);
+    c.tick();await settle(c);assert.equal(calls,2);assert.equal(JSON.parse(db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload).trigger,'Auto trading started');
+  }finally{db.close();}
+});
