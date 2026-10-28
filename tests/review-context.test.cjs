@@ -30,6 +30,8 @@ function failedLike(n=1){
     discovery:{enabled:true,watchlist:all.map(s=>({symbol:s,reason:text(60)}))},reviewWatches:Array.from({length:6},(_,i)=>({symbol:all[i],kind:'price',reason:text(120)}))};
 }
 const MANDATORY_SAME=['positions','cash','equity','orders','orderReconciliation','equityReliability','equityUncertainty','quotes','universe','triggerEvidence','risk','emergency','marketSession','fx','userGuidelines'];
+// Reads a part to the end by following next.from; each read may have a different size allowance.
+const readAll=(detail,section,part,limits=[8000])=>{const out=[];let from=0;for(let i=0;i<10000;i++){const r=rc.detailPart(detail,{section,part,from},limits[i%limits.length]);out.push(r);if(!r.next)return out;assert.equal(r.next.from,r.to);from=r.next.from;}throw new Error('no end');};
 test('the failed review shape fits once duplication is removed and background starts as summaries; nothing mandatory is lost',()=>{
   const ctx=failedLike();const limit=reviewByteLimit({});assert.ok(rc.wire(ctx)>limit,`the fixture is oversized like the real one (${rc.wire(ctx)})`);
   const combined={...ctx,...rc.combineTradingCosts(ctx.markets)};assert.ok(combined.markets.every(m=>!m.tradingCosts),'trading costs stated once');assert.equal(typeof combined.tradingCosts.taxModel,'string');assert.ok(combined.tradingCosts.markets.every(m=>!m.taxModel),'the tax model once for both markets');
@@ -60,14 +62,14 @@ test('point 1: detail is read in bounded, selectable parts; a large section neve
   const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
   const big=failedLike(20);const combined={...big,...rc.combineTradingCosts(big.markets)};const shaped=rc.shape(combined,{limit:Math.round(rc.wire(combined)*0.6)});
   assert.ok(rc.bytes(shaped.detail.positionSizing)>4*8000,`a section larger than a round of detail replies (${rc.bytes(shaped.detail.positionSizing)})`);
-  const d=rc.detailPart(shaped.detail,{section:'positionSizing',part:'',page:1});assert.equal(d.complete,false);assert.equal(d.data.riskPerTradePct,10,'small parts come inline');assert.deepEqual(d.omittedParts.map(p=>p.part),['rows'],'a large part is named by its path');
-  const p1=rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',page:1});assert.ok(rc.bytes(p1)<=8000);assert.ok(p1.pages>1);assert.equal(p1.totalItems,big.positionSizing.rows.length);assert.equal(p1.complete,false);
-  const pages=Array.from({length:p1.pages},(_,k)=>rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',page:k+1}));assert.deepEqual(pages.flatMap(x=>x.data).map(r=>r.symbol),big.positionSizing.rows.map(r=>r.symbol),'every row reachable, none twice');
-  const one=rc.detailPart(shaped.detail,{section:'positionSizing',part:'NASD:T3',page:1});assert.equal(one.complete,true);assert.deepEqual(one.data,big.positionSizing.rows.filter(r=>r.symbol==='NASD:T3'),'rows about one symbol');
-  assert.equal(rc.detailPart(shaped.detail,{section:'secrets',part:'',page:1}).status,'rejected');
+  const d=rc.detailPart(shaped.detail,{section:'positionSizing',part:'',from:0});assert.equal(d.complete,false);assert.equal(d.data.riskPerTradePct,10,'small parts come inline');assert.deepEqual(d.omittedParts.map(p=>p.part),['rows'],'a large part is named by its path');
+  const p1=rc.detailPart(shaped.detail,{section:'positionSizing',part:'rows',from:0});assert.ok(rc.bytes(p1)<=8000);assert.ok(p1.next.from>0);assert.equal(p1.totalItems,big.positionSizing.rows.length);assert.equal(p1.complete,false);
+  const pages=readAll(shaped.detail,'positionSizing','rows');assert.deepEqual(pages.flatMap(x=>x.data).map(r=>r.symbol),big.positionSizing.rows.map(r=>r.symbol),'every row reachable, none twice');
+  const one=rc.detailPart(shaped.detail,{section:'positionSizing',part:'NASD:T3',from:0});assert.equal(one.complete,true);assert.deepEqual(one.data,big.positionSizing.rows.filter(r=>r.symbol==='NASD:T3'),'rows about one symbol');
+  assert.equal(rc.detailPart(shaped.detail,{section:'secrets',part:'',from:0}).status,'rejected');
   // Through a review: four detail requests in one round on top of a first request at the limit stay under the follow-up limit.
   const sent=[];let round=0;const base='c'.repeat(69000);
-  const request=async({continuation})=>{if(continuation)sent.push(cf.size(continuation));round++;if(round===1){const calls=[1,2,3,4].map(k=>({name:'get_context_detail',callId:'d'+k,args:{section:'positionSizing',part:'rows',page:k}}));
+  const request=async({continuation})=>{if(continuation)sent.push(cf.size(continuation));round++;if(round===1){const calls=[1,2,3,4].map(k=>({name:'get_context_detail',callId:'d'+k,args:{section:'positionSizing',part:'rows',from:(k-1)*5}}));
     return {toolCalls:calls,continuation:[{role:'user',content:base},...calls.map(c=>({type:'function_call',call_id:c.callId,name:c.name,arguments:JSON.stringify(c.args)}))],usage:{}};}
     return {decision:{action:'Hold'},usage:{}};};
   await researchReview({context:{universe:[]},detail:shaped.detail,evidence:{get:async()=>({})},request,log:()=>{}});assert.ok(sent.every(n=>n<=cf.LIMIT*cf.TARGET),'within the budget: '+sent.join(','));
@@ -162,22 +164,33 @@ test('wire 2: the complete request is checked before every call; results are red
   await assert.rejects(researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request:tooBig,log:()=>{},discovery:{get_company_research:async()=>({a:1})}}),/CONTEXT_OVER_BUDGET/);assert.equal(calls,1,'the follow-up was not sent');
 });
 // Finding 2: a row larger than one reply became a placeholder marked complete, with no way to read it.
+test('detail reads continue from a stable position whatever room each read has: every row and character exactly once',()=>{
+  const rows=Array.from({length:100},(_,i)=>({symbol:'S'+i,note:'n'.repeat(i%7*40)}));
+  const text=Array.from({length:3000},(_,i)=>String.fromCharCode(0xAC00+i%500)).join('')+'"quoted" \\ end';const detail={rows,text};
+  for(const limits of [[1500,8000],[8000,1500,3000],[1600]]){
+    assert.deepEqual(readAll(detail,'rows','',limits).flatMap(r=>r.data),rows,'rows with allowances '+limits);
+    assert.equal(readAll(detail,'text','',limits).map(r=>r.text).join(''),text,'text with allowances '+limits);}
+  // The reported case: a small first read, then a larger one, continues at the next row instead of skipping ahead.
+  const first=rc.detailPart(detail,{section:'rows',part:'',from:0},1500);assert.ok(first.to<20);
+  const second=rc.detailPart(detail,{section:'rows',part:'',from:first.next.from},8000);assert.equal(second.from,first.to);assert.equal(second.data[0].symbol,'S'+first.to);
+  assert.equal(rc.detailPart(detail,{section:'rows',part:'',from:100}).status,'rejected','past the end');assert.equal(rc.detailPart(detail,{section:'text',part:'',from:9999}).status,'rejected');
+});
 test('detail: an oversized row is read in full through nested paths and pages of text; complete only when nothing is left out',()=>{
   const notes='투자 메모 "인용" C:\\data\\x — '+escaped(9000);const row={symbol:'005930',name:'Samsung Electronics',price:216000,targets:{low:180000,high:260000},notes,history:Array.from({length:60},(_,i)=>({day:'2026-08-'+String(i%30+1).padStart(2,'0'),close:200000+i,note:'"'+i+'"'}))};
   const detail={research:[{symbol:'000660',price:1},row]};
-  const top=rc.detailPart(detail,{section:'research',part:'005930',page:1});assert.equal(top.complete,false,'a row was left out');assert.ok(rc.outBytes(top)<=8000);
+  const top=rc.detailPart(detail,{section:'research',part:'005930',from:0});assert.equal(top.complete,false,'a row was left out');assert.ok(rc.outBytes(top)<=8000);
   const ph=top.data.find(r=>r.omitted);assert.equal(ph.path,'005930/0');assert.equal(ph.symbol,'005930');
-  const inside=rc.detailPart(detail,{section:'research',part:ph.path,page:1});assert.equal(inside.complete,false);assert.ok(rc.outBytes(inside)<=8000);
+  const inside=rc.detailPart(detail,{section:'research',part:ph.path,from:0});assert.equal(inside.complete,false);assert.ok(rc.outBytes(inside)<=8000);
   assert.equal(inside.data.price,216000);assert.deepEqual(inside.data.targets,{low:180000,high:260000},'small fields inline');
   const paths=inside.omittedParts.map(p=>p.part);assert.ok(paths.includes('005930/0/notes'));
-  const first=rc.detailPart(detail,{section:'research',part:'005930/0/notes',page:1});assert.ok(first.pages>1);
-  const text=Array.from({length:first.pages},(_,k)=>rc.detailPart(detail,{section:'research',part:'005930/0/notes',page:k+1})).map(r=>{assert.ok(rc.outBytes(r)<=8000,'each page within the reply limit');return r.text;}).join('');
+  const first=rc.detailPart(detail,{section:'research',part:'005930/0/notes',from:0});assert.ok(first.next.from>0);
+  const text=readAll(detail,'research','005930/0/notes').map(r=>{assert.ok(rc.outBytes(r)<=8000,'each read within the reply limit');return r.text;}).join('');
   assert.equal(text,notes,'the oversized text, read back exactly');
   // A long list inside the row: pages, then every row equal to the original.
-  if(paths.includes('005930/0/history')){const h=rc.detailPart(detail,{section:'research',part:'005930/0/history',page:1});const all=Array.from({length:h.pages??1},(_,k)=>rc.detailPart(detail,{section:'research',part:'005930/0/history',page:k+1}).data).flat();assert.deepEqual(all,row.history);}
+  if(paths.includes('005930/0/history')){const all=readAll(detail,'research','005930/0/history').flatMap(r=>r.data);assert.deepEqual(all,row.history);}
   else assert.deepEqual(inside.data.history,row.history);
-  assert.equal(rc.detailPart(detail,{section:'research',part:'005930/0/nothing',page:1}).status,'rejected');
-  assert.deepEqual(rc.detailPart(detail,{section:'research',part:'000660',page:1}),{section:'research',part:'000660',data:[{symbol:'000660',price:1}],complete:true});
+  assert.equal(rc.detailPart(detail,{section:'research',part:'005930/0/nothing',from:0}).status,'rejected');
+  assert.deepEqual(rc.detailPart(detail,{section:'research',part:'000660',from:0}),{section:'research',part:'000660',data:[{symbol:'000660',price:1}],complete:true});
 });
 // Review of 844904c, P2: when the list of cuts had to give way, list truncations went first and cuts inside rows no
 // longer in the reply stayed listed, so a list shortened to 12 of 40 rows read as complete.
@@ -193,13 +206,13 @@ test('review P2: a shortened list is always named with its kept count, and cuts 
 test('review: names containing a slash are readable by their path; every stored result gets its own section',async()=>{
   const rc=require('../electron/review-context.cjs');const v={'data/P/E':{'~note':'t'.repeat(3000),rows:Array.from({length:30},(_,i)=>({symbol:'S'+i,v:'w'.repeat(300)}))}};
   const b=rc.bound(v,3000,{ref:'result-1'});const paths=[...(b.omittedParts??[]),...(b.cuts??[]).map(c=>c.path)];assert.ok(paths.length);
-  for(const path of paths){const d=rc.detailPart({'result-1':v},{section:'result-1',part:path,page:1});assert.equal(d.status,undefined,'readable: '+path);}
-  assert.equal(rc.detailPart({x:v},{section:'x',part:'data~1P~1E/~0note',page:1}).text?.slice(0,3)??rc.detailPart({x:v},{section:'x',part:'data~1P~1E/~0note',page:1}).data.slice(0,3),'ttt');
+  for(const path of paths){const d=rc.detailPart({'result-1':v},{section:'result-1',part:path,from:0});assert.equal(d.status,undefined,'readable: '+path);}
+  assert.equal(rc.detailPart({x:v},{section:'x',part:'data~1P~1E/~0note',from:0}).text?.slice(0,3)??rc.detailPart({x:v},{section:'x',part:'data~1P~1E/~0note',from:0}).data.slice(0,3),'ttt');
   const {researchReview}=require('../electron/research-review.cjs');const outputs=[];let round=0;
   const request=async({continuation})=>{round++;if(continuation)outputs.push(...continuation.filter(o=>o.type==='function_call_output'));
     if(round===1)return {toolCalls:[{name:'get_company_research',args:{symbol:'A'},callId:'same'}],continuation:[]};
     if(round===2)return {toolCalls:[{name:'get_company_research',args:{symbol:'B'},callId:'same'}],continuation:[]};
-    if(round===3)return {toolCalls:[{name:'get_context_detail',args:{section:'result-1',part:'',page:1},callId:'d'}],continuation:[]};return {decision:{action:'Hold'}};};
+    if(round===3)return {toolCalls:[{name:'get_context_detail',args:{section:'result-1',part:'',from:0},callId:'d'}],continuation:[]};return {decision:{action:'Hold'}};};
   await researchReview({context:{universe:[]},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async a=>({symbol:a.symbol})}});
   assert.equal(JSON.parse(outputs.find(o=>o.call_id==='d').output).data.symbol,'A','the first result is still result-1');
 });

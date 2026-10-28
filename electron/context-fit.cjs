@@ -27,7 +27,7 @@ async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null,targetB
   }
   for(const {item} of outputs(next,keepFrom).sort((a,b)=>b.item.output.length-a.item.output.length)){
     if(size(next)<=targetBytes)break;if(JSON.parse(item.output)?.reference)continue;
-    item.output=JSON.stringify({reference:true,request:calls.get(item.call_id)??null,...full(item.call_id),note:refs?.has(item.call_id)?'Read earlier in this run; read it again in full with get_context_detail (section fullResult.section, in pages).':'Read earlier in this review; call the same tool with the same arguments to read it again in full.'});}
+    item.output=JSON.stringify({reference:true,request:calls.get(item.call_id)??null,...full(item.call_id),note:refs?.has(item.call_id)?'Read earlier in this run; read it again in full with get_context_detail (section fullResult.section, from 0).':'Read earlier in this review; call the same tool with the same arguments to read it again in full.'});}
   if(steps.at(-1)?.step!=='compact'||size(next)!==steps.at(-1).bytes)steps.push({step:'reference',bytes:size(next)});
   return {items:next,steps};
 }

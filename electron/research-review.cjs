@@ -33,7 +33,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   const add=u=>{usage.inputTokens+=u?.inputTokens??0;usage.outputTokens+=u?.outputTokens??0;usage.cachedTokens+=u?.cachedTokens??0;};
   // Each response is bounded by the round's budget: what the request may still grow by, shared by the round's calls.
   // Every tool result is kept whole for this review (as section result-N of get_context_detail), so whatever bounding
-  // cuts or leaves out can be read in full, by path and page. The meter counts what was asked, read and sent.
+  // cuts or leaves out can be read in full, by path, continuing from each reply's next.from. The meter counts what was asked, read and sent.
   const store=require('./review-context.cjs').resultStore(detail),meter=require('./research-meter.cjs').createMeter();
   const done=()=>meter.summary(watched);
   let perCall=16000;const answer=(call,value,keep=true,runCache=false)=>{const sent=keep?store.keep(call.callId,value,perCall):require('./review-context.cjs').bound(value,perCall);
