@@ -127,3 +127,29 @@ test('review P2: a held change returned gradually in small steps leaves nothing,
   for(let k=1;k<=10;k++)half.read(at(9,1+k*3),{krCash:600000-k*5000,usCash:200-k*5});
   assert.deepEqual(half.read(at(12,0),{krCash:550000,usCash:150}).map(f=>[f.market,f.amount]),[['KR',50000],['US',50]],'the accumulated difference, not the first jump');
 });
+// Oct 28: the one-share Pentair buy was proposed at 00:25:20, submitted at 00:25:26 and filled at about 03:45. A reading
+// saved while it was only proposed put its creation time before the comparison window, so the fill was never matched
+// and the KRW funding (₩81,855) was recorded as a withdrawal at 05:46.
+const pnr=(status,filled)=>({id:'pnr',market:'US',side:'Buy',symbol:'NYSE:PNR',status,filled,fillPrice:filled?61.56:null,...(filled?{resultCosts:{netCash:-61.71},filledObservedAt:at('2026-10-28T03:45:19+09:00')}:{}),createdAt:at('2026-10-28T00:25:20+09:00')});
+test('fills are matched by what changed since the last reading: a fill hours after the order is still explained (Pentair)',()=>{
+  const {perf,read}=settling();
+  read('2026-10-28T00:20:00+09:00',{krCash:497231,usCash:0});
+  assert.deepEqual(read('2026-10-28T00:25:23+09:00',{krCash:497231,usCash:0,orders:[pnr('Ready',0)]}),[],'a reading between proposal and submission');
+  assert.deepEqual(read('2026-10-28T01:00:00+09:00',{krCash:497231,usCash:0,orders:[pnr('Accepted',0)]}),[],'waits while open');
+  const found=read('2026-10-28T03:45:30+09:00',{krCash:497231-81855,usCash:0,unsettledKRW:81855,orders:[pnr('Filled',1)]});
+  assert.deepEqual(found.map(f=>[f.market,f.amount,f.transfer,f.awaitingExchange]),[['KR',-81855,true,true],['US',61.71,true,true]],'integrated-margin funding, not a withdrawal');
+  assert.deepEqual(read('2026-10-28T06:00:00+09:00',{krCash:497231-81855,usCash:0,unsettledKRW:81855,orders:[pnr('Filled',1)]}),[],'the same fill is not explained twice');
+  assert.equal(perf.flows('acct').filter(f=>f.detected).length,0);
+});
+test('fills matched by change: an order filled before it was tracked is not counted again; readings from before fills were kept still work',()=>{
+  {const {perf,read}=settling();read('2026-10-28T09:00:00+09:00',{krCash:500000,usCash:0});
+    // The U.S. orders were not loaded at the first reading; the Pentair order had already been seen filled before it.
+    const late={...pnr('Filled',1),filledObservedAt:at('2026-10-28T08:00:00+09:00')};
+    assert.deepEqual(read('2026-10-28T09:01:00+09:00',{krCash:500000,usCash:0,orders:[late]}),[]);read('2026-10-28T11:30:00+09:00',{krCash:500000,usCash:0,orders:[late]});
+    assert.equal(perf.flows('acct').length,0,'no phantom U.S. deposit from an old fill');}
+  {const db=new DatabaseSync(':memory:');let now=at('2026-10-28T09:00:00+09:00');const perf=new PerformanceHistory(db,()=>now);const d=new FlowDetector(db,perf,()=>now);
+    db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('acct',JSON.stringify({at:now,krCash:1000000,usCash:0,basis:'net-of-confirmed',provisionalKRW:0,unsettledKRW:0}));now+=60000;
+    const kr={id:'k',market:'KR',side:'Buy',symbol:'005930',status:'Filled',filled:1,fillPrice:200000,resultCosts:{netCash:-200030},createdAt:now-30000};
+    assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[],'an older saved reading falls back to orders placed in between');
+    now+=60000;assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[]);now+=3*3600000;assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[]);}
+});
