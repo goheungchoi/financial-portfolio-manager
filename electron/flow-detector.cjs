@@ -81,7 +81,8 @@ class FlowDetector {
     // moved to the U.S. account before its balance was seen: the change is held like any other, marked so the user
     // investigates it rather than taking it for a withdrawal.
     const usStart=prev.usCash==null&&now.usCash!=null;
-    const compare=()=>usStart?unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US')):unexplained(prev,now,orders);
+    // Any open order, U.S. ones included, still means the reading cannot be judged.
+    const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):unexplained(prev,now,orders);
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
     // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.
@@ -96,7 +97,8 @@ class FlowDetector {
         // A change that returns a held change to its earlier balance is that reversal (for example dollars from an
         // exchange spent at settlement), not part of the payment.
         if(seen)for(const m of ['KR','US']){const held=state.pending[m];if(held&&seen[m]&&Math.sign(seen[m])!==Math.sign(held.amount)&&!big(m,held.amount+seen[m],fx)){held.amount=round(m,held.amount+seen[m]);seen[m]=0;}}
-        const usFall=seen&&seen.US<0?(fx>0?-seen.US*fx:Infinity):0,outstanding=seen?Math.round(paidOff-Math.max(0,-seen.KR)-usFall):0;
+        // At the first U.S. reading the U.S. side of the payment was not seen, so it cannot be measured: no evidence is kept.
+        const usFall=usStart?Infinity:seen&&seen.US<0?(fx>0?-seen.US*fx:Infinity):0,outstanding=seen?Math.round(paidOff-Math.max(0,-seen.KR)-usFall):0;
         if(outstanding>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:outstanding});}
       const found=this.resolve(account,state,now,prev,fx);save();return found;}
     const u=compare();if(!u)return [];

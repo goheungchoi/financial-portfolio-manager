@@ -110,10 +110,12 @@ function bound(value,limit=16000,{ref=null}={}){
     if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room-200);if(cut&&outBytes({...out,[k]:cut.value})<=limit-spare-200){out[k]=cut.value;shortened.push(k);cuts.push(...cut.cuts.map(c=>({...c,path:c.path?`${k}/${c.path}`:k})));continue;}}
     omitted.push(k);
   }
-  const result=()=>({...out,...(omitted.length?{omittedParts:omitted}:{}),...(shortened.length?{shortenedParts:shortened}:{}),...(cuts.length?{cuts}:{}),...full,
-    note:(omitted.length?'Some parts were left out to fit':'Long texts and lists in some parts were shortened to fit')+(ref?'; read them in full from fullResult.':'; request them separately or a narrower part.')});
-  // The list of cuts gives way before the data: the shortened parts themselves stay readable by name.
-  while(cuts.length&&outBytes(result())>limit)cuts.pop();
+  // Every part's list cuts come before its text cuts, so when the list of cuts must give way, the text cuts go first
+  // and the count left out is stated; the shortened parts themselves stay readable by name.
+  cuts.sort((a,b)=>('items' in a?0:1)-('items' in b?0:1));let unlisted=0;
+  const result=()=>({...out,...(omitted.length?{omittedParts:omitted}:{}),...(shortened.length?{shortenedParts:shortened}:{}),...(cuts.length?{cuts}:{}),...(unlisted?{cutsNotListed:unlisted}:{}),...full,
+    note:(omitted.length?'Some parts were left out to fit':'Long texts and lists in some parts were shortened to fit')+(unlisted?` (${unlisted} more cuts inside shortenedParts are not listed)`:'')+(ref?'; read them in full from fullResult.':'; request them separately or a narrower part.')});
+  while(cuts.length&&outBytes(result())>limit){cuts.pop();unlisted++;}
   return result();
 }
 // Statements kept whole when a response is shortened: a guidance sentence cut in half loses its qualification.
@@ -136,7 +138,11 @@ function shrink(value,limit){
     const list=largest('list');if(list){if(!cuts.has(list.path))cuts.set(list.path,{path:list.path,items:list.list.length});list.list.pop();cuts.get(list.path).keptItems=list.list.length;continue;}
     break;
   }
-  return outBytes(copy)<=limit?{value:copy,cuts:[...cuts.values()]}:null;
+  // Lists first: a list that lost entries matters more than a text inside it, and a cut inside an entry that was later
+  // removed is no longer in the reply (the list cut covers it).
+  const all=[...cuts.values()],lists=all.filter(c=>'items' in c);
+  const gone=c=>lists.some(l=>c!==l&&c.path.startsWith(l.path?l.path+'/':'')&&Number(c.path.slice(l.path?l.path.length+1:0).split('/')[0])>=l.keptItems);
+  return outBytes(copy)<=limit?{value:copy,cuts:[...lists,...all.filter(c=>!('items' in c))].filter(c=>!gone(c))}:null;
 }
 // Combined reviews: each market's trading costs move out of markets[] into one tradingCosts, with the tax model, fee
 // assumption and rule version stated once for both markets. Returns {markets, tradingCosts}.

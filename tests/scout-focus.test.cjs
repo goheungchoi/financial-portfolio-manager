@@ -41,3 +41,29 @@ test('review P2: a closed market allows a few read-only company reads for next-s
   stale=true;assert.throws(()=>tools.update_watchlist({action:'add',entries:[]}),/STALE_DECISION/);
   assert.match(INSTRUCTIONS,/up to three such reads per run, marked nextSession/);assert.doesNotMatch(INSTRUCTIONS,/company research for other markets are refused/);
 });
+// Review of 844904c: the scout cut every tool result at 8,000 characters, so a long next-session read reached the model
+// as broken JSON without its nextSession marker and with no sign it was cut.
+test('review: scout tool results are bounded as valid JSON, keep the next-session marker, and say what was shortened',async()=>{
+  const {focusTools,runScout}=require('../electron/scout.cjs'),rc=require('../electron/review-context.cjs');
+  const long={symbol:'NASD:AVGO',overview:{price:300},release:{source:'8-K',guidance:['The Company expects fourth quarter revenue of about $18.0 billion.'],text:'Line of the release. '.repeat(1500)},note:'Third-party data.'};
+  const tools=focusTools({research:async()=>long,update_watchlist:()=>({status:'ok'})},{markets:['KR'],deferred:['US']});
+  const outputs=[];let round=0;
+  const request=async({continuation})=>{round++;if(round===1)return {toolCalls:[{name:'get_company_research',callId:'c1',args:{symbol:'NASD:AVGO',sections:['overview','release']}}],continuation:[{role:'user',content:'context'}]};
+    outputs.push(...continuation.filter(o=>o.type==='function_call_output'));return {plan:{targets:[]}};};
+  await runScout({request,tools,log:()=>{}});const out=outputs[0].output;const parsed=JSON.parse(out);
+  assert.ok(rc.outBytes(parsed)<=12000,'within the per-call bound');assert.equal(parsed.nextSession.awaitingOpen,true,'the marker survives');assert.equal(Object.keys(parsed)[0],'nextSession');
+  assert.deepEqual(parsed.shortenedParts,['release']);assert.ok(parsed.cuts.some(c=>c.path==='release/text'));assert.deepEqual(parsed.release.guidance,long.release.guidance);
+  // The share shrinks as the request grows, and never sends more than the room left.
+  const big=[{role:'user',content:'x'.repeat(140000)}];const outs=[];let r2=0;
+  await runScout({request:async({continuation})=>{r2++;if(r2===1)return {toolCalls:Array.from({length:6},(_,i)=>({name:'get_company_research',callId:'k'+i,args:{symbol:'NASD:AVGO',sections:['release'],i}})),continuation:big};outs.push(...continuation.filter(o=>o.type==='function_call_output'));return {plan:{targets:[]}};},tools:focusTools({research:async()=>long},{markets:['US'],deferred:[]}),log:()=>{}});
+  assert.ok(outs.every(o=>rc.outBytes(JSON.parse(o.output))<=2400),'each result fits its share: '+outs.map(o=>rc.outBytes(JSON.parse(o.output))).join(','));
+});
+test('review: a failed next-session read does not spend the budget; padded symbols and empty reasons are handled',async()=>{
+  const {focusTools,NEXT_SESSION_LABEL}=require('../electron/scout.cjs');let mode='ok';const added=[];
+  const tools=focusTools({research:async args=>{if(mode==='throw')throw new Error('DATA_SOURCE_UNAVAILABLE');return mode==='bad'?{status:'unavailable',reason:'INVALID_SYMBOL'}:{symbol:args.symbol};},update_watchlist:a=>{added.push(...a.entries);return {status:'ok'};}},{markets:['US'],deferred:['KR']});
+  mode='bad';assert.equal((await tools.get_company_research({symbol:'999999'})).reason,'INVALID_SYMBOL');
+  mode='throw';await assert.rejects(tools.get_company_research({symbol:'091170'}),/DATA_SOURCE_UNAVAILABLE/);
+  mode='ok';const r=await tools.get_company_research({symbol:'005930 '});assert.equal(r.nextSession.market,'KR','a padded Korean code is still the closed market');assert.equal(r.nextSession.readsLeft,2,'failed reads were not counted');
+  tools.update_watchlist({action:'add',entries:[{symbol:' 233740',reason:''},{symbol:'233740',reason:'Chip lead'}]});
+  assert.deepEqual(added.map(e=>e.reason),['',NEXT_SESSION_LABEL+'Chip lead'],'an empty reason stays empty, so it cannot replace an existing one');
+});

@@ -179,3 +179,12 @@ test('detail: an oversized row is read in full through nested paths and pages of
   assert.equal(rc.detailPart(detail,{section:'research',part:'005930/0/nothing',page:1}).status,'rejected');
   assert.deepEqual(rc.detailPart(detail,{section:'research',part:'000660',page:1}),{section:'research',part:'000660',data:[{symbol:'000660',price:1}],complete:true});
 });
+// Review of 844904c, P2: when the list of cuts had to give way, list truncations went first and cuts inside rows no
+// longer in the reply stayed listed, so a list shortened to 12 of 40 rows read as complete.
+test('review P2: a shortened list is always named with its kept count, and cuts in removed rows are not listed',()=>{
+  const rc=require('../electron/review-context.cjs');const v={a:{t:'x'.repeat(3000),u:'y'.repeat(1500),rows:Array.from({length:40},(_,i)=>({symbol:'S'+i,note:'n'.repeat(600)}))}};
+  for(const limit of [3000,6000,16000]){const b=rc.bound(v,limit,{ref:'result-1'});assert.ok(rc.outBytes(b)<=limit);
+    const kept=b.a.rows.length,list=b.cuts.find(c=>c.path==="a/rows");if(limit<16000)assert.ok(kept<40,"rows dropped at "+limit);if(kept<40)assert.deepEqual(list&&[list.items,list.keptItems],[40,kept],"the list cut is listed at "+limit);
+    assert.ok(b.cuts.every(c=>{const m=/^a\/rows\/(\d+)\//.exec(c.path);return !m||Number(m[1])<kept;}),'no cut inside a removed row at '+limit);
+    const notes=b.a.rows.filter(r=>r.note.endsWith('…')).length,listed=b.cuts.filter(c=>/^a\/rows\/\d+\/note$/.test(c.path)).length;assert.equal(listed+(b.cutsNotListed??0)>=notes,true,'every text cut is listed or counted at '+limit);}
+});

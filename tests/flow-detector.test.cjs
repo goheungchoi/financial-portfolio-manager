@@ -184,6 +184,20 @@ test('review P1: the reading where the U.S. balance first loads still compares K
   // A later U.S. change is compared against the new baseline.
   assert.deepEqual(t.read('2026-10-28T12:31:00+09:00',{krCash:1000000,usCash:700,orders:[g]}),[]);assert.deepEqual(t.d.pending('acct').map(p=>[p.market,p.amount]),[['US',500]]);
 });
+// Review of 844904c, P2: at the first U.S. reading the U.S. side of a settlement is not seen, but it was taken as zero,
+// so the whole settled amount became evidence that later hid a real withdrawal of the same size.
+test('review P2: a settlement at the first U.S. reading leaves no evidence that could hide a withdrawal',()=>{
+  const {perf,read,notes}=settling();read('2026-10-28T10:00:00+09:00',{krCash:5000000,usCash:null,provisionalKRW:1400000,unsettledKRW:1400000});
+  read('2026-10-28T10:01:00+09:00',{krCash:5000000,usCash:300,provisionalKRW:0,unsettledKRW:0});
+  read('2026-10-28T11:00:00+09:00',{krCash:3600000,usCash:300});const found=read('2026-10-28T14:00:00+09:00',{krCash:3600000,usCash:300});
+  assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['KR',-1400000,true]],'the withdrawal is recorded');assert.ok(!notes.includes('Settlement matched'));
+  assert.equal(perf.flows('acct').length,1);
+  // An open U.S. order at that reading still means it cannot be judged: nothing is held until it closes.
+  const t=settling();const open={id:'o',market:'US',symbol:'NASD:NVDA',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:at('2026-10-28T09:59:00+09:00')};
+  t.read('2026-10-28T10:00:00+09:00',{krCash:1000000,usCash:null});assert.deepEqual(t.read('2026-10-28T10:01:00+09:00',{krCash:1500000,usCash:0,orders:[open]}),[]);
+  assert.deepEqual(t.d.pending('acct'),[],'not compared while the order is open');
+  t.read('2026-10-28T10:05:00+09:00',{krCash:1500000,usCash:0,orders:[{...open,status:'Canceled'}]});assert.deepEqual(t.d.pending('acct').map(p=>[p.market,p.amount]),[['KR',500000]],'compared once it closes');
+});
 test('an order cancelled or rejected after partial fills records when it was seen with its fills',async()=>{
   const {LiveEngine}=require('../electron/live-engine.cjs');const db=new DatabaseSync(':memory:');const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
   const broker={request:async op=>op==='orders'?{orders:[{orderId:'B1',filled:1,fillPrice:100,status:'Cancelled'}]}:{balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}}};
