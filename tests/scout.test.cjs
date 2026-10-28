@@ -201,3 +201,18 @@ test('the scout reads its scorecard and earlier self-reviews, and plans carry an
   await automation.scout();assert.equal(contexts[1].scorecard.picks[0].symbol,'005930');assert.equal(contexts[1].scorecard.picks[0].tradingReviews,'not yet');assert.equal(contexts[1].retrospectives[0].note,'Too few results to judge yet.');
   const state=automation.getState().scout;assert.equal(state.scorecard.picks.length,1,'the same pick across runs');assert.deepEqual(state.briefs,[]);
 });
+// When a promising stock is set aside because one share is too large (Samsung Electronics at about ₩216,000 for a
+// ₩1.5m account), the scout checks affordable instruments that keep the thesis and records what it found.
+test('scout substitutions: a stock set aside for its size gets affordable alternatives checked by their holdings, and the record reaches reviews',()=>{
+  const scout=require('../electron/scout.cjs');
+  const strict=s=>{if(Array.isArray(s))return s.forEach(strict);if(!s||typeof s!=='object')return;if(s.type==='object'&&s.properties){assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort());assert.equal(s.additionalProperties,false);}for(const v of Object.values(s))strict(v);};strict(scout.SCHEMA);
+  const plan=scout.validatePlan({summary:'s',cashTargetPct:30,focus:'f',targets:[],briefAnswers:[],retrospective:'',substitutions:[{forSymbol:'005930',why:'One share is about 14% of equity; the intended starter is 5%.',alternatives:[
+    {symbol:'091160',exposure:'KODEX 반도체: Samsung Electronics about 22% of holdings, SK hynix about 20%',verdict:'chosen',reason:'Keeps the memory-cycle thesis at a 3% position.'},
+    {symbol:'NASD:SOXL',exposure:'3x daily semiconductor index',verdict:'rejected',reason:'Leverage for a long holding period.'},
+    {symbol:'X',exposure:'',verdict:'maybe',reason:'invalid verdict'}]}]});
+  assert.deepEqual(plan.substitutions[0].alternatives.map(a=>[a.symbol,a.verdict]),[['091160','chosen'],['NASD:SOXL','rejected']]);
+  assert.equal(scout.validatePlan({summary:'s',cashTargetPct:null,focus:'f',targets:[],briefAnswers:[],retrospective:'',substitutions:[]}).substitutions,undefined,'empty when nothing was set aside');
+  const ctx=scout.reviewContext({timestamp:Date.now(),plan});assert.equal(ctx.substitutions[0].forSymbol,'005930');
+  assert.match(scout.INSTRUCTIONS,/When a promising stock is set aside because one share is larger than the allocation/);assert.match(scout.INSTRUCTIONS,/a name or label is not exposure/);
+  assert.match(scout.INSTRUCTIONS,/never pick one only because a stock is unaffordable/);assert.match(scout.INSTRUCTIONS,/An avoid in a brief applies to that brief/);
+});
