@@ -31,8 +31,11 @@ function prune(value){
   return value===null||value===''?undefined:value;
 }
 class ResearchService {
-  constructor({db,master,kis,provider,kisReady=()=>true,dartReady=()=>false,secReady=()=>false,clock=Date.now}){
+  // classify(symbol, name): the product classification the order checks use (exposure.cjs Exposure.classify, with your
+  // overrides and the English names of U.S. listings); by default one on the same database.
+  constructor({db,master,kis,provider,kisReady=()=>true,dartReady=()=>false,secReady=()=>false,clock=Date.now,classify=null}){
     this.db=db;this.master=master;this.kis=kis;this.provider=provider;this.kisReady=kisReady;this.dartReady=dartReady;this.secReady=secReady;this.clock=clock;this.inflight=new Map();this.failures=new Map();
+    this.classify=classify??((symbol,name,known)=>(this.exposure??=new (require('./exposure.cjs').Exposure)(db)).classify(symbol,name,known));
     db.exec('CREATE TABLE IF NOT EXISTS research_cache(symbol TEXT NOT NULL,source TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,source));CREATE TABLE IF NOT EXISTS research_snapshots(symbol TEXT NOT NULL,day TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(symbol,day))');
   }
   cached(symbol,source){const row=this.db.prepare('SELECT at,payload FROM research_cache WHERE symbol=? AND source=?').get(symbol,source);return row?{at:row.at,value:JSON.parse(row.payload)}:null;}
@@ -49,7 +52,8 @@ class ResearchService {
     // A description that could not be found in the filing is tried again after a day, not after the full week.
     if(hit&&!refresh&&this.clock()-hit.at<(hit.value?.overviewUnavailable?Math.min(spec.ttl,24*HOUR):spec.ttl)){note('hit');return {status:'ok',retrievedAt:hit.at,data:hit.value};}
     const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL){note(hit?'stale':'unavailable');return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};}
-    const key=symbol+'|'+source;if(this.inflight.has(key)){note('shared');return this.inflight.get(key);}
+    // A read that joins one in flight is labelled by how that read ended: shared when it answered, stale or unavailable when not.
+    const key=symbol+'|'+source;if(this.inflight.has(key))return this.inflight.get(key).then(r=>{note(r.status!=='ok'?'unavailable':r.stale?'stale':'shared');return r;});
     const task=(async()=>{
       try{
         let value;
@@ -222,7 +226,11 @@ class ResearchService {
     // when the agent digest below left something out, where its original can be read (with get_context_detail).
     for(const name of sections){
       const seen=[];const section=await reads.run(seen,()=>this.section(symbol,name));trace[name]=seen;
-      const p={from:[...new Set(seen.map(r=>r.origin))].join(' + ')||null,cache:seen.some(r=>r.cache==='stale')?'stale':section.status!=='ok'?'unavailable':seen.length&&seen.every(r=>r.cache==='hit'||r.cache==='shared')?'reused':'fetched'};
+      // Only sources that answered are named and labelled; a section that came back unavailable is unavailable whatever
+      // its sources did, and one computed without reading any source is derived.
+      const answered=seen.filter(r=>r.cache!=='unavailable'),missing=[...new Set(seen.filter(r=>r.cache==='unavailable').map(r=>r.origin))];
+      const p={from:[...new Set(answered.map(r=>r.origin))].join(' + ')||null,cache:section.status!=='ok'?'unavailable':answered.some(r=>r.cache==='stale')?'stale':!answered.length?'derived':answered.every(r=>r.cache==='hit'||r.cache==='shared')?'reused':'fetched',
+        ...(section.status==='ok'&&missing.length?{unavailableFrom:missing.join(' + ')}:{})};
       if(section.status!=='ok'){out[name]={unavailable:section.reason};provenance[name]=p;continue;}
       if(name==='events')filings=section.data?.filings??[];
       out[name]=digest(name,section.data);provenance[name]={...p,retrievedAt:new Date(section.retrievedAt).toISOString(),...(section.stale?{stale:true}:{})};
@@ -230,15 +238,24 @@ class ResearchService {
     }
     if(us&&sections.some(s=>s==='fund'||s==='holdings'))out.fundData='Fund details and holdings are available for Korean-listed funds only: for this U.S. listing the leverage factor, holdings and weights cannot be read here, so treat them as unverified.';
     // What the instrument is, stated on its own so it never depends on which sections were read or kept: type, the daily
-    // multiple (from fund data when read, otherwise from the name or the known U.S. tickers) and material risks.
-    const fundFactor=Number.isFinite(out.fund?.leverageFactor)?out.fund.leverageFactor:null,factor=fundFactor??require('./exposure.cjs').classifyName(symbol,id.name??''),flags=[];
+    // multiple and material risks. The multiple is your setting when you made one, then the fund data when read, then
+    // the classification the order checks use (known U.S. tickers, the English name of a U.S. listing, the master name).
+    let product=null;try{const row=this.master?.get?.(symbol);product=this.classify?.(symbol,id.name,row?{englishName:row.englishName??'',type:row.type??null}:null)??null;}catch{}
+    const fundFactor=Number.isFinite(out.fund?.leverageFactor)?out.fund.leverageFactor:null,yours=product?.source==='Your setting';
+    const factor=yours?product.factor:fundFactor??product?.factor??1,basis=yours?'your setting':fundFactor!=null?'fund data':product?.source?.toLowerCase()??'unknown',flags=[];
     if(factor<0)flags.push(`inverse: ${factor}x the daily move, reset daily`);else if(factor>1)flags.push(`leveraged: ${factor}x the daily move, reset daily`);
+    if(fundFactor!=null&&product&&product.source!=='Unknown product'&&product.factor!==fundFactor)flags.push(`leverage sources disagree: ${basis} ${factor}x, ${yours?'fund data '+fundFactor:product.source.toLowerCase()+' '+product.factor}x`);
     if(id.type==='etn')flags.push('ETN: carries the issuer\'s credit risk');
     if(us&&fundFactor==null&&sections.some(s=>s==='fund'||s==='holdings'))flags.push('leverage and holdings unverified (U.S. listing)');
-    if(Object.values(provenance).some(p=>p.cache==='stale'))flags.push('stale data: a source failed and older data was kept (see provenance)');
+    if(Object.values(provenance).some(p=>p.cache==='stale'||p.stale))flags.push('stale data: a source failed and older data was kept (see provenance)');
+    // Material filings are checked for every Korean stock, not only when events were asked for: from the OpenDART
+    // filings the app keeps (fetched when there are none), and the reply says when they could not be checked.
+    let filingsChecked=sections.includes('events')||us||FUND_TYPES.has(id.type);
+    if(!filingsChecked&&this.dartReady?.()){try{const dart=await this.source(symbol,'dart');if(dart?.status==='ok'){filings=dart.data?.filings??[];filingsChecked=true;}}catch{}}
+    if(!filingsChecked)flags.push('material filings not checked: OpenDART filings unavailable');
     const since=new Date(this.clock()-90*86400000).toISOString().slice(0,10);
     for(const f of filings.filter(f=>String(f?.date??'')>=since&&MATERIAL_FILING.test(String(f?.title??''))).slice(0,3))flags.push(`material filing ${f.date}: ${String(f.title).slice(0,80)}`);
-    out.instrument={type:id.type??null,leverageFactor:factor,leverageBasis:fundFactor!=null?'fund data':'name',...(flags.length?{riskFlags:flags}:{})};
+    out.instrument={type:id.type??null,leverageFactor:factor,leverageBasis:basis,...(flags.length?{riskFlags:flags}:{})};
     out.provenance=provenance;
     out.note='Third-party and broker data; check dates. Analyst targets and estimates are opinions. Null fields were left out.';
     const result=prune(out);result[TRACE]={originals,reads:trace};return result;

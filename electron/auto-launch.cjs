@@ -30,10 +30,16 @@ async function start(a,token){
   // Starting resumes the schedule: no review runs because of the button. The last review time is kept across restarts
   // (Automation.restoreClock), so a review that ran just before waits its interval; one already due starts within
   // seconds from the scheduler, and with every market in scope closed the pre-open review comes first (unless set otherwise).
+  // The message says what the scheduler will do: the near-budget slowdown and a pre-open review that already ran are in
+  // nextReviewAt. With markets closed no review is due now, so none is named after Start.
   a.restoreClock?.();const next=a.nextReviewAt?.()??Date.now();a.firstAfterStart=next<=Date.now()+5000;
-  const hours=a.marketHours?.();if(hours&&!hours.open&&a.config.closedMarketReviews!=='keep'&&!a.emergencyState?.().active)return 'Auto trading started. Markets are closed, so the first review runs before the next open.';
+  const at=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})+' KST';
+  const hours=a.marketHours?.();if(hours&&!hours.open&&a.config.closedMarketReviews!=='keep'&&!a.emergencyState?.().active){a.firstAfterStart=false;
+    if(a.config.closedMarketReviews==='off')return `Auto trading started. Markets are closed, so the first review runs at the open${hours.next?` (${at(next)})`:''}.`;
+    if(a.preOpenRan?.(hours))return `Auto trading started. Markets are closed and the pre-open review already ran; next review at ${at(next)}.`;
+    return 'Auto trading started. Markets are closed, so the first review runs before the next open.';}
   if(a.firstAfterStart)return 'Auto trading started. A review is due and starts shortly.';
-  return `Auto trading started. Next review at ${new Date(next).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST, on schedule.`;
+  return `Auto trading started. Next review at ${at(next)}, on schedule.`;
 }
 function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;a.configure({enabled:false,autoSubmit:false});a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);return 'Auto trading stopped. Existing broker orders remain active.';}
 module.exports={launchState,start,stop};
