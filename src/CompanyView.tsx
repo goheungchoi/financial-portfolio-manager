@@ -12,6 +12,9 @@ export function CompanyView({initialSymbol,standalone=false,autoRefreshMs=0,onSy
   useEffect(()=>{onSymbolChange?.(symbol);},[symbol]);
   // Name, sector, day change, analyst target and ROE come from the research cache, which the Research panel shares.
   const [profile,setProfile]=useState<ResearchProfile|null>(null);
+  // What the company does, from its latest annual report; loaded on its own so a first download never delays prices.
+  const [about,setAbout]=useState<any>(null);const [aboutOpen,setAboutOpen]=useState(false);
+  useEffect(()=>{let alive=true;setAbout(null);setAboutOpen(false);window.portfolio?.getResearch(symbol,['about']).then(p=>{if(alive&&p.symbol===symbol)setAbout(p.sections?.about??null);}).catch(()=>{});return()=>{alive=false;};},[symbol,reload]);
   useEffect(()=>{let alive=true;setProfile(null);window.portfolio?.getResearch(symbol,['overview','analysts','financials']).then(p=>{if(alive&&p.symbol===symbol)setProfile(p);}).catch(()=>{});return()=>{alive=false;};},[symbol,reload]);
   // Timed refreshes keep the current chart on screen and ignore transient failures.
   useEffect(()=>{if(!autoRefreshMs)return;const timer=window.setInterval(()=>setTick(n=>n+1),autoRefreshMs);return()=>window.clearInterval(timer);},[autoRefreshMs]);
@@ -44,10 +47,19 @@ export function CompanyView({initialSymbol,standalone=false,autoRefreshMs=0,onSy
     {cap!=null&&tile('Market cap',compactKRW(cap))}{typeof overview?.foreignOwnershipPct==='number'&&tile('Foreign ownership',`${overview.foreignOwnershipPct.toFixed(1)}%`)}
   </div><details className="inline-help"><summary>Data coverage</summary><p>Prices and valuation from KIS, possibly delayed. ROE is from the latest financial statements and the target is the median of analyst targets over 180 days (Research below has the detail).</p></details></>;
   const loadingName=name;
+  // About: the industry and the opening of the annual report's business section, with where it comes from.
+  const aboutData=about?.status==='ok'?about.data:null;const paragraphs:string[]=typeof aboutData?.overview==='string'?aboutData.overview.split('\n\n').filter(Boolean):[];
+  const aboutBlock=aboutData&&(paragraphs.length||aboutData.industry)?<div className="company-about" aria-label="About the company">
+    <div className="company-about-head"><b>About</b>{aboutData.industry&&<span className="badge" title="SEC industry classification">{aboutData.industry}</span>}</div>
+    {paragraphs.length>0&&<div className={`company-about-text${aboutOpen?' open':''}`} lang={aboutData.language==='ko'?'ko':'en'}>{(aboutOpen?paragraphs:paragraphs.slice(0,1)).map((text,i)=><p key={i}>{text}</p>)}</div>}
+    <div className="company-about-foot">{(paragraphs.length>1||paragraphs[0]?.length>260)&&<button className="link-button" onClick={()=>setAboutOpen(v=>!v)}>{aboutOpen?'Less':'More'}</button>}
+      {aboutData.source&&<small className="muted">From {aboutData.source.kind}{aboutData.source.date?` filed ${aboutData.source.date}`:''}{aboutData.source.section?` · ${aboutData.source.section}`:''}{aboutData.truncated?' · opening paragraphs':''}</small>}
+      {aboutData.source?.url&&<button className="link-button" onClick={()=>void window.portfolio?.openFiling(aboutData.source.url)}>Open filing</button>}</div>
+  </div>:null;
   const status=loading?<div className="load-status" role="status" aria-live="polite"><div className="load-line"><span className="spinner"/><b>Loading {loadingName}</b><small className="muted">Price, valuation and price history from KIS</small></div><div className="load-bar"><span/></div><div className="company-stats skeleton-stats" aria-hidden="true">{Array.from({length:10},(_,i)=><div key={i}><i/><i/></div>)}</div></div>:error?<p role="alert" className="error">{error}</p>:null;
   const chart=<CandleChart rows={list} symbol={symbol} interval={interval} onSymbol={choose} onInterval={setInterval} candles={candles} source="kis" loading={loading} name={name}/>;
   const indicators=<section><h2>Technical indicators · {interval==='1d'?'Daily':'1-minute'} completed bars</h2><div className={`company-stats ${loading?'is-loading':''}`}>{[['MA5',technical.SMA5],['MA10',technical.SMA10],['MA20',technical.SMA20],['STOCH K (14)',technical.stochastic?.K],['STOCH D (3)',technical.stochastic?.D]].map(([name,n])=><div key={name}><small>{name}</small><b>{loading?<i className="skeleton-text"/>:format(n)}</b></div>)}</div><small>{loading?'Calculating from the price history…':technical.asOf?`Last completed bar: ${new Date(technical.asOf).toLocaleString()}`:'No completed-bar evidence available'}{technical.stale?' · Stale data':''} · Fast stochastic (14,3)</small></section>;
   // The pop-out window leads with the chart; the Charts tab keeps company details first.
-  if(standalone)return <><section>{header}{status??price}</section>{!status&&chart}{!status&&<section>{stats}</section>}{!status&&indicators}{!status&&<ResearchPanel symbol={symbol}/>}</>;
-  return <><section>{header}{status??<>{price}{stats}</>}</section>{chart}{indicators}<ResearchPanel symbol={symbol}/><PaperReplay key={symbol} symbol={symbol} candles={replayCandles}/></>;
+  if(standalone)return <><section>{header}{status??<>{price}{aboutBlock}</>}</section>{!status&&chart}{!status&&<section>{stats}</section>}{!status&&indicators}{!status&&<ResearchPanel symbol={symbol}/>}</>;
+  return <><section>{header}{status??<>{price}{aboutBlock}{stats}</>}</section>{chart}{indicators}<ResearchPanel symbol={symbol}/><PaperReplay key={symbol} symbol={symbol} candles={replayCandles}/></>;
 }

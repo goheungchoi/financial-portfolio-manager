@@ -3,16 +3,16 @@
 // and, for U.S. stocks, SEC EDGAR (annual financials, dividends, filings).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
-const SECTIONS=['overview','analysts','estimates','financials','dividends','events','release','flows','risk','valuation','peers','fund','holdings','factors','fairvalue'];
-const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['analysts','estimates','financials','events','release','valuation','peers','factors','fairvalue']),FUND_DEFAULT=['overview','fund','holdings','risk'];
+const SECTIONS=['overview','about','analysts','estimates','financials','dividends','events','release','flows','risk','valuation','peers','fund','holdings','factors','fairvalue'];
+const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['about','analysts','estimates','financials','events','release','valuation','peers','factors','fairvalue']),FUND_DEFAULT=['overview','fund','holdings','risk'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
-const US_SECTIONS=['overview','risk','financials','dividends','events','release'],US_DEFAULT=['overview','financials','risk'];
+const US_SECTIONS=['overview','about','risk','financials','dividends','events','release'],US_DEFAULT=['overview','financials','risk'];
 const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},'sec-earnings':{ttl:6*HOUR,from:'sec-earnings'},market:{ttl:10*60000,from:'kis'},'us-market':{ttl:5*60000,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},'sec-earnings':{ttl:6*HOUR,from:'sec-earnings'},'sec-about':{ttl:7*24*HOUR,from:'sec-about'},'dart-about':{ttl:7*24*HOUR,from:'dart-about'},market:{ttl:10*60000,from:'kis'},'us-market':{ttl:5*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
-const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],release:['dart'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],release:['dart'],about:['dart-about'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
 const FAILURE_TTL=10*60000;
 const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
 // Null, empty and "not applicable" values are dropped so the agents only read what exists.
@@ -38,8 +38,8 @@ class ResearchService {
     const task=(async()=>{
       try{
         let value;
-        if(spec.from==='dart'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider('dart-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
-        else if(['sec','sec-filings','sec-earnings'].includes(spec.from)){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider(spec.from==='sec'?'sec-company':spec.from,{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
+        if(spec.from==='dart'||spec.from==='dart-about'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider(spec.from==='dart'?'dart-company':'dart-about',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
+        else if(['sec','sec-filings','sec-earnings','sec-about'].includes(spec.from)){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider(spec.from==='sec'?'sec-company':spec.from,{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
         else{if(!this.kisReady())throw new Error('KIS_NOT_CONNECTED');value=await this.kis('research-section',{symbol,section:source});}
         const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);this.snapshot(symbol,source,value);
         return {status:'ok',retrievedAt:at,data:value};
@@ -123,6 +123,8 @@ class ResearchService {
     }
     // The latest earnings release read from its 8-K exhibit: results and guidance in the company's words, with the source.
     if(name==='release')return this.source(symbol,'sec-earnings',refresh);
+    // What the company does, from its latest 10-K (or 20-F) business section.
+    if(name==='about')return this.source(symbol,'sec-about',refresh);
     const sec=await this.source(symbol,'sec',refresh);if(sec.status!=='ok')return sec;const d=sec.data;
     if(name==='financials')return {status:'ok',retrievedAt:sec.retrievedAt,data:{currency:'USD',source:'SEC 10-K filings',periods:d.annual.map(r=>({...r,period:'FY'+r.fiscalYearEnd.slice(0,4)+(r.fiscalYearEnd.slice(5,7)!=='12'?` (to ${r.fiscalYearEnd.slice(0,7)})`:'')}))}};
     if(name==='dividends'){
@@ -214,6 +216,7 @@ function digest(name,d){
   if(name==='financials'&&d.currency==='USD')return {periods:(d.periods??[]).slice(0,4).map(({filed,...r})=>r),source:d.source};
   if(name==='financials')return {periods:(d.periods??[]).slice(0,4).map(({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})=>({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})),annualRatios:d.periods?.length?undefined:d.annualRatios,note:'Periods not ending in December are year to date.'};
   // The release's own results and guidance sentences in full; its text shortened so the reply stays within one tool response.
+  if(name==='about')return {...d,...(typeof d.overview==='string'&&d.overview.length>1200?{overview:d.overview.slice(0,1200),truncated:true}:{})};
   if(name==='release')return {...d,...(typeof d.text==='string'&&d.text.length>4000?{text:d.text.slice(0,4000),textTruncated:true}:{})};
   if(name==='valuation')return {...d,monthly:undefined};
   if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};

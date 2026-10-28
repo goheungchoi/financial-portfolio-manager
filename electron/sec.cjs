@@ -67,6 +67,11 @@ async function secCompany(fetcher,contact,symbol,today,state){
   return {cik:company.cik,name:company.title,fiscalYearEndMonthDay:subs.fiscalYearEnd??null,annual,filings:list,earnings:earningsTiming(list,today),
     dividends:{years:annual.filter(r=>r.dividendsPerShare!=null).map(r=>({year:r.fiscalYearEnd.slice(0,4),fiscalYearEnd:r.fiscalYearEnd,perShare:r.dividendsPerShare,payoutRatioPct:r.payoutRatioPct}))}};
 }
+// An EDGAR document as text, naming the app and contact as SEC asks.
+async function secText(fetcher,contact,url,max=8*1024*1024){
+  const response=await fetcher(url,{headers:{'user-agent':`FinancialPortfolioManager ${contact}`,accept:'text/html'},redirect:'error',signal:AbortSignal.timeout(45000)});
+  if(response.status===403||response.status===429)throw new Error('SEC_RATE_LIMITED');if(!response.ok)throw new Error('SEC_UNAVAILABLE');const body=await response.text();if(body.length>max)throw new Error('SEC_UNAVAILABLE');return body;
+}
 // Plain text of an HTML filing document: blocks become lines, tags go, common entities are decoded.
 function htmlText(html){
   const named={nbsp:' ',amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",rsquo:"'",lsquo:"'",rdquo:'"',ldquo:'"',ndash:'-',mdash:'-',hellip:'...'};
@@ -97,7 +102,7 @@ async function secEarningsRelease(fetcher,contact,symbol,today,state){
   const f=(await get(`https://data.sec.gov/submissions/CIK${cik}.json`))?.filings?.recent;if(!f||!Array.isArray(f.form))return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};
   const i=f.form.findIndex((form,k)=>/^8-K/.test(String(form))&&String(f.items?.[k]??'').split(',').includes('2.02'));if(i<0)return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};
   const accession=String(f.accessionNumber?.[i]??'');if(!/^\d{10}-\d{2}-\d{6}$/.test(accession))return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};const plain=accession.replaceAll('-','');
-  const text=async url=>{const response=await fetcher(url,{headers:{'user-agent':`FinancialPortfolioManager ${contact}`,accept:'text/html'},redirect:'error',signal:AbortSignal.timeout(30000)});if(response.status===403||response.status===429)throw new Error('SEC_RATE_LIMITED');if(!response.ok)throw new Error('SEC_UNAVAILABLE');const body=await response.text();if(body.length>8*1024*1024)throw new Error('SEC_UNAVAILABLE');return body;};
+  const text=url=>secText(fetcher,contact,url);
   const indexUrl=`https://www.sec.gov/Archives/edgar/data/${company.cik}/${plain}/${accession}-index.htm`;const exhibit=releaseExhibit(await text(indexUrl));
   if(!exhibit)return {status:'unavailable',reason:'NO_RELEASE_EXHIBIT',filing:{filed:String(f.filingDate?.[i]??''),url:indexUrl}};
   const url='https://www.sec.gov'+exhibit.path;const body=htmlText(await text(url));const facts=releaseFacts(body);const LIMIT=12000;
@@ -106,4 +111,30 @@ async function secEarningsRelease(fetcher,contact,symbol,today,state){
     headline:body.split('\n').filter(line=>line.length>=25&&!/^(ex(hibit)?[- ]?99|\S+\.html?$)|\.html?$/i.test(line)).slice(0,3).join(' ').slice(0,700),results:facts.results,guidance:facts.guidance,
     ...(facts.guidance.length?{}:{guidanceNote:'No outlook or guidance sentence was found in the release text.'}),textChars:body.length,text:body.slice(0,LIMIT),...(body.length>LIMIT?{textTruncated:true}:{})};
 }
-module.exports={parseTickers,annualFacts,filings,earningsTiming,secCompany,secFilings,secEarningsRelease,htmlText,releaseExhibit,releaseFacts};
+// The opening paragraphs of the business description in an annual report: 10-K Item 1 (Business), or 20-F Item 4
+// (Information on the Company). The table-of-contents entry is skipped: the real section runs on for pages.
+function businessSection(text,form){
+  const lines=String(text).split('\n');const foreign=/^20-F/.test(form);
+  const start=foreign?/^item\s*4\.?\s*[-:.]?\s*information on the company\b/i:/^item\s*1\.?\s*[-:.]?\s*business\b/i,stop=foreign?/^item\s*(4a|5)\b/i:/^item\s*(1a|1b|2)\b/i;
+  for(let i=0;i<lines.length;i++){
+    if(!start.test(lines[i]))continue;const body=[];let size=0;for(let j=i+1;j<lines.length&&!stop.test(lines[j]);j++){body.push(lines[j]);size+=lines[j].length;}
+    if(size<2000)continue;
+    // Definitions of "we", "us" and the company name are not a description.
+    const paragraphs=body.filter(line=>line.length>=80&&!/^table of contents/i.test(line)&&!/unless the context|as used (herein|in this)|references (herein|in this)|the terms "?(we|us|our)\b/i.test(line));const out=[];let n=0;
+    for(const p of paragraphs){if(n>=900)break;out.push(p.length>1200?p.slice(0,1199)+'…':p);n+=p.length;}
+    return out.length?{text:out.join('\n\n'),truncated:out.length<paragraphs.length}:null;
+  }
+  return null;
+}
+// What the company does, from its latest annual report on EDGAR, with its SEC industry classification.
+async function secAbout(fetcher,contact,symbol,today,state){
+  const {company,get,cik}=await secLookup(fetcher,contact,symbol,state);if(!company)return {status:'unavailable',reason:'NOT_IN_SEC'};
+  const subs=await get(`https://data.sec.gov/submissions/CIK${cik}.json`);const f=subs?.filings?.recent;const industry=typeof subs?.sicDescription==='string'&&subs.sicDescription.trim()?subs.sicDescription.trim():null;
+  const i=Array.isArray(f?.form)?f.form.findIndex(form=>/^(10-K|20-F)$/.test(String(form))):-1;if(i<0)return {status:'unavailable',reason:'NO_ANNUAL_REPORT',industry};
+  const accession=String(f.accessionNumber?.[i]??'').replaceAll('-',''),doc=String(f.primaryDocument?.[i]??''),form=String(f.form[i]),filed=String(f.filingDate?.[i]??'');
+  if(!/^\d{18}$/.test(accession)||!/^[A-Za-z0-9._-]+\.html?$/i.test(doc))return {status:'unavailable',reason:'NO_ANNUAL_REPORT',industry};
+  const url=`https://www.sec.gov/Archives/edgar/data/${company.cik}/${accession}/${doc}`;const section=businessSection(htmlText(await secText(fetcher,contact,url,25*1024*1024)),form);
+  return {name:company.title,language:'en',industry,source:{kind:`SEC ${form}`,form,date:filed,url,section:/^20-F/.test(form)?'Item 4. Information on the Company':'Item 1. Business'},
+    ...(section?{overview:section.text,...(section.truncated?{truncated:true}:{})}:{overviewUnavailable:'NO_BUSINESS_SECTION'})};
+}
+module.exports={parseTickers,annualFacts,filings,earningsTiming,secCompany,secFilings,secEarningsRelease,secAbout,businessSection,htmlText,releaseExhibit,releaseFacts};

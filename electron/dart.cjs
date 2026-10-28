@@ -52,13 +52,18 @@ function earningsTiming(items,today,{confirmed=[]}={}){
   let end=quarterEnd(last);let next;do{const [y,m]=end.split('-').map(Number);end=new Date(Date.UTC(y,m+3,0)).toISOString().slice(0,10);next=new Date(Date.parse(end)+lag*86400000).toISOString().slice(0,10);}while(next<today);
   return {lastRelease:last,daysAfterQuarterEnd:lag,nextExpected:next,basis:'Estimated from the timing of the last preliminary-earnings filing; not an announced date.'};
 }
+// Calls with the worker's DART key; the corp-code map is cached in state for a week.
+const dartClient=(fetcher,key)=>async(path,params)=>{const response=await fetcher('https://opendart.fss.or.kr/api/'+path+'?'+new URLSearchParams({crtfc_key:key,...params}),{redirect:'error',signal:AbortSignal.timeout(path==='corpCode.xml'?60000:path==='document.xml'?45000:15000)});if(!response.ok)throw new Error('DART_UNAVAILABLE');return response;};
+async function corpOf(call,state,stockCode){
+  if(!state.corps||Date.now()-state.corpsAt>7*86400000){const buffer=Buffer.from(await (await call('corpCode.xml',{})).arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('DART_FORMAT');state.corps=parseCorpCodes(unzipFirst(buffer).toString('utf8'));state.corpsAt=Date.now();}
+  return state.corps.get(stockCode)??null;
+}
+const dayOffset=(today,offset)=>new Date(Date.parse(today+'T00:00:00Z')-offset*86400000).toISOString().slice(0,10).replaceAll('-','');
 // Fetches with the worker's DART key. corpMap is cached by the caller for the worker's lifetime.
 async function companyFilings(fetcher,key,stockCode,today,state){
   if(!/^\d{6}$/.test(stockCode))throw new Error('INVALID_INSTRUMENT');
-  const call=async(path,params)=>{const response=await fetcher('https://opendart.fss.or.kr/api/'+path+'?'+new URLSearchParams({crtfc_key:key,...params}),{redirect:'error',signal:AbortSignal.timeout(path==='corpCode.xml'?60000:15000)});if(!response.ok)throw new Error('DART_UNAVAILABLE');return response;};
-  if(!state.corps||Date.now()-state.corpsAt>7*86400000){const buffer=Buffer.from(await (await call('corpCode.xml',{})).arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('DART_FORMAT');state.corps=parseCorpCodes(unzipFirst(buffer).toString('utf8'));state.corpsAt=Date.now();}
-  const corp=state.corps.get(stockCode);if(!corp)return {status:'unavailable',reason:'NOT_IN_DART'};
-  const day=offset=>new Date(Date.parse(today+'T00:00:00Z')-offset*86400000).toISOString().slice(0,10).replaceAll('-','');
+  const call=dartClient(fetcher,key);const corp=await corpOf(call,state,stockCode);if(!corp)return {status:'unavailable',reason:'NOT_IN_DART'};
+  const day=offset=>dayOffset(today,offset);
   const rows=[];
   // Periodic reports, material-event reports and exchange filings (earnings, IR, dividends, contracts); one page each.
   for(const type of ['A','B','I']){const body=await (await call('list.json',{corp_code:corp,bgn_de:day(365),end_de:day(0),pblntf_ty:type,page_count:'100'})).json();if(body.status==='000')rows.push(...(body.list??[]));else if(body.status!=='013')throw new Error(body.status==='020'?'DART_RATE_LIMITED':'DART_UNAVAILABLE');}
@@ -100,4 +105,23 @@ async function preliminaryFigures(call,filings){
   }
   return {source:sourceOf(list[0]),unavailable:'NO_EARNINGS_FIGURES_IN_RECENT_FILINGS',note:'The recent filings under the preliminary-results title hold no revenue or profit figures.',...(monthlySales?{monthlySales}:{}),skipped};
 }
-module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,preliminaryFigures,announcedResults};
+// What the company does: the business overview (사업의 개요) of an annual report (사업보고서), its first paragraphs as filed.
+function businessOverview(doc){
+  const xml=String(doc);const strip=s=>String(s).replace(/<[^>]+>/g,'').replace(/&nbsp;|&#160;/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(Number(n))).replace(/\s+/g,' ').trim();
+  const titles=[...xml.matchAll(/<TITLE[^>]*>([\s\S]*?)<\/TITLE>/gi)].map(m=>({at:m.index,end:m.index+m[0].length,text:strip(m[1])}));
+  const i=titles.findIndex(t=>/사업의\s*개요/.test(t.text));if(i<0)return null;
+  const paragraphs=[...xml.slice(titles[i].end,titles[i+1]?.at??xml.length).matchAll(/<P[^>]*>([\s\S]*?)<\/P>/gi)].map(m=>strip(m[1])).filter(p=>p.length>=30);if(!paragraphs.length)return null;
+  const out=[];let n=0;for(const p of paragraphs){if(n>=900)break;out.push(p.length>1200?p.slice(0,1199)+'…':p);n+=p.length;}
+  return {section:titles[i].text,text:out.join('\n\n'),truncated:out.length<paragraphs.length};
+}
+// The latest annual report filed in the last 18 months and its business overview.
+async function companyAbout(fetcher,key,stockCode,today,state){
+  if(!/^\d{6}$/.test(stockCode))throw new Error('INVALID_INSTRUMENT');const call=dartClient(fetcher,key);const corp=await corpOf(call,state,stockCode);if(!corp)return {status:'unavailable',reason:'NOT_IN_DART'};
+  const body=await (await call('list.json',{corp_code:corp,bgn_de:dayOffset(today,550),end_de:dayOffset(today,0),pblntf_detail_ty:'A001',page_count:'10'})).json();
+  if(body.status==='013')return {status:'unavailable',reason:'NO_ANNUAL_REPORT'};if(body.status!=='000')throw new Error(body.status==='020'?'DART_RATE_LIMITED':'DART_UNAVAILABLE');
+  const report=disclosures(body.list).find(f=>/사업보고서/.test(f.title));if(!report)return {status:'unavailable',reason:'NO_ANNUAL_REPORT'};
+  const rceptNo=receiptOf(report);const source={kind:'DART annual report',date:report.date,title:report.title,rceptNo,url:report.url};
+  const parsed=businessOverview(await fetchDocument(call,rceptNo));
+  return {language:'ko',source:{...source,section:parsed?.section??'사업의 개요'},...(parsed?{overview:parsed.text,...(parsed.truncated?{truncated:true}:{})}:{overviewUnavailable:'NO_BUSINESS_OVERVIEW'})};
+}
+module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,companyAbout,businessOverview,preliminaryFigures,announcedResults};
