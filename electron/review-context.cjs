@@ -69,17 +69,20 @@ function chunks(text,limit){
 // (for example "rows/3/thesis" or "NASD:NVDA/0/notes"; a symbol selects the rows about it). A list too long for one
 // reply comes in pages; a row, field or text too large for one reply is replaced by its path (or comes in pages of
 // text), so everything can be read, and complete is true only when nothing was left out of this reply.
+// A name inside a path: '/' is written ~1 and '~' is written ~0 (as in a JSON pointer), so a name such as "P/E" is
+// one step.
+const segment=k=>String(k).replaceAll('~','~0').replaceAll('/','~1'),unsegment=s=>s.replaceAll('~1','/').replaceAll('~0','~');
 function detailPart(detail,{section,part='',page=1},limit=8000){
   if(!detail||!Object.hasOwn(detail,section))return {status:'rejected',reason:`No detail for ${JSON.stringify(section)}; available: ${Object.keys(detail??{}).join(', ')||'none'}.`};
   let value=detail[section];const at=[];
-  for(const step of String(part??'').split('/').filter(Boolean)){
-    if(Array.isArray(value)&&/^\d+$/.test(step)&&Number(step)<value.length){value=value[Number(step)];at.push(step);continue;}
-    if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,step)){value=value[step];at.push(step);continue;}
+  for(const written of String(part??'').split('/').filter(Boolean)){const step=unsegment(written);
+    if(Array.isArray(value)&&/^\d+$/.test(step)&&Number(step)<value.length){value=value[Number(step)];at.push(written);continue;}
+    if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,step)){value=value[step];at.push(written);continue;}
     const rows=Array.isArray(value)?value:value&&typeof value==='object'?value.rows??value.books??value.targets??null:null;const matched=Array.isArray(rows)?rows.filter(r=>r?.symbol===step):[];
-    if(matched.length){value=matched;at.push(step);continue;}
-    return {status:'rejected',reason:`No part, index or symbol ${JSON.stringify(step)} in ${[section,...at].join('/')}.`,...(value&&typeof value==='object'?{parts:Array.isArray(value)?`indexes 0 to ${value.length-1}`:Object.keys(value)}:{})};
+    if(matched.length){value=matched;at.push(written);continue;}
+    return {status:'rejected',reason:`No part, index or symbol ${JSON.stringify(step)} in ${[section,...at].join('/')}.`,...(value&&typeof value==='object'?{parts:Array.isArray(value)?`indexes 0 to ${value.length-1}`:Object.keys(value).map(segment)}:{})};
   }
-  const path=at.join('/'),head={section,...(path?{part:path}:{})},sub=k=>path?`${path}/${k}`:String(k),room=limit-500;
+  const path=at.join('/'),head={section,...(path?{part:path}:{})},sub=k=>path?`${path}/${segment(k)}`:segment(k),room=limit-500;
   const pageOf=count=>Math.min(Math.max(1,Number.isInteger(page)?page:1),count);
   if(outBytes(value)<=limit)return {...head,data:value,complete:true};
   if(typeof value==='string'){const pieces=chunks(value,room);const n=pageOf(pieces.length);return {...head,page:n,pages:pieces.length,text:pieces[n-1],complete:false,note:'Long text: read every page with the same part to have all of it.'};}
@@ -107,8 +110,8 @@ function bound(value,limit=16000,{ref=null}={}){
   for(const [k,v] of Object.entries(value)){
     if(outBytes({...out,[k]:v})<=limit-spare){out[k]=v;continue;}
     const room=limit-spare-outBytes({...out,[k]:null});
-    if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room-200);if(cut&&outBytes({...out,[k]:cut.value})<=limit-spare-200){out[k]=cut.value;shortened.push(k);cuts.push(...cut.cuts.map(c=>({...c,path:c.path?`${k}/${c.path}`:k})));continue;}}
-    omitted.push(k);
+    if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room-200);if(cut&&outBytes({...out,[k]:cut.value})<=limit-spare-200){out[k]=cut.value;shortened.push(segment(k));cuts.push(...cut.cuts.map(c=>({...c,path:c.path?`${segment(k)}/${c.path}`:segment(k)})));continue;}}
+    omitted.push(segment(k));
   }
   // Every part's list cuts come before its text cuts, so when the list of cuts must give way, the text cuts go first
   // and the count left out is stated; the shortened parts themselves stay readable by name.
@@ -130,7 +133,7 @@ function shrink(value,limit){
       if(kind==='text'&&typeof node==='string'&&!inList&&node.length>400&&(!best||node.length>best.size))best={holder,key,path,size:node.length};
       if(node&&typeof node==='object'){
         if(kind==='list'&&Array.isArray(node)&&node.length>1){const rank=[KEEP_WHOLE.has(key)?0:1,outBytes(node)];if(!best||rank[0]>best.rank[0]||rank[0]===best.rank[0]&&rank[1]>best.rank[1])best={list:node,path,rank};}
-        for(const [k,v] of Object.entries(node))visit(v,node,k,path?`${path}/${k}`:String(k),Array.isArray(node));}};
+        for(const [k,v] of Object.entries(node))visit(v,node,k,path?`${path}/${segment(k)}`:segment(k),Array.isArray(node));}};
     visit(copy,null,null,'',false);return best;};
   for(let i=0;i<400&&outBytes(copy)>limit;i++){
     const text=largest('text');if(text){const s=text.holder[text.key];if(!cuts.has(text.path))cuts.set(text.path,{path:text.path,chars:s.length});

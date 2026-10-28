@@ -31,8 +31,9 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   // Each response is bounded by the round's budget: what the request may still grow by, shared by the round's calls.
   // Every tool result is kept whole for this review (as section result-N of get_context_detail), so whatever bounding
   // cuts or leaves out can be read in full, by path and page.
-  const stored={},full=new Map();const details=()=>({...(detail??{}),...stored});
-  let perCall=16000;const answer=(call,value,keep=true)=>{let ref=null;if(keep){ref=`result-${full.size+1}`;stored[ref]=value;full.set(call.callId,{value,ref});}
+  const stored={},full=new Map();const details=()=>({...(detail??{}),...stored});let results=0;
+  // Numbered by result, not by call id: a repeated call id gets a new section and never overwrites an earlier one.
+  let perCall=16000;const answer=(call,value,keep=true)=>{let ref=null;if(keep){ref=`result-${++results}`;stored[ref]=value;full.set(call.callId,{value,ref});}
     continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(require('./review-context.cjs').bound(value,perCall,{ref}))});};
   for(let round=0;round<ROUNDS;round++){
     // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
