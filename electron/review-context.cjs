@@ -55,7 +55,7 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
 function report(context,limit){return {wireBytes:wire(context),limitBytes:limit,largest:Object.entries(context).map(([k,v])=>[k,bytes(v)]).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,b])=>`${k}:${b}`)};}
-const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), or a tool result that was shortened or had parts left out (its fullResult.section, result-N), in bounded parts. A research section whose provenance says complete false has its original at the path in provenance.original, inside that result. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. from: 0 to start; for a long list or text, a reply that does not reach the end gives next.from, and reading the same part from there continues exactly where it stopped. A reply with complete false and no next names the paths still to read.',strict:true,
+const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), or a tool result that was shortened or had parts left out (its fullResult.section, result-N), in bounded parts. A research section whose provenance says complete false has its original at the path in provenance.original, inside that result. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. from: 0 to start; for a long list or text, a reply that does not reach the end gives next.from, and reading the same part from there continues exactly where it stopped. A reply with last true ends that list or text; complete false otherwise means omittedParts or rows given by path name what is still to read.',strict:true,
   parameters:{type:'object',properties:{section:{type:'string'},part:{type:'string'},from:{type:'integer'}},required:['section','part','from'],additionalProperties:false}};
 // Size of a value once it is a tool result in the request: the result travels as a JSON string inside the JSON
 // request, so every quote, backslash and control character is escaped twice. All tool budgets are in these bytes.
@@ -78,6 +78,8 @@ function detailPart(detail,{section,part='',from=0},limit=8000){
   if(!detail||!Object.hasOwn(detail,section))return {status:'rejected',reason:`No detail for ${JSON.stringify(section)}; available: ${Object.keys(detail??{}).join(', ')||'none'}.`};
   let value=detail[section];const at=[];
   for(const written of String(part??'').split('/').filter(Boolean)){const step=unsegment(written);
+    // A six-digit step names a Korean listing when rows have that symbol (000100 is Yuhan, not row 100).
+    if(Array.isArray(value)&&/^\d{6}$/.test(step)){const rows=value.filter(r=>r?.symbol===step);if(rows.length){value=rows;at.push(written);continue;}}
     if(Array.isArray(value)&&/^\d+$/.test(step)&&Number(step)<value.length){value=value[Number(step)];at.push(written);continue;}
     if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,step)){value=value[step];at.push(written);continue;}
     const rows=Array.isArray(value)?value:value&&typeof value==='object'?value.rows??value.books??value.targets??null:null;const matched=Array.isArray(rows)?rows.filter(r=>r?.symbol===step):[];
@@ -87,6 +89,7 @@ function detailPart(detail,{section,part='',from=0},limit=8000){
   const path=at.join('/'),head={section,...(path?{part:path}:{})},sub=k=>path?`${path}/${segment(k)}`:segment(k),room=limit-500;
   const start=Number.isInteger(from)&&from>0?from:0;
   if(start===0&&outBytes(value)<=limit)return {...head,data:value,complete:true};
+  if(start>0&&typeof value!=='string'&&!Array.isArray(value))return {...head,status:'rejected',reason:'from applies to long lists and texts only; read this part from 0.'};
   const position=(end,total,unit)=>({from:start,to:end,[unit]:total,...(end<total?{next:{from:end}}:{last:true})});
   if(typeof value==='string'){
     const chars=Array.from(value);if(start>=chars.length)return {...head,status:'rejected',reason:`from ${start} is past the end of this text (${chars.length} characters).`};
@@ -122,9 +125,11 @@ function bound(value,limit=16000,{ref=null,always=false}={}){
   if(outBytes(named?{...value,...full}:value)<=limit)return named?{...value,...full}:value;
   if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),...full,note:ref?'Too large for one reply: read it from fullResult, from 0 and then each reply\'s next.from.':'Ask for a narrower request (fewer sections or one symbol).'};
   // A part that does not fit is shortened to the room left when that room is useful (see shrink), so a section asked for
-  // alone still arrives; only what cannot fit at all is left out.
-  const spare=500+outBytes(full),out=Object.fromEntries(PINNED.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]])),omitted=[],shortened=[],cuts=[];
-  for(const [k,v] of Object.entries(value)){if(Object.hasOwn(out,k))continue;
+  // alone still arrives; only what cannot fit at all is left out. Pinned parts go first, so they are the last to give way,
+  // but they are bounded like the rest: a reply never grows past its limit because of them.
+  const spare=500+outBytes(full),out={},omitted=[],shortened=[],cuts=[];
+  const ordered=[...PINNED.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]]),...Object.entries(value).filter(([k])=>!PINNED.includes(k))];
+  for(const [k,v] of ordered){
     if(outBytes({...out,[k]:v})<=limit-spare){out[k]=v;continue;}
     const room=limit-spare-outBytes({...out,[k]:null});
     if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room-200);if(cut&&outBytes({...out,[k]:cut.value})<=limit-spare-200){out[k]=cut.value;shortened.push(segment(k));cuts.push(...cut.cuts.map(c=>({...c,path:c.path?`${segment(k)}/${c.path}`:segment(k)})));continue;}}
@@ -168,17 +173,24 @@ function shrink(value,limit){
 // is section result-N, numbered by result so a repeated call id never overwrites an earlier one; a research reply keeps
 // the sections its digest shortened as originalSections. base: the run's summarized context sections, if any.
 const TRACE=Symbol.for('fpm.research-trace');
+// Results and detail reads are listed by call id in the order they were answered, so a call id used twice keeps both
+// (occurrence 0, 1, ... matching the order of their outputs in the conversation).
 function resultStore(base=null){
   const stored={},byCall=new Map();let count=0;
   const details=()=>({...(base??{}),...stored}),originalsOf=value=>{const o=value?.[TRACE]?.originals;return o&&Object.keys(o).length?o:null;};
+  const add=(callId,entry)=>{if(!byCall.has(callId))byCall.set(callId,[]);byCall.get(callId).push(entry);};
+  const part=(args,limit)=>detailPart(details(),{section:String(args?.section??''),part:String(args?.part??''),from:args?.from},limit);
   return {details,
     // Keeps a result and returns it bounded to limit, naming the section that holds all of it.
     keep(callId,value,limit){const ref=`result-${++count}`,originals=originalsOf(value);
-      stored[ref]=originals?{...value,originalSections:originals}:value;byCall.set(callId,{value,ref});return bound(value,limit,{ref,always:Boolean(originals)});},
-    // A kept result bounded again, from all of it, to a new limit (null for a call that was not kept).
-    again(callId,limit){const kept=byCall.get(callId);return kept?bound(kept.value,limit,{ref:kept.ref,always:Boolean(originalsOf(kept.value))}):null;},
-    refs:()=>new Map([...byCall].map(([id,{ref}])=>[id,ref])),
-    read:(args,limit)=>detailPart(details(),{section:String(args?.section??''),part:String(args?.part??''),from:args?.from},limit)};
+      stored[ref]=originals?{...value,originalSections:originals}:value;add(callId,{value,ref});return bound(value,limit,{ref,always:Boolean(originals)});},
+    // An answer given again within a new limit: a kept result bounded from all of it, or a detail read made again from
+    // the same position, so its next.from always follows what the reply holds. Null when the call is not listed.
+    again(callId,limit,occurrence=0){const e=byCall.get(callId)?.[occurrence];if(!e)return null;
+      return e.read?part(e.read,Math.min(8000,limit)):bound(e.value,limit,{ref:e.ref,always:Boolean(originalsOf(e.value))});},
+    // call id → the sections holding its kept results, in order (null for a detail read).
+    refs:()=>new Map([...byCall].map(([id,list])=>[id,list.map(e=>e.ref??null)])),
+    read(args,limit,callId=null){if(callId!=null)add(callId,{read:args});return part(args,limit);}};
 }
 // Combined reviews: each market's trading costs move out of markets[] into one tradingCosts, with the tax model, fee
 // assumption and rule version stated once for both markets. Returns {markets, tradingCosts}.

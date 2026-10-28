@@ -1,8 +1,9 @@
 // Keeps a research review's follow-up request under the size limit without cutting evidence by row position.
 // Each tool response is already bounded when it is appended (review-context.cjs bound). When the conversation still
 // grows past the budget, older results (never the latest round) are first condensed by the cheap model, which keeps
-// every figure, date and refusal; if that is not possible or not enough, the largest older results become references
-// that name the request, so the agent can ask again and read them in full.
+// every figure, date and refusal; if that is not possible or not enough, the largest older results become references.
+// A condensed or referenced result points at the stored section that holds it in full when there is one (refs), so it
+// is read again with get_context_detail; otherwise it names its request so the agent can ask again.
 const LIMIT=require('./ai-models.cjs').reviewByteLimit({continuation:true}),TARGET=0.9;
 const size=value=>Buffer.byteLength(JSON.stringify(value));
 const outputs=(items,keepFrom)=>items.map((item,i)=>({item,i})).filter(({item,i})=>i<keepFrom&&item?.type==='function_call_output');
@@ -13,7 +14,10 @@ const settled=item=>{try{const v=JSON.parse(item.output);return Boolean(v?.compa
 // refs: call id → the get_context_detail section holding that result in full (review-context.cjs resultStore); a result
 // condensed or referenced here then points there, so reading it again needs no new tool request.
 async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null,targetBytes=limit*TARGET,refs=null}={}){
-  const full=id=>refs?.has(id)?{fullResult:{section:refs.get(id)}}:{};
+  // refs: call id → section, or call id → sections in the order of that id's outputs (a repeated id keeps each its own).
+  const refAt=new Map(),seen=new Map();items.forEach((item,i)=>{if(item?.type!=='function_call_output')return;const k=seen.get(item.call_id)??0;seen.set(item.call_id,k+1);
+    const r=refs?.get(item.call_id);const ref=Array.isArray(r)?r[k]:r;if(ref)refAt.set(i,ref);});
+  const full=i=>refAt.has(i)?{fullResult:{section:refAt.get(i)}}:{};
   if(!Array.isArray(items)||size(items)<=targetBytes)return {items,steps:[]};
   const next=items.map(item=>({...item}));const steps=[];const calls=new Map(next.filter(i=>i?.type==='function_call').map(i=>[i.call_id,{name:i.name,args:i.arguments}]));
   const older=()=>outputs(next,keepFrom).filter(({item})=>!settled(item)).sort((a,b)=>b.item.output.length-a.item.output.length);
@@ -22,12 +26,12 @@ async function fit(items,{keepFrom=items.length,limit=LIMIT,compact=null,targetB
     try{result=await compact({results:batch.map(({item})=>({callId:item.call_id,tool:calls.get(item.call_id)?.name??'tool',output:item.output}))});}
     catch(error){if(error?.message==='STALE_DECISION')throw error;steps.push({step:'compact',error:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'COMPACT_FAILED'});}
     if(result){const byId=new Map((result.summaries??[]).filter(s=>s&&typeof s.callId==='string'&&typeof s.summary==='string').map(s=>[s.callId,s.summary.slice(0,1500)]));
-      for(const {item} of batch)if(byId.has(item.call_id))item.output=JSON.stringify({compacted:true,summary:byId.get(item.call_id),request:calls.get(item.call_id)??null,...full(item.call_id)});
+      for(const {item,i} of batch)if(byId.has(item.call_id))item.output=JSON.stringify({compacted:true,summary:byId.get(item.call_id),request:calls.get(item.call_id)??null,...full(i)});
       steps.push({step:'compact',bytes:size(next),usage:result.usage??null});}
   }
-  for(const {item} of outputs(next,keepFrom).sort((a,b)=>b.item.output.length-a.item.output.length)){
+  for(const {item,i} of outputs(next,keepFrom).sort((a,b)=>b.item.output.length-a.item.output.length)){
     if(size(next)<=targetBytes)break;if(JSON.parse(item.output)?.reference)continue;
-    item.output=JSON.stringify({reference:true,request:calls.get(item.call_id)??null,...full(item.call_id),note:refs?.has(item.call_id)?'Read earlier in this run; read it again in full with get_context_detail (section fullResult.section, from 0).':'Read earlier in this review; call the same tool with the same arguments to read it again in full.'});}
+    item.output=JSON.stringify({reference:true,request:calls.get(item.call_id)??null,...full(i),note:refAt.has(i)?'Read earlier in this run; read it again in full with get_context_detail (section fullResult.section, from 0).':'Read earlier in this review; call the same tool with the same arguments to read it again in full.'});}
   if(steps.at(-1)?.step!=='compact'||size(next)!==steps.at(-1).bytes)steps.push({step:'reference',bytes:size(next)});
   return {items:next,steps};
 }

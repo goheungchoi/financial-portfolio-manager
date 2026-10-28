@@ -57,14 +57,16 @@ class Automation {
   // The review clock: when this account and scope last had a review (run, skipped or failed) and which pre-open review
   // already ran, kept across restarts, so starting auto trading resumes the schedule instead of reviewing again.
   // The clock in memory belongs to clockScope. When the account or scope changes, both fields are replaced by that
-  // scope's saved clock, or reset when it has none: another account's review time never carries over. A disconnected
-  // account keeps the clock it had, since its identity is unknown. The first scope adopted also keeps a clock set
-  // before any scope was known (nothing could have run for another account yet), unless its saved one is later.
-  saveClock(){const scope=this.clockScope;if(!scope||scope.endsWith(':disconnected')||!(this.lastRun>0))return;
+  // scope's saved clock, or reset when it has none: another account's review time never carries over. Nothing changes
+  // while a review runs, so its time is saved under the scope it reviewed. A disconnected account keeps the clock it
+  // had, since its identity is unknown; a clock started while disconnected belongs to no account and is replaced. The
+  // first scope adopted keeps a clock set before any scope was known, unless its saved one is later. A saved time in
+  // the future (the system clock moved back) counts as now, so the interval still applies.
+  saveClock(){const scope=this.clockScope;if(!scope||scope.endsWith(':disconnected')||!(this.lastRun>0)&&!this.preOpenKey)return;
     try{this.db.prepare('INSERT INTO review_clock VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({lastRun:this.lastRun,preOpenKey:this.preOpenKey??null}));}catch{}}
-  restoreClock(){const scope=this.watchScope();if(scope===this.clockScope||scope.endsWith(':disconnected'))return;let c=null;
+  restoreClock(){if(this.busy)return;const scope=this.watchScope();if(scope===this.clockScope)return;if(scope.endsWith(':disconnected')){this.clockScope??=scope;return;}let c=null;
     try{const row=this.db.prepare('SELECT payload FROM review_clock WHERE scope=?').get(scope);c=row?JSON.parse(row.payload):null;}catch{}
-    const first=this.clockScope==null,saved=Number.isFinite(c?.lastRun)&&c.lastRun<=Date.now()?c.lastRun:0;this.clockScope=scope;
+    const first=this.clockScope==null,saved=Number.isFinite(c?.lastRun)&&c.lastRun>0?Math.min(c.lastRun,Date.now()):0;this.clockScope=scope;
     this.lastRun=first?Math.max(this.lastRun,saved):saved;this.preOpenKey=typeof c?.preOpenKey==='string'?c.preOpenKey:first?this.preOpenKey??null:null;}
   saveConfig(){this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(this.config));}
   configure(value) {
@@ -109,10 +111,16 @@ class Automation {
   noteSessions(context){const {krOpen,seoulDay}=require('./market-hours.cjs');const kr=context?.environment==='kis-combined'?context.markets?.find(m=>m.market==='KR')?.marketSession:this.config.scope==='kis'?context?.marketSession:null;
     if(kr&&kr.open===false&&kr.status==='closed'&&krOpen(Date.now(),this.closedDays??=new Set()))this.closedDays.add(seoulDay(Date.now()));}
   // When the next scheduled review is due: while markets are closed, the pre-open review or the open itself.
-  nextReviewAt(){if(!this.config.enabled||!this.sessionArmed)return null;this.restoreClock();const hours=this.marketHours();
-    if(!hours.open&&this.config.closedMarketReviews!=='keep'&&!this.emergencyState().active&&hours.next)return this.config.closedMarketReviews==='pre-open'?hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS:hours.next.at;
-    const due=Math.max(Date.now(),this.lastRun+Math.max(60000,this.emergencyState().active?60000:this.reviewInterval.get(this.watchScope(),this.config).minutes*60000));
+  // The pre-open review already ran for the next open: the next one is a scheduled review after that open.
+  nextReviewAt(){if(!this.config.enabled||!this.sessionArmed)return null;this.restoreClock();const hours=this.marketHours(),emergency=this.emergencyState().active;
+    const interval=Math.max(60000,emergency?60000:this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*this.slowFactor());
+    if(!hours.open&&this.config.closedMarketReviews!=='keep'&&!emergency&&hours.next){if(this.config.closedMarketReviews!=='pre-open')return hours.next.at;
+      return this.preOpenRan(hours)?Math.max(hours.next.at,this.lastRun+interval):hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS;}
+    const due=Math.max(Date.now(),this.lastRun+interval);
     const defer=this.emergencyState().active?null:this.deferForPendingOrder();return defer?Math.max(due,defer.until):due;}
+  preOpenRan(hours=this.marketHours()){return Boolean(hours.next)&&this.preOpenKey===`${hours.next.market}:${hours.next.at}`;}
+  // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping (tick and nextReviewAt).
+  slowFactor(){return this.config.provider==='openai'&&this.config.degradeNearBudget&&require('./token-saver.cjs').nearBudget(this.config,this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0})?2:1;}
   executionState(){const selected=this.config.scope==='both'?[['KR',this.live],['US',this.usLive]]:this.config.scope==='paper'?[['Paper',{enabled:!this.paper.account().paused,autoEnabled:true}]]:[[this.config.scope==='us'?'US':'KR',this.config.scope==='us'?this.usLive:this.live]];const markets=selected.map(([market,engine])=>({market,enabled:Boolean(engine?.enabled),automatic:Boolean(engine?.enabled&&engine?.autoEnabled)}));const describe=market=>(market==='US'?'U.S.':market==='KR'?'Korea':market);const blocked=markets.filter(row=>!row.enabled||this.config.autoSubmit&&!row.automatic);return {label:!this.config.autoSubmit?'Approval first':blocked.length?'Automatic requested · waiting for activation':'Automatic execution ready',detail:markets.map(row=>describe(row.market)+': '+(!row.enabled?'orders off':!this.config.autoSubmit?'approval first':row.automatic?'automatic orders enabled':'automatic orders off; approval required')).join(' · '),markets};}
   emergencyState(){const candidates=this.config.scope==='both'?[{market:'KR',loss:this.live?.getState().loss},{market:'US',loss:this.usLive?.getState().loss}]:[{market:this.config.scope==='us'?'US':'KR',loss:this.config.scope==='paper'?this.paper.getState().loss:(this.config.scope==='us'?this.usLive:this.live)?.getState().loss}];const selected=candidates.find(row=>row.loss?.breached)??candidates[0];return {active:candidates.some(row=>row.loss?.breached),scope:this.config.scope,currency:selected.market==='US'?'USD':'KRW',activeMarkets:candidates.filter(row=>row.loss?.breached).map(row=>row.market),loss:selected.loss??null,reviewIntervalSeconds:60,objective:'Prioritize justified loss reduction after costs. Reassess both markets when selected; respect native currencies, broker capacity, hours and approval. Do not chase losses.'};}
   observeEmergency(emergency){if(emergency.active!==Boolean(this.lastEmergencyActive)||emergency.active&&emergency.scope!==this.lastEmergencyScope){this.lastEmergencyActive=emergency.active;this.lastEmergencyScope=emergency.scope;this.emergencyStartedAt=emergency.active?Date.now():null;this.log(randomUUID(),'Risk',emergency.active?'Emergency mode entered':'Emergency mode cleared',JSON.stringify(emergency));}}
@@ -252,7 +260,7 @@ class Automation {
         this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
         const providerContext=shapedDry.context;const transcript=[],requests=[];
         const trace=()=>({size,requests,transcript,detailReads:transcript.filter(t=>t.title.startsWith('Context detail')).map(t=>t.title.replace(/^Context detail · /,'')+' → '+t.body),condensed:transcript.filter(t=>t.title==='Research context condensed').map(t=>t.body)});
-        const failed=error=>{const at=Date.now();const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...trace()}};
+        const failed=error=>{const at=Date.now();const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...trace(),...(error?.metrics?{research:error.metrics}:{})}};
           try{this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,at,JSON.stringify({...record,snapshot}));}catch{}return error;};
         if(!shapedDry.fits){const e=new Error('CONTEXT_OVER_BUDGET');e.detail=shapedDry.report;throw failed(e);}
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
@@ -269,10 +277,10 @@ class Automation {
           catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}};
         // Condensing uses the routine model as a live review does (accounted as kind compact under this dry run's id).
         const log=(kind,title,body)=>{transcript.push({at:new Date().toISOString(),kind,title,body:String(body).slice(0,4000)});this.log(id,kind,title,String(body));};
-        let r;try{r=await require('./research-review.cjs').researchReview({context:providerContext,detail:shapedDry.detail,wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log,compact:this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request});}
+        let r;try{r=await require('./research-review.cjs').researchReview({context:providerContext,detail:shapedDry.detail,watched:watchedIn(this.discovery,providerContext),wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log,compact:this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request});}
         catch(error){throw failed(error);}
         const micro=this.db.prepare('SELECT payload FROM ai_calls').all().map(row=>JSON.parse(row.payload)).filter(p=>p.reviewId===id).reduce((sum,p)=>sum+(p.accountedMicro??p.estimatedMicro??0),0);
-        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
+        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,research:r.metrics??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
       }
       const record={id,timestamp:Date.now(),mode,summary,...(review?{review}:{})};
       this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify({...record,snapshot}));
@@ -391,7 +399,7 @@ class Automation {
     return {context,emergency,usValue,execution,lessonIds};
   }
   async review(trigger='User request',externalDecision) {
-    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;this.restoreClock();this.reviewSessionKey=this.sessionKey();const id=randomUUID();let context;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
+    if(this.busy)throw new Error('REVIEW_BUSY');this.restoreClock();this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();let context;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
       costRevision=JSON.stringify(this.costs?.get());
       let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;}}));
@@ -442,7 +450,9 @@ class Automation {
         }});
         if(selected.tier==='routine'&&(selected.openaiModel!==this.config.openaiModel||selected.reasoningEffort!==this.config.reasoningEffort)){
           // A failed cheaper-model run falls back to the main model instead of failing the review.
-          try{result=await research();}catch(error){if(error.message==='STALE_DECISION'||error.message==='AI_BUDGET_EXHAUSTED')throw error;this.log(id,'System','Cheaper model failed',`${selected.openaiModel}: ${/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'}; asking ${this.config.openaiModel} instead.`);selected={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort,tier:'escalated',reason:'cheaper model failed'};result=await research();}
+          // The failed run's research counts join the main model's run.
+          try{result=await research();}catch(error){if(error.message==='STALE_DECISION'||error.message==='AI_BUDGET_EXHAUSTED')throw error;this.log(id,'System','Cheaper model failed',`${selected.openaiModel}: ${/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED'}; asking ${this.config.openaiModel} instead.`);selected={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort,tier:'escalated',reason:'cheaper model failed'};
+            const failedMetrics=error.metrics;try{result=await research();}catch(again){if(failedMetrics&&again&&typeof again==='object')again.metrics=require('./research-meter.cjs').merge(failedMetrics,again.metrics);throw again;}if(failedMetrics)result={...result,metrics:require('./research-meter.cjs').merge(failedMetrics,result.metrics)};}
         }else result=await research();this.recordSaving(selected.tier);routing={tier:selected.tier,reason:selected.reason,model:selected.openaiModel,effort:selected.reasoningEffort,confirmed:null,...(inputs?{complexity:{score:inputs.complexity.score,parts:inputs.complexity.parts,reasons:inputs.complexity.reasons,agent:inputs.complexity.agent},hardRule:inputs.hardRule}:{})};
         // A trade proposed by the cheaper model is confirmed by the configured model before any proposal is created.
         if(selected.tier==='routine'&&result.decision.action!=='Hold'&&(selected.openaiModel!==this.config.openaiModel||selected.reasoningEffort!==this.config.reasoningEffort)){
@@ -515,7 +525,7 @@ class Automation {
     }catch(error){this.lastRun=Date.now();this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+(error.detail?` Size: ${error.detail.wireBytes} of ${error.detail.limitBytes} bytes; largest ${error.detail.largest.slice(0,5).join(', ')}.`:'');
       // A size failure is remembered with its inputs so the same inputs are not retried (see the skip above).
       if(['CONTEXT_TOO_LARGE','CONTEXT_OVER_BUDGET','AI_CONTEXT_LIMIT'].includes(this.lastError)&&this.pendingInput)this.failedInput={...this.pendingInput,code:this.lastError,at:Date.now()};
-      if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
+      if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
     finally{this.busy=false;this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
   }
   // A momentary OpenAI failure (connection, server error or timeout) is retried once after a short pause.
@@ -797,7 +807,7 @@ class Automation {
       const saved=this.scoutStore.save(scope,plan,{runId:id,trigger,model:result.model??modelConfig.openaiModel,usage:result.usage,research:result.metrics??null,rounds:result.rounds,answered});this.scoutScorecard.record(scope,result.plan,saved.timestamp);
       this.log(id,'Agent','Scout plan',JSON.stringify(plan,null,2));this.log(id,'System','Review completed',JSON.stringify(result.usage));if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));
       this.scoutError=null;return saved;
-    }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));throw error;}
+    }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));throw error;}
     finally{this.scouting=false;}
   }
   syncLearning(){try{this.outcomes.sync();this.memory.sync();this.reflections.sync();this.trials.observe(this.paper.getState().quotes,'paper');
@@ -850,8 +860,7 @@ class Automation {
     if(drift){this.triggerEvidence=drift;if(drift.kind==='price')this.watches.fired(scope,drift.symbol);}
     if(!drift&&this.config.newsTrigger!=='off'&&Date.now()-(this.lastNewsTrigger??0)>=600000){const pending=this.newsEvents.pending(this.config.newsTrigger);if(pending.length){this.lastNewsTrigger=Date.now();this.newsEvents.markTriggered(pending.map(event=>event.id));this.triggerEvidence={kind:'news',events:pending.slice(0,5).map(({title,source,published,symbols,importance})=>({title,source,published,symbols,importance}))};void this.review('News event trigger').catch(()=>{});return;}}
     // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping.
-    const slow=this.config.provider==='openai'&&this.config.degradeNearBudget&&require('./token-saver.cjs').nearBudget(this.config,this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0})?2:1;
-    const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*slow;
+    const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*this.slowFactor();
     if(!drift&&elapsed>=interval){const defer=this.deferForPendingOrder();if(defer){if(this.deferredAfter!==this.lastRun){this.deferredAfter=this.lastRun;const o=defer.orders[0];
       this.log(o.id,'System','Review waits for the pending order',`${o.side} ${o.quantity} ${o.symbol} is waiting at the broker (${o.status}${defer.orders.length>1?`, with ${defer.orders.length-1} more`:''}). The next review starts when it fills, partly fills or is cancelled, on a price, news or agent trigger, when a market opens or closes, or at ${new Date(defer.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST at the latest.`);}return;}}
     if(elapsed>=interval||drift)void this.review(drift?'Price movement trigger':this.firstAfterStart?'Auto trading started':'Scheduled review').catch(()=>{});

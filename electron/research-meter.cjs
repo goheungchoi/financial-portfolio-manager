@@ -11,7 +11,7 @@ const TRACE=Symbol.for('fpm.research-trace');
 const SYMBOL_TOOLS=new Set(['get_company_research','get_market_evidence']);
 const COUNTS=['toolCalls','runCacheHits','detailReads','shortened','resultBytes','detailBytes','researchReads','sections','sourceReads','reused','fetched','refreshed','stale','unavailable'];
 function createMeter(){
-  const c=Object.fromEntries(COUNTS.map(k=>[k,0])),symbols=new Set(),attempted=new Set(),partial=new Set();
+  const c=Object.fromEntries(COUNTS.map(k=>[k,0])),symbols=new Set(),attempted=new Set(),partial=new Set(),whole=new Set();
   return {
     // One answered tool request: its name and arguments, the full value and the reply as sent. runCache: answered from
     // the run's own cache of identical requests (no source was read again).
@@ -20,7 +20,8 @@ function createMeter(){
       if(name==='get_context_detail'){c.detailReads++;c.detailBytes+=bytes;return;}
       c.resultBytes+=bytes;if(sent&&typeof sent==='object'&&(sent.cuts||sent.omittedParts||sent.shortenedParts||sent.status==='too_large'))c.shortened++;
       const symbol=typeof args?.symbol==='string'?args.symbol.trim().toUpperCase():'';
-      if(symbol&&SYMBOL_TOOLS.has(name)){attempted.add(symbol);const found=usable(name,value);if(found){symbols.add(symbol);if(found==='partial')partial.add(symbol);else partial.delete(symbol);}}
+      // One full read makes a symbol fully researched for the run, whatever was read before or after it (as in merge).
+      if(symbol&&SYMBOL_TOOLS.has(name)){attempted.add(symbol);const found=usable(name,value);if(found){symbols.add(symbol);if(found==='full'){whole.add(symbol);partial.delete(symbol);}else if(!whole.has(symbol))partial.add(symbol);}}
       if(runCache){c.runCacheHits++;return;}
       const trace=name==='get_company_research'?value?.[TRACE]:null;if(!trace)return;c.researchReads++;
       for(const reads of Object.values(trace.reads??{})){c.sections++;for(const r of reads){c.sourceReads++;const k=r.cache==='hit'||r.cache==='shared'?'reused':r.cache;if(Object.hasOwn(c,k))c[k]++;}}
@@ -28,7 +29,7 @@ function createMeter(){
     // watched: the symbols on the watchlist this run could research.
     summary(watched=[]){const list=[...new Set(watched)],missed=list.filter(s=>!symbols.has(s));
       return {format:FORMAT,...c,researchedSymbols:[...symbols],partialSymbols:[...partial],unavailableSymbols:[...attempted].filter(s=>!symbols.has(s)),
-        coverage:{watched:list.length,researched:list.length-missed.length,partial:list.filter(s=>partial.has(s)).length,notResearched:missed.slice(0,40),attemptedNotResearched:missed.filter(s=>attempted.has(s)).slice(0,40)}};},
+        coverage:{watched:list.length,researched:list.length-missed.length,partial:list.filter(s=>partial.has(s)).length,partialSymbols:list.filter(s=>partial.has(s)).slice(0,40),notResearched:missed.slice(0,40),attemptedNotResearched:missed.filter(s=>attempted.has(s)).slice(0,40)}};},
   };
 }
 // Whether a reply holds usable evidence: 'full', 'partial' (some company research sections unavailable) or null for a
@@ -49,8 +50,9 @@ function merge(a,b){
   const watched=Math.max(a.coverage?.watched??0,b.coverage?.watched??0),union=(x,y)=>[...new Set([...(x??[]),...(y??[])])];
   const full=r=>(r.researchedSymbols??[]).filter(s=>!(r.partialSymbols??[]).includes(s)),whole=union(full(a),full(b));
   out.partialSymbols=union(a.partialSymbols,b.partialSymbols).filter(s=>!whole.includes(s));out.unavailableSymbols=union(a.unavailableSymbols,b.unavailableSymbols).filter(s=>!out.researchedSymbols.includes(s));
-  const attempted=union(a.coverage?.attemptedNotResearched,b.coverage?.attemptedNotResearched);
-  out.coverage={watched,researched:watched-missed.length,partial:Math.min(Math.max(a.coverage?.partial??0,b.coverage?.partial??0),out.partialSymbols.length),notResearched:missed,attemptedNotResearched:missed.filter(s=>attempted.includes(s))};
+  // Watched partial symbols: those partial in either run's watched list and full in neither.
+  const attempted=union(a.coverage?.attemptedNotResearched,b.coverage?.attemptedNotResearched),watchedPartial=union(a.coverage?.partialSymbols,b.coverage?.partialSymbols).filter(s=>!whole.includes(s));
+  out.coverage={watched,researched:watched-missed.length,partial:watchedPartial.length,partialSymbols:watchedPartial,notResearched:missed,attemptedNotResearched:missed.filter(s=>attempted.includes(s))};
   return out;
 }
 module.exports={createMeter,merge,FORMAT,COUNTS};

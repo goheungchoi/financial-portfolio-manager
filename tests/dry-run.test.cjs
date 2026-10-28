@@ -107,11 +107,17 @@ test('a dry-run review condenses older results like a live review, accounts that
   assert.ok(r.review.requests.filter(q=>q.followUp).every(q=>q.bytes<=140000*0.9),'follow-ups within the fitting point: '+r.review.requests.map(q=>q.bytes).join(','));
   const kinds=db.prepare('SELECT payload FROM ai_calls').all().map(x=>JSON.parse(x.payload)).filter(c=>c.reviewId===r.id).map(c=>c.kind);assert.deepEqual(kinds.sort(),['compact','dry-run','dry-run']);
 });
+test('a dry-run review records its research counts like a live review',async()=>{
+  const {automation,queue}=harness();const args={symbol:'005930',dataset:'company'};
+  queue.push(()=>({toolCalls:[call('get_market_evidence',args,'c1')],continuation:[{role:'user',content:'x'},fcall('get_market_evidence',args,'c1')],usage:{inputTokens:1,outputTokens:1}}));
+  const r=await automation.dryRun('review');assert.equal(r.review.research.toolCalls,1);assert.deepEqual(r.review.research.researchedSymbols,['005930']);
+});
 test('a failed dry-run review keeps its diagnostics: sizes, transcript and the reason',async()=>{
   const {automation,queue,db}=harness();
   queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',from:0},'d3')],continuation:[{role:'user',content:'"'.repeat(80000)},fcall('get_context_detail',{section:'x',part:'',from:0},'d3')],usage:{inputTokens:1,outputTokens:1}}));
   await assert.rejects(automation.dryRun('review'),/CONTEXT_OVER_BUDGET/);
   const stored=db.prepare('SELECT payload FROM dry_runs').all().map(x=>JSON.parse(x.payload)).at(-1);assert.equal(stored.review.failed,'CONTEXT_OVER_BUDGET');
+  assert.equal(stored.review.research.detailReads,1,'a failed dry run keeps what it researched');
   assert.equal(stored.review.requests.length,1,'the follow-up was not sent');assert.ok(stored.review.transcript.some(t=>t.title.startsWith('Context detail')));assert.ok(stored.review.size.wireBytes>0);
   assert.equal(automation.busy,false);
 });

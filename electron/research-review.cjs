@@ -18,7 +18,10 @@ async function fitRequest(items,{keepFrom,compact,log,store=null}){
   const first=await cf.fit(items,{keepFrom,compact,refs});let out=first.items;const steps=[...first.steps];
   const latest=out.map((item,i)=>({item,i})).filter(({item,i})=>i>=keepFrom&&item?.type==='function_call_output');
   if(cf.size(out)>target&&latest.length){const room=Math.floor((target-cf.size(out)+latest.reduce((sum,{item})=>sum+cf.size(item),0))/latest.length)-300;
-    out=out.map((item,i)=>i>=keepFrom&&item?.type==='function_call_output'?{...item,output:JSON.stringify(store?.again(item.call_id,Math.max(800,room))??rc.bound(JSON.parse(item.output),Math.max(800,room)))}:item);steps.push({step:'rebound',perCall:room,bytes:cf.size(out)});}
+    // Each output is answered again from the store (the k-th output of a call id is its k-th answer), so a detail read
+    // is made again within the new room and its next.from follows what it now holds.
+    const seen=new Map();out=out.map((item,i)=>{if(item?.type!=='function_call_output')return item;const k=seen.get(item.call_id)??0;seen.set(item.call_id,k+1);
+      return i>=keepFrom?{...item,output:JSON.stringify(store?.again(item.call_id,Math.max(800,room),k)??rc.bound(JSON.parse(item.output),Math.max(800,room)))}:item;});steps.push({step:'rebound',perCall:room,bytes:cf.size(out)});}
   if(cf.size(out)>target){const last=await cf.fit(out,{keepFrom:out.length,refs});out=last.items;steps.push(...last.steps);}
   if(steps.length)log('System','Research context condensed',JSON.stringify(steps));
   if(cf.size(out)>cf.LIMIT){const e=new Error('CONTEXT_OVER_BUDGET');e.detail={limit:'app bytes',wireBytes:cf.size(out),limitBytes:cf.LIMIT};throw e;}
@@ -38,6 +41,8 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   const done=()=>meter.summary(watched);
   let perCall=16000;const answer=(call,value,keep=true,runCache=false)=>{const sent=keep?store.keep(call.callId,value,perCall):require('./review-context.cjs').bound(value,perCall);
     meter.call(call.name,call.args,value,sent,{runCache});continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(sent)});};
+  // A review that fails still reports what it researched (error.metrics), for the failed review's log and a fallback run.
+  try{
   for(let round=0;round<ROUNDS;round++){
     // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
     if(round>0)continuation=await fitRequest(continuation,{keepFrom,compact,log,store});
@@ -64,7 +69,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
       perCall=Math.max(1500,Math.min(16000,Math.floor((cf.LIMIT*cf.TARGET-cf.size(continuation))/calls)-200));}
     for(const call of result.toolCalls){
       // Summarized sections are read in full on request (review-context.cjs).
-      if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=store.read(call.args,Math.min(8000,perCall));log('Tool','Context detail · '+section+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));answer(call,value,false);continue;}
+      if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=store.read(call.args,Math.min(8000,perCall),call.callId);log('Tool','Context detail · '+section+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));answer(call,value,false);continue;}
       if(call.name==='set_review_interval'&&setInterval){const value=await via('set_review_interval',setInterval)(call.args);log('Tool','Review interval updated',JSON.stringify(value));answer(call,value);continue;}
       if(call.name==='set_review_watch'&&setWatch){const value=await via('set_review_watch',setWatch)(call.args);log('Tool','Review watch updated',JSON.stringify(value));answer(call,value);continue;}
       // Desk tools: formulas, triggers, notes and conditional orders. A refused request is answered, not fatal; a changed account still stops the review.
@@ -79,5 +84,6 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
     }
   }
   throw new Error('INVALID_AI_RESPONSE');
+  }catch(error){if(error&&typeof error==='object'&&!error.metrics)error.metrics=done();throw error;}
 }
 module.exports={researchReview,fitRequest,ROUNDS,MAX_CALLS};
