@@ -50,7 +50,7 @@ test('research offers the release section for U.S. stocks through SEC and keeps 
 // explicit split between uncertainty acceptable at this size and what must be verified before adding more.
 const {validateDecision}=require('../electron/ai-client.cjs');
 const impact={weightBeforePct:0,weightAfterPct:5.4,related:[],relatedBeforePct:0,relatedAfterPct:5.4,equityReliable:true,why:'A small industrial starter outside the AI concentration.'};
-const buy=plan=>validateDecision({action:'Buy',symbol:'NYSE:PNR',quantity:1,explanation:'Starter.',credit:'none',loanDate:'',plan:{thesis:'Water-industrial cash generation',invalidation:'Guidance cut',stopPrice:58.1,targetPrice:null,horizonDays:365,confidence:'medium',portfolioImpact:impact,evidence:[],valuation:null,uncertainty:null,...plan}},['NYSE:PNR'],{requirePlan:true});
+const buy=plan=>validateDecision({action:'Buy',symbol:'NYSE:PNR',quantity:1,explanation:'Starter.',credit:'none',loanDate:'',plan:{strategy:'long-term',thesis:'Water-industrial cash generation',invalidation:'Guidance cut',stopPrice:58.1,targetPrice:null,horizonDays:365,confidence:'medium',portfolioImpact:impact,evidence:[],valuation:null,uncertainty:null,...plan}},['NYSE:PNR'],{requirePlan:true});
 const headline={claim:'Full-year adjusted EPS guidance maintained at about $4.70',source:'News headline, Oct 27',verified:false};
 const read={claim:'Full-year adjusted EPS guidance maintained at about $4.70',source:'SEC 8-K Oct 27, EX-99.1 (release section)',verified:true};
 test('a Buy needs sourced evidence; a target price needs its valuation basis; unverified facts need the size and next-step split',()=>{
@@ -79,4 +79,15 @@ test('real EDGAR documents: the document label is not the headline and bullets a
   const r=await sec.secEarningsRelease(labelled,'me@example.com','NYSE:PNR','2026-10-28',{});
   assert.match(r.headline,/^Pentair Reports Third Quarter 2026 Results/);assert.ok(r.results.includes('GAAP EPS was $0.91 and adjusted EPS was $1.18'));
   assert.ok(r.guidance.includes('The Company reaffirms its previous full year adjusted EPS midpoint of approximately $4.70.'));
+});
+// The user found the agents' strategies too monotonous: every review now names the best idea of each strategy type it
+// considered, and a Buy names its strategy; leveraged-tactical trades follow their own evidence and size rules.
+test('strategy variety: a Buy names its strategy and each review records the ideas it considered by type',()=>{
+  assert.equal(buy({evidence:[read],strategy:'none'}).withheld?.reason,'no strategy (long-term, swing, short-term or leveraged-tactical)');
+  const d=validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'x',credit:'none',loanDate:'',plan:{strategy:'none',thesis:'',invalidation:'i',stopPrice:null,targetPrice:null,horizonDays:null,confidence:'low',portfolioImpact:null,evidence:[],valuation:null,uncertainty:null},
+    strategyCheck:[{strategy:'long-term',idea:'Pentair add',verdict:'watching',reason:'After the guidance is verified.'},{strategy:'leveraged-tactical',idea:'KODEX 반도체레버리지 on a +4% SOX night',verdict:'rejected',reason:'No confirmation at the open.'},{strategy:'scalping',idea:'x',verdict:'acted',reason:'unknown type'}]},['NYSE:PNR'],{requirePlan:true});
+  assert.deepEqual(d.strategyCheck.map(c=>[c.strategy,c.verdict]),[['long-term','watching'],['leveraged-tactical','rejected']]);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
+  assert.match(src,/Vary your strategies instead of defaulting to one/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
+  assert.match(require('../electron/scout.cjs').INSTRUCTIONS,/include a tactical candidate for it/);
 });

@@ -169,3 +169,9 @@ test('only orders of the markets a review covers defer it, start it or appear in
   a.config={...a.config,scope:'both'};assert.deepEqual(a.deferForPendingOrder().orders.map(o=>o.symbol).sort(),['005930','NYSE:PNR'],'both markets: both');
   a.config={...a.config,scope:'paper'};assert.equal(a.deferForPendingOrder(),null);
 });
+test('reviews get the other market sector moves as leads for the next session; a failing source leaves them out',async()=>{
+  const {automation:a}=harness();const leads={us:{asOf:'2026-10-28T20:05:00.000Z',indices:[{label:'Nasdaq-100',changePct:1.8}],sectors:[{sector:'Technology',etf:'AMEX:XLK',changePct:2.4}]},note:'n'};const asked=[];
+  a.sectorLeads=async scope=>{asked.push(scope);return leads;};let {context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'Scheduled review',setStage:()=>{}});
+  assert.deepEqual(context.sectorLeads,leads);assert.deepEqual(asked,['kis'],'asked for the review scope');
+  a.sectorLeads=async()=>{throw new Error('KIS down');};({context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'Scheduled review',setStage:()=>{}}));assert.equal(context.sectorLeads,undefined);
+});
