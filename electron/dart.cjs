@@ -11,6 +11,20 @@ function unzipFirst(buffer){
   const start=local+30+buffer.readUInt16LE(local+26)+buffer.readUInt16LE(local+28);if(start+size>buffer.length||![0,8].includes(method))throw new Error('DART_FORMAT');
   const data=buffer.subarray(start,start+size);return method===8?zlib.inflateRawSync(data,{maxOutputLength:MAX_XML}):data;
 }
+// Every entry of a ZIP archive, by name, from its central directory.
+function unzipAll(buffer){
+  let eocd=-1;for(let i=buffer.length-22;i>=Math.max(0,buffer.length-65557);i--)if(buffer.readUInt32LE(i)===0x06054b50){eocd=i;break;}
+  if(eocd<0)throw new Error('DART_FORMAT');const count=buffer.readUInt16LE(eocd+10);let at=buffer.readUInt32LE(eocd+16);const out=[];let total=0;
+  for(let n=0;n<count&&n<50;n++){
+    if(at+46>buffer.length||buffer.readUInt32LE(at)!==0x02014b50)throw new Error('DART_FORMAT');
+    const method=buffer.readUInt16LE(at+10),size=buffer.readUInt32LE(at+20),nameLength=buffer.readUInt16LE(at+28),extra=buffer.readUInt16LE(at+30),comment=buffer.readUInt16LE(at+32),local=buffer.readUInt32LE(at+42);
+    const name=buffer.subarray(at+46,at+46+nameLength).toString('utf8');at+=46+nameLength+extra+comment;
+    if(local+30>buffer.length||buffer.readUInt32LE(local)!==0x04034b50)throw new Error('DART_FORMAT');
+    const start=local+30+buffer.readUInt16LE(local+26)+buffer.readUInt16LE(local+28);if(start+size>buffer.length||![0,8].includes(method))throw new Error('DART_FORMAT');
+    const data=method===8?zlib.inflateRawSync(buffer.subarray(start,start+size),{maxOutputLength:MAX_XML}):buffer.subarray(start,start+size);total+=data.length;if(total>MAX_XML)throw new Error('DART_FORMAT');out.push({name,data});
+  }
+  return out;
+}
 // Listed companies only: stock code → DART corp code.
 function parseCorpCodes(xml){
   const map=new Map();const re=/<corp_code>(\d{8})<\/corp_code>[\s\S]*?<stock_code>\s*(\d{6})?\s*<\/stock_code>/g;let m;
@@ -121,7 +135,12 @@ async function companyAbout(fetcher,key,stockCode,today,state){
   if(body.status==='013')return {status:'unavailable',reason:'NO_ANNUAL_REPORT'};if(body.status!=='000')throw new Error(body.status==='020'?'DART_RATE_LIMITED':'DART_UNAVAILABLE');
   const report=disclosures(body.list).find(f=>/사업보고서/.test(f.title));if(!report)return {status:'unavailable',reason:'NO_ANNUAL_REPORT'};
   const rceptNo=receiptOf(report);const source={kind:'DART annual report',date:report.date,title:report.title,rceptNo,url:report.url};
-  const parsed=businessOverview(await fetchDocument(call,rceptNo));
+  // An annual report archive holds the report and attachments (audit reports and the like), in no fixed order: the
+  // report is the entry named by its receipt number, or else the entry that has a business overview.
+  const response=await call('document.xml',{rcept_no:rceptNo});const buffer=Buffer.from(await response.arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('DART_FORMAT');
+  if(buffer.subarray(0,2).toString('latin1')!=='PK'){const status=/<status>(\d+)<\/status>/.exec(buffer.toString('utf8'))?.[1];throw new Error(status==='020'?'DART_RATE_LIMITED':status==='014'?'DOCUMENT_NOT_FOUND':'DART_UNAVAILABLE');}
+  const decode=require('./dart-preliminary.cjs').decodeDocument;const entries=unzipAll(buffer);const main=entries.find(e=>e.name.replace(/^.*\//,'')===rceptNo+'.xml');
+  let parsed=main?businessOverview(decode(main.data)):null;for(const e of entries){if(parsed)break;if(e!==main)parsed=businessOverview(decode(e.data));}
   return {language:'ko',source:{...source,section:parsed?.section??'사업의 개요'},...(parsed?{overview:parsed.text,...(parsed.truncated?{truncated:true}:{})}:{overviewUnavailable:'NO_BUSINESS_OVERVIEW'})};
 }
-module.exports={unzipFirst,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,companyAbout,businessOverview,preliminaryFigures,announcedResults};
+module.exports={unzipFirst,unzipAll,parseCorpCodes,classify,disclosures,dividendTable,earningsTiming,companyFilings,companyAbout,businessOverview,preliminaryFigures,announcedResults};

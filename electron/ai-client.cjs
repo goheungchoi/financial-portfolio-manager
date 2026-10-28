@@ -49,8 +49,10 @@ function normalizeImpact(v){if(!v||typeof v!=='object')return null;const pct=x=>
 // A Buy needs a thesis, an invalidation point, a stop, a horizon and the before-and-after portfolio comparison.
 // Evidence standards: every fact needs a source; a target price needs its valuation basis; any fact not read in its
 // source needs both why that is acceptable at this size and what must be verified before adding more.
-function planGap(plan){
-  if(!plan)return 'no trade plan';if(!plan.strategy)return 'no strategy (long-term, swing, short-term or leveraged-tactical)';if(!plan.thesis)return 'no thesis';if(!plan.invalidation)return 'no invalidation point';if(!plan.stopPrice)return 'no stop price';if(!plan.horizonDays)return 'no horizon';if(!plan.portfolioImpact)return 'no before-and-after portfolio comparison';
+function planGap(plan,{cover=false}={}){
+  if(!plan)return 'no trade plan';if(!cover&&!plan.strategy)return 'no strategy (long-term, swing, short-term or leveraged-tactical)';if(!plan.thesis)return 'no thesis';if(!plan.invalidation)return 'no invalidation point';if(!plan.stopPrice)return 'no stop price';if(!plan.horizonDays)return 'no horizon';if(!plan.portfolioImpact)return 'no before-and-after portfolio comparison';
+  // Covering a short reduces risk: it needs the basic plan, not the evidence standard for opening a position.
+  if(cover)return null;
   const evidence=plan.evidence??[];if(!evidence.length)return 'no evidence with sources';if(evidence.some(e=>!e.source))return 'evidence without a source';
   if(plan.targetPrice&&!(plan.valuation?.inputs&&plan.valuation?.justification))return 'a target price without its valuation basis (method, sourced inputs and why that multiple or assumption fits)';
   if(evidence.some(e=>!e.verified)&&!(plan.uncertainty?.acceptableAtThisSize&&plan.uncertainty?.beforeAddingMore))return 'unverified evidence without saying why it is acceptable at this size and what must be verified before adding more';
@@ -66,7 +68,7 @@ function validateDecision(value,symbols,{requirePlan=false}={}) {
   let complexity=null;if(value&&typeof value==='object'&&'complexity' in value){const {complexity:raw,...rest}=value;value=rest;if(raw&&Number.isFinite(raw.score))complexity={score:Math.max(0,Math.min(100,Math.round(raw.score))),reason:String(raw.reason??'').trim().slice(0,200)};}
   let plan=null;if(value&&typeof value==='object'&&'plan' in value){const {plan:raw,...rest}=value;value=rest;plan=normalizePlan(raw);}
   let decision=checkDecision(value,symbols);
-  if(requirePlan&&decision.action==='Buy'&&planGap(plan))decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a Buy of ${decision.quantity} ${decision.symbol}: ${planGap(plan)}. A Buy needs a thesis, an invalidation point, a stop price, a horizon, the before-and-after portfolio comparison and sourced evidence.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:planGap(plan)}};
+  if(requirePlan&&decision.action==='Buy'&&planGap(plan,{cover:decision.credit==='cover'}))decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a Buy of ${decision.quantity} ${decision.symbol}: ${planGap(plan,{cover:decision.credit==='cover'})}. A Buy needs a thesis, an invalidation point, a stop price, a horizon, the before-and-after portfolio comparison and sourced evidence.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:planGap(plan,{cover:decision.credit==='cover'})}};
   return {...decision,...(plan?{plan}:{}),...(complexity?{complexity}:{}),...(strategyCheck?.length?{strategyCheck}:{}),...(verdicts?{planVerdicts:verdicts}:{}),...(brief?{scoutBrief:brief}:{})};
 }
 function checkDecision(value,symbols) {

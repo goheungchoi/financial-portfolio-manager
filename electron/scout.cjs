@@ -32,8 +32,9 @@ function validatePlan(value){
     targets.push({symbol:t.symbol,name:cut(t.name,60),role:t.role,targetWeightPct:weight,thesis:cut(t.thesis,400),risks:cut(t.risks,300)});
   }
   const briefAnswers=(Array.isArray(value.briefAnswers)?value.briefAnswers:[]).filter(a=>a&&typeof a.briefId==='string'&&typeof a.answer==='string'&&a.answer.trim()).slice(0,8).map(a=>({briefId:a.briefId.trim().slice(0,20),answer:cut(a.answer,400)}));
-  const substitutions=(Array.isArray(value.substitutions)?value.substitutions:[]).filter(s=>s&&typeof s.forSymbol==='string'&&s.forSymbol.trim()&&Array.isArray(s.alternatives)).slice(0,4).map(s=>({forSymbol:s.forSymbol.trim().slice(0,24),why:cut(s.why,200),
-    alternatives:s.alternatives.filter(a=>a&&typeof a.symbol==='string'&&a.symbol.trim()&&['chosen','rejected','not-researched'].includes(a.verdict)).slice(0,3).map(a=>({symbol:a.symbol.trim().slice(0,24),exposure:cut(a.exposure,160),verdict:a.verdict,reason:cut(a.reason,240)}))}));
+  const unique=(rows,key)=>{const seen=new Set();return rows.filter(r=>{const k=key(r);if(seen.has(k))return false;seen.add(k);return true;});};
+  const substitutions=unique((Array.isArray(value.substitutions)?value.substitutions:[]).filter(s=>s&&typeof s.forSymbol==='string'&&s.forSymbol.trim()&&Array.isArray(s.alternatives)),s=>s.forSymbol.trim()).slice(0,4).map(s=>({forSymbol:s.forSymbol.trim().slice(0,24),why:cut(s.why,200),
+    alternatives:unique(s.alternatives.filter(a=>a&&typeof a.symbol==='string'&&a.symbol.trim()&&['chosen','rejected','not-researched'].includes(a.verdict)),a=>a.symbol.trim()).slice(0,3).map(a=>({symbol:a.symbol.trim().slice(0,24),exposure:cut(a.exposure,160),verdict:a.verdict,reason:cut(a.reason,240)}))}));
   return {summary:cut(value.summary,900),cashTargetPct:cash,focus:cut(value.focus,400),targets,briefAnswers,retrospective:cut(typeof value.retrospective==='string'?value.retrospective:'',500),...(substitutions.length?{substitutions}:{})};
 }
 // Schedule presets in Seoul time on weekdays: [hour, minute].

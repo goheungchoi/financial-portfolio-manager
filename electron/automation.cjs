@@ -278,19 +278,23 @@ class Automation {
   }
   // Order events: a pending order that fills, partly fills, is cancelled or rejected starts a review promptly, once per
   // change. Orders first seen after the app starts are only recorded.
-  orderEvent(){
-    this.orderSeen??=new Map();let event=null;
+  orderEvents(){
+    this.orderSeen??=new Map();const events=[];
     for(const o of this.scopedOrders()){if(!o?.id)continue;const key=`${o.status}|${o.filled??0}`;const prev=this.orderSeen.get(o.id);this.orderSeen.set(o.id,key);
-      if(prev!==undefined&&prev!==key&&ORDER_EVENTS.includes(o.status))event??=o;}
-    return event;
+      if(prev!==undefined&&prev!==key&&ORDER_EVENTS.includes(o.status))events.push(o);}
+    return events;
   }
+  // Orders waiting at the broker on their own trading day. One left from an earlier day has expired: KIS reports some
+  // expired day orders without a cancel flag, so they would otherwise stay Accepted and hold reviews back.
+  pendingOrders(now=Date.now()){const today={KR:seoulDate(now),US:require('./kis-overseas.cjs').localDate(new Date(now))};
+    return this.scopedOrders().filter(o=>PENDING_ORDER.includes(o.status)&&(!o.day||o.day>=today[o.market==='US'?'US':'KR']));}
   // Which markets are open: a change since the last review (an open or a close) is a backstop for a deferred review.
   sessionKey(now=Date.now()){try{return this.marketHours(now).markets.map(m=>`${m.market}:${m.open?'open':'closed'}`).join(',');}catch{return '';}}
   // While an order only waits at the broker, routine scheduled reviews would keep re-checking it: they wait for the
   // order's fill, partial fill or cancellation instead, with backstops: price, news and agent triggers still run, and so
   // does a review once a market opens or closes or ORDER_BACKSTOP_MS after the last one.
   deferForPendingOrder(now=Date.now()){
-    const orders=this.scopedOrders().filter(o=>PENDING_ORDER.includes(o.status));if(!orders.length)return null;
+    const orders=this.pendingOrders(now);if(!orders.length)return null;
     if(now-this.lastRun>=ORDER_BACKSTOP_MS||this.reviewSessionKey&&this.sessionKey(now)!==this.reviewSessionKey)return null;
     return {orders,until:this.lastRun+ORDER_BACKSTOP_MS};
   }
@@ -355,7 +359,7 @@ class Automation {
       // Sector moves in the other market, as leads for the next session here (electron/main.cjs sectorLeads).
       if(this.config.scope!=='paper'&&this.sectorLeads){try{const leads=await this.sectorLeads(this.config.scope);if(leads)context.sectorLeads=leads;}catch{}}
       // How a pending order is followed, so reviews do not keep re-deciding an order that is only waiting.
-      {const pending=this.scopedOrders().filter(o=>PENDING_ORDER.includes(o.status));if(pending.length)context.orderFollowUp={orders:pending.map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status})),
+      {const pending=this.pendingOrders();if(pending.length)context.orderFollowUp={orders:pending.map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status})),
         note:`The app starts a review as soon as a pending order fills, partly fills or is cancelled, and otherwise routine reviews wait for it up to ${ORDER_BACKSTOP_MS/60000} minutes (price, news and agent triggers and market opens or closes still start reviews). Do not re-decide a pending order in each review: say only what would make you cancel or change it (a broken thesis, a price far from the limit, new evidence), and act if that has happened.`};}if(context.environment!=='local-paper'){const plan=require('./scout.cjs').reviewContext(this.scoutStore.latest(watchScope));if(plan){context.scoutPlan=plan;const gap=require('./plan-gap.cjs').planGap(context);if(gap)context.planGap=gap;}const brief=this.scoutBriefState(watchScope);if(brief)context.scoutBrief=brief;context.agentDesk=this.desk.context(watchScope,this.config,(context.universe??[]).map(r=>r.symbol));if(context.agentDesk?.notes?.length){const flags=new Map(this.annotatedNotes(this.desk.notes(watchScope)).map(n=>[n.symbol,n]));context.agentDesk.notes=context.agentDesk.notes.map(n=>{const f=flags.get(n.symbol??'');return {...n,...(f?.accountStateConflict?{accountStateConflict:f.accountStateConflict}:{}),...(f?.orderClaimUnverified?{orderClaimUnverified:f.orderClaimUnverified}:{})};});}if(context.agentDesk?.conditionalOrders?.allowed)context.agentDesk.conditionalOrders.monitoring=this.conditionalMonitoringActive()?'active':'inactive: auto trading is paused, so armed orders do not fire until it is started';const story=this.storyContext();if(story.marketNarrative)context.marketNarrative=story.marketNarrative;if(story.similarEpisodes?.length)context.similarEpisodes=story.similarEpisodes;const risk=this.riskContext(context);Object.assign(context,risk);if(context.planGap)require('./plan-gap.cjs').addMinimumPositions(context);const events=this.calendarState(14,(context.universe??[]).map(r=>({symbol:r.symbol,name:r.name})));if(events.length)context.eventCalendar=events.slice(0,15).map(({date,kind,market,symbol,title,estimated})=>({date,kind,market,symbol,title,estimated}));}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];const usStarters=['us','both'].includes(this.config.scope)?this.discovery.usStarters?.()??[]:[];const starterCandidates=[...(starters.length?[{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[]),...(usStarters.length?[{market:'US',symbols:usStarters,source:'KIS NASDAQ and NYSE market-cap rankings',note:'The U.S. market has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[])];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starterCandidates.length?{starterCandidates}:{})};}if(['Price movement trigger','News event trigger','Agent trigger','Order update'].includes(trigger))context.triggerEvidence=this.triggerEvidence;
       try{await this.attachOrderBooks(context);}catch{}
       // Whether total equity can be trusted for weights: unconfirmed order status, an uncertain settlement or a missing market.
@@ -808,15 +812,17 @@ class Automation {
     }
     if(this.schedulerStatus().label!=='Monitoring')return;
     // Order updates are noted every 5 seconds, also while markets are closed, and start a review when one can run.
-    if(deskDue&&this.config.scope!=='paper'){const event=this.orderEvent();if(event)this.pendingOrderEvent=event;}
+    // Each order keeps its latest update; the queue belongs to the scope it was noted in.
+    if(deskDue&&this.config.scope!=='paper'){const events=this.orderEvents();if(events.length){if(this.orderQueue?.scope!==this.config.scope)this.orderQueue={scope:this.config.scope,orders:new Map()};for(const o of events)this.orderQueue.orders.set(o.id,o);}}
+    if(this.orderQueue&&this.orderQueue.scope!==this.config.scope)this.orderQueue=null;
     // While every market in scope is closed, nothing can execute: scheduled, news and agent-trigger reviews wait,
     // except one review shortly before the next open (unless set otherwise). Emergencies and your own requests still run.
     if(!emergency.active&&this.config.closedMarketReviews!=='keep'){const hours=this.marketHours();if(!hours.open){
       if(this.config.closedMarketReviews==='pre-open'&&hours.preOpen&&this.preOpenKey!==hours.preOpen.key&&!this.busy){this.preOpenKey=hours.preOpen.key;void this.review('Pre-open review').catch(()=>{});}
       return;}}
-    if(this.pendingOrderEvent&&!this.busy&&Date.now()-this.lastRun>=30000){const o=this.pendingOrderEvent;this.pendingOrderEvent=null;
-      this.triggerEvidence={kind:'order',order:{symbol:o.symbol,market:o.market??'KR',side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,fillPrice:o.fillPrice??null,placedAt:o.createdAt?new Date(o.createdAt).toISOString():null}};
-      this.log(o.id,'System','Order update',`${o.status}: ${o.side} ${o.symbol}, ${o.filled??0}/${o.quantity} shares. A review starts now.`);void this.review('Order update').catch(()=>{});return;}
+    if(this.orderQueue?.orders.size&&!this.busy&&Date.now()-this.lastRun>=30000){const list=[...this.orderQueue.orders.values()];this.orderQueue=null;
+      this.triggerEvidence={kind:'order',orders:list.map(o=>({symbol:o.symbol,market:o.market??'KR',side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,fillPrice:o.fillPrice??null,placedAt:o.createdAt?new Date(o.createdAt).toISOString():null}))};
+      this.log(list[0].id,'System','Order update',list.map(o=>`${o.status}: ${o.side} ${o.symbol}, ${o.filled??0}/${o.quantity} shares`).join('; ')+'. A review starts now.');void this.review('Order update').catch(()=>{});return;}
     // Agent triggers: met conditions start a review with the values that met them.
     if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData());if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
     const elapsed=Date.now()-this.lastRun;
