@@ -119,7 +119,7 @@ test('a failed dry-run review keeps its diagnostics: sizes, transcript and the r
 // re-decided it ("do not submit a second buy while the order is pending"). Pending orders now wait for their fill or
 // cancellation, with backstops, and an order update starts a review at once.
 function scheduler(){
-  const h=harness();const a=h.automation;let orders=[];const reviews=[];a.engineOrders=()=>orders;a.review=async trigger=>{reviews.push({trigger,evidence:a.triggerEvidence});a.lastRun=Date.now();a.reviewSessionKey=a.sessionKey();};
+  const h=harness();const a=h.automation;let orders=[];const reviews=[];a.live.orders=()=>orders;a.review=async trigger=>{reviews.push({trigger,evidence:a.triggerEvidence});a.lastRun=Date.now();a.reviewSessionKey=a.sessionKey();};
   a.schedulerStatus=()=>({label:'Monitoring'});let open=true;a.marketHours=()=>({open,markets:[{market:'US',open}],preOpen:null,next:null});a.reviewInterval.get=()=>({minutes:30});
   const order=(status,filled=0)=>({id:'pnr',market:'US',symbol:'NYSE:PNR',side:'Buy',quantity:1,filled,status,fillPrice:filled?61.56:null,createdAt:Date.now()-60000});
   return {a,reviews,set:list=>{orders=list;},order,setOpen:v=>{open=v;},tick:()=>{a.lastDeskCheck=0;a.tick();}};
@@ -142,7 +142,30 @@ test('an order fill or cancellation starts a review at once with the order as ev
   closed.setOpen(true);closed.a.lastRun=Date.now()-60000;closed.tick();assert.deepEqual(closed.reviews.map(r=>r.trigger),['Order update'],'reviewed once a market is open');
 });
 test('the review is told how a pending order is followed',async()=>{
-  const {automation}=harness();automation.engineOrders=()=>[{id:'o',market:'KR',symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()}];
+  const {automation}=harness();automation.live.orders=()=>[{id:'o',market:'KR',symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()}];
   const {context}=await automation.assembleReviewContext({watchScope:automation.watchScope(),trigger:'Scheduled review',setStage:()=>{}});
   assert.deepEqual(context.orderFollowUp.orders,[{symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted'}]);assert.match(context.orderFollowUp.note,/Do not re-decide a pending order in each review/);
+});
+// Review of 40d7666..7e2539f: the order-update review reached the model without the order (context assembly passed
+// trigger evidence only for price, news and agent triggers), and orders of a market outside the review delayed it.
+test('an order-update review gives the model the order: status, filled quantity and fill price (end to end)',async()=>{
+  const {automation:a,supplied}=harness();const order=(status,filled)=>({id:'kia',market:'KR',symbol:'005930',side:'Buy',quantity:2,filled,status,fillPrice:filled?217000:null,createdAt:Date.now()-60000});
+  let orders=[order('Accepted',0)];const realOrders=a.live.orders.bind(a.live);a.live.orders=()=>[...realOrders(),...orders];
+  a.schedulerStatus=()=>({label:'Monitoring'});a.marketHours=()=>({open:true,markets:[{market:'KR',open:true}],preOpen:null,next:null});a.lastRun=Date.now()-5*60000;
+  a.lastDeskCheck=0;a.tick();orders=[order('Filled',2)];a.lastDeskCheck=0;a.tick();
+  for(let i=0;i<200&&!supplied.some(([op])=>op==='decision');i++)await new Promise(r=>setTimeout(r,10));
+  const call=supplied.find(([op])=>op==='decision');assert.ok(call,'a review reached the provider');
+  const context=call[1].context;assert.deepEqual({...context.triggerEvidence,order:{...context.triggerEvidence.order,placedAt:undefined}},{kind:'order',order:{symbol:'005930',market:'KR',side:'Buy',quantity:2,filled:2,status:'Filled',fillPrice:217000,placedAt:undefined}});
+  for(let i=0;i<200&&a.busy;i++)await new Promise(r=>setTimeout(r,10));
+});
+test('only orders of the markets a review covers defer it, start it or appear in its follow-up (Korea-only and U.S.-only)',async()=>{
+  const {automation:a}=harness();const kr={id:'k',market:'KR',symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()};const us={id:'u',market:'US',symbol:'NYSE:PNR',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()};
+  let usOrders=[us],krOrders=[];a.live.orders=()=>krOrders;a.usLive={orders:()=>usOrders};a.marketHours=()=>({open:true,markets:[{market:'KR',open:true}],preOpen:null,next:null});a.lastRun=Date.now()-45*60000;a.reviewSessionKey=a.sessionKey();
+  assert.equal(a.config.scope,'kis');assert.equal(a.deferForPendingOrder(),null,'a pending U.S. order does not delay a Korea-only review');
+  a.orderEvent();usOrders=[{...us,status:'Filled',filled:1,fillPrice:61.56}];assert.equal(a.orderEvent(),null,'nor does its fill start one');
+  usOrders=[us];let {context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'Scheduled review',setStage:()=>{}});assert.equal(context.orderFollowUp,undefined);
+  krOrders=[kr];assert.equal(a.deferForPendingOrder().orders[0].symbol,'005930','a Korean order does');
+  a.config={...a.config,scope:'us'};assert.deepEqual(a.deferForPendingOrder().orders.map(o=>o.symbol),['NYSE:PNR'],'U.S.-only: only the U.S. order');
+  a.config={...a.config,scope:'both'};assert.deepEqual(a.deferForPendingOrder().orders.map(o=>o.symbol).sort(),['005930','NYSE:PNR'],'both markets: both');
+  a.config={...a.config,scope:'paper'};assert.equal(a.deferForPendingOrder(),null);
 });
