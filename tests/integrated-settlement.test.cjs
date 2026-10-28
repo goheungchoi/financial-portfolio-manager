@@ -89,3 +89,12 @@ test('review fix: when a USD-funded buy of unknown funding settles before a KRW-
   observe(1600000,0,0);observe(1600000,0,0);// A settles in KRW
   assert.deepEqual(found.filter(f=>f.detected),[],'the old rule recorded a ₩980,000 deposit at the third reading');
 });
+// After a restart the Korean value could be recorded before the U.S. balance (and the KRW committed to a U.S.
+// buy) had loaded, so the day's Korean value rose by that amount and Korean returns looked far too high.
+test('the day value is not recorded while the U.S. balance that Korean equity depends on is still loading',()=>{
+  const {PerformanceHistory}=require('../electron/performance.cjs');let now=Date.parse('2026-10-21T09:00:00Z');const p=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);
+  p.record('a',{totals:{KRW:726980,USD:607.07,equityKRW:1517500},cash:{KRW:422690,USD:0},fx:{usdKRW:1322.6}});now+=60000;
+  assert.equal(p.record('a',{totals:{KRW:811240,USD:null,equityKRW:null},cash:{KRW:512640,USD:null},fx:null},{awaitingUS:true}),null,'nothing recorded while waiting');
+  assert.equal(p.history('a').at(-1).KRW.equity,726980,'the earlier value of the day stays');
+  p.record('a',{totals:{KRW:714700,USD:607.1,equityKRW:1517700},cash:{KRW:422690,USD:0},fx:{usdKRW:1322.6}},{awaitingUS:false});assert.equal(p.history('a').at(-1).KRW.equity,714700);
+});

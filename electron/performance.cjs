@@ -11,8 +11,10 @@ class PerformanceHistory {
     db.exec('CREATE TABLE IF NOT EXISTS nav_history(account TEXT NOT NULL,day TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(account,day));CREATE TABLE IF NOT EXISTS cash_flows(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS benchmark_closes(idx TEXT NOT NULL,day TEXT NOT NULL,close REAL NOT NULL,PRIMARY KEY(idx,day))');
   }
   // Keeps the latest valuation of each Seoul day; a market missing from this refresh keeps its earlier value for the day.
-  record(account,state){
-    if(typeof account!=='string'||!account||!state?.totals)return null;const {KRW,USD,equityKRW}=state.totals;if(KRW==null&&USD==null)return null;
+  // awaitingUS: the U.S. balance has not loaded yet (at startup). Korean equity is net of KRW committed to unsettled U.S.
+  // buys, which comes from that balance, so nothing is recorded until it arrives.
+  record(account,state,{awaitingUS=false}={}){
+    if(typeof account!=='string'||!account||!state?.totals||awaitingUS&&state.totals.USD==null)return null;const {KRW,USD,equityKRW}=state.totals;if(KRW==null&&USD==null)return null;
     const day=seoulDate(this.clock()),existing=this.db.prepare('SELECT payload FROM nav_history WHERE account=? AND day=?').get(account,day);const prior=existing?JSON.parse(existing.payload):{};
     // Each market keeps the day's first, highest and lowest observed value and a snapshot of its holdings.
     const holdings=market=>(state.rows??[]).filter(r=>r.market===market&&Number.isFinite(r.quantity)&&Number.isFinite(r.price)).slice(0,80).map(r=>({symbol:r.symbol,name:r.name??r.symbol,quantity:r.quantity,value:r.quantity*r.price,cost:Number.isFinite(r.cost)?r.quantity*r.cost:null}));

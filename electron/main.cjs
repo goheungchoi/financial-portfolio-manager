@@ -328,7 +328,7 @@ app.whenReady().then(async () => {
     for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash:null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
-  const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState());}catch{}};
+  const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:['both','us'].includes(automation.config.scope)&&!usSnapshot&&!usLive.refreshError});}catch{}};
   setInterval(recordValue,60000).unref();
   setInterval(()=>{if(Date.now()-calendarAt>6*3600000)void refreshKrCalendar();},600000).unref();
   automation.officialClosedDays=()=>officialKrCalendar().filter(r=>!r.open).map(r=>r.day);
