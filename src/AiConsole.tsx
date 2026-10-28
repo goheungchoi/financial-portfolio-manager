@@ -46,6 +46,12 @@ function ThreadItem({event}:{event:Interaction}){
   if(event.kind==='Risk')return <div className="tool-row risk"><span className="tool-icon" aria-hidden="true">◆</span><div><b>{event.title}</b><p>{event.body}</p></div>{time}</div>;
   const failed=/fail|error/i.test(event.title);const usage=parse(event.body);
   if(usage&&Number.isFinite(usage.inputTokens))return <div className="meta-line"><b>{event.title}</b><span>{usage.inputTokens.toLocaleString()} in · {(usage.outputTokens??0).toLocaleString()} out tokens{usage.cachedTokens?` · ${usage.cachedTokens.toLocaleString()} cached`:''}</span>{time}</div>;
+  // A request's size in a sentence (used, limit and the largest parts); the full record opens below.
+  if(usage&&Number.isFinite(usage.wireBytes)){const kb=(n:number)=>`${(n/1000).toFixed(1)} KB`;
+    const largest=(Array.isArray(usage.largest)?usage.largest:[]).slice(0,3).map((s:string)=>{const [k,b]=String(s).split(':');return Number.isFinite(Number(b))?`${k} ${kb(Number(b))}`:k;});
+    return <div className="meta-line"><b>{event.title}</b><span>{kb(usage.wireBytes)}{Number.isFinite(usage.limitBytes)?` of ${kb(usage.limitBytes)}`:''}{usage.dryRun?' · dry run':''}{largest.length?` · largest: ${largest.join(', ')}`:''}</span>{time}<details className="meta-detail"><summary>Details</summary><pre>{pretty(event.body)}</pre></details></div>;}
+  // Any other structured record: a short line, with the full record behind Details.
+  if(usage&&typeof usage==='object')return <div className={`meta-line ${failed?'failed':''}`}><b>{event.title}</b>{time}<details className="meta-detail"><summary>{short(event.body,120)}</summary><pre>{pretty(event.body)}</pre></details></div>;
   return <div className={`meta-line ${failed?'failed':''}`}><b>{event.title}</b>{event.body&&<span>{short(event.body,240)}</span>}{time}</div>;
 }
 export function AiConsole({events:allEvents}:{events:Interaction[]}){
