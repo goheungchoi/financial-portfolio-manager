@@ -31,9 +31,10 @@ class Exposure {
   // known: {englishName, type} from the security master, used when the securities table has no row for the symbol.
   classify(symbol,name=null,known=null){
     const override=this.db.prepare('SELECT factor FROM product_overrides WHERE symbol=?').get(symbol);if(override)return {factor:override.factor,kind:kindOf(override.factor),source:'Your setting'};
-    const row=this.security(symbol)??(known?{name,englishName:known.englishName??'',type:known.type??null}:null);const ticker=symbol.includes(':')?symbol.split(':')[1]:symbol;
+    // A master row without a type is classified by its name, never assumed standard.
+    const stored=this.security(symbol),row=stored??(known?{name,englishName:known.englishName??'',type:known.type??null}:null);const ticker=symbol.includes(':')?symbol.split(':')[1]:symbol;
     if(symbol.includes(':')&&US_KNOWN[ticker]!=null)return {factor:US_KNOWN[ticker],kind:kindOf(US_KNOWN[ticker]),source:'Known product list'};
-    if(row&&!['etf','etn'].includes(row.type))return {factor:1,kind:'standard',source:'Security master'};
+    if(row&&(stored||row.type!=null)&&!['etf','etn'].includes(row.type))return {factor:1,kind:'standard',source:'Security master'};
     if(!row&&!name)return {factor:1,kind:'standard',source:'Unknown product'};
     const factor=classifyName(symbol,row?.name??name??'',row?.englishName??'');return {factor,kind:kindOf(factor),source:row?'Security master name':'Product name'};
   }
