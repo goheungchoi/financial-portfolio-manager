@@ -24,7 +24,7 @@ test('the regime gauge adds stress readings and needs at least three',()=>{
 });
 test('a Buy needs a complete trade plan; otherwise it becomes a Hold with the reason',()=>{
   const {validateDecision}=require('../electron/ai-client.cjs');const base={action:'Buy',symbol:'005930',quantity:3,credit:'none',loanDate:'',explanation:'Buy on the dip.'};
-  const plan={thesis:'Memory upcycle',invalidation:'Margins fall below 30%',stopPrice:200000,targetPrice:260000,horizonDays:60,confidence:'medium'};
+  const plan={strategy:'swing',thesis:'Memory upcycle',invalidation:'Margins fall below 30%',stopPrice:200000,targetPrice:260000,horizonDays:60,confidence:'medium'};
   assert.deepEqual(validateDecision({...base,plan},['005930'],{requirePlan:true}).plan,plan);
   const held=validateDecision({...base,plan:{...plan,stopPrice:null}},['005930'],{requirePlan:true});assert.equal(held.action,'Hold');assert.equal(held.withheld.reason,'no stop price');assert.match(held.explanation,/held back a Buy of 3 005930/);
   assert.equal(validateDecision({...base,plan:{...plan,thesis:' '}},['005930'],{requirePlan:true}).withheld.reason,'no thesis');
@@ -50,7 +50,7 @@ test('reviews get sizing and the regime gauge; a stop not below the price holds 
   assert.ok(events.some(e=>e.title==='Buy held back · trade plan'&&/not below the price/.test(e.body)));assert.equal(a.getState().reviews[0].decision.action,'Hold');
 });
 test('a Buy with a complete plan saves the plan as a note and arms a stop-loss when conditional orders are on',async()=>{
-  const plan={thesis:'Memory upcycle',invalidation:'Margins fall',stopPrice:205000,targetPrice:250000,horizonDays:45,confidence:'medium'};
+  const plan={strategy:'swing',thesis:'Memory upcycle',invalidation:'Margins fall',stopPrice:205000,targetPrice:250000,horizonDays:45,confidence:'medium'};
   const {a,events}=harness({action:'Buy',symbol:'005930',quantity:2,credit:'none',loanDate:'',explanation:'Buy.',plan},{conditional:true});
   a.live.enabled=true;a.live.policy=()=>({anyStock:true,symbols:[],maxOrderKRW:null});
   await a.review();const scope=a.watchScope();

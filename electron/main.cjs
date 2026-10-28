@@ -271,6 +271,13 @@ app.whenReady().then(async () => {
   // The performance store is created further down; until then there are no closes.
   automation.indexCloses=()=>{try{return Object.fromEntries(Object.keys(require('./performance.cjs').INDEXES).map(index=>[index,performance.closes(index).slice(-90)]));}catch{return {};}};
   automation.marketOverviewCache=()=>{const hit=research.cached('MARKET','market');return hit?{value:hit.value,at:hit.at}:null;};
+  // The other market's latest sector moves, as a lead for the next session: U.S. sector ETFs for Korean reviews (read at
+  // most every three hours) and KOSPI sectors from the cached Korean overview for U.S. reviews.
+  automation.sectorLeads=async scope=>{const out={};
+    if(['kis','both'].includes(scope)){let hit=research.cached('MARKET','us-market');if(!hit||Date.now()-hit.at>3*3600000){try{await research.usMarket();}catch{}hit=research.cached('MARKET','us-market');}
+      if(hit?.value?.sectors?.length)out.us={asOf:new Date(hit.at).toISOString(),indices:(hit.value.indices??[]).map(({label,changePct})=>({label,changePct})),sectors:hit.value.sectors.map(({symbol,label,changePct})=>({sector:label,etf:symbol,changePct}))};}
+    if(['us','both'].includes(scope)){const hit=research.cached('MARKET','market');if(hit?.value?.kospiSectors?.length)out.korea={asOf:new Date(hit.at).toISOString(),sectors:hit.value.kospiSectors.map(({name,changePct})=>({sector:name,changePct})).filter(s=>s.changePct!=null).sort((a,b)=>b.changePct-a.changePct)};}
+    return Object.keys(out).length?{...out,note:'Latest sector moves in the other market (change against its previous close, read at asOf). A sharp move in a sector there often carries into the same sector in the next session here, but it is a lead to check against news, flows and the open, not a certainty.'}:null;};
   automation.freshenMarket=async()=>{if(!kisState.snapshot)return;const F=require('./market-freshness.cjs');if(!F.krOpen(Date.now(),{closedDays:new Set([...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])])}))return;await research.market();};
   ipcMain.handle('narrative:refresh',async event=>{authorize(event);try{await automation.buildNarrative();return {ok:true,state:automation.narrativeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED',state:automation.narrativeState()};}});
   ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
