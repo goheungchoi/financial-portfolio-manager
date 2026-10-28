@@ -222,3 +222,9 @@ test('the trading review describes reading by position and stored references',()
   assert.doesNotMatch(src,/parts and pages|paths or pages/);assert.match(src,/continues from the next\.from each reply gives until a reply says last/);assert.match(src,/read it again with get_context_detail from its fullResult\.section/);
   assert.match(rc.DETAIL_TOOL.description,/last true ends that list or text/);
 });
+test('self-review: an events section that came back without filings does not count as a filing check; an untyped master row is classified by name',async()=>{
+  const master={get:x=>x==='005930'?{name:'삼성전자',market:'KOSPI',type:'stock'}:x==='AMEX:SOXX2'?{name:'세미 2X',englishName:'SEMICONDUCTOR BEAR 2X SHARES'}:null,status:()=>({total:2})};
+  const s=new ResearchService({db:new DatabaseSync(':memory:'),master,kis:async()=>{throw new Error('KIS_DOWN');},provider:async()=>{throw new Error('DART_DOWN');},kisReady:()=>true,dartReady:()=>true});
+  const r=await s.agent({symbol:'005930',sections:['events']});assert.equal(r.provenance.events.cache,'unavailable');assert.ok(r.instrument.riskFlags.some(f=>/material filings not checked/.test(f)));
+  const fund=await s.agent({symbol:'AMEX:SOXX2',sections:['overview']});assert.equal(fund.instrument.leverageFactor,-2,'a master row without a type is not assumed standard');
+});

@@ -221,7 +221,7 @@ class ResearchService {
     const us=US.test(symbol);if(!us&&!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'INVALID_SYMBOL'};
     if(this.master?.status?.().total&&!this.master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};
     const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:us?US_DEFAULT:FUND_TYPES.has(this.identity(symbol).type)?FUND_DEFAULT:AGENT_DEFAULT;
-    const id=this.identity(symbol),out={symbol,name:id.name,market:id.market,asOf:seoulDate(this.clock())},provenance={},originals={},trace={};let filings=[];
+    const id=this.identity(symbol),out={symbol,name:id.name,market:id.market,asOf:seoulDate(this.clock())},provenance={},originals={},trace={};let filings=[],eventsRead=false;
     // Every section says where it came from, when it was retrieved and whether the app's cache answered (reused), and,
     // when the agent digest below left something out, where its original can be read (with get_context_detail).
     for(const name of sections){
@@ -232,7 +232,7 @@ class ResearchService {
       const p={from:[...new Set(answered.map(r=>r.origin))].join(' + ')||null,cache:section.status!=='ok'?'unavailable':answered.some(r=>r.cache==='stale')?'stale':!answered.length?'derived':answered.every(r=>r.cache==='hit'||r.cache==='shared')?'reused':'fetched',
         ...(section.status==='ok'&&missing.length?{unavailableFrom:missing.join(' + ')}:{})};
       if(section.status!=='ok'){out[name]={unavailable:section.reason};provenance[name]=p;continue;}
-      if(name==='events')filings=section.data?.filings??[];
+      if(name==='events'){filings=section.data?.filings??[];eventsRead=!section.data?.filingsUnavailable;}
       out[name]=digest(name,section.data);provenance[name]={...p,retrievedAt:new Date(section.retrievedAt).toISOString(),...(section.stale?{stale:true}:{})};
       if(JSON.stringify(prune(out[name]))!==JSON.stringify(prune(section.data))){originals[name]=section.data;Object.assign(provenance[name],{complete:false,original:`originalSections/${name}`});}
     }
@@ -250,7 +250,7 @@ class ResearchService {
     if(Object.values(provenance).some(p=>p.cache==='stale'||p.stale))flags.push('stale data: a source failed and older data was kept (see provenance)');
     // Material filings are checked for every Korean stock, not only when events were asked for: from the OpenDART
     // filings the app keeps (fetched when there are none), and the reply says when they could not be checked.
-    let filingsChecked=sections.includes('events')||us||FUND_TYPES.has(id.type);
+    let filingsChecked=eventsRead||us||FUND_TYPES.has(id.type);
     if(!filingsChecked&&this.dartReady?.()){try{const dart=await this.source(symbol,'dart');if(dart?.status==='ok'){filings=dart.data?.filings??[];filingsChecked=true;}}catch{}}
     if(!filingsChecked)flags.push('material filings not checked: OpenDART filings unavailable');
     const since=new Date(this.clock()-90*86400000).toISOString().slice(0,10);
