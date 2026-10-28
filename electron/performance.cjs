@@ -116,4 +116,13 @@ function closedSince(since,now=Date.now()){
     for(const market of ['KR','US']){const end=sessionEnd(market,day);if(end>since&&end<=now)return true;}}
   return false;
 }
-module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,finishedRows,closedSince,sessionEnd};
+// Whether a market's returns measure market performance, apart from whether its balance is reliable: unconfirmed
+// detected flows, cash changes not yet explained, and unknown funding of unsettled U.S. buys (Korean value) are inside them.
+function returnReliability({unconfirmed=[],checking=[],uncertainKRW=0}){
+  const money=(amount,currency)=>currency==='USD'?`$${Math.abs(amount).toFixed(2)}`:`₩${Math.abs(Math.round(amount)).toLocaleString('en-US')}`;
+  const reasons=[...unconfirmed.map(f=>`a detected ${f.amount>0?'deposit':'withdrawal'} of ${money(f.amount,f.currency)} on ${f.day} is not confirmed; returns treat it as one`),
+    ...checking.map(f=>`a cash change of ${f.amount>0?'+':'−'}${money(f.amount,f.currency)} since ${String(f.since).slice(0,16).replace('T',' ')} UTC is not yet explained; returns count it as gain or loss`),
+    ...(uncertainKRW>0?[`funding of ₩${Math.round(uncertainKRW).toLocaleString('en-US')} of unsettled U.S. buys is not yet known, so Korean value may be understated`]:[])];
+  return reasons.length?{reliable:false,reasons}:{reliable:true};
+}
+module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,finishedRows,closedSince,sessionEnd,returnReliability};

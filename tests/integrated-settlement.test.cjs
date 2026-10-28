@@ -98,3 +98,12 @@ test('the day value is not recorded while the U.S. balance that Korean equity de
   assert.equal(p.history('a').at(-1).KRW.equity,714609,'the earlier value of the day stays');
   p.record('a',{totals:{KRW:714700,USD:607.1,equityKRW:1517700},cash:{KRW:415376,USD:0},fx:{usdKRW:1322.6}},{awaitingUS:false});assert.equal(p.history('a').at(-1).KRW.equity,714700);
 });
+// Review of Oct 27-28: the agent received a Korean -10.33% day and a U.S. +12.04% day that came from an unrecorded
+// transfer between markets. Returns now say whether they measure market performance, separately from equity.
+test('returns are marked unreliable while unconfirmed flows, unexplained cash changes or unknown funding are inside them',()=>{
+  const {returnReliability}=require('../electron/performance.cjs');
+  assert.deepEqual(returnReliability({}),{reliable:true});
+  const r=returnReliability({unconfirmed:[{day:'2026-10-28',amount:-81855,currency:'KRW'}],checking:[{amount:61.71,currency:'USD',since:'2026-10-27T18:45:30.000Z'}],uncertainKRW:712078});
+  assert.equal(r.reliable,false);assert.deepEqual(r.reasons,['a detected withdrawal of ₩81,855 on 2026-10-28 is not confirmed; returns treat it as one','a cash change of +$61.71 since 2026-10-27 18:45 UTC is not yet explained; returns count it as gain or loss','funding of ₩712,078 of unsettled U.S. buys is not yet known, so Korean value may be understated']);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(src,/returnReliability:reliability/,'given to reviews with the performance summary');assert.match(src,/returnReliability is separate from equityReliability/);
+});
