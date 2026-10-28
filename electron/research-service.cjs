@@ -2,7 +2,16 @@
 // composed from KIS (quotes, analysts, estimates, ratios, KSD dividends and meetings), OpenDART (filings, annual dividend table)
 // and, for U.S. stocks, SEC EDGAR (annual financials, dividends, filings).
 const {seoulDate}=require('./kis-activity.cjs');
+const {AsyncLocalStorage}=require('node:async_hooks');
 const HOUR=3600000;
+// The source reads behind the agent reply being built, so concurrent replies never mix theirs.
+const reads=new AsyncLocalStorage();
+// An agent reply carries, under this key, each section's data before the agent digest and the source reads behind it.
+// A symbol key never reaches the model (JSON leaves it out) but survives spreading, so the research loops can keep
+// the originals for get_context_detail and count cache use (electron/research-meter.cjs).
+const TRACE=Symbol.for('fpm.research-trace');
+// Filings that change what a holding or candidate is: listing status, trading halts, insolvency, audit opinions, fraud.
+const MATERIAL_FILING=/상장폐지|거래정지|관리종목|회생|파산|부도|감사의견|횡령|배임|불성실공시/;
 const SECTIONS=['overview','about','analysts','estimates','financials','dividends','events','release','flows','risk','valuation','peers','fund','holdings','factors','fairvalue'];
 const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['about','analysts','estimates','financials','events','release','valuation','peers','factors','fairvalue']),FUND_DEFAULT=['overview','fund','holdings','risk'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
@@ -30,12 +39,15 @@ class ResearchService {
   // One raw source: fresh cache, a recent failure, or a new fetch (shared by concurrent callers).
   async source(symbol,source,refresh=false){
     const spec=SOURCES[source];let hit=this.cached(symbol,source);
+    // Each read is noted for the agent reply being built (see agent): from the cache, a first fetch, a refresh of
+    // expired data, stale data kept because the source failed, or unavailable.
+    const note=cache=>{reads.getStore()?.push({source,origin:spec.from.startsWith('dart')?'OpenDART':spec.from.startsWith('sec')?'SEC EDGAR':'KIS',cache});};
     // OpenDART results saved before the current format (unit-sales filings told apart, announced results dates) are refetched once.
     if(hit&&source==='dart'&&(hit.value?.version??1)<2)hit={...hit,at:0};
     // A description that could not be found in the filing is tried again after a day, not after the full week.
-    if(hit&&!refresh&&this.clock()-hit.at<(hit.value?.overviewUnavailable?Math.min(spec.ttl,24*HOUR):spec.ttl))return {status:'ok',retrievedAt:hit.at,data:hit.value};
-    const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL)return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};
-    const key=symbol+'|'+source;if(this.inflight.has(key))return this.inflight.get(key);
+    if(hit&&!refresh&&this.clock()-hit.at<(hit.value?.overviewUnavailable?Math.min(spec.ttl,24*HOUR):spec.ttl)){note('hit');return {status:'ok',retrievedAt:hit.at,data:hit.value};}
+    const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL){note(hit?'stale':'unavailable');return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};}
+    const key=symbol+'|'+source;if(this.inflight.has(key)){note('shared');return this.inflight.get(key);}
     const task=(async()=>{
       try{
         let value;
@@ -47,7 +59,8 @@ class ResearchService {
       }catch(error){const reason=code(error);this.failures.set(symbol+source,{at:this.clock(),reason});return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason};}
     })();
     // Registered before it settles and removed after, even when the task finished without waiting.
-    this.inflight.set(key,task);void task.finally(()=>{if(this.inflight.get(key)===task)this.inflight.delete(key);});return task;
+    this.inflight.set(key,task);void task.finally(()=>{if(this.inflight.get(key)===task)this.inflight.delete(key);});
+    return task.then(r=>{note(r.status!=='ok'?'unavailable':r.stale?'stale':hit?'refreshed':'fetched');return r;});
   }
   // A public section built from its sources; sources are fetched one after another (KIS calls are paced anyway).
   async section(symbol,name,refresh=false){
@@ -202,11 +215,31 @@ class ResearchService {
     const us=US.test(symbol);if(!us&&!/^\d{6}$/.test(symbol))return {status:'unavailable',reason:'INVALID_SYMBOL'};
     if(this.master?.status?.().total&&!this.master.get(symbol))return {status:'unavailable',reason:'UNKNOWN_SYMBOL'};
     const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:us?US_DEFAULT:FUND_TYPES.has(this.identity(symbol).type)?FUND_DEFAULT:AGENT_DEFAULT;
-    const profile=await this.profile(symbol,{sections});const out={symbol,name:profile.name,market:profile.market,asOf:profile.asOf};
-    for(const [name,section] of Object.entries(profile.sections))out[name]=section.status==='ok'?digest(name,section.data):{unavailable:section.reason};
+    const id=this.identity(symbol),out={symbol,name:id.name,market:id.market,asOf:seoulDate(this.clock())},provenance={},originals={},trace={};let filings=[];
+    // Every section says where it came from, when it was retrieved and whether the app's cache answered (reused), and,
+    // when the agent digest below left something out, where its original can be read (with get_context_detail).
+    for(const name of sections){
+      const seen=[];const section=await reads.run(seen,()=>this.section(symbol,name));trace[name]=seen;
+      const p={from:[...new Set(seen.map(r=>r.origin))].join(' + ')||null,cache:seen.some(r=>r.cache==='stale')?'stale':section.status!=='ok'?'unavailable':seen.length&&seen.every(r=>r.cache==='hit'||r.cache==='shared')?'reused':'fetched'};
+      if(section.status!=='ok'){out[name]={unavailable:section.reason};provenance[name]=p;continue;}
+      if(name==='events')filings=section.data?.filings??[];
+      out[name]=digest(name,section.data);provenance[name]={...p,retrievedAt:new Date(section.retrievedAt).toISOString(),...(section.stale?{stale:true}:{})};
+      if(JSON.stringify(prune(out[name]))!==JSON.stringify(prune(section.data))){originals[name]=section.data;Object.assign(provenance[name],{complete:false,original:`originalSections/${name}`});}
+    }
     if(us&&sections.some(s=>s==='fund'||s==='holdings'))out.fundData='Fund details and holdings are available for Korean-listed funds only: for this U.S. listing the leverage factor, holdings and weights cannot be read here, so treat them as unverified.';
+    // What the instrument is, stated on its own so it never depends on which sections were read or kept: type, the daily
+    // multiple (from fund data when read, otherwise from the name or the known U.S. tickers) and material risks.
+    const fundFactor=Number.isFinite(out.fund?.leverageFactor)?out.fund.leverageFactor:null,factor=fundFactor??require('./exposure.cjs').classifyName(symbol,id.name??''),flags=[];
+    if(factor<0)flags.push(`inverse: ${factor}x the daily move, reset daily`);else if(factor>1)flags.push(`leveraged: ${factor}x the daily move, reset daily`);
+    if(id.type==='etn')flags.push('ETN: carries the issuer\'s credit risk');
+    if(us&&fundFactor==null&&sections.some(s=>s==='fund'||s==='holdings'))flags.push('leverage and holdings unverified (U.S. listing)');
+    if(Object.values(provenance).some(p=>p.cache==='stale'))flags.push('stale data: a source failed and older data was kept (see provenance)');
+    const since=new Date(this.clock()-90*86400000).toISOString().slice(0,10);
+    for(const f of filings.filter(f=>String(f?.date??'')>=since&&MATERIAL_FILING.test(String(f?.title??''))).slice(0,3))flags.push(`material filing ${f.date}: ${String(f.title).slice(0,80)}`);
+    out.instrument={type:id.type??null,leverageFactor:factor,leverageBasis:fundFactor!=null?'fund data':'name',...(flags.length?{riskFlags:flags}:{})};
+    out.provenance=provenance;
     out.note='Third-party and broker data; check dates. Analyst targets and estimates are opinions. Null fields were left out.';
-    return prune(out);
+    const result=prune(out);result[TRACE]={originals,reads:trace};return result;
   }
 }
 // Per-section shortening for the agents.
@@ -232,4 +265,4 @@ function digest(name,d){
     ...(rows.length>15?{moreHoldings:rows.slice(15).map(({symbol,name,weightPct})=>[symbol||name,weightPct]),moreHoldingsNote:`Holdings 16 to ${rows.length} of the ${rows.length} KIS lists, as [code, weight %].`}:{})};}
   return d;
 }
-module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,prune,digest};
+module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,TRACE,prune,digest};

@@ -55,7 +55,7 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
 function report(context,limit){return {wireBytes:wire(context),limitBytes:limit,largest:Object.entries(context).map(([k,v])=>[k,bytes(v)]).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,b])=>`${k}:${b}`)};}
-const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), or a tool result that was shortened or had parts left out (its fullResult.section, result-N), in bounded parts. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. page: 1 or more for long lists and long text. A reply with complete false names the paths or pages still to read.',strict:true,
+const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), or a tool result that was shortened or had parts left out (its fullResult.section, result-N), in bounded parts. A research section whose provenance says complete false has its original at the path in provenance.original, inside that result. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. page: 1 or more for long lists and long text. A reply with complete false names the paths or pages still to read.',strict:true,
   parameters:{type:'object',properties:{section:{type:'string'},part:{type:'string'},page:{type:'integer'}},required:['section','part','page'],additionalProperties:false}};
 // Size of a value once it is a tool result in the request: the result travels as a JSON string inside the JSON
 // request, so every quote, backslash and control character is escaped twice. All tool budgets are in these bytes.
@@ -100,14 +100,18 @@ function detailPart(detail,{section,part='',page=1},limit=8000){
 // kept in order while they fit. 16 KB each: four responses in a round plus the review's first request stay within the
 // follow-up limit. ref, when given, is the get_context_detail section that holds the full response: everything cut or
 // left out is listed by path in it, so the agent can read exactly that, in pages.
-function bound(value,limit=16000,{ref=null}={}){
-  if(outBytes(value)<=limit)return value;
-  const full=ref?{fullResult:{section:ref,read:'Every path in cuts and omittedParts is readable in full with get_context_detail: this section, part set to the path, page 1 and up.'}}:{};
+// always: name the full result even when nothing here is cut (a research reply whose digest left parts out says where
+// in it the originals are). Parts in PINNED (identity, the next-session marker, instrument risk and provenance) come
+// first and are never shortened or left out, wherever they sat in the reply.
+const PINNED=['nextSession','status','symbol','name','market','asOf','instrument','fundData','provenance'];
+function bound(value,limit=16000,{ref=null,always=false}={}){
+  const full=ref?{fullResult:{section:ref,read:'Every path in cuts and omittedParts, and every provenance original, is readable in full with get_context_detail: this section, part set to the path, page 1 and up.'}}:{};
+  if(outBytes(value)<=limit)return always&&ref&&value&&typeof value==='object'&&!Array.isArray(value)&&outBytes({...value,...full})<=limit?{...value,...full}:value;
   if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),...full,note:ref?'Too large for one reply: read it in pages from fullResult.':'Ask for a narrower request (fewer sections or one symbol).'};
   // A part that does not fit is shortened to the room left when that room is useful (see shrink), so a section asked for
   // alone still arrives; only what cannot fit at all is left out.
-  const spare=500+outBytes(full),out={},omitted=[],shortened=[],cuts=[];
-  for(const [k,v] of Object.entries(value)){
+  const spare=500+outBytes(full),out=Object.fromEntries(PINNED.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]])),omitted=[],shortened=[],cuts=[];
+  for(const [k,v] of Object.entries(value)){if(Object.hasOwn(out,k))continue;
     if(outBytes({...out,[k]:v})<=limit-spare){out[k]=v;continue;}
     const room=limit-spare-outBytes({...out,[k]:null});
     if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room-200);if(cut&&outBytes({...out,[k]:cut.value})<=limit-spare-200){out[k]=cut.value;shortened.push(segment(k));cuts.push(...cut.cuts.map(c=>({...c,path:c.path?`${segment(k)}/${c.path}`:segment(k)})));continue;}}
@@ -147,6 +151,22 @@ function shrink(value,limit){
   const gone=c=>lists.some(l=>c!==l&&c.path.startsWith(l.path?l.path+'/':'')&&Number(c.path.slice(l.path?l.path.length+1:0).split('/')[0])>=l.keptItems);
   return outBytes(copy)<=limit?{value:copy,cuts:[...lists,...all.filter(c=>!('items' in c))].filter(c=>!gone(c))}:null;
 }
+// The full results of one run (a trading review or a scout run), read back with get_context_detail. Every tool result
+// is section result-N, numbered by result so a repeated call id never overwrites an earlier one; a research reply keeps
+// the sections its digest shortened as originalSections. base: the run's summarized context sections, if any.
+const TRACE=Symbol.for('fpm.research-trace');
+function resultStore(base=null){
+  const stored={},byCall=new Map();let count=0;
+  const details=()=>({...(base??{}),...stored}),originalsOf=value=>{const o=value?.[TRACE]?.originals;return o&&Object.keys(o).length?o:null;};
+  return {details,
+    // Keeps a result and returns it bounded to limit, naming the section that holds all of it.
+    keep(callId,value,limit){const ref=`result-${++count}`,originals=originalsOf(value);
+      stored[ref]=originals?{...value,originalSections:originals}:value;byCall.set(callId,{value,ref});return bound(value,limit,{ref,always:Boolean(originals)});},
+    // A kept result bounded again, from all of it, to a new limit (null for a call that was not kept).
+    again(callId,limit){const kept=byCall.get(callId);return kept?bound(kept.value,limit,{ref:kept.ref,always:Boolean(originalsOf(kept.value))}):null;},
+    refs:()=>new Map([...byCall].map(([id,{ref}])=>[id,ref])),
+    read:(args,limit)=>detailPart(details(),{section:String(args?.section??''),part:String(args?.part??''),page:args?.page},limit)};
+}
 // Combined reviews: each market's trading costs move out of markets[] into one tradingCosts, with the tax model, fee
 // assumption and rule version stated once for both markets. Returns {markets, tradingCosts}.
 function combineTradingCosts(markets){
@@ -164,4 +184,4 @@ function sameInputs(failed,next,tolerancePct){
 // Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
 // market and what set this review off (a new agent trigger, news event or price watch is material).
 const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
-module.exports={sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,DETAIL_TOOL};
+module.exports={sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};

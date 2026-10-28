@@ -82,7 +82,7 @@ test('without a DART key, dividends still load from KIS and filings say what is 
 });
 test('the agent view reads default sections, drops empty values and shortens lists',async()=>{
   const {s,calls}=service();
-  const v=await s.agent({symbol:'005930',sections:[]});assert.deepEqual(Object.keys(v).filter(k=>!['symbol','name','market','asOf','note'].includes(k)).sort(),['analysts','dividends','estimates','overview']);
+  const v=await s.agent({symbol:'005930',sections:[]});assert.deepEqual(Object.keys(v).filter(k=>!['symbol','name','market','asOf','note','instrument','provenance'].includes(k)).sort(),['analysts','dividends','estimates','overview']);
   assert.equal(v.overview.pbr,undefined,'nulls are dropped');assert.equal(v.analysts.latest.length,4);assert.equal(v.name,'삼성전자');assert.equal(v.dividends.annualReport[0].year,'2025');
   const e=await s.agent({symbol:'005930',sections:['events','bogus']});assert.ok(e.events.filings.every(f=>f.kind!=='ownership'),'ownership reports are left out for the agents');assert.equal(e.overview,undefined);
   assert.equal((await s.agent({symbol:'000000',sections:[]})).reason,'UNKNOWN_SYMBOL');assert.equal((await s.agent({symbol:'NASD:AAPL',sections:[]})).reason,'UNKNOWN_SYMBOL','symbols must be in the symbol list');
@@ -298,7 +298,7 @@ test('review: holdings beyond the first 15 are kept compactly, and a U.S. fund r
   const d=digest('holdings',{constituents:52,listed:40,holdings:rows,note:'KIS lists the largest 40 of 52 holdings.'});
   assert.equal(d.holdings.length,15);assert.equal(d.moreHoldings.length,25);assert.deepEqual(d.moreHoldings[9],['100024',rows[24].weightPct],'the 25th holding and its weight');assert.match(d.moreHoldingsNote,/16 to 40/);
   assert.equal(digest('holdings',{holdings:rows.slice(0,10)}).moreHoldings,undefined,'short lists unchanged');
-  const s=Object.create(ResearchService.prototype);s.master=null;s.identity=()=>({type:'etf'});s.profile=async(symbol,{sections})=>({name:'Semis 3x',market:'NYSE',asOf:'2026-10-28',sections:Object.fromEntries(sections.map(n=>[n,{status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'}]))});
+  const s=Object.create(ResearchService.prototype);s.master=null;s.clock=Date.now;s.identity=()=>({type:'etf',name:'Semis 3x'});s.section=async()=>({status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'});
   const us=await s.agent({symbol:'AMEX:SOXL',sections:['fund','holdings']});assert.match(us.fundData,/Korean-listed funds only.*unverified/);
   const kr=await s.agent({symbol:'233740',sections:['fund']});assert.equal(kr.fundData,undefined);
   const {INSTRUCTIONS}=require('../electron/scout.cjs');assert.match(INSTRUCTIONS,/fund details and holdings exist for Korean-listed funds only/);

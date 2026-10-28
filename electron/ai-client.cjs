@@ -35,6 +35,12 @@ function trimExplanation(text){
   return (end>=EXPLANATION_LIMIT/2?room.slice(0,end+1):room).trimEnd()+'…';
 }
 // Desk tools are offered when the review has a desk (KIS accounts); conditional orders only when the user allowed them.
+// The scout's fixed request parts: its tools (discovery, company research, market overview and the detail reader for
+// results it was given shortened), instructions and plan schema. Their size counts against the scout's request limit.
+function scoutTools(){const scout=require('./scout.cjs');return [...require('./discovery.cjs').TOOLS,scout.RESEARCH_TOOL,scout.MARKET_TOOL,require('./review-context.cjs').DETAIL_TOOL];}
+function scoutFixed(){const scout=require('./scout.cjs');return {tools:scoutTools(),instructions:scout.INSTRUCTIONS,text:{format:{type:'json_schema',name:'portfolio_plan',strict:true,schema:scout.SCHEMA}}};}
+// Bytes the fixed parts add to every scout request, with the request's own fields (model, effort, flags) allowed for.
+function scoutOverheadBytes(){return Buffer.byteLength(JSON.stringify(scoutFixed()))+400;}
 function deskTools(context){if(!context.agentDesk)return [];const d=require('./agent-desk.cjs');return [d.COMPUTE_TOOL,d.TRIGGER_TOOL,d.NOTE_TOOL,...(context.agentDesk.conditionalOrders?.allowed?[d.ORDER_TOOL]:[])];}
 // A Buy needs a thesis, an invalidation point, a stop and a horizon; without them it is held back as a Hold.
 function normalizePlan(plan){
@@ -121,13 +127,15 @@ class AiClient {
       return {narrative:JSON.parse(output),usage:reportedUsage,provider:'openai',model:returnedModel};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;throw safe;}
   }
-  // Scout research run: discovery and company-research tools, answered with a portfolio plan.
+  // Scout research run: discovery and company-research tools, answered with a portfolio plan. The size limit applies to
+  // the whole request as sent (instructions, tool definitions, schema and input), not to the input alone.
   async scout(context,options={}) {
-    const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;const scout=require('./scout.cjs');const discovery=require('./discovery.cjs');
-    const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];if(Buffer.byteLength(JSON.stringify(input))>160000)throw new Error('CONTEXT_TOO_LARGE');
-    const names=[...discovery.TOOL_NAMES,scout.RESEARCH_TOOL.name,scout.MARKET_TOOL.name];
+    const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;const scout=require('./scout.cjs');
+    const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const names=scoutTools().map(t=>t.name);
+    const payload=JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'portfolio-scout-v1',max_output_tokens:selected.maxOutput,...scoutFixed(),parallel_tool_calls:true,tool_choice:options.final?'none':'auto',reasoning:{effort:selected.effort},input});
+    const limit=options.maxBytes??scout.SCOUT_REQUEST_BYTES;if(Buffer.byteLength(payload)>limit)throw Object.assign(new Error('CONTEXT_TOO_LARGE'),{detail:`the scout request is ${Buffer.byteLength(payload)} bytes, over its ${limit}-byte limit (instructions and tools ${scoutOverheadBytes()}, input ${Buffer.byteLength(JSON.stringify(input))})`});
     try {
-      const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(85000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'portfolio-scout-v1',max_output_tokens:selected.maxOutput,tools:[...discovery.TOOLS,scout.RESEARCH_TOOL,scout.MARKET_TOOL],parallel_tool_calls:true,tool_choice:options.final?'none':'auto',reasoning:{effort:selected.effort},instructions:scout.INSTRUCTIONS,text:{format:{type:'json_schema',name:'portfolio_plan',strict:true,schema:scout.SCHEMA}},input})});
+      const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(85000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:payload});
       if(!response.ok)throw await require('./ai-errors.cjs').responseError(response);
       const text=await response.text();if(text.length>200000)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
@@ -172,4 +180,4 @@ class AiClient {
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }
-module.exports={AiClient,validateDecision,trimExplanation,decisionSchema};
+module.exports={AiClient,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes};
