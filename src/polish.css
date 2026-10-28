@@ -472,3 +472,23 @@ main>.engine-settings{margin-bottom:18px}
 .tick-delta.increase .tick-pill{color:var(--accent)}
 .tick-delta.decrease .tick-pill{color:var(--danger,#d96c6c)}
 .metric-foot>.tick-delta{flex-basis:100%}
+
+/* Discover tables (watchlist, search results): every column keeps one alignment for its header and its cells. Short
+   columns take only what they need and the name and reason share the rest, so nothing overflows at narrow widths. */
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+table.discover-table{table-layout:auto}
+.discover-table th,.discover-table td{text-align:left;vertical-align:middle;padding-right:14px}
+.discover-table th{padding-bottom:10px}
+.discover-table td{padding-top:13px;padding-bottom:13px}
+.discover-table .col-symbol,.discover-table .num,.discover-table .col-actions,.discover-table .col-short{width:1%;white-space:nowrap}
+.discover-table th.num,.discover-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.discover-table td.num .change-cell{justify-content:flex-end}
+.discover-table .link-button{text-align:left}
+.discover-table .col-name{min-width:120px}
+.discover-table .sub{display:block;margin-top:3px;font-size:11px;color:var(--muted)}
+.discover-table th.col-actions,.discover-table td.col-actions{text-align:right;padding-right:0}
+.discover-table .row-actions{flex-wrap:nowrap}
+.discover-table .reason{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;color:var(--muted);font-size:12.5px;line-height:1.45;min-width:140px}
+@media (max-width:1180px){.discover-table .change-bar{display:none}.discover-table .row-actions{flex-direction:column;align-items:flex-end;gap:4px}}
+.pager{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:12px;font-size:12px}
+.pager span{font-variant-numeric:tabular-nums}
