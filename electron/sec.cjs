@@ -67,4 +67,43 @@ async function secCompany(fetcher,contact,symbol,today,state){
   return {cik:company.cik,name:company.title,fiscalYearEndMonthDay:subs.fiscalYearEnd??null,annual,filings:list,earnings:earningsTiming(list,today),
     dividends:{years:annual.filter(r=>r.dividendsPerShare!=null).map(r=>({year:r.fiscalYearEnd.slice(0,4),fiscalYearEnd:r.fiscalYearEnd,perShare:r.dividendsPerShare,payoutRatioPct:r.payoutRatioPct}))}};
 }
-module.exports={parseTickers,annualFacts,filings,earningsTiming,secCompany,secFilings};
+// Plain text of an HTML filing document: blocks become lines, tags go, common entities are decoded.
+function htmlText(html){
+  const named={nbsp:' ',amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",rsquo:"'",lsquo:"'",rdquo:'"',ldquo:'"',ndash:'-',mdash:'-',hellip:'...'};
+  return String(html).replace(/<(script|style)[\s\S]*?<\/\1>/gi,' ').replace(/<br\s*\/?>|<\/(p|div|tr|h\d|li|table)>/gi,'\n').replace(/<\/t[dh]>/gi,' ').replace(/<[^>]+>/g,'')
+    .replace(/&#x([0-9a-f]+);/gi,(_,h)=>String.fromCodePoint(parseInt(h,16))).replace(/&#(\d+);/g,(_,d)=>String.fromCodePoint(Number(d))).replace(/&([a-z]+);/gi,(m,n)=>named[n.toLowerCase()]??m)
+    .replace(/[   ]/g,' ').replace(/[‘’]/g,"'").replace(/[“”]/g,'"').replace(/[–—]/g,'-')
+    .split('\n').map(line=>line.replace(/[ \t]+/g,' ').trim()).filter(Boolean).join('\n');
+}
+// The press-release exhibit (EX-99.1, else another EX-99) listed on a filing's index page.
+function releaseExhibit(indexHtml){
+  const rows=String(indexHtml).match(/<tr[\s\S]*?<\/tr>/gi)??[];let other=null;
+  for(const row of rows){const cells=(row.match(/<td[^>]*>[\s\S]*?<\/td>/gi)??[]).map(c=>htmlText(c));const href=/href="([^"]+)"/i.exec(row)?.[1]?.replace(/^\/ix\?doc=/,'');
+    if(!href||!/^\/Archives\/edgar\/data\/\d+\/\d{18}\/[A-Za-z0-9._-]+\.(htm|html|txt)$/i.test(href))continue;const type=cells.find(c=>/^EX-99/i.test(c));if(!type)continue;
+    if(/^EX-99\.0?1$/i.test(type))return {type:type.toUpperCase(),path:href};other??={type:type.toUpperCase(),path:href};}
+  return other;
+}
+const BOILERPLATE=/forward-looking|safe harbor|risks and uncertainties|undue reliance|Securities Litigation Reform/i;
+// The results and outlook stated in a release, as the company's own sentences.
+function releaseFacts(text){
+  const sentences=text.split('\n').flatMap(line=>line.split(/(?<=[.!?])\s+(?=[A-Z("$])/)).map(s=>s.replace(/^[•·▪◦*-]\s*/,'').trim()).filter(s=>s.length>=30&&s.length<=450&&/\d/.test(s)&&!BOILERPLATE.test(s));
+  const guidance=sentences.filter(s=>/\b(guidance|outlook|expects?|expected|anticipates?|reaffirm\w*|raises?|raised|narrow\w*|lowers?|lowered|full[- ]year|fiscal (year )?20\d\d|fourth[- ]quarter|next quarter)\b/i.test(s));
+  const results=sentences.filter(s=>!guidance.includes(s)&&/\b(sales|revenues?|EPS|earnings per share|operating income|segment income|margins?|free cash flow|net income|orders|backlog)\b/i.test(s)&&/[$%]|\d\.\d/.test(s));
+  return {results:results.slice(0,10),guidance:guidance.slice(0,8)};
+}
+// The latest earnings release (8-K item 2.02): its exhibit text, the results and guidance sentences, and where it came from.
+async function secEarningsRelease(fetcher,contact,symbol,today,state){
+  const {company,get,cik}=await secLookup(fetcher,contact,symbol,state);if(!company)return {status:'unavailable',reason:'NOT_IN_SEC'};
+  const f=(await get(`https://data.sec.gov/submissions/CIK${cik}.json`))?.filings?.recent;if(!f||!Array.isArray(f.form))return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};
+  const i=f.form.findIndex((form,k)=>/^8-K/.test(String(form))&&String(f.items?.[k]??'').split(',').includes('2.02'));if(i<0)return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};
+  const accession=String(f.accessionNumber?.[i]??'');if(!/^\d{10}-\d{2}-\d{6}$/.test(accession))return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};const plain=accession.replaceAll('-','');
+  const text=async url=>{const response=await fetcher(url,{headers:{'user-agent':`FinancialPortfolioManager ${contact}`,accept:'text/html'},redirect:'error',signal:AbortSignal.timeout(30000)});if(response.status===403||response.status===429)throw new Error('SEC_RATE_LIMITED');if(!response.ok)throw new Error('SEC_UNAVAILABLE');const body=await response.text();if(body.length>8*1024*1024)throw new Error('SEC_UNAVAILABLE');return body;};
+  const indexUrl=`https://www.sec.gov/Archives/edgar/data/${company.cik}/${plain}/${accession}-index.htm`;const exhibit=releaseExhibit(await text(indexUrl));
+  if(!exhibit)return {status:'unavailable',reason:'NO_RELEASE_EXHIBIT',filing:{filed:String(f.filingDate?.[i]??''),url:indexUrl}};
+  const url='https://www.sec.gov'+exhibit.path;const body=htmlText(await text(url));const facts=releaseFacts(body);const LIMIT=12000;
+  return {cik:company.cik,name:company.title,source:`SEC EDGAR ${String(f.form[i])} filed ${String(f.filingDate?.[i]??'')}, ${exhibit.type}`,filed:String(f.filingDate?.[i]??''),reportDate:String(f.reportDate?.[i]??'')||null,form:String(f.form[i]),accession,exhibit:exhibit.type,url,
+    // The release opens after EDGAR's document label (for example "EX-99.1 2 q32026pressrelease.htm") and short header lines.
+    headline:body.split('\n').filter(line=>line.length>=25&&!/^(ex(hibit)?[- ]?99|\S+\.html?$)|\.html?$/i.test(line)).slice(0,3).join(' ').slice(0,700),results:facts.results,guidance:facts.guidance,
+    ...(facts.guidance.length?{}:{guidanceNote:'No outlook or guidance sentence was found in the release text.'}),textChars:body.length,text:body.slice(0,LIMIT),...(body.length>LIMIT?{textTruncated:true}:{})};
+}
+module.exports={parseTickers,annualFacts,filings,earningsTiming,secCompany,secFilings,secEarningsRelease,htmlText,releaseExhibit,releaseFacts};

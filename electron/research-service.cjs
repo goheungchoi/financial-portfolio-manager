@@ -3,16 +3,16 @@
 // and, for U.S. stocks, SEC EDGAR (annual financials, dividends, filings).
 const {seoulDate}=require('./kis-activity.cjs');
 const HOUR=3600000;
-const SECTIONS=['overview','analysts','estimates','financials','dividends','events','flows','risk','valuation','peers','fund','holdings','factors','fairvalue'];
-const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['analysts','estimates','financials','events','valuation','peers','factors','fairvalue']),FUND_DEFAULT=['overview','fund','holdings','risk'];
+const SECTIONS=['overview','analysts','estimates','financials','dividends','events','release','flows','risk','valuation','peers','fund','holdings','factors','fairvalue'];
+const FUND_TYPES=new Set(['etf','etn']),STOCK_ONLY=new Set(['analysts','estimates','financials','events','release','valuation','peers','factors','fairvalue']),FUND_DEFAULT=['overview','fund','holdings','risk'];
 const AGENT_DEFAULT=['overview','analysts','estimates','dividends'];
-const US_SECTIONS=['overview','risk','financials','dividends','events'],US_DEFAULT=['overview','financials','risk'];
+const US_SECTIONS=['overview','risk','financials','dividends','events','release'],US_DEFAULT=['overview','financials','risk'];
 const US=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
 // Raw sources and how long each stays fresh.
 const SOURCES={overview:{ttl:HOUR/4,from:'kis'},analysts:{ttl:6*HOUR,from:'kis'},estimates:{ttl:12*HOUR,from:'kis'},financials:{ttl:24*HOUR,from:'kis'},
-  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},market:{ttl:10*60000,from:'kis'},'us-market':{ttl:5*60000,from:'kis'}};
+  dividends:{ttl:24*HOUR,from:'kis'},meetings:{ttl:24*HOUR,from:'kis'},dart:{ttl:12*HOUR,from:'dart'},flows:{ttl:2*HOUR,from:'kis'},valuation:{ttl:24*HOUR,from:'kis'},daily:{ttl:6*HOUR,from:'kis'},'index-daily':{ttl:6*HOUR,from:'kis'},fund:{ttl:HOUR/2,from:'kis'},holdings:{ttl:24*HOUR,from:'kis'},sec:{ttl:24*HOUR,from:'sec'},'sec-filings':{ttl:20*HOUR,from:'sec-filings'},'sec-earnings':{ttl:6*HOUR,from:'sec-earnings'},market:{ttl:10*60000,from:'kis'},'us-market':{ttl:5*60000,from:'kis'}};
 const MARKET_INDEX={KOSPI:['0001','KOSPI'],KOSDAQ:['1001','KOSDAQ']};
-const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
+const NEEDS={overview:['overview'],analysts:['analysts'],estimates:['estimates'],financials:['financials'],dividends:['dividends','dart'],events:['meetings','dart','dividends'],release:['dart'],flows:['flows'],risk:['daily'],valuation:['valuation','overview'],peers:['overview'],fund:['fund','daily'],holdings:['holdings'],factors:['overview'],fairvalue:['overview','analysts','estimates','valuation']};
 const FAILURE_TTL=10*60000;
 const code=error=>/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'DATA_SOURCE_UNAVAILABLE';
 // Null, empty and "not applicable" values are dropped so the agents only read what exists.
@@ -39,7 +39,7 @@ class ResearchService {
       try{
         let value;
         if(spec.from==='dart'){if(!this.dartReady())return {status:'unavailable',reason:'DART_KEY_MISSING'};value=await this.provider('dart-company',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
-        else if(spec.from==='sec'||spec.from==='sec-filings'){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider(spec.from==='sec'?'sec-company':'sec-filings',{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
+        else if(['sec','sec-filings','sec-earnings'].includes(spec.from)){if(!this.secReady())return {status:'unavailable',reason:'SEC_CONTACT_MISSING'};value=await this.provider(spec.from==='sec'?'sec-company':spec.from,{symbol});if(value?.status==='unavailable')return {status:'unavailable',reason:value.reason};}
         else{if(!this.kisReady())throw new Error('KIS_NOT_CONNECTED');value=await this.kis('research-section',{symbol,section:source});}
         const at=this.clock();this.db.prepare('INSERT INTO research_cache VALUES(?,?,?,?) ON CONFLICT(symbol,source) DO UPDATE SET at=excluded.at,payload=excluded.payload').run(symbol,source,at,JSON.stringify(value));this.failures.delete(symbol+source);this.snapshot(symbol,source,value);
         return {status:'ok',retrievedAt:at,data:value};
@@ -69,6 +69,9 @@ class ResearchService {
           :dart?.earnings?.nextExpected?[{date:dart.earnings.nextExpected,kind:'earnings',title:'Preliminary earnings (estimated date)',estimated:true}]:[])].sort((a,b)=>a.date.localeCompare(b.date));
       return {status:'ok',retrievedAt:Number.isFinite(at)?at:this.clock(),data:{upcoming,earnings:dart?.earnings??null,preliminaryEarnings:dart?.preliminary??null,filings:dart?.filings??[],meetings,...(parts.dart.status!=='ok'?{filingsUnavailable:parts.dart.reason}:{})}};
     }
+    // The latest earnings disclosure as filed: for Korean stocks the preliminary-earnings filing read from DART.
+    if(name==='release'){const dart=ok('dart');if(!dart)return main;if(!dart.preliminary||dart.preliminary.unavailable)return {status:'unavailable',reason:dart.preliminary?.unavailable??'NO_EARNINGS_RELEASE'};
+      return {status:'ok',retrievedAt:main.retrievedAt,data:{source:dart.preliminary.source??'DART preliminary earnings filing',...dart.preliminary,earnings:dart.earnings??null}};}
     if(name==='fund'){
       if(main.status!=='ok')return main;const d=main.data;const closes=ok('daily')?.closes??[];let leverage=null;
       // Daily-reset products lose value in choppy markets: annual drag ≈ (L²−L)/2 × σ² of the underlying, with σ estimated from the fund's own volatility.
@@ -118,6 +121,8 @@ class ResearchService {
       const metrics=require('./kis-insights.cjs').riskMetrics(daily.data.closes,market.status==='ok'?market.data.closes:[],[]);if(!metrics)return {status:'unavailable',reason:'INSUFFICIENT_HISTORY'};
       return {status:'ok',retrievedAt:daily.retrievedAt,data:{...metrics,marketIndex:'S&P 500',sectorIndex:null,currency:'USD',technicals:require('./indicators.cjs').technicals(daily.data.closes),closes:daily.data.closes.slice(-120).map(({date,close})=>({date,close}))}};
     }
+    // The latest earnings release read from its 8-K exhibit: results and guidance in the company's words, with the source.
+    if(name==='release')return this.source(symbol,'sec-earnings',refresh);
     const sec=await this.source(symbol,'sec',refresh);if(sec.status!=='ok')return sec;const d=sec.data;
     if(name==='financials')return {status:'ok',retrievedAt:sec.retrievedAt,data:{currency:'USD',source:'SEC 10-K filings',periods:d.annual.map(r=>({...r,period:'FY'+r.fiscalYearEnd.slice(0,4)+(r.fiscalYearEnd.slice(5,7)!=='12'?` (to ${r.fiscalYearEnd.slice(0,7)})`:'')}))}};
     if(name==='dividends'){
@@ -208,6 +213,8 @@ function digest(name,d){
   if(name==='events')return {upcoming:d.upcoming?.slice(0,6),earnings:d.earnings,...(d.preliminaryEarnings?{preliminaryEarnings:d.preliminaryEarnings.unavailable?{source:d.preliminaryEarnings.source,unavailable:d.preliminaryEarnings.unavailable}:{...d.preliminaryEarnings,metrics:Object.fromEntries(Object.entries(d.preliminaryEarnings.metrics??{}).filter(([k])=>(d.preliminaryEarnings.disclosed??[]).includes(k)))}}:{}),filings:d.filings?.filter(f=>!['ownership','periodic'].includes(f.kind)).slice(0,10).map(({date,kind,title})=>({date,kind,title})),filingsUnavailable:d.filingsUnavailable};
   if(name==='financials'&&d.currency==='USD')return {periods:(d.periods??[]).slice(0,4).map(({filed,...r})=>r),source:d.source};
   if(name==='financials')return {periods:(d.periods??[]).slice(0,4).map(({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})=>({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})),annualRatios:d.periods?.length?undefined:d.annualRatios,note:'Periods not ending in December are year to date.'};
+  // The release's own results and guidance sentences in full; its text shortened so the reply stays within one tool response.
+  if(name==='release')return {...d,...(typeof d.text==='string'&&d.text.length>4000?{text:d.text.slice(0,4000),textTruncated:true}:{})};
   if(name==='valuation')return {...d,monthly:undefined};
   if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};
   if(name==='flows')return {...d,investors:d.investors?{...d.investors,daily:undefined}:undefined,note:'Net buying in KRW; positive streak days mean consecutive net buying, negative mean selling. Short share is the percent of daily volume sold short; margin rate is loans outstanding as a percent of listed shares.'};
