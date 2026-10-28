@@ -26,15 +26,23 @@ function cashEffect(order){
   if(!(order.filled>0)||!(order.fillPrice>0))return 0;const net=order.resultCosts?.netCash;
   if(Number.isFinite(net))return net;const gross=order.filled*order.fillPrice;return order.side==='Sell'?gross:-gross;
 }
+// Each order's cash effect at a reading, by order: the next reading is explained only by what changed since, so an
+// order placed before a reading and filled hours later is still counted once, when its fill appears.
+const orderKey=o=>o.id??`${o.market??'KR'}|${o.side}|${o.symbol}|${o.createdAt}`;
+const fillsOf=orders=>Object.fromEntries(orders.map(o=>[orderKey(o),Math.round(cashEffect(o)*100)/100]).filter(([,effect])=>effect!==0));
 // Unexplained cash change per market since the previous observation, or null when it cannot be judged now.
 function unexplained(prev,now,orders){
   if(orders.some(o=>OPEN.includes(o.status)))return null;
-  const recent=orders.filter(o=>o.createdAt>prev.at&&o.createdAt<=now.at);
-  const usTraded=recent.some(o=>o.market==='US'&&o.filled>0);
+  // An order missing from the previous reading's fills had none then, unless it was already seen filled before it.
+  // Readings saved before fills were kept fall back to the orders placed in between.
+  const change=o=>{const effect=cashEffect(o);if(!prev.fills)return o.createdAt>prev.at&&o.createdAt<=now.at?effect:0;
+    const before=Object.hasOwn(prev.fills,orderKey(o))?prev.fills[orderKey(o)]:Number.isFinite(o.filledObservedAt)&&o.filledObservedAt<=prev.at?effect:0;return effect-before;};
+  const moved=orders.map(o=>({market:o.market??'KR',amount:change(o)})).filter(m=>Math.abs(m.amount)>=0.005);
+  const usTraded=moved.some(m=>m.market==='US');
   if(!Number.isFinite(now.krCash)||!Number.isFinite(prev.krCash))return null;
   // Without both U.S. readings a U.S. fill funded from KRW could look like a withdrawal.
   const usKnown=Number.isFinite(now.usCash)&&Number.isFinite(prev.usCash);if(usTraded&&!usKnown)return null;
-  const explained=market=>recent.filter(o=>(o.market??'KR')===market).reduce((sum,o)=>sum+cashEffect(o),0);
+  const explained=market=>moved.filter(m=>m.market===market).reduce((sum,m)=>sum+m.amount,0);
   return {KR:now.krCash-prev.krCash-explained('KR'),US:usKnown?now.usCash-prev.usCash-explained('US'):0,usTraded};
 }
 // Whether an amount in a market's currency is large enough to matter (U.S. amounts at the rate, or $10 without one).
@@ -59,7 +67,7 @@ class FlowDetector {
   // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD); unsettledKRW: all unsettled U.S. buys.
   observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0)};
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:fillsOf(orders)};
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const prev=row?JSON.parse(row.payload):null;
     // Provisional changes and settlement evidence carry over between readings.
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
