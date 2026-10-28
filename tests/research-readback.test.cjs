@@ -51,6 +51,24 @@ test('bounding pins identity, the next-session marker, instrument risk and prove
 const research=calls=>async args=>{calls.push(args.symbol);const out={symbol:args.symbol,release:{text:'Release sentence. '.repeat(1400)},analysts:{latest:[1,2,3,4]},provenance:{analysts:{from:'KIS',cache:'reused',complete:false,original:'originalSections/analysts'}}};
   out[TRACE]={originals:{analysts:{latest:[1,2,3,4,5,6]}},reads:{release:[{cache:'fetched'}],analysts:[{cache:'hit'}]}};return out;};
 
+test('a reply that must name its full result keeps that reference at the size limit, shortening something else',()=>{
+  const value={symbol:'005930',release:{text:'Sentence. '.repeat(300)},provenance:{release:{from:'OpenDART',cache:'reused',complete:false,original:'originalSections/release'}}};
+  const limit=rc.outBytes(value)+20;assert.ok(rc.outBytes({...value,fullResult:{section:'result-1',read:'x'.repeat(40)}})>limit,'the boundary: the value fits, the value and its reference do not');
+  const out=rc.bound(value,limit,{ref:'result-1',always:true});
+  assert.ok(rc.outBytes(out)<=limit);assert.equal(out.fullResult.section,'result-1','the originals stay reachable');assert.deepEqual(out.provenance,value.provenance);assert.ok(out.cuts.some(c=>c.path==='release/text'));
+  assert.equal(rc.bound(value,limit,{ref:'result-1'}),value,'without originals a fitting reply is unchanged');
+});
+test('coverage counts only usable evidence: refused, skipped and empty replies are attempts, and missing sections make it partial',()=>{
+  const m=meter.createMeter();const reply=(sections)=>({provenance:Object.fromEntries(Object.entries(sections).map(([k,cache])=>[k,{cache}]))});
+  m.call('get_company_research',{symbol:'A'},{status:'skipped',reason:'reads used'},{});
+  m.call('get_company_research',{symbol:'B'},reply({overview:'unavailable'}),{});
+  m.call('get_company_research',{symbol:'C'},reply({overview:'reused',analysts:'unavailable'}),{});
+  m.call('get_company_research',{symbol:'D'},reply({overview:'stale'}),{});
+  m.call('get_market_evidence',{symbol:'E'},{status:'rejected'},{});m.call('get_market_evidence',{symbol:'F'},{rows:[]},{});
+  const s=m.summary(['A','B','C','D','E','F','G']);
+  assert.deepEqual(s.researchedSymbols,['C','D','F'],'cached and stale evidence counts; nothing usable does not');assert.deepEqual(s.partialSymbols,['C']);assert.deepEqual(s.unavailableSymbols,['A','B','E']);
+  assert.deepEqual(s.coverage,{watched:7,researched:3,partial:1,notResearched:['A','B','E','G'],attemptedNotResearched:['A','B','E']});
+});
 test('the scout reads shortened results back in full without spending a next-session read',async()=>{
   const calls=[];const tools=focusTools({research:research(calls),update_watchlist:()=>({status:'ok'})},{markets:['KR'],deferred:['US']},{reads:1});
   const sent=[];let round=0;
@@ -66,7 +84,8 @@ test('the scout reads shortened results back in full without spending a next-ses
   assert.deepEqual(original.data,{latest:[1,2,3,4,5,6]},'the original before the digest');
   assert.equal(second.status,'skipped','the one next-session read was spent by the first company read, not by the detail reads');assert.deepEqual(calls,['NASD:AVGO']);
   const m=result.metrics;assert.equal(m.format,meter.FORMAT);assert.equal(m.detailReads,2);assert.equal(m.researchReads,1);assert.equal(m.fetched,1);assert.equal(m.reused,1);
-  assert.deepEqual(m.coverage,{watched:3,researched:2,notResearched:['005930']});assert.ok(m.toolCalls===4&&m.resultBytes>0&&m.detailBytes>0);
+  // The refused read of MSFT was attempted, not researched.
+  assert.deepEqual(m.coverage,{watched:3,researched:1,partial:0,notResearched:['NASD:MSFT','005930'],attemptedNotResearched:['NASD:MSFT']});assert.deepEqual(m.unavailableSymbols,['NASD:MSFT']);assert.ok(m.toolCalls===4&&m.resultBytes>0&&m.detailBytes>0);
 });
 
 test('the scout budget covers the whole request: older results become references to their full section, and an oversized request is not sent',async()=>{
@@ -95,9 +114,10 @@ test('the scout client measures instructions and tool definitions against its li
 });
 
 test('research counts from a cheaper run and its confirmation add up',()=>{
-  const a={format:meter.FORMAT,...Object.fromEntries(meter.COUNTS.map(k=>[k,1])),researchedSymbols:['A'],coverage:{watched:3,researched:1,notResearched:['B','C']}};
-  const b={format:meter.FORMAT,...Object.fromEntries(meter.COUNTS.map(k=>[k,2])),researchedSymbols:['B'],coverage:{watched:3,researched:1,notResearched:['A','C']}};
-  const m=meter.merge(a,b);assert.equal(m.toolCalls,3);assert.deepEqual(m.researchedSymbols,['A','B']);assert.deepEqual(m.coverage,{watched:3,researched:2,notResearched:['C']});
+  const a={format:meter.FORMAT,...Object.fromEntries(meter.COUNTS.map(k=>[k,1])),researchedSymbols:['A'],partialSymbols:['A'],unavailableSymbols:['B','C'],coverage:{watched:3,researched:1,partial:1,notResearched:['B','C'],attemptedNotResearched:['B','C']}};
+  const b={format:meter.FORMAT,...Object.fromEntries(meter.COUNTS.map(k=>[k,2])),researchedSymbols:['A','B'],partialSymbols:[],unavailableSymbols:[],coverage:{watched:3,researched:2,partial:0,notResearched:['C'],attemptedNotResearched:[]}};
+  const m=meter.merge(a,b);assert.equal(m.toolCalls,3);assert.deepEqual(m.researchedSymbols,['A','B']);assert.deepEqual(m.partialSymbols,[],'A came back whole in the second run');assert.deepEqual(m.unavailableSymbols,['C']);
+  assert.deepEqual(m.coverage,{watched:3,researched:2,partial:0,notResearched:['C'],attemptedNotResearched:['C']});
   assert.equal(meter.merge(null,b),b);
 });
 
@@ -111,5 +131,5 @@ test('trading reviews keep results with originals and report research metrics',a
   const r=await researchReview({context:{universe:[{symbol:'005930'}]},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:research(calls)},watched:['005930','000660']});
   assert.equal(seen[0].fullResult.section,'result-1','a reply with digested parts names its full section even when nothing was cut here');
   assert.deepEqual(calls,['005930'],'the repeated request was answered from the run cache');
-  assert.equal(r.metrics.runCacheHits,1);assert.equal(r.metrics.detailReads,1);assert.deepEqual(r.metrics.coverage,{watched:2,researched:1,notResearched:['000660']});assert.equal(r.usage.cachedTokens,2);
+  assert.equal(r.metrics.runCacheHits,1);assert.equal(r.metrics.detailReads,1);assert.deepEqual(r.metrics.coverage,{watched:2,researched:1,partial:0,notResearched:['000660'],attemptedNotResearched:[]});assert.equal(r.usage.cachedTokens,2);
 });
