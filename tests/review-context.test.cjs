@@ -188,3 +188,18 @@ test('review P2: a shortened list is always named with its kept count, and cuts 
     assert.ok(b.cuts.every(c=>{const m=/^a\/rows\/(\d+)\//.exec(c.path);return !m||Number(m[1])<kept;}),'no cut inside a removed row at '+limit);
     const notes=b.a.rows.filter(r=>r.note.endsWith('…')).length,listed=b.cuts.filter(c=>/^a\/rows\/\d+\/note$/.test(c.path)).length;assert.equal(listed+(b.cutsNotListed??0)>=notes,true,'every text cut is listed or counted at '+limit);}
 });
+// Review of 844904c (P3): a name containing '/' could not be read by its path, and a repeated call id could overwrite
+// an earlier stored result.
+test('review: names containing a slash are readable by their path; every stored result gets its own section',async()=>{
+  const rc=require('../electron/review-context.cjs');const v={'data/P/E':{'~note':'t'.repeat(3000),rows:Array.from({length:30},(_,i)=>({symbol:'S'+i,v:'w'.repeat(300)}))}};
+  const b=rc.bound(v,3000,{ref:'result-1'});const paths=[...(b.omittedParts??[]),...(b.cuts??[]).map(c=>c.path)];assert.ok(paths.length);
+  for(const path of paths){const d=rc.detailPart({'result-1':v},{section:'result-1',part:path,page:1});assert.equal(d.status,undefined,'readable: '+path);}
+  assert.equal(rc.detailPart({x:v},{section:'x',part:'data~1P~1E/~0note',page:1}).text?.slice(0,3)??rc.detailPart({x:v},{section:'x',part:'data~1P~1E/~0note',page:1}).data.slice(0,3),'ttt');
+  const {researchReview}=require('../electron/research-review.cjs');const outputs=[];let round=0;
+  const request=async({continuation})=>{round++;if(continuation)outputs.push(...continuation.filter(o=>o.type==='function_call_output'));
+    if(round===1)return {toolCalls:[{name:'get_company_research',args:{symbol:'A'},callId:'same'}],continuation:[]};
+    if(round===2)return {toolCalls:[{name:'get_company_research',args:{symbol:'B'},callId:'same'}],continuation:[]};
+    if(round===3)return {toolCalls:[{name:'get_context_detail',args:{section:'result-1',part:'',page:1},callId:'d'}],continuation:[]};return {decision:{action:'Hold'}};};
+  await researchReview({context:{universe:[]},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async a=>({symbol:a.symbol})}});
+  assert.equal(JSON.parse(outputs.find(o=>o.call_id==='d').output).data.symbol,'A','the first result is still result-1');
+});
