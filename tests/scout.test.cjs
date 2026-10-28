@@ -37,7 +37,7 @@ test('the research loop runs tools until the plan, reports tool failures as data
     if(round===1)return {toolCalls:[{name:'get_company_research',callId:'a',args:{symbol:'005930'}},{name:'screen_market',callId:'b',args:{market:'KR'}}],continuation:['input'],usage:{inputTokens:10,outputTokens:2}};
     return {plan:{summary:'s',cashTargetPct:null,focus:'f',targets:[]},usage:{inputTokens:20,outputTokens:3},model:'m'};};
   const result=await runScout({request,tools:{get_company_research:async()=>({price:1}),screen_market:async()=>{throw new Error('RATE_LIMITED');}},log:(kind,title,body)=>logs.push([kind,title,body])});
-  assert.equal(result.rounds,2);assert.deepEqual(result.usage,{inputTokens:30,outputTokens:5});assert.equal(calls[1].length,3,'two tool outputs appended');
+  assert.equal(result.rounds,2);assert.deepEqual(result.usage,{inputTokens:30,outputTokens:5,cachedTokens:0});assert.equal(calls[1].length,3,'two tool outputs appended');
   assert.ok(logs.some(([,title,body])=>title==='Scout result · screen_market'&&body.includes('RATE_LIMITED')));
   let sent;let ran=0;const burst=await runScout({request:async({continuation})=>{if(!continuation)return {toolCalls:[1,2,3,4,5,6,7,8].map(i=>({name:'search_securities',callId:String(i),args:{query:String(i)}})),continuation:[]};sent=continuation;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[]}};},tools:{search_securities:async()=>{ran++;return {rows:[]};}},log:()=>{}});
   assert.equal(burst.rounds,2);assert.equal(ran,6,'six requests run per round');assert.equal(sent.length,8,'every request is answered');assert.equal(sent.filter(o=>o.output.includes('skipped')).length,2,'the rest are told to ask again');
@@ -80,7 +80,7 @@ test('the scout request offers research and discovery tools, asks for a plan and
     return reply([{type:'message',content:[{type:'output_text',text:JSON.stringify({summary:'s',cashTargetPct:10,focus:'f',targets:[]})}]}]);});
   const first=await client.scout({today:'2026-10-16'},{openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   assert.equal(first.toolCalls[0].name,'get_company_research');
-  assert.deepEqual(bodies[0].tools.map(t=>t.name).sort(),['get_company_research','get_market_overview','screen_market','search_securities','update_watchlist']);assert.equal(bodies[0].text.format.name,'portfolio_plan');assert.equal(bodies[0].tool_choice,'auto');
+  assert.deepEqual(bodies[0].tools.map(t=>t.name).sort(),['get_company_research','get_context_detail','get_market_overview','screen_market','search_securities','update_watchlist']);assert.equal(bodies[0].text.format.name,'portfolio_plan');assert.equal(bodies[0].tool_choice,'auto');
   const second=await client.scout({},{openaiModel:'gpt-6-sol',reasoningEffort:'low',final:true,continuation:first.continuation});
   assert.equal(bodies[1].tool_choice,'none');assert.equal(second.plan.cashTargetPct,10);
 });

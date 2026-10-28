@@ -55,7 +55,7 @@ test('review: scout tool results are bounded as valid JSON, keep the next-sessio
   assert.deepEqual(parsed.shortenedParts,['release']);assert.ok(parsed.cuts.some(c=>c.path==='release/text'));assert.deepEqual(parsed.release.guidance,long.release.guidance);
   // The share shrinks as the request grows, and never sends more than the room left.
   const big=[{role:'user',content:'x'.repeat(140000)}];const outs=[];let r2=0;
-  await runScout({request:async({continuation})=>{r2++;if(r2===1)return {toolCalls:Array.from({length:6},(_,i)=>({name:'get_company_research',callId:'k'+i,args:{symbol:'NASD:AVGO',sections:['release'],i}})),continuation:big};outs.push(...continuation.filter(o=>o.type==='function_call_output'));return {plan:{targets:[]}};},tools:focusTools({research:async()=>long},{markets:['US'],deferred:[]}),log:()=>{}});
+  await runScout({request:async({continuation})=>{r2++;if(r2===1)return {toolCalls:Array.from({length:6},(_,i)=>({name:'get_company_research',callId:'k'+i,args:{symbol:'NASD:AVGO',sections:['release'],i}})),continuation:big};outs.push(...continuation.filter(o=>o.type==='function_call_output'));return {plan:{targets:[]}};},tools:focusTools({research:async()=>long},{markets:['US'],deferred:[]}),maxBytes:160000,log:()=>{}});
   assert.ok(outs.every(o=>rc.outBytes(JSON.parse(o.output))<=2400),'each result fits its share: '+outs.map(o=>rc.outBytes(JSON.parse(o.output))).join(','));
 });
 test('review: a failed next-session read does not spend the budget; padded symbols and empty reasons are handled',async()=>{

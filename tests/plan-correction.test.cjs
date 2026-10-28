@@ -10,7 +10,7 @@ test('a Buy withheld for a missing horizon gets one correction request and is ac
   const r=await researchReview({context,evidence:null,request:async opts=>{asked.push(opts);return replies.shift();},log:(k,t,b)=>logs.push(t)});
   assert.equal(r.decision.action,'Buy');assert.deepEqual(r.decision.planCorrected,{missing:'no horizon'});assert.equal(r.decision.plan.horizonDays,365);
   assert.equal(asked.length,2,'exactly one correction');assert.equal(asked[1].final,true,'no more tool calls');assert.match(asked[1].continuation.at(-1).content,/held back your Buy of 1 NASD:GOOGL because its plan is incomplete: no horizon/);
-  assert.deepEqual(r.usage,{inputTokens:20,outputTokens:10});assert.ok(logs.includes('Plan correction requested')&&logs.includes('Plan correction accepted'));assert.equal('continuation' in r,false);
+  assert.deepEqual(r.usage,{inputTokens:20,outputTokens:10,cachedTokens:0});assert.ok(logs.includes('Plan correction requested')&&logs.includes('Plan correction accepted'));assert.equal('continuation' in r,false);
 });
 test('if the correction is still incomplete, the Buy stays withheld and is marked as such; the safeguard is not weakened',async()=>{
   const replies=[reply(null),reply(null)];let calls=0;
