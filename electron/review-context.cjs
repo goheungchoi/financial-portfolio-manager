@@ -37,7 +37,7 @@ const COMPRESS=[
   ['macro',m=>Array.isArray(m?.series)?{...m,series:m.series.map(({history,...s})=>s)}:Array.isArray(m)?m.map(({history,...s})=>s):m],
   ['eventCalendar',e=>Array.isArray(e)?e.map(r=>({date:r.date??r.day,kind:r.kind,title:clip(r.title??r.name,90),...(r.symbols?{symbols:r.symbols}:{}),...(r.symbol?{symbol:r.symbol}:{})})):e],
   ['similarEpisodes',e=>Array.isArray(e)?e.map(({drivers,sharedThemes,...r})=>r):e],
-  ['performance',p=>p?.history?{...p,history:Object.fromEntries(Object.entries(p.history).map(([m,h])=>[m,{since:h.since,currency:h.currency,benchmark:h.benchmark,timeWeightedReturns:h.timeWeightedReturns,risk:h.risk?{maxDrawdownPct:h.risk.maxDrawdownPct,currentDrawdownPct:h.risk.currentDrawdownPct,volatilityPct:h.risk.volatilityPct}:undefined}]))}:p],
+  ['performance',p=>p?.history?{...p,history:Object.fromEntries(Object.entries(p.history).map(([m,h])=>[m,{since:h.since,currency:h.currency,benchmark:h.benchmark,...(h.returnReliability?{returnReliability:h.returnReliability}:{}),timeWeightedReturns:h.timeWeightedReturns,risk:h.risk?{maxDrawdownPct:h.risk.maxDrawdownPct,currentDrawdownPct:h.risk.currentDrawdownPct,volatilityPct:h.risk.volatilityPct}:undefined}]))}:p],
   ['topStories',t=>Array.isArray(t)?t.map(r=>({title:clip(r.title,120),outlets:r.outlets,...(r.symbols?{symbols:r.symbols}:{})})):t],
   ['planGap',g=>g&&Array.isArray(g.targets)?{...g,targets:g.targets.map(({minimumPosition,...t})=>({...t,...(minimumPosition?{minimumPosition:{feasible:minimumPosition.feasible,weightPct:minimumPosition.weightPct}}:{})}))}:g],
 ];
