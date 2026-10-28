@@ -88,7 +88,7 @@ test('strategy variety: a Buy names its strategy and each review records the ide
     strategyCheck:[{strategy:'long-term',idea:'Pentair add',verdict:'watching',reason:'After the guidance is verified.'},{strategy:'leveraged-tactical',idea:'KODEX 반도체레버리지 on a +4% SOX night',verdict:'rejected',reason:'No confirmation at the open.'},{strategy:'scalping',idea:'x',verdict:'acted',reason:'unknown type'}]},['NYSE:PNR'],{requirePlan:true});
   assert.deepEqual(d.strategyCheck.map(c=>[c.strategy,c.verdict]),[['long-term','watching'],['leveraged-tactical','rejected']]);
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
-  assert.match(src,/Vary your strategies instead of defaulting to one/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
+  assert.match(src,/Compare relevant permitted strategies; strategy variety is not a goal/);assert.doesNotMatch(src,/Vary your strategies/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
   assert.match(require('../electron/scout.cjs').INSTRUCTIONS,/include a tactical candidate for it/);
 });
 // Review of 40d7666..c276de6 (agent behaviour).
@@ -117,4 +117,33 @@ test('review: sector leads alone do not force a paid review; a short cover keeps
   const cover=validateDecision({action:'Buy',symbol:'005930',quantity:1,explanation:'Cover the short.',credit:'cover',loanDate:'2026-10-20',plan:{strategy:'none',thesis:'Close the short',invalidation:'n/a',stopPrice:230000,targetPrice:null,horizonDays:1,confidence:'medium',portfolioImpact:{weightBeforePct:-14,weightAfterPct:0,related:[],relatedBeforePct:-14,relatedAfterPct:0,equityReliable:true,why:'Removes the short.'},evidence:[],valuation:null,uncertainty:null}},['005930'],{requirePlan:true});
   assert.equal(cover.action,'Buy','a cover is not held back for missing evidence');
   assert.equal(buy({evidence:[]}).withheld?.reason,'no evidence with sources','an opening Buy still is');
+});
+// Review of 7dc8395, P2: shortening halved the release text and dropped trailing guidance, and the cut content could not
+// be read back: company research takes only section names, and the detail tool did not hold tool results.
+test('review P2: a shortened research result keeps every guidance statement whole and can be read in full by path and page',async()=>{
+  const rc=require('../electron/review-context.cjs'),{researchReview}=require('../electron/research-review.cjs');
+  const guidance=Array.from({length:8},(_,i)=>`For the fourth quarter, the Company expects adjusted EPS of $1.${10+i} to $1.${20+i}, excluding restructuring costs and assuming no further tariff changes, statement ${i}; this outlook does not include acquisitions.`);
+  const text=Array.from({length:120},(_,i)=>`Line ${i} of the release text, with figures ${i*7}.${i}%. `).join('');
+  const reply={symbol:'NYSE:PNR',release:{source:'SEC EDGAR 8-K filed 2026-10-27, EX-99.1',guidance,results:Array.from({length:10},(_,i)=>'Third quarter 2026 sales of $976 million decreased 3 percent, item '+i+'.'),text}};
+  const b=rc.bound(reply,4000,{ref:'result-1'});assert.ok(rc.outBytes(b)<=4000);
+  assert.deepEqual(b.release.guidance,guidance,'no guidance statement is cut or dropped while other content can give way');
+  assert.ok(b.cuts.some(c=>c.path==='release/text'&&c.chars===text.length&&c.keptChars<text.length),'the text cut is named by path: '+JSON.stringify(b.cuts));
+  assert.equal(b.fullResult.section,'result-1');
+  // Through a review: the agent reads the cut path back, page by page, from the stored result.
+  const longText=text.repeat(8),longReply={...reply,release:{...reply.release,text:longText}};
+  const outputs=[];let round=0;const call=(name,args,id)=>({name,args,callId:id});
+  const request=async({continuation})=>{round++;if(continuation)outputs.push(...continuation.filter(o=>o.type==='function_call_output'));
+    if(round===1)return {toolCalls:[call('get_company_research',{symbol:'NYSE:PNR',sections:['release']},'r1'),call('get_market_evidence',{symbol:'x'},'e1'),call('get_market_evidence',{symbol:'y'},'e2'),call('get_market_evidence',{symbol:'z'},'e3')],continuation:[]};
+    const last=outputs.at(-1)&&JSON.parse(outputs.at(-1).output);
+    if(round===2){const first=JSON.parse(outputs.find(o=>o.call_id==='r1').output);return {toolCalls:[call('get_context_detail',{section:first.fullResult?.section??'none',part:'release/text',page:1},'d1')],continuation:[]};}
+    if(round===3)return {toolCalls:[call('get_context_detail',{section:'result-1',part:'release/text',page:2},'d2')],continuation:[]};
+    return {decision:{action:'Hold'},pages:last};};
+  const big=JSON.stringify({rows:'z'.repeat(14000)});
+  const result=await researchReview({context:{universe:[]},evidence:{get:async()=>JSON.parse(big)},request,log:()=>{},discovery:{get_company_research:async()=>longReply},detail:null});
+  assert.equal(result.decision.action,'Hold');
+  const pages=outputs.filter(o=>o.call_id.startsWith('d')).map(o=>JSON.parse(o.output));const cut=JSON.parse(outputs.find(o=>o.call_id==='r1').output);
+  assert.equal(cut.fullResult.section,'result-1','the shortened reply names where the full result is');assert.ok(cut.cuts.some(c=>c.path==='release/text'));
+  assert.deepEqual(pages.map(p=>[p.section,p.part,p.page]),[['result-1','release/text',1],['result-1','release/text',2]]);assert.ok(pages[0].pages>2);
+  assert.ok(longText.startsWith(pages[0].text+pages[1].text),'pages continue the text exactly');
+  const all=Array.from({length:pages[0].pages},(_,i)=>rc.detailPart({'result-1':longReply},{section:'result-1',part:'release/text',page:i+1}).text).join('');assert.equal(all,longText,'every page together is the whole text');
 });

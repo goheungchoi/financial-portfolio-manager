@@ -773,9 +773,7 @@ class Automation {
         try{const response=await this.provider.request('scout',{context,options:{final,continuation,...modelConfig}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,response,'completed');return response;}
         catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
       };
-      const deferred=market=>focus.deferred.includes(market);const skip=market=>({status:'skipped',reason:`${market==='KR'?'Korea':'The U.S.'} is outside this run's research focus (closed); its targets carry forward from the previous plan.`});
-      const tools={screen_market:args=>deferred(args?.market)?skip(args.market):this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),get_company_research:args=>deferred(scoutLib.marketOf(String(args?.symbol??'')))?skip(scoutLib.marketOf(String(args.symbol))):this.discovery.research(args),get_market_overview:()=>deferred('KR')?skip('KR'):this.discovery.marketOverview?this.discovery.marketOverview():{status:'unavailable',reason:'MARKET_OVERVIEW_UNAVAILABLE'},
-        update_watchlist:args=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}};
+      const tools=scoutLib.focusTools(this.discovery,focus,{guard:()=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');}});
       const result=await require('./scout.cjs').runScout({request,tools,log:(kind,title,body)=>this.log(id,kind,title,body)});
       if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');
       const answered=this.briefs.answer(scope,result.plan.briefAnswers);const plan=scoutLib.carryForward(result.plan,previous,focus.deferred);

@@ -168,6 +168,22 @@ test('review P1: a restart before the U.S. account loads does not stop detection
   t.read('2026-10-28T11:00:00+09:00',{krCash:1500000,usCash:100,orders:[cancelled]});assert.deepEqual(t.read('2026-10-28T15:30:00+09:00',{krCash:1500000,usCash:100,orders:[cancelled]}).map(f=>[f.market,f.amount]),[['KR',1000000]]);
   assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0,'the old U.S. fill is not a deposit');
 });
+// Review of 7dc8395, P1: the first reading with U.S. cash reset the whole comparison, so a Korean deposit in the same
+// interval was lost.
+test('review P1: the reading where the U.S. balance first loads still compares Korean cash',()=>{
+  const {d,perf,read}=settling();read('2026-10-28T10:00:00+09:00',{krCash:1000000,usCash:null});
+  assert.deepEqual(read('2026-10-28T10:01:00+09:00',{krCash:1500000,usCash:0}),[]);
+  assert.deepEqual(d.pending('acct').map(p=>[p.market,p.amount,p.usBalanceUnseen]),[['KR',500000,true]],'held, marked as seen without the U.S. side');
+  const found=read('2026-10-28T12:30:00+09:00',{krCash:1500000,usCash:0});assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['KR',500000,true]]);
+  assert.match(found[0].note,/U\.S\. balance was not loaded/,'the user is told the U.S. side was not seen');
+  assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0,'the U.S. baseline starts here');
+  // A U.S. fill in the same interval is still not judged against U.S. cash; the Korean side alone is compared.
+  const t=settling();const g={id:'g',market:'US',symbol:'NASD:GOOGL',side:'Buy',quantity:1,filled:1,fillPrice:300,status:'Filled',createdAt:at('2026-10-28T09:59:00+09:00')};
+  t.read('2026-10-28T10:00:00+09:00',{krCash:1000000,usCash:null});t.read('2026-10-28T10:01:00+09:00',{krCash:1000000,usCash:200,orders:[g]});
+  assert.deepEqual(t.read('2026-10-28T12:30:00+09:00',{krCash:1000000,usCash:200,orders:[g]}),[],'no change, nothing recorded');
+  // A later U.S. change is compared against the new baseline.
+  assert.deepEqual(t.read('2026-10-28T12:31:00+09:00',{krCash:1000000,usCash:700,orders:[g]}),[]);assert.deepEqual(t.d.pending('acct').map(p=>[p.market,p.amount]),[['US',500]]);
+});
 test('an order cancelled or rejected after partial fills records when it was seen with its fills',async()=>{
   const {LiveEngine}=require('../electron/live-engine.cjs');const db=new DatabaseSync(':memory:');const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
   const broker={request:async op=>op==='orders'?{orders:[{orderId:'B1',filled:1,fillPrice:100,status:'Cancelled'}]}:{balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}}};

@@ -10,13 +10,14 @@ const ROUNDS=4,MAX_CALLS=4;
 // Before every model call the complete request is measured as it will be sent. Older results are condensed or become
 // references first; if the latest round is still too large, its results are bounded again to the space left (whole
 // parts kept, the rest named so the agent can ask for them), and then become references. A request that still does not
-// fit is not sent. keepFrom: index of the latest round's first item.
-async function fitRequest(items,{keepFrom,compact,log}){
+// fit is not sent. keepFrom: index of the latest round's first item. full: each call's complete result and the section
+// that holds it (by call id), so a result bounded again is cut from the original and still points to all of it.
+async function fitRequest(items,{keepFrom,compact,log,full=null}){
   const cf=require('./context-fit.cjs'),rc=require('./review-context.cjs'),target=cf.LIMIT*cf.TARGET;
   const first=await cf.fit(items,{keepFrom,compact});let out=first.items;const steps=[...first.steps];
   const latest=out.map((item,i)=>({item,i})).filter(({item,i})=>i>=keepFrom&&item?.type==='function_call_output');
   if(cf.size(out)>target&&latest.length){const room=Math.floor((target-cf.size(out)+latest.reduce((sum,{item})=>sum+cf.size(item),0))/latest.length)-300;
-    out=out.map((item,i)=>i>=keepFrom&&item?.type==='function_call_output'?{...item,output:JSON.stringify(rc.bound(JSON.parse(item.output),Math.max(800,room)))}:item);steps.push({step:'rebound',perCall:room,bytes:cf.size(out)});}
+    out=out.map((item,i)=>i>=keepFrom&&item?.type==='function_call_output'?{...item,output:JSON.stringify((({value,ref})=>rc.bound(value,Math.max(800,room),{ref}))(full?.get(item.call_id)??{value:JSON.parse(item.output),ref:null}))}:item);steps.push({step:'rebound',perCall:room,bytes:cf.size(out)});}
   if(cf.size(out)>target){const last=await cf.fit(out,{keepFrom:out.length});out=last.items;steps.push(...last.steps);}
   if(steps.length)log('System','Research context condensed',JSON.stringify(steps));
   if(cf.size(out)>cf.LIMIT){const e=new Error('CONTEXT_OVER_BUDGET');e.detail={limit:'app bytes',wireBytes:cf.size(out),limitBytes:cf.LIMIT};throw e;}
@@ -28,10 +29,14 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   const via=(name,fn)=>wrap?wrap(name,fn):fn;
   let continuation,keepFrom=0;const usage={inputTokens:0,outputTokens:0};const cache=new Map();
   // Each response is bounded by the round's budget: what the request may still grow by, shared by the round's calls.
-  let perCall=16000;const answer=(call,value)=>continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(require('./review-context.cjs').bound(value,perCall))});
+  // Every tool result is kept whole for this review (as section result-N of get_context_detail), so whatever bounding
+  // cuts or leaves out can be read in full, by path and page.
+  const stored={},full=new Map();const details=()=>({...(detail??{}),...stored});
+  let perCall=16000;const answer=(call,value,keep=true)=>{let ref=null;if(keep){ref=`result-${full.size+1}`;stored[ref]=value;full.set(call.callId,{value,ref});}
+    continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(require('./review-context.cjs').bound(value,perCall,{ref}))});};
   for(let round=0;round<ROUNDS;round++){
     // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
-    if(round>0)continuation=await fitRequest(continuation,{keepFrom,compact,log});
+    if(round>0)continuation=await fitRequest(continuation,{keepFrom,compact,log,full});
     const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});
     usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;
     if(!result.toolCalls){
@@ -56,7 +61,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
       perCall=Math.max(1500,Math.min(16000,Math.floor((cf.LIMIT*cf.TARGET-cf.size(continuation))/calls)-200));}
     for(const call of result.toolCalls){
       // Summarized sections are read in full on request (review-context.cjs).
-      if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=require('./review-context.cjs').detailPart(detail,{section,part:String(call.args?.part??''),page:call.args?.page},Math.min(8000,perCall));log('Tool','Context detail · '+section+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));answer(call,value);continue;}
+      if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=require('./review-context.cjs').detailPart(details(),{section,part:String(call.args?.part??''),page:call.args?.page},Math.min(8000,perCall));log('Tool','Context detail · '+section+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));answer(call,value,false);continue;}
       if(call.name==='set_review_interval'&&setInterval){const value=await via('set_review_interval',setInterval)(call.args);log('Tool','Review interval updated',JSON.stringify(value));answer(call,value);continue;}
       if(call.name==='set_review_watch'&&setWatch){const value=await via('set_review_watch',setWatch)(call.args);log('Tool','Review watch updated',JSON.stringify(value));answer(call,value);continue;}
       // Desk tools: formulas, triggers, notes and conditional orders. A refused request is answered, not fatal; a changed account still stops the review.

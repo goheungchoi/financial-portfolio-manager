@@ -24,3 +24,20 @@ test('a scout run allows two research rounds, then must answer',async()=>{
   let rounds=0;const finals=[];await assert.rejects(runScout({request:async({final})=>{rounds++;finals.push(final);return {toolCalls:[{name:'x',callId:String(rounds),args:{}}],continuation:[]};},tools:{},log:()=>{}}),/INVALID_AI_RESPONSE/);
   assert.equal(rounds,3);assert.deepEqual(finals,[false,false,true]);
 });
+// Review of 7dc8395, P2: during U.S. trading Korea is deferred, and every Korean company read was refused, so a
+// next-session sector ETF could be searched for but its fund details, holdings and leverage could not be checked.
+test('review P2: a closed market allows a few read-only company reads for next-session candidates, labeled as awaiting the open',async()=>{
+  const {focusTools,NEXT_SESSION_LABEL,INSTRUCTIONS}=require('../electron/scout.cjs');const calls=[];const added=[];
+  const discovery={research:async args=>{calls.push(args.symbol);return {status:'ok',symbol:args.symbol,fund:{leverage:2}};},screen_market:()=>({rows:[]}),search_securities:()=>({rows:[]}),marketOverview:()=>({status:'ok'}),update_watchlist:args=>{added.push(...args.entries);return {status:'ok'};}};
+  let stale=false;const tools=focusTools(discovery,{markets:['US'],deferred:['KR']},{guard:()=>{if(stale)throw new Error('STALE_DECISION');}});
+  const us=await tools.get_company_research({symbol:'NASD:NVDA',sections:['quote']});assert.equal(us.nextSession,undefined,'an open market is read as before');
+  const reads=[];for(const symbol of ['233740','091170','462330','005930'])reads.push(await tools.get_company_research({symbol,sections:['fund','holdings']}));
+  assert.deepEqual(reads.slice(0,3).map(r=>[r.status,r.nextSession.market,r.nextSession.awaitingOpen,r.nextSession.readsLeft]),[['ok','KR',true,2],['ok','KR',true,1],['ok','KR',true,0]]);
+  assert.match(reads[0].nextSession.note,/last session.*confirmation at the open/);assert.equal(reads[3].status,'skipped','bounded: the fourth read is refused');
+  assert.deepEqual(calls,['NASD:NVDA','233740','091170','462330']);
+  assert.equal(tools.screen_market({market:'KR'}).status,'skipped','screening a closed market stays refused');assert.equal(tools.get_market_overview().status,'skipped');
+  tools.update_watchlist({action:'add',entries:[{symbol:'233740',reason:'KODEX semiconductor leveraged on the U.S. chip rally'},{symbol:'NASD:AMD',reason:'open market'}]});
+  assert.deepEqual(added.map(e=>e.reason.startsWith(NEXT_SESSION_LABEL)),[true,false],'only the closed-market candidate is labeled');
+  stale=true;assert.throws(()=>tools.update_watchlist({action:'add',entries:[]}),/STALE_DECISION/);
+  assert.match(INSTRUCTIONS,/up to three such reads per run, marked nextSession/);assert.doesNotMatch(INSTRUCTIONS,/company research for other markets are refused/);
+});

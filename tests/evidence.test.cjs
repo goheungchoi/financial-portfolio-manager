@@ -29,7 +29,7 @@ test('review watches persist per scope, allow self-tuning, reject unsafe values,
 test('AI client returns validated read-only tool requests and replays function outputs',async()=>{
   const context={universe:[{symbol:'005930'}]};let request;
   const client=new AiClient('fake_key_12345',async(_url,options)=>{request=JSON.parse(options.body);return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'function_call',name:'get_market_evidence',call_id:'c1',arguments:JSON.stringify({symbol:'005930',dataset:'company'})}],usage:{input_tokens:10,output_tokens:5}})};});
-  const result=await client.decide(context,{research:true});assert.equal(result.toolCalls[0].args.dataset,'company');assert.equal(request.tools.length,2);assert.equal(request.parallel_tool_calls,true,'up to four requests per round');assert.equal(request.store,false);assert.ok(!JSON.stringify(result).includes('fake_key'));
+  const result=await client.decide(context,{research:true});assert.equal(result.toolCalls[0].args.dataset,'company');assert.equal(request.tools.length,3);assert.equal(request.parallel_tool_calls,true,'up to four requests per round');assert.equal(request.store,false);assert.ok(!JSON.stringify(result).includes('fake_key'));
   await assert.rejects(client.decide(context,{research:true,final:true}),/INVALID_AI_RESPONSE/);
 });
 test('research rounds are bounded, cached, logged and accumulate token usage',async()=>{
