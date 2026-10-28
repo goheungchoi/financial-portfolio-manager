@@ -28,12 +28,12 @@ process.parentPort.on('message',async({data})=>{
       result=await require('./macro.cjs').fetchMacro(fetch,{ecosKey,fredKey});
     } else if(data.operation==='fx-rates') {
       if(!Array.isArray(data.days))throw 0;result=await require('./macro.cjs').fetchUsdKrw(fetch,ecosKey,data.days.filter(day=>typeof day==='string'));
-    } else if(['sec-company','sec-filings','sec-earnings'].includes(data.operation)) {
+    } else if(['sec-company','sec-filings','sec-earnings','sec-about'].includes(data.operation)) {
       // The contact saved in the app wins over the providers file; either way it is sent only to sec.gov.
       const contact=typeof data.contact==='string'&&EMAIL.test(data.contact)?data.contact:secContact;
-      if(!contact)throw 0;result=await require('./sec.cjs')[({'sec-company':'secCompany','sec-filings':'secFilings','sec-earnings':'secEarningsRelease'})[data.operation]](fetch,contact,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),secState);
-    } else if(data.operation==='dart-company') {
-      if(!dartKey)throw 0;result=await require('./dart.cjs').companyFilings(fetch,dartKey,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),dartState);
+      if(!contact)throw 0;result=await require('./sec.cjs')[({'sec-company':'secCompany','sec-filings':'secFilings','sec-earnings':'secEarningsRelease','sec-about':'secAbout'})[data.operation]](fetch,contact,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),secState);
+    } else if(data.operation==='dart-company'||data.operation==='dart-about') {
+      if(!dartKey)throw 0;result=await require('./dart.cjs')[data.operation==='dart-about'?'companyAbout':'companyFilings'](fetch,dartKey,String(data.symbol??''),new Date(Date.now()+9*3600000).toISOString().slice(0,10),dartState);
     } else if(data.operation==='disclosures') {
       if(!dartKey)throw 0;
       const date=new Date(Date.now()+9*3600000).toISOString().slice(0,10).replaceAll('-','');

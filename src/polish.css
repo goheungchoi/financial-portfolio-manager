@@ -492,3 +492,11 @@ table.discover-table{table-layout:auto}
 @media (max-width:1180px){.discover-table .change-bar{display:none}.discover-table .row-actions{flex-direction:column;align-items:flex-end;gap:4px}}
 .pager{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:12px;font-size:12px}
 .pager span{font-variant-numeric:tabular-nums}
+
+/* Charts: what the company does, from its annual report. The first paragraph shows three lines; More opens the rest. */
+.company-about{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);max-width:900px}
+.company-about-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:13px}
+.company-about-text p{margin:0 0 8px;font-size:13px;line-height:1.6;color:var(--text)}
+.company-about-text:not(.open) p{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.company-about-text:lang(ko) p{word-break:keep-all}
+.company-about-foot{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:12px}
