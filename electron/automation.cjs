@@ -56,10 +56,16 @@ class Automation {
   watchScope(){if(this.config.scope==='paper')return 'paper';try{return this.config.scope+':'+(this.live??this.usLive).identity();}catch{return this.config.scope+':disconnected';}}
   // The review clock: when this account and scope last had a review (run, skipped or failed) and which pre-open review
   // already ran, kept across restarts, so starting auto trading resumes the schedule instead of reviewing again.
-  saveClock(){const scope=this.watchScope();if(scope.endsWith(':disconnected')||!(this.lastRun>0))return;
+  // The clock in memory belongs to clockScope. When the account or scope changes, both fields are replaced by that
+  // scope's saved clock, or reset when it has none: another account's review time never carries over. A disconnected
+  // account keeps the clock it had, since its identity is unknown. The first scope adopted also keeps a clock set
+  // before any scope was known (nothing could have run for another account yet), unless its saved one is later.
+  saveClock(){const scope=this.clockScope;if(!scope||scope.endsWith(':disconnected')||!(this.lastRun>0))return;
     try{this.db.prepare('INSERT INTO review_clock VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({lastRun:this.lastRun,preOpenKey:this.preOpenKey??null}));}catch{}}
-  restoreClock(){try{const row=this.db.prepare('SELECT payload FROM review_clock WHERE scope=?').get(this.watchScope());if(!row)return;const c=JSON.parse(row.payload);
-    if(Number.isFinite(c.lastRun)&&c.lastRun<=Date.now())this.lastRun=Math.max(this.lastRun,c.lastRun);if(typeof c.preOpenKey==='string'&&!this.preOpenKey)this.preOpenKey=c.preOpenKey;}catch{}}
+  restoreClock(){const scope=this.watchScope();if(scope===this.clockScope||scope.endsWith(':disconnected'))return;let c=null;
+    try{const row=this.db.prepare('SELECT payload FROM review_clock WHERE scope=?').get(scope);c=row?JSON.parse(row.payload):null;}catch{}
+    const first=this.clockScope==null,saved=Number.isFinite(c?.lastRun)&&c.lastRun<=Date.now()?c.lastRun:0;this.clockScope=scope;
+    this.lastRun=first?Math.max(this.lastRun,saved):saved;this.preOpenKey=typeof c?.preOpenKey==='string'?c.preOpenKey:first?this.preOpenKey??null:null;}
   saveConfig(){this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(this.config));}
   configure(value) {
     if(!value || Object.keys(value).some(key=>!Object.hasOwn(DEFAULTS,key)))throw new Error('INVALID_SETTINGS');
@@ -103,7 +109,7 @@ class Automation {
   noteSessions(context){const {krOpen,seoulDay}=require('./market-hours.cjs');const kr=context?.environment==='kis-combined'?context.markets?.find(m=>m.market==='KR')?.marketSession:this.config.scope==='kis'?context?.marketSession:null;
     if(kr&&kr.open===false&&kr.status==='closed'&&krOpen(Date.now(),this.closedDays??=new Set()))this.closedDays.add(seoulDay(Date.now()));}
   // When the next scheduled review is due: while markets are closed, the pre-open review or the open itself.
-  nextReviewAt(){if(!this.config.enabled||!this.sessionArmed)return null;const hours=this.marketHours();
+  nextReviewAt(){if(!this.config.enabled||!this.sessionArmed)return null;this.restoreClock();const hours=this.marketHours();
     if(!hours.open&&this.config.closedMarketReviews!=='keep'&&!this.emergencyState().active&&hours.next)return this.config.closedMarketReviews==='pre-open'?hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS:hours.next.at;
     const due=Math.max(Date.now(),this.lastRun+Math.max(60000,this.emergencyState().active?60000:this.reviewInterval.get(this.watchScope(),this.config).minutes*60000));
     const defer=this.emergencyState().active?null:this.deferForPendingOrder();return defer?Math.max(due,defer.until):due;}
@@ -385,7 +391,7 @@ class Automation {
     return {context,emergency,usValue,execution,lessonIds};
   }
   async review(trigger='User request',externalDecision) {
-    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();let context;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
+    if(this.busy)throw new Error('REVIEW_BUSY');this.busy=true;this.restoreClock();this.reviewSessionKey=this.sessionKey();const id=randomUUID();let context;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
       costRevision=JSON.stringify(this.costs?.get());
       let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;}}));
@@ -797,6 +803,7 @@ class Automation {
   syncLearning(){try{this.outcomes.sync();this.memory.sync();this.reflections.sync();this.trials.observe(this.paper.getState().quotes,'paper');
       for(const [engine,quotes] of [[this.live,this.marketQuotes?.()??[]],[this.usLive,this.usQuotes??[]]]){if(engine){try{this.trials.observe(quotes,'broker',engine.identity());}catch(error){if(!['KIS_NOT_CONNECTED','ACCOUNT_CHANGED'].includes(error.message))throw error;}}}this.learningLastRun=Date.now();this.learningError=null;}catch{this.learningError='LOCAL_EVALUATION_FAILED';}}
   tick() {
+    this.restoreClock();
     if(!this.learningLastRun||Date.now()-this.learningLastRun>=15000)this.syncLearning();
     if(!this.busy&&!this.learningError)void this.reflections.tick(this.config,this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
     const emergency=this.emergencyState();

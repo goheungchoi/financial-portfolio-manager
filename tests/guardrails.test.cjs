@@ -107,3 +107,20 @@ test('Start auto trading resumes the schedule from the last review, also after a
     c.tick();await settle(c);assert.equal(calls,2);assert.equal(JSON.parse(db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload).trigger,'Auto trading started');
   }finally{db.close();}
 });
+test('switching accounts in a running app replaces the review clock with that account\'s own, never another\'s',async()=>{
+  const {db,automation:a}=fixture({breached:false});try{
+    a.configure({provider:'openai',intervalMinutes:60,closedMarketReviews:'keep'});const twoHoursAgo=Date.now()-2*3600000;
+    db.prepare('INSERT INTO review_clock VALUES(?,?)').run('kr:B',JSON.stringify({lastRun:twoHoursAgo,preOpenKey:'KR:2026-10-28'}));
+    let scope='kr:A';a.watchScope=()=>scope;
+    await a.review('User request');const reviewedA=a.lastRun;assert.ok(Date.now()-reviewedA<5000);
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM review_clock WHERE scope=?').get('kr:A').payload).lastRun,reviewedA);
+    // Account B: its own two-hour-old review, so its review is overdue, and its own pre-open record.
+    scope='kr:B';a.tick();assert.equal(a.lastRun,twoHoursAgo,'B does not inherit A\'s just-completed review');assert.equal(a.preOpenKey,'KR:2026-10-28');
+    a.sessionArmed=true;a.config.enabled=true;assert.ok(a.nextReviewAt()<=Date.now()+1000,'B\'s overdue review is not delayed');a.config.enabled=false;
+    // An account with no saved clock starts empty; one that is disconnected keeps the clock it had.
+    scope='kr:C';a.restoreClock();assert.equal(a.lastRun,0);assert.equal(a.preOpenKey,null);
+    scope='kr:A';a.restoreClock();assert.equal(a.lastRun,reviewedA);assert.equal(a.preOpenKey,null);
+    scope='kr:disconnected';a.restoreClock();assert.equal(a.lastRun,reviewedA,'an unknown account changes nothing');
+    a.saveClock();assert.equal(db.prepare('SELECT COUNT(*) AS n FROM review_clock').get().n,2,'nothing is saved under a disconnected or empty scope');
+  }finally{db.close();}
+});

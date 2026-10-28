@@ -106,7 +106,9 @@ function detailPart(detail,{section,part='',page=1},limit=8000){
 const PINNED=['nextSession','status','symbol','name','market','asOf','instrument','fundData','provenance'];
 function bound(value,limit=16000,{ref=null,always=false}={}){
   const full=ref?{fullResult:{section:ref,read:'Every path in cuts and omittedParts, and every provenance original, is readable in full with get_context_detail: this section, part set to the path, page 1 and up.'}}:{};
-  if(outBytes(value)<=limit)return always&&ref&&value&&typeof value==='object'&&!Array.isArray(value)&&outBytes({...value,...full})<=limit?{...value,...full}:value;
+  // A reply that must name its full result counts that reference in its size: when both do not fit, it is shortened.
+  const named=always&&ref&&value&&typeof value==='object'&&!Array.isArray(value);
+  if(outBytes(named?{...value,...full}:value)<=limit)return named?{...value,...full}:value;
   if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),...full,note:ref?'Too large for one reply: read it in pages from fullResult.':'Ask for a narrower request (fewer sections or one symbol).'};
   // A part that does not fit is shortened to the room left when that room is useful (see shrink), so a section asked for
   // alone still arrives; only what cannot fit at all is left out.
