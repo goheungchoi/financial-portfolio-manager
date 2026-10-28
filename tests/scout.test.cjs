@@ -216,3 +216,8 @@ test('scout substitutions: a stock set aside for its size gets affordable altern
   assert.match(scout.INSTRUCTIONS,/When a promising stock is set aside because one share is larger than the allocation/);assert.match(scout.INSTRUCTIONS,/a name or label is not exposure/);
   assert.match(scout.INSTRUCTIONS,/never pick one only because a stock is unaffordable/);assert.match(scout.INSTRUCTIONS,/An avoid in a brief applies to that brief/);
 });
+test('review: duplicate substitutions and alternatives are merged so the Scout panel keys stay unique',()=>{
+  const scout=require('../electron/scout.cjs');const alt=(symbol,verdict)=>({symbol,exposure:'x',verdict,reason:'r'});
+  const p=scout.validatePlan({summary:'s',cashTargetPct:null,focus:'f',targets:[],briefAnswers:[],retrospective:'',substitutions:[{forSymbol:'000660',why:'a',alternatives:[alt('091160','chosen'),alt('091160','rejected')]},{forSymbol:'000660',why:'b',alternatives:[alt('396500','chosen')]}]});
+  assert.equal(p.substitutions.length,1);assert.deepEqual(p.substitutions[0].alternatives.map(a=>[a.symbol,a.verdict]),[['091160','chosen']]);
+});

@@ -107,3 +107,11 @@ test('returns are marked unreliable while unconfirmed flows, unexplained cash ch
   assert.equal(r.reliable,false);assert.deepEqual(r.reasons,['a detected withdrawal of ₩81,855 on 2026-10-28 is not confirmed; returns treat it as one','a cash change of +$61.71 since 2026-10-27 18:45 UTC is not yet explained; returns count it as gain or loss','funding of ₩712,078 of unsettled U.S. buys is not yet known, so Korean value may be understated']);
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(src,/returnReliability:reliability/,'given to reviews with the performance summary');assert.match(src,/returnReliability is separate from equityReliability/);
 });
+// P2/P3: the startup skip applies in every scope (Korean equity always depends on the U.S. balance), and an old U.S.
+// error is forgotten when the connection resets.
+test('the startup skip does not depend on scope, and a reconnect forgets an old U.S. error',()=>{
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8');
+  assert.match(src,/awaitingUS:!usSnapshot&&!usLive\.refreshError\}/);assert.doesNotMatch(src,/awaitingUS:\['both','us'\]/);
+  assert.deepEqual(src.match(/;usSnapshot=null;(?!if\(usLive\)usLive\.refreshError=null)/g)??[],[],'every reset of the U.S. snapshot clears its error');
+  assert.equal((src.match(/usSnapshot=null;if\(usLive\)usLive\.refreshError=null;/g)??[]).length,3);
+});

@@ -91,3 +91,30 @@ test('strategy variety: a Buy names its strategy and each review records the ide
   assert.match(src,/Vary your strategies instead of defaulting to one/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
   assert.match(require('../electron/scout.cjs').INSTRUCTIONS,/include a tactical candidate for it/);
 });
+// Review of 40d7666..c276de6 (agent behaviour).
+test('review: a fourth-quarter release keeps its results as results and its outlook as guidance; U.S. and entities read right',()=>{
+  const html=`<p>Acme Reports Fourth-Quarter and Full-Year 2025 Results; Introduces 2026 Outlook</p><p>&bull; Fourth-quarter sales of $1.02 billion increased 4% compared to the prior year.</p>
+<p>&bull; Full-year 2025 sales of $4.10 billion increased 2%; full-year adjusted EPS was $4.52, up 8%.</p><p>Fourth-quarter diluted EPS on a U.S. GAAP basis was $1.05, up 6% from a year ago.</p>
+<p>Fourth-quarter operating income was $210 million, and segment margin expanded 120 basis points to 21.4%.</p><p>The board raised its quarterly dividend 5% to $0.25 per share.</p>
+<p>2026 Outlook</p><p>For 2026, the company expects sales to grow 3% to 5% and adjusted EPS of $4.80 to $5.00.</p><p>Capital expenditures of about $120 million are planned for 2026.</p>
+<p>Conference Call</p><p>The call on February 3, 2026 starts at 9:00 a.m. ET.</p>`;
+  const f=sec.releaseFacts(sec.htmlText(html));
+  assert.deepEqual(f.guidance,['For 2026, the company expects sales to grow 3% to 5% and adjusted EPS of $4.80 to $5.00.','Capital expenditures of about $120 million are planned for 2026.'],'the outlook section and forward wording; not the period labels, the dividend or the title');
+  assert.ok(f.results.includes('Fourth-quarter sales of $1.02 billion increased 4% compared to the prior year.'),'bullets decoded and removed: '+JSON.stringify(f.results));
+  assert.ok(f.results.includes('Fourth-quarter diluted EPS on a U.S. GAAP basis was $1.05, up 6% from a year ago.'),'not split at U.S.');
+  assert.ok(!f.results.some(s=>/conference|call on/i.test(s)));assert.equal(sec.htmlText('<p>Acme&reg; &trade; &frac12;</p>'),'Acme® ™ ½');
+});
+test('review: a release larger than the round budget arrives shortened, not dropped',()=>{
+  const rc=require('../electron/review-context.cjs');
+  const reply={symbol:'NYSE:PNR',name:'Pentair',market:'NYSE',asOf:'2026-10-28',release:{source:'SEC EDGAR 8-K filed 2026-10-27, EX-99.1',guidance:Array.from({length:8},(_,i)=>'The Company expects fourth quarter sales to be up approximately 7 percent to 9 percent, item '+i+'.'),results:Array.from({length:10},(_,i)=>'Third quarter 2026 sales of $976 million decreased 3 percent, item '+i+'.'),text:'"'.repeat(1500)+'x'.repeat(2500)}};
+  for(const limit of [8000,4000]){const b=rc.bound(reply,limit);assert.ok(rc.outBytes(b)<=limit,'within '+limit);assert.ok(b.release,'kept at '+limit);assert.deepEqual(b.shortenedParts,['release']);assert.equal(b.release.source,reply.release.source);assert.ok(b.release.guidance.length>=1);}
+  assert.equal(rc.bound(reply,16000).release.text,reply.release.text,'untouched when it fits');
+});
+test('review: sector leads alone do not force a paid review; a short cover keeps the basic plan rules only',()=>{
+  const saver=require('../electron/token-saver.cjs');const base={positions:{},cash:{KRW:1},quotes:[],marketSession:{open:true}};
+  const a=saver.fingerprint({...base,sectorLeads:{us:{asOf:'2026-10-28T20:05:00Z',sectors:[{sector:'Technology',changePct:2.4}]}}}),b=saver.fingerprint({...base,sectorLeads:{us:{asOf:'2026-10-28T23:05:00Z',sectors:[{sector:'Technology',changePct:2.4}]}}});
+  assert.equal(a.exact,b.exact);
+  const cover=validateDecision({action:'Buy',symbol:'005930',quantity:1,explanation:'Cover the short.',credit:'cover',loanDate:'2026-10-20',plan:{strategy:'none',thesis:'Close the short',invalidation:'n/a',stopPrice:230000,targetPrice:null,horizonDays:1,confidence:'medium',portfolioImpact:{weightBeforePct:-14,weightAfterPct:0,related:[],relatedBeforePct:-14,relatedAfterPct:0,equityReliable:true,why:'Removes the short.'},evidence:[],valuation:null,uncertainty:null}},['005930'],{requirePlan:true});
+  assert.equal(cover.action,'Buy','a cover is not held back for missing evidence');
+  assert.equal(buy({evidence:[]}).withheld?.reason,'no evidence with sources','an opening Buy still is');
+});

@@ -32,7 +32,8 @@ class ResearchService {
     const spec=SOURCES[source];let hit=this.cached(symbol,source);
     // OpenDART results saved before the current format (unit-sales filings told apart, announced results dates) are refetched once.
     if(hit&&source==='dart'&&(hit.value?.version??1)<2)hit={...hit,at:0};
-    if(hit&&!refresh&&this.clock()-hit.at<spec.ttl)return {status:'ok',retrievedAt:hit.at,data:hit.value};
+    // A description that could not be found in the filing is tried again after a day, not after the full week.
+    if(hit&&!refresh&&this.clock()-hit.at<(hit.value?.overviewUnavailable?Math.min(spec.ttl,24*HOUR):spec.ttl))return {status:'ok',retrievedAt:hit.at,data:hit.value};
     const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL)return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};
     const key=symbol+'|'+source;if(this.inflight.has(key))return this.inflight.get(key);
     const task=(async()=>{

@@ -153,3 +153,26 @@ test('fills matched by change: an order filled before it was tracked is not coun
     assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[],'an older saved reading falls back to orders placed in between');
     now+=60000;assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[]);now+=3*3600000;assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[]);}
 });
+// Review of 40d7666..c276de6 (accounting). P1: after a restart the U.S. orders are not loaded until the U.S. balance is;
+// a reading saved then (no U.S. cash, only Korean fills) made a partly filled, cancelled U.S. order look new, and with
+// no U.S. cash in that reading detection waited forever. A ₩1,000,000 deposit was never recorded.
+test('review P1: a restart before the U.S. account loads does not stop detection',()=>{
+  const {perf,read}=settling();const cancelled={id:'gx',market:'US',symbol:'NASD:GOOGL',side:'Buy',quantity:2,filled:1,fillPrice:320,status:'Canceled',resultCosts:{netCash:-320.5},createdAt:at('2026-10-27T23:00:00+09:00')};
+  read('2026-10-28T08:00:00+09:00',{krCash:500000,usCash:100,orders:[cancelled]});
+  read('2026-10-28T10:00:00+09:00',{krCash:500000,usCash:null,orders:[]});
+  read('2026-10-28T10:01:00+09:00',{krCash:500000,usCash:100,orders:[cancelled]});
+  read('2026-10-28T11:00:00+09:00',{krCash:1500000,usCash:100,orders:[cancelled]});
+  const found=read('2026-10-28T15:30:00+09:00',{krCash:1500000,usCash:100,orders:[cancelled]});assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['KR',1000000,true]]);
+  // Never seen before at all (filled before fills were kept), first seen with the U.S. account: a new U.S. baseline.
+  const t=settling();t.read('2026-10-28T10:00:00+09:00',{krCash:500000,usCash:null,orders:[]});t.read('2026-10-28T10:01:00+09:00',{krCash:500000,usCash:100,orders:[cancelled]});
+  t.read('2026-10-28T11:00:00+09:00',{krCash:1500000,usCash:100,orders:[cancelled]});assert.deepEqual(t.read('2026-10-28T15:30:00+09:00',{krCash:1500000,usCash:100,orders:[cancelled]}).map(f=>[f.market,f.amount]),[['KR',1000000]]);
+  assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0,'the old U.S. fill is not a deposit');
+});
+test('an order cancelled or rejected after partial fills records when it was seen with its fills',async()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const db=new DatabaseSync(':memory:');const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
+  const broker={request:async op=>op==='orders'?{orders:[{orderId:'B1',filled:1,fillPrice:100,status:'Cancelled'}]}:{balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}}};
+  const e=new LiveEngine(db,broker,()=>({status:'connected',snapshot}));const order={id:'o1',symbol:'005930',side:'Buy',quantity:2,limitPrice:100,status:'Accepted',brokerOrderId:'B1',createdAt:Date.now()-60000,day:require('../electron/kis-activity.cjs').seoulDate(),accountKey:'acct',environment:'mock',market:'KR'};
+  db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,payload TEXT NOT NULL)');try{e.save(order);}catch{db.prepare('INSERT OR REPLACE INTO live_intents VALUES(?,?)').run(order.id,JSON.stringify(order));}
+  try{await e.reconcile();}catch{}const saved=e.orders().find(o=>o.id==='o1');
+  assert.equal(saved?.status,'Canceled');assert.ok(Number.isFinite(saved.filledObservedAt),'fills seen with the cancellation are timed');
+});

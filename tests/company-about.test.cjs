@@ -59,3 +59,30 @@ test('research serves the about section from DART or SEC, cached for a week, and
   assert.ok(require('../electron/scout.cjs').RESEARCH_SECTIONS.includes('about'));
   const fund=new ResearchService({db:new DatabaseSync(':memory:'),master:{get:()=>({type:'etf'})},kis:async()=>{},provider:async()=>{throw new Error('x');},dartReady:()=>true});assert.deepEqual(await fund.section('360750','about'),{status:'unavailable',reason:'NOT_FOR_FUNDS'});
 });
+// Review of 40d7666..c276de6 (descriptions).
+const filler='We make industrial pumps, valves and filtration systems sold to utilities, builders and factories worldwide. '.repeat(30);
+test('review: common 10-K heading variants and the 20-F business overview are found',()=>{
+  for(const head of ['ITEMS 1 AND 2. BUSINESS AND PROPERTIES','Item 1. Description of Business','PART I - ITEM 1. BUSINESS','<p>Item 1.</p><p>Business</p>']){
+    const html=(head.startsWith('<')?head:`<p>${head}</p>`)+`<p>${filler}</p><p>Item 1A. Risk Factors</p>`;assert.match(sec.businessSection(sec.htmlText(html),'10-K')?.text??'',/^We make industrial pumps/,head);}
+  const f20=sec.businessSection(sec.htmlText(`<p>Item 4. Information on the Company</p><p>A. History and Development of the Company</p><p>${'We were incorporated in the Netherlands in 1984 and our registered office is in Veldhoven, with telephone number listed. '.repeat(12)}</p><p>B. Business Overview</p><p>${'We design and sell lithography systems used by chipmakers to print circuits on silicon wafers. '.repeat(12)}</p><p>Item 4A. Unresolved Staff Comments</p>`),'20-F');
+  assert.match(f20.text,/^We design and sell lithography systems/,'the business, not the incorporation history');
+});
+test('review: a description that could not be found is retried after a day, not a week',async()=>{
+  const {ResearchService}=require('../electron/research-service.cjs');let now=Date.parse('2026-10-28T00:00:00Z');let calls=0;
+  const r=new ResearchService({db:new DatabaseSync(':memory:'),master:{get:()=>({type:'stock'})},kis:async()=>{},provider:async()=>{calls++;return {language:'en',overviewUnavailable:'NO_BUSINESS_SECTION',source:{kind:'SEC 10-K'}};},secReady:()=>true,clock:()=>now});
+  await r.section('NYSE:XOM','about');now+=12*3600000;await r.section('NYSE:XOM','about');assert.equal(calls,1);now+=13*3600000;await r.section('NYSE:XOM','about');assert.equal(calls,2,'tried again after a day');
+});
+function zipEntries(entries){
+  const locals=[],cds=[];let offset=0;
+  for(const [name,text] of entries){const data=Buffer.from(text,'utf8'),n=Buffer.from(name);const local=Buffer.alloc(30);local.writeUInt32LE(0x04034b50,0);local.writeUInt32LE(data.length,18);local.writeUInt32LE(data.length,22);local.writeUInt16LE(n.length,26);
+    const cd=Buffer.alloc(46);cd.writeUInt32LE(0x02014b50,0);cd.writeUInt32LE(data.length,20);cd.writeUInt32LE(data.length,24);cd.writeUInt16LE(n.length,28);cd.writeUInt32LE(offset,42);locals.push(local,n,data);cds.push(cd,n);offset+=30+n.length+data.length;}
+  const cdSize=cds.reduce((s,b)=>s+b.length,0);const end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);end.writeUInt32LE(cdSize,12);end.writeUInt32LE(offset,16);
+  return Buffer.concat([...locals,...cds,end]);
+}
+test('review: the DART report is found among the archive entries even when an attachment comes first',async()=>{
+  const audit='<?xml version="1.0" encoding="utf-8"?><DOCUMENT><BODY><SECTION-1><TITLE>감사보고서</TITLE><P>감사인의 의견입니다. 2025년 재무제표는 적정하게 표시되어 있습니다.</P></SECTION-1></BODY></DOCUMENT>';
+  const fetcher=async url=>{const u=new URL(url);if(u.pathname.endsWith('list.json'))return {ok:true,json:async()=>({status:'000',list:[{rcept_no:'20260311001234',report_nm:'사업보고서 (2025.12)',rcept_dt:'20260311',flr_nm:'삼성전자'}]})};
+    return {ok:true,arrayBuffer:async()=>zipEntries([['20260311001234_00760.xml',audit],['20260311001234.xml',report]])};};
+  const r=await dart.companyAbout(fetcher,'k'.repeat(40),'005930','2026-10-28',{corps:new Map([['005930','00126380']]),corpsAt:Date.now()});
+  assert.match(r.overview,/^당사는 본사를 거점으로/);assert.deepEqual(dart.unzipAll(zipEntries([['a.xml','x'],['b.xml','y']])).map(e=>[e.name,e.data.toString()]),[['a.xml','x'],['b.xml','y']]);
+});

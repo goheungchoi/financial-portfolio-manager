@@ -67,13 +67,17 @@ class FlowDetector {
   // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD); unsettledKRW: all unsettled U.S. buys.
   observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:fillsOf(orders)};
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const prev=row?JSON.parse(row.payload):null;
+    // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)}};
     // Provisional changes and settlement evidence carry over between readings.
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...now,...state}));
     // Readings taken before KRW committed to unsettled U.S. buys was netted out are a different basis: start again.
     if(!prev||prev.basis!==BASIS){save();return [];}
+    // The first reading with U.S. cash after one without it starts the U.S. comparison here: a U.S. fill since then could
+    // not be judged without both readings, and waiting for one that will never come would stop detection.
+    if(prev.usCash==null&&now.usCash!=null&&!orders.some(o=>OPEN.includes(o.status))){save();return [];}
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
     // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.

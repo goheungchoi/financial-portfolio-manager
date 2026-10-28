@@ -74,9 +74,9 @@ async function secText(fetcher,contact,url,max=8*1024*1024){
 }
 // Plain text of an HTML filing document: blocks become lines, tags go, common entities are decoded.
 function htmlText(html){
-  const named={nbsp:' ',amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",rsquo:"'",lsquo:"'",rdquo:'"',ldquo:'"',ndash:'-',mdash:'-',hellip:'...'};
+  const named={nbsp:' ',ensp:' ',emsp:' ',thinsp:' ',zwsp:'',shy:'',amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",rsquo:"'",lsquo:"'",rdquo:'"',ldquo:'"',ndash:'-',mdash:'-',minus:'-',hellip:'...',bull:'•',middot:'·',reg:'®',trade:'™',copy:'©',frac12:'½',frac14:'¼',frac34:'¾',times:'×',deg:'°',euro:'€',pound:'£',cent:'¢',yen:'¥',sect:'§',para:'¶',laquo:'«',raquo:'»'};
   return String(html).replace(/<(script|style)[\s\S]*?<\/\1>/gi,' ').replace(/<br\s*\/?>|<\/(p|div|tr|h\d|li|table)>/gi,'\n').replace(/<\/t[dh]>/gi,' ').replace(/<[^>]+>/g,'')
-    .replace(/&#x([0-9a-f]+);/gi,(_,h)=>String.fromCodePoint(parseInt(h,16))).replace(/&#(\d+);/g,(_,d)=>String.fromCodePoint(Number(d))).replace(/&([a-z]+);/gi,(m,n)=>named[n.toLowerCase()]??m)
+    .replace(/&#x([0-9a-f]+);/gi,(_,h)=>String.fromCodePoint(parseInt(h,16))).replace(/&#(\d+);/g,(_,d)=>String.fromCodePoint(Number(d))).replace(/&([a-z][a-z0-9]*);/gi,(m,n)=>named[n.toLowerCase()]??m)
     .replace(/[   ]/g,' ').replace(/[‘’]/g,"'").replace(/[“”]/g,'"').replace(/[–—]/g,'-')
     .split('\n').map(line=>line.replace(/[ \t]+/g,' ').trim()).filter(Boolean).join('\n');
 }
@@ -89,11 +89,31 @@ function releaseExhibit(indexHtml){
   return other;
 }
 const BOILERPLATE=/forward-looking|safe harbor|risks and uncertainties|undue reliance|Securities Litigation Reform/i;
-// The results and outlook stated in a release, as the company's own sentences.
+// Abbreviations end with a period but not a sentence ("on a U.S. GAAP basis").
+const ABBREVIATIONS=/\b(U\.S|U\.K|Inc|Corp|Co|Ltd|Nos?|vs|Mr|Ms|Dr|approx|e\.g|i\.e|St|Jr|Sr)\./g;
+// Forward-looking wording. A period label ("fourth-quarter", "full-year") describes results as often as an outlook, so it
+// is not enough on its own; nor is "raised its dividend".
+const FORWARD=/\b(guidance|outlook|forecasts?|expects?|expected to|anticipates?|projects?|reaffirm\w*|(maintain|rais|lower|narrow|updat|introduc|initiat|issu)\w*\s+(its\s+|the\s+)?((full[- ]year|fiscal|\d{4}|fourth[- ]quarter|first[- ]quarter)\s+)*(guidance|outlook|forecast|estimates?))\b/i;
+const OUTLOOK_HEADING=/^((\d{4}|fiscal\s+\d{4}|full[- ]year)\s+)?((financial|business)\s+)?(outlook|guidance)\b/i;
+const METRIC=/\b(sales|revenues?|EPS|earnings per share|operating income|segment income|margins?|free cash flow|net income|orders|backlog)\b/i;
+// The results and outlook stated in a release, as the company's own sentences: sentences under an Outlook or Guidance
+// heading and sentences with forward-looking wording are guidance; figures on reported metrics are results.
 function releaseFacts(text){
-  const sentences=text.split('\n').flatMap(line=>line.split(/(?<=[.!?])\s+(?=[A-Z("$])/)).map(s=>s.replace(/^[•·▪◦*-]\s*/,'').trim()).filter(s=>s.length>=30&&s.length<=450&&/\d/.test(s)&&!BOILERPLATE.test(s));
-  const guidance=sentences.filter(s=>/\b(guidance|outlook|expects?|expected|anticipates?|reaffirm\w*|raises?|raised|narrow\w*|lowers?|lowered|full[- ]year|fiscal (year )?20\d\d|fourth[- ]quarter|next quarter)\b/i.test(s));
-  const results=sentences.filter(s=>!guidance.includes(s)&&/\b(sales|revenues?|EPS|earnings per share|operating income|segment income|margins?|free cash flow|net income|orders|backlog)\b/i.test(s)&&/[$%]|\d\.\d/.test(s));
+  const items=[];let inOutlook=false;
+  for(const line of String(text).split('\n')){
+    if(line.length<=60&&OUTLOOK_HEADING.test(line)){inOutlook=true;continue;}
+    if(line.length<=60&&!/\d/.test(line)&&!/[.!?]$/.test(line))inOutlook=false;
+    const guarded=line.replace(ABBREVIATIONS,m=>m.replace(/\./g,'\u0000'));
+    for(const part of guarded.split(/(?<=[.!?])\s+(?=[A-Z("$])/)){
+      const s=part.replace(/\u0000/g,'.').replace(/^[•·▪◦*-]\s*/,'').trim();
+      if(s.length>=30&&s.length<=450&&/\d/.test(s)&&!BOILERPLATE.test(s))items.push({s,outlook:inOutlook});
+    }
+  }
+  // The release title ("Acme Reports Fourth-Quarter Results; Introduces 2026 Outlook") names an outlook without stating one.
+  const title=s=>/\breports?\b[^.]*\bresults\b/i.test(s);items.splice(0,items.length,...items.filter(i=>!title(i.s)));
+  const forward=i=>i.outlook||FORWARD.test(i.s);
+  const guidance=[...new Set([...items.filter(i=>i.outlook),...items.filter(i=>!i.outlook&&FORWARD.test(i.s))].map(i=>i.s))];
+  const results=items.filter(i=>!forward(i)&&METRIC.test(i.s)&&/[$%]|\d\.\d/.test(i.s)).map(i=>i.s);
   return {results:results.slice(0,10),guidance:guidance.slice(0,8)};
 }
 // The latest earnings release (8-K item 2.02): its exhibit text, the results and guidance sentences, and where it came from.
@@ -111,14 +131,20 @@ async function secEarningsRelease(fetcher,contact,symbol,today,state){
     headline:body.split('\n').filter(line=>line.length>=25&&!/^(ex(hibit)?[- ]?99|\S+\.html?$)|\.html?$/i.test(line)).slice(0,3).join(' ').slice(0,700),results:facts.results,guidance:facts.guidance,
     ...(facts.guidance.length?{}:{guidanceNote:'No outlook or guidance sentence was found in the release text.'}),textChars:body.length,text:body.slice(0,LIMIT),...(body.length>LIMIT?{textTruncated:true}:{})};
 }
-// The opening paragraphs of the business description in an annual report: 10-K Item 1 (Business), or 20-F Item 4
-// (Information on the Company). The table-of-contents entry is skipped: the real section runs on for pages.
+// The opening paragraphs of the business description in an annual report: 10-K Item 1 (Business, also "Items 1 and 2.
+// Business and Properties" or "Description of Business", with or without a "Part I" prefix, on one line or two), or
+// 20-F Item 4 from its "B. Business Overview" (its part A is incorporation history). The table-of-contents entry is
+// skipped: the real section runs on for pages.
 function businessSection(text,form){
   const lines=String(text).split('\n');const foreign=/^20-F/.test(form);
-  const start=foreign?/^item\s*4\.?\s*[-:.]?\s*information on the company\b/i:/^item\s*1\.?\s*[-:.]?\s*business\b/i,stop=foreign?/^item\s*(4a|5)\b/i:/^item\s*(1a|1b|2)\b/i;
+  const head=foreign?/^(part\s+i\b\W*)?item\s*4\.?\s*[-:.]?\s*information on the company\b/i:/^(part\s+i\b\W*)?items?\s*1\.?\s*((and|&)\s*2\.?\s*)?[-:.]?\s*(description\s+of\s+)?business\b/i;
+  const headAlone=foreign?/^(part\s+i\b\W*)?item\s*4\.?$/i:/^(part\s+i\b\W*)?items?\s*1\.?(\s*(and|&)\s*2\.?)?$/i,titleAlone=foreign?/^information on the company\b/i:/^(description\s+of\s+)?business\b/i;
+  const stop=foreign?/^item\s*(4a|5)\b/i:/^items?\s*(1a|1b|2|3)\b/i;
   for(let i=0;i<lines.length;i++){
-    if(!start.test(lines[i]))continue;const body=[];let size=0;for(let j=i+1;j<lines.length&&!stop.test(lines[j]);j++){body.push(lines[j]);size+=lines[j].length;}
+    let start=-1;if(head.test(lines[i]))start=i+1;else if(headAlone.test(lines[i])&&titleAlone.test(lines[i+1]??''))start=i+2;if(start<0)continue;
+    let body=[];let size=0;for(let j=start;j<lines.length&&!stop.test(lines[j]);j++){body.push(lines[j]);size+=lines[j].length;}
     if(size<2000)continue;
+    if(foreign){const overview=body.findIndex(line=>/^B\.?\s*business overview\b/i.test(line));if(overview>=0)body=body.slice(overview+1);}
     // Definitions of "we", "us" and the company name are not a description.
     const paragraphs=body.filter(line=>line.length>=80&&!/^table of contents/i.test(line)&&!/unless the context|as used (herein|in this)|references (herein|in this)|the terms "?(we|us|our)\b/i.test(line));const out=[];let n=0;
     for(const p of paragraphs){if(n>=900)break;out.push(p.length>1200?p.slice(0,1199)+'…':p);n+=p.length;}

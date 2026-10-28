@@ -99,8 +99,28 @@ function detailPart(detail,{section,part='',page=1},limit=8000){
 function bound(value,limit=16000){
   if(outBytes(value)<=limit)return value;
   if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),note:'Ask for a narrower request (fewer sections or one symbol).'};
-  const out={},omitted=[];for(const [k,v] of Object.entries(value)){if(outBytes({...out,[k]:v})<=limit-400)out[k]=v;else omitted.push(k);}
-  return {...out,omittedParts:omitted,note:'These parts were left out to fit; request them separately.'};
+  // A part that does not fit is shortened to the room left when that room is useful (its longest texts first, then its
+  // longest lists), so a section asked for alone still arrives; only what cannot fit at all is left out.
+  const out={},omitted=[],shortened=[];
+  for(const [k,v] of Object.entries(value)){
+    if(outBytes({...out,[k]:v})<=limit-500){out[k]=v;continue;}
+    const room=limit-500-outBytes({...out,[k]:null});if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room);if(cut&&outBytes({...out,[k]:cut})<=limit-500){out[k]=cut;shortened.push(k);continue;}}
+    omitted.push(k);
+  }
+  return {...out,...(omitted.length?{omittedParts:omitted}:{}),...(shortened.length?{shortenedParts:shortened}:{}),note:omitted.length?'These parts were left out to fit; request them separately.':'Long texts and lists in these parts were shortened to fit; request a narrower part to read more.'};
+}
+// A copy of a value cut down to limit bytes as sent: the longest text is halved (to no less than 200 characters) until
+// none is long, then the longest list loses its last items. Null when it cannot get small enough.
+function shrink(value,limit){
+  const copy=structuredClone(value);
+  const largest=kind=>{let best=null;const visit=(node,holder,key)=>{if(kind==='text'&&typeof node==='string'&&node.length>400&&(!best||node.length>best.size))best={holder,key,size:node.length};
+      if(node&&typeof node==='object'){if(kind==='list'&&Array.isArray(node)&&node.length>1){const size=outBytes(node);if(!best||size>best.size)best={list:node,size};}for(const [k,v] of Object.entries(node))visit(v,node,k);}};visit(copy,null,null);return best;};
+  for(let i=0;i<400&&outBytes(copy)>limit;i++){
+    const text=largest('text');if(text){const s=text.holder[text.key];text.holder[text.key]=s.slice(0,Math.max(200,Math.floor(s.length/2)))+'…';continue;}
+    const list=largest('list');if(list){list.list.pop();continue;}
+    break;
+  }
+  return outBytes(copy)<=limit?copy:null;
 }
 // Combined reviews: each market's trading costs move out of markets[] into one tradingCosts, with the tax model, fee
 // assumption and rule version stated once for both markets. Returns {markets, tradingCosts}.
