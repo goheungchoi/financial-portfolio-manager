@@ -75,9 +75,13 @@ class FlowDetector {
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...now,...state}));
     // Readings taken before KRW committed to unsettled U.S. buys was netted out are a different basis: start again.
     if(!prev||prev.basis!==BASIS){save();return [];}
-    // The first reading with U.S. cash after one without it starts the U.S. comparison here: a U.S. fill since then could
-    // not be judged without both readings, and waiting for one that will never come would stop detection.
-    if(prev.usCash==null&&now.usCash!=null&&!orders.some(o=>OPEN.includes(o.status))){save();return [];}
+    // The first reading with U.S. cash after one without it starts the U.S. comparison here (a U.S. fill since then could
+    // not be judged without both readings, and waiting for one that will never come would stop detection), but the Korean
+    // change is still compared. A U.S. order filled in between may have been funded from KRW, and a fall could be money
+    // moved to the U.S. account before its balance was seen: the change is held like any other, marked so the user
+    // investigates it rather than taking it for a withdrawal.
+    const usStart=prev.usCash==null&&now.usCash!=null;
+    const compare=()=>usStart?unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US')):unexplained(prev,now,orders);
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
     // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.
@@ -88,24 +92,25 @@ class FlowDetector {
     if(pf!==now.provisionalKRW||pf>0&&(prev.unsettledKRW??0)!==now.unsettledKRW){
       if(orders.some(o=>OPEN.includes(o.status)))return [];
       const paidOff=pf-now.provisionalKRW;
-      if(pf>0&&(prev.unsettledKRW??0)>now.unsettledKRW&&paidOff>0){const seen=unexplained(prev,now,orders);
+      if(pf>0&&(prev.unsettledKRW??0)>now.unsettledKRW&&paidOff>0){const seen=compare();
         // A change that returns a held change to its earlier balance is that reversal (for example dollars from an
         // exchange spent at settlement), not part of the payment.
         if(seen)for(const m of ['KR','US']){const held=state.pending[m];if(held&&seen[m]&&Math.sign(seen[m])!==Math.sign(held.amount)&&!big(m,held.amount+seen[m],fx)){held.amount=round(m,held.amount+seen[m]);seen[m]=0;}}
         const usFall=seen&&seen.US<0?(fx>0?-seen.US*fx:Infinity):0,outstanding=seen?Math.round(paidOff-Math.max(0,-seen.KR)-usFall):0;
         if(outstanding>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:outstanding});}
       const found=this.resolve(account,state,now,prev,fx);save();return found;}
-    const u=unexplained(prev,now,orders);if(!u)return [];
+    const u=compare();if(!u)return [];
     // A change starts being held only when it is large; once held, every later change in that market adds to it, so the
     // threshold applies to the accumulated difference (a gradual return to the earlier balance cancels it).
     for(const market of ['KR','US']){const amount=u[market],held=state.pending[market];if(!amount||!held&&!big(market,amount,fx))continue;
-      state.pending[market]=held?{...held,amount:round(market,held.amount+amount),funding:held.funding||u.usTraded}:{amount:round(market,amount),since:now.at,funding:u.usTraded};}
+      const mark=usStart&&market==='KR'?{usUnseen:true}:{};
+      state.pending[market]=held?{...held,amount:round(market,held.amount+amount),funding:held.funding||u.usTraded,...mark}:{amount:round(market,amount),since:now.at,funding:u.usTraded,...mark};}
     const found=this.resolve(account,state,now,prev,fx);save();return found;
   }
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const p=row?JSON.parse(row.payload).pending??{}:{};
-    return Object.entries(p).map(([market,q])=>({market,currency:market==='US'?'USD':'KRW',amount:q.amount,since:new Date(q.since).toISOString()}));
+    return Object.entries(p).map(([market,q])=>({market,currency:market==='US'?'USD':'KRW',amount:q.amount,since:new Date(q.since).toISOString(),...(q.usUnseen?{usBalanceUnseen:true}:{})}));
   }
   resolve(account,state,now,prev,fx){
     const p=state.pending,out=[];const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};
@@ -130,7 +135,8 @@ class FlowDetector {
     for(const m of ['KR','US']){const q=p[m];if(!q)continue;const age=now.at-q.since,krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;
       const couldSettle=now.provisionalKRW>0&&(m==='KR'?q.amount<0:q.amount>0)&&(krw==null||Math.abs(krw)<=now.provisionalKRW*1.05+THRESHOLD_KRW);
       if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
-      out.push(this.performance.addFlow(account,{day:seoulDate(q.since),market:m,amount:q.amount,detected:true,note:`Detected: ${label(m)} cash ${q.amount>0?'rose':'fell'} with no matching trade. Confirm or remove.`}));delete p[m];}
+      const unseen=q.usUnseen?' The U.S. balance was not loaded before this change, so money moved to or from the U.S. account cannot be ruled out.':'';
+      out.push(this.performance.addFlow(account,{day:seoulDate(q.since),market:m,amount:q.amount,detected:true,note:`Detected: ${label(m)} cash ${q.amount>0?'rose':'fell'} with no matching trade.${unseen} Confirm or remove.`}));delete p[m];}
     return out;
   }
   // A transfer pair recorded in the last MATCH_DAYS days as funding awaiting its exchange (or by the user), not yet

@@ -55,7 +55,7 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
 function report(context,limit){return {wireBytes:wire(context),limitBytes:limit,largest:Object.entries(context).map(([k,v])=>[k,bytes(v)]).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,b])=>`${k}:${b}`)};}
-const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), in bounded parts. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. page: 1 or more for long lists and long text. A reply with complete false names the paths or pages still to read.',strict:true,
+const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), or a tool result that was shortened or had parts left out (its fullResult.section, result-N), in bounded parts. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. page: 1 or more for long lists and long text. A reply with complete false names the paths or pages still to read.',strict:true,
   parameters:{type:'object',properties:{section:{type:'string'},part:{type:'string'},page:{type:'integer'}},required:['section','part','page'],additionalProperties:false}};
 // Size of a value once it is a tool result in the request: the result travels as a JSON string inside the JSON
 // request, so every quote, backslash and control character is escaped twice. All tool budgets are in these bytes.
@@ -94,33 +94,49 @@ function detailPart(detail,{section,part='',page=1},limit=8000){
   return {...head,status:'too_large',bytes:outBytes(value),complete:false};
 }
 // Bounds a tool response before it joins the conversation, in bytes as sent (outBytes): whole top-level parts are
-// kept in order while they fit, and the parts left out are named so the agent can ask for them; nothing is cut inside
-// a part. 16 KB each: four responses in a round plus the review's first request stay within the follow-up limit.
-function bound(value,limit=16000){
+// kept in order while they fit. 16 KB each: four responses in a round plus the review's first request stay within the
+// follow-up limit. ref, when given, is the get_context_detail section that holds the full response: everything cut or
+// left out is listed by path in it, so the agent can read exactly that, in pages.
+function bound(value,limit=16000,{ref=null}={}){
   if(outBytes(value)<=limit)return value;
-  if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),note:'Ask for a narrower request (fewer sections or one symbol).'};
-  // A part that does not fit is shortened to the room left when that room is useful (its longest texts first, then its
-  // longest lists), so a section asked for alone still arrives; only what cannot fit at all is left out.
-  const out={},omitted=[],shortened=[];
+  const full=ref?{fullResult:{section:ref,read:'Every path in cuts and omittedParts is readable in full with get_context_detail: this section, part set to the path, page 1 and up.'}}:{};
+  if(!value||typeof value!=='object'||Array.isArray(value))return {status:'too_large',bytes:outBytes(value),...full,note:ref?'Too large for one reply: read it in pages from fullResult.':'Ask for a narrower request (fewer sections or one symbol).'};
+  // A part that does not fit is shortened to the room left when that room is useful (see shrink), so a section asked for
+  // alone still arrives; only what cannot fit at all is left out.
+  const spare=500+outBytes(full),out={},omitted=[],shortened=[],cuts=[];
   for(const [k,v] of Object.entries(value)){
-    if(outBytes({...out,[k]:v})<=limit-500){out[k]=v;continue;}
-    const room=limit-500-outBytes({...out,[k]:null});if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room);if(cut&&outBytes({...out,[k]:cut})<=limit-500){out[k]=cut;shortened.push(k);continue;}}
+    if(outBytes({...out,[k]:v})<=limit-spare){out[k]=v;continue;}
+    const room=limit-spare-outBytes({...out,[k]:null});
+    if(room>=1200&&v&&typeof v==='object'){const cut=shrink(v,room-200);if(cut&&outBytes({...out,[k]:cut.value})<=limit-spare-200){out[k]=cut.value;shortened.push(k);cuts.push(...cut.cuts.map(c=>({...c,path:c.path?`${k}/${c.path}`:k})));continue;}}
     omitted.push(k);
   }
-  return {...out,...(omitted.length?{omittedParts:omitted}:{}),...(shortened.length?{shortenedParts:shortened}:{}),note:omitted.length?'These parts were left out to fit; request them separately.':'Long texts and lists in these parts were shortened to fit; request a narrower part to read more.'};
+  const result=()=>({...out,...(omitted.length?{omittedParts:omitted}:{}),...(shortened.length?{shortenedParts:shortened}:{}),...(cuts.length?{cuts}:{}),...full,
+    note:(omitted.length?'Some parts were left out to fit':'Long texts and lists in some parts were shortened to fit')+(ref?'; read them in full from fullResult.':'; request them separately or a narrower part.')});
+  // The list of cuts gives way before the data: the shortened parts themselves stay readable by name.
+  while(cuts.length&&outBytes(result())>limit)cuts.pop();
+  return result();
 }
-// A copy of a value cut down to limit bytes as sent: the longest text is halved (to no less than 200 characters) until
-// none is long, then the longest list loses its last items. Null when it cannot get small enough.
+// Statements kept whole when a response is shortened: a guidance sentence cut in half loses its qualification.
+const KEEP_WHOLE=new Set(['guidance','results']);
+// A copy of a value cut down to limit bytes as sent, and the cuts made, by path: free text (not a list entry) is halved,
+// longest first, to no less than 200 characters, then the longest list loses its last entries, statement lists
+// (KEEP_WHOLE) last. A list entry is never cut inside, so each statement left is complete. Null when it cannot fit.
 function shrink(value,limit){
-  const copy=structuredClone(value);
-  const largest=kind=>{let best=null;const visit=(node,holder,key)=>{if(kind==='text'&&typeof node==='string'&&node.length>400&&(!best||node.length>best.size))best={holder,key,size:node.length};
-      if(node&&typeof node==='object'){if(kind==='list'&&Array.isArray(node)&&node.length>1){const size=outBytes(node);if(!best||size>best.size)best={list:node,size};}for(const [k,v] of Object.entries(node))visit(v,node,k);}};visit(copy,null,null);return best;};
+  const copy=structuredClone(value),cuts=new Map();
+  const largest=kind=>{let best=null;
+    const visit=(node,holder,key,path,inList)=>{
+      if(kind==='text'&&typeof node==='string'&&!inList&&node.length>400&&(!best||node.length>best.size))best={holder,key,path,size:node.length};
+      if(node&&typeof node==='object'){
+        if(kind==='list'&&Array.isArray(node)&&node.length>1){const rank=[KEEP_WHOLE.has(key)?0:1,outBytes(node)];if(!best||rank[0]>best.rank[0]||rank[0]===best.rank[0]&&rank[1]>best.rank[1])best={list:node,path,rank};}
+        for(const [k,v] of Object.entries(node))visit(v,node,k,path?`${path}/${k}`:String(k),Array.isArray(node));}};
+    visit(copy,null,null,'',false);return best;};
   for(let i=0;i<400&&outBytes(copy)>limit;i++){
-    const text=largest('text');if(text){const s=text.holder[text.key];text.holder[text.key]=s.slice(0,Math.max(200,Math.floor(s.length/2)))+'…';continue;}
-    const list=largest('list');if(list){list.list.pop();continue;}
+    const text=largest('text');if(text){const s=text.holder[text.key];if(!cuts.has(text.path))cuts.set(text.path,{path:text.path,chars:s.length});
+      const kept=s.slice(0,Math.max(200,Math.floor(s.length/2)));text.holder[text.key]=kept+'…';cuts.get(text.path).keptChars=kept.length;continue;}
+    const list=largest('list');if(list){if(!cuts.has(list.path))cuts.set(list.path,{path:list.path,items:list.list.length});list.list.pop();cuts.get(list.path).keptItems=list.list.length;continue;}
     break;
   }
-  return outBytes(copy)<=limit?copy:null;
+  return outBytes(copy)<=limit?{value:copy,cuts:[...cuts.values()]}:null;
 }
 // Combined reviews: each market's trading costs move out of markets[] into one tradingCosts, with the tax model, fee
 // assumption and rule version stated once for both markets. Returns {markets, tradingCosts}.
