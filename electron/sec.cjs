@@ -114,9 +114,13 @@ function releaseFacts(text){
   const forward=i=>i.outlook||FORWARD.test(i.s);
   const guidance=[...new Set([...items.filter(i=>i.outlook),...items.filter(i=>!i.outlook&&FORWARD.test(i.s))].map(i=>i.s))];
   const results=items.filter(i=>!forward(i)&&METRIC.test(i.s)&&/[$%]|\d\.\d/.test(i.s)).map(i=>i.s);
-  return {results:results.slice(0,10),guidance:guidance.slice(0,8)};
+  // Every statement is kept (up to 40 of each, far beyond a release's usual count): one left out could be the
+  // qualification that changes what the others mean.
+  return {results:results.slice(0,40),guidance:guidance.slice(0,40)};
 }
 // The latest earnings release (8-K item 2.02): its exhibit text, the results and guidance sentences, and where it came from.
+// The whole parsed text is kept (to 400,000 characters, far beyond a release): the agents get a shortened view and read
+// the rest from it. version 2: the full text and every statement; earlier cached releases are fetched again.
 async function secEarningsRelease(fetcher,contact,symbol,today,state){
   const {company,get,cik}=await secLookup(fetcher,contact,symbol,state);if(!company)return {status:'unavailable',reason:'NOT_IN_SEC'};
   const f=(await get(`https://data.sec.gov/submissions/CIK${cik}.json`))?.filings?.recent;if(!f||!Array.isArray(f.form))return {status:'unavailable',reason:'NO_EARNINGS_RELEASE'};
@@ -125,8 +129,8 @@ async function secEarningsRelease(fetcher,contact,symbol,today,state){
   const text=url=>secText(fetcher,contact,url);
   const indexUrl=`https://www.sec.gov/Archives/edgar/data/${company.cik}/${plain}/${accession}-index.htm`;const exhibit=releaseExhibit(await text(indexUrl));
   if(!exhibit)return {status:'unavailable',reason:'NO_RELEASE_EXHIBIT',filing:{filed:String(f.filingDate?.[i]??''),url:indexUrl}};
-  const url='https://www.sec.gov'+exhibit.path;const body=htmlText(await text(url));const facts=releaseFacts(body);const LIMIT=12000;
-  return {cik:company.cik,name:company.title,source:`SEC EDGAR ${String(f.form[i])} filed ${String(f.filingDate?.[i]??'')}, ${exhibit.type}`,filed:String(f.filingDate?.[i]??''),reportDate:String(f.reportDate?.[i]??'')||null,form:String(f.form[i]),accession,exhibit:exhibit.type,url,
+  const url='https://www.sec.gov'+exhibit.path;const body=htmlText(await text(url));const facts=releaseFacts(body);const LIMIT=400000;
+  return {version:2,cik:company.cik,name:company.title,source:`SEC EDGAR ${String(f.form[i])} filed ${String(f.filingDate?.[i]??'')}, ${exhibit.type}`,filed:String(f.filingDate?.[i]??''),reportDate:String(f.reportDate?.[i]??'')||null,form:String(f.form[i]),accession,exhibit:exhibit.type,url,
     // The release opens after EDGAR's document label (for example "EX-99.1 2 q32026pressrelease.htm") and short header lines.
     headline:body.split('\n').filter(line=>line.length>=25&&!/^(ex(hibit)?[- ]?99|\S+\.html?$)|\.html?$/i.test(line)).slice(0,3).join(' ').slice(0,700),results:facts.results,guidance:facts.guidance,
     ...(facts.guidance.length?{}:{guidanceNote:'No outlook or guidance sentence was found in the release text.'}),textChars:body.length,text:body.slice(0,LIMIT),...(body.length>LIMIT?{textTruncated:true}:{})};

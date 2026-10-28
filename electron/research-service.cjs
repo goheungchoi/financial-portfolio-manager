@@ -44,6 +44,8 @@ class ResearchService {
     const note=cache=>{reads.getStore()?.push({source,origin:spec.from.startsWith('dart')?'OpenDART':spec.from.startsWith('sec')?'SEC EDGAR':'KIS',cache});};
     // OpenDART results saved before the current format (unit-sales filings told apart, announced results dates) are refetched once.
     if(hit&&source==='dart'&&(hit.value?.version??1)<2)hit={...hit,at:0};
+    // SEC releases saved with only the first 12,000 characters and the first few statements are fetched again in full.
+    if(hit&&source==='sec-earnings'&&hit.value&&!hit.value.status&&(hit.value.version??1)<2)hit={...hit,at:0};
     // A description that could not be found in the filing is tried again after a day, not after the full week.
     if(hit&&!refresh&&this.clock()-hit.at<(hit.value?.overviewUnavailable?Math.min(spec.ttl,24*HOUR):spec.ttl)){note('hit');return {status:'ok',retrievedAt:hit.at,data:hit.value};}
     const failed=this.failures.get(symbol+source);if(failed&&!refresh&&this.clock()-failed.at<FAILURE_TTL){note(hit?'stale':'unavailable');return hit?{status:'ok',retrievedAt:hit.at,data:hit.value,stale:true}:{status:'unavailable',reason:failed.reason};}
@@ -252,7 +254,9 @@ function digest(name,d){
   if(name==='financials')return {periods:(d.periods??[]).slice(0,4).map(({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})=>({period,revenueKRW,operatingProfitKRW,netIncomeKRW,operatingMarginPct,netMarginPct,roePct,roaPct,debtRatioPct,currentRatioPct,revenueGrowthPct,operatingProfitGrowthPct,eps,bps,evToEbitda})),annualRatios:d.periods?.length?undefined:d.annualRatios,note:'Periods not ending in December are year to date.'};
   // The release's own results and guidance sentences in full; its text shortened so the reply stays within one tool response.
   if(name==='about')return {...d,...(typeof d.overview==='string'&&d.overview.length>1200?{overview:d.overview.slice(0,1200),truncated:true}:{})};
-  if(name==='release')return {...d,...(typeof d.text==='string'&&d.text.length>4000?{text:d.text.slice(0,4000),textTruncated:true}:{})};
+  // The text starts the reply and the rest stays readable: provenance.release.original holds every character. The
+  // results and guidance statements are all kept.
+  if(name==='release')return {...d,...(typeof d.text==='string'&&d.text.length>4000?{text:d.text.slice(0,4000),textTruncated:true,textNote:`The first 4,000 of ${d.text.length.toLocaleString('en-US')} characters; the whole text is at provenance.release.original.`}:{})};
   if(name==='valuation')return {...d,monthly:undefined};
   if(name==='peers')return {...d,rows:d.rows?.map(({symbol,name,self,marketCapKRW,per,pbr})=>({symbol,name,self:self||undefined,marketCapKRW,per,pbr}))};
   if(name==='flows')return {...d,investors:d.investors?{...d.investors,daily:undefined}:undefined,note:'Net buying in KRW; positive streak days mean consecutive net buying, negative mean selling. Short share is the percent of daily volume sold short; margin rate is loans outstanding as a percent of listed shares.'};

@@ -76,11 +76,11 @@ test('the scout reads shortened results back in full without spending a next-ses
     if(round===1)return {toolCalls:[{name:'get_company_research',callId:'a',args:{symbol:'NASD:AVGO'}}],continuation:[{role:'user',content:'context'}]};
     const outputs=continuation.filter(o=>o.type==='function_call_output').map(o=>JSON.parse(o.output));sent.push(outputs);
     if(round===2){const ref=outputs[0].fullResult.section;assert.equal(ref,'result-1');assert.equal(outputs[0].nextSession.readsLeft,0);
-      return {toolCalls:[{name:'get_context_detail',callId:'d1',args:{section:ref,part:'release/text',page:2}},{name:'get_context_detail',callId:'d2',args:{section:ref,part:'originalSections/analysts',page:1}},{name:'get_company_research',callId:'b',args:{symbol:'NASD:MSFT'}}],continuation};}
+      return {toolCalls:[{name:'get_context_detail',callId:'d1',args:{section:ref,part:'release/text',from:100}},{name:'get_context_detail',callId:'d2',args:{section:ref,part:'originalSections/analysts',from:0}},{name:'get_company_research',callId:'b',args:{symbol:'NASD:MSFT'}}],continuation};}
     return {plan:{targets:[]}};};
   const result=await runScout({request,tools,log:()=>{},watched:['NASD:AVGO','NASD:MSFT','005930']});
   const [page,original,second]=sent[1].slice(1);
-  assert.equal(page.page,2);assert.match(page.text,/Release sentence/);
+  assert.equal(page.from,100);assert.equal(page.text,'Release sentence. '.repeat(1400).slice(100,page.to),'a read from 100 starts at character 100');assert.match(page.text,/Release sentence/);
   assert.deepEqual(original.data,{latest:[1,2,3,4,5,6]},'the original before the digest');
   assert.equal(second.status,'skipped','the one next-session read was spent by the first company read, not by the detail reads');assert.deepEqual(calls,['NASD:AVGO']);
   const m=result.metrics;assert.equal(m.format,meter.FORMAT);assert.equal(m.detailReads,2);assert.equal(m.researchReads,1);assert.equal(m.fetched,1);assert.equal(m.reused,1);
@@ -125,7 +125,7 @@ test('trading reviews keep results with originals and report research metrics',a
   const {researchReview}=require('../electron/research-review.cjs');const calls=[];let round=0,seen;
   const request=async({continuation})=>{round++;
     if(round===1)return {toolCalls:[{name:'get_company_research',callId:'c1',args:{symbol:'005930'}},{name:'get_company_research',callId:'c2',args:{symbol:'005930'}}],continuation:[{role:'user',content:'ctx'}]};
-    if(round===2){seen=continuation.filter(o=>o.type==='function_call_output').map(o=>JSON.parse(o.output));return {toolCalls:[{name:'get_context_detail',callId:'d',args:{section:seen[0].fullResult.section,part:'originalSections/analysts',page:1}}],continuation};}
+    if(round===2){seen=continuation.filter(o=>o.type==='function_call_output').map(o=>JSON.parse(o.output));return {toolCalls:[{name:'get_context_detail',callId:'d',args:{section:seen[0].fullResult.section,part:'originalSections/analysts',from:0}}],continuation};}
     const detail=JSON.parse(continuation.at(-1).output);assert.deepEqual(detail.data,{latest:[1,2,3,4,5,6]});
     return {decision:{action:'Hold',symbol:'',quantity:0},usage:{inputTokens:3,outputTokens:1,cachedTokens:2}};};
   const r=await researchReview({context:{universe:[{symbol:'005930'}]},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:research(calls)},watched:['005930','000660']});

@@ -38,9 +38,29 @@ test('an earnings release that cannot be read says why instead of inventing one'
   assert.equal(sec.releaseExhibit('<tr><td>1</td><td><a href="/Archives/edgar/data/1/000000000126000001/a.htm">a</a></td><td>8-K</td></tr>'),null,'no EX-99 exhibit');
   const facts=sec.releaseFacts('The company expects nothing.\nNo figures here at all in this sentence.');assert.deepEqual(facts,{results:[],guidance:[]},'sentences without figures are not guidance');
 });
+test('the whole release is kept: a qualification near the end stays in the text, the statements and the original the agents can read',async()=>{
+  const filler='<p>'+'Segment commentary without figures continues across the quarter in this paragraph. '.repeat(40)+'</p>';
+  const outlook=Array.from({length:9},(_,i)=>`<p>Pentair expects segment ${i+1} sales growth of approximately ${i+1} percent in 2026.</p>`).join('');
+  const caveat='Pentair expects the pending acquisition to reduce 2026 adjusted EPS by up to $0.40, which the guidance above excludes.';
+  const long=release.replace('<script>',filler.repeat(5)+outlook+`<p>${caveat}</p><script>`);const base=fetcher([]);
+  const r=await sec.secEarningsRelease(async(url,o)=>url.endsWith('pnr-ex991.htm')?{ok:true,status:200,text:async()=>long}:base(url,o),'me@example.com','NYSE:PNR','2026-10-28',{});
+  assert.equal(r.version,2);assert.ok(r.textChars>15000,'a long release: '+r.textChars);assert.equal(r.text.length,r.textChars,'every character kept');assert.equal(r.textTruncated,undefined);
+  assert.ok(r.text.endsWith(caveat)||r.text.includes(caveat));assert.ok(r.guidance.includes(caveat),'the closing qualification is among the guidance statements ('+r.guidance.length+')');
+  // The agents get the first 4,000 characters and read the rest from the original, continuing from next.from.
+  const {ResearchService,TRACE}=require('../electron/research-service.cjs'),rc=require('../electron/review-context.cjs');
+  const db=new DatabaseSync(':memory:');const calls=[];const svc=new ResearchService({db,master:null,kis:async()=>{throw new Error('no KIS');},provider:async op=>{calls.push(op);return r;},secReady:()=>true});
+  const reply=await svc.agent({symbol:'NYSE:PNR',sections:['release']});
+  assert.equal(reply.release.text.length,4000);assert.match(reply.release.textNote,/whole text is at provenance\.release\.original/);assert.equal(reply.provenance.release.original,'originalSections/release');
+  const store=rc.resultStore();store.keep('c1',reply,16000);let text='',from=0;
+  for(;;){const part=store.read({section:'result-1',part:'originalSections/release/text',from},3000);text+=part.text;if(!part.next)break;from=part.next.from;}
+  assert.equal(text,r.text,'the original read back exactly, qualification included');assert.ok(reply[TRACE].originals.release.guidance.includes(caveat));
+  // A release cached in the earlier, shortened format is fetched again in full.
+  db.prepare('UPDATE research_cache SET payload=? WHERE source=?').run(JSON.stringify({...r,version:undefined,text:r.text.slice(0,12000),textTruncated:true}),'sec-earnings');
+  const again=await svc.section('NYSE:PNR','release');assert.equal(calls.length,2,'refetched');assert.equal(again.data.text.length,r.textChars);
+});
 test('research offers the release section for U.S. stocks through SEC and keeps the agent copy within one tool response',async()=>{
   const {ResearchService,digest}=require('../electron/research-service.cjs');const calls=[];
-  const r=new ResearchService({db:new DatabaseSync(':memory:'),master:null,kis:async()=>{throw new Error('no KIS');},provider:async(op,payload)=>{calls.push([op,payload.symbol]);return {source:'SEC EDGAR 8-K filed 2026-10-27, EX-99.1',guidance:['g'],results:['r'],text:'t'.repeat(9000),textChars:9000};},secReady:()=>true});
+  const r=new ResearchService({db:new DatabaseSync(':memory:'),master:null,kis:async()=>{throw new Error('no KIS');},provider:async(op,payload)=>{calls.push([op,payload.symbol]);return {version:2,source:'SEC EDGAR 8-K filed 2026-10-27, EX-99.1',guidance:['g'],results:['r'],text:'t'.repeat(9000),textChars:9000};},secReady:()=>true});
   const s=await r.section('NYSE:PNR','release');assert.equal(s.status,'ok');assert.deepEqual(calls,[['sec-earnings','NYSE:PNR']]);await r.section('NYSE:PNR','release');assert.equal(calls.length,1,'cached');
   const d=digest('release',s.data);assert.equal(d.text.length,4000);assert.equal(d.textTruncated,true);assert.deepEqual(d.guidance,['g']);
   assert.ok(require('../electron/scout.cjs').RESEARCH_SECTIONS.includes('release'));assert.match(require('../electron/scout.cjs').RESEARCH_TOOL.description,/release: the latest earnings release as the company filed it/);
@@ -88,8 +108,10 @@ test('strategy variety: a Buy names its strategy and each review records the ide
     strategyCheck:[{strategy:'long-term',idea:'Pentair add',verdict:'watching',reason:'After the guidance is verified.'},{strategy:'leveraged-tactical',idea:'KODEX 반도체레버리지 on a +4% SOX night',verdict:'rejected',reason:'No confirmation at the open.'},{strategy:'scalping',idea:'x',verdict:'acted',reason:'unknown type'}]},['NYSE:PNR'],{requirePlan:true});
   assert.deepEqual(d.strategyCheck.map(c=>[c.strategy,c.verdict]),[['long-term','watching'],['leveraged-tactical','rejected']]);
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
-  assert.match(src,/Compare relevant permitted strategies; strategy variety is not a goal/);assert.doesNotMatch(src,/Vary your strategies/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
-  assert.match(require('../electron/scout.cjs').INSTRUCTIONS,/include a tactical candidate for it/);
+  assert.match(src,/Compare relevant permitted strategies\. Strategy variety is not a goal\. Report when no suitable candidate exists; do not manufacture a candidate to fill a category\./);assert.match(src,/neither variety nor diversification is required for its own sake/);assert.doesNotMatch(src,/Vary your strategies/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
+  const scoutRules=require('../electron/scout.cjs').INSTRUCTIONS;assert.match(scoutRules,/include a tactical candidate for it when one meets your standards/);
+  // The scout and the trading reviews say the same: no variety or diversification for its own sake.
+  assert.match(scoutRules,/Compare relevant permitted strategies\. Strategy variety is not a goal\. Report when no suitable candidate exists; do not manufacture a candidate to fill a category\./);assert.match(scoutRules,/neither variety nor diversification is required for its own sake/);assert.doesNotMatch(scoutRules,/Keep a mix of long-term|Prefer candidates that diversify/);assert.match(scoutRules,/An affordable ETF is a different investment, not a cheaper share/);
 });
 // Review of 40d7666..c276de6 (agent behaviour).
 test('review: a fourth-quarter release keeps its results as results and its outlook as guidance; U.S. and entities read right',()=>{
@@ -135,15 +157,15 @@ test('review P2: a shortened research result keeps every guidance statement whol
   const request=async({continuation})=>{round++;if(continuation)outputs.push(...continuation.filter(o=>o.type==='function_call_output'));
     if(round===1)return {toolCalls:[call('get_company_research',{symbol:'NYSE:PNR',sections:['release']},'r1'),call('get_market_evidence',{symbol:'x'},'e1'),call('get_market_evidence',{symbol:'y'},'e2'),call('get_market_evidence',{symbol:'z'},'e3')],continuation:[]};
     const last=outputs.at(-1)&&JSON.parse(outputs.at(-1).output);
-    if(round===2){const first=JSON.parse(outputs.find(o=>o.call_id==='r1').output);return {toolCalls:[call('get_context_detail',{section:first.fullResult?.section??'none',part:'release/text',page:1},'d1')],continuation:[]};}
-    if(round===3)return {toolCalls:[call('get_context_detail',{section:'result-1',part:'release/text',page:2},'d2')],continuation:[]};
+    if(round===2){const first=JSON.parse(outputs.find(o=>o.call_id==='r1').output);return {toolCalls:[call('get_context_detail',{section:first.fullResult?.section??'none',part:'release/text',from:0},'d1')],continuation:[]};}
+    if(round===3)return {toolCalls:[call('get_context_detail',{section:'result-1',part:'release/text',from:last.next.from},'d2')],continuation:[]};
     return {decision:{action:'Hold'},pages:last};};
   const big=JSON.stringify({rows:'z'.repeat(14000)});
   const result=await researchReview({context:{universe:[]},evidence:{get:async()=>JSON.parse(big)},request,log:()=>{},discovery:{get_company_research:async()=>longReply},detail:null});
   assert.equal(result.decision.action,'Hold');
   const pages=outputs.filter(o=>o.call_id.startsWith('d')).map(o=>JSON.parse(o.output));const cut=JSON.parse(outputs.find(o=>o.call_id==='r1').output);
   assert.equal(cut.fullResult.section,'result-1','the shortened reply names where the full result is');assert.ok(cut.cuts.some(c=>c.path==='release/text'));
-  assert.deepEqual(pages.map(p=>[p.section,p.part,p.page]),[['result-1','release/text',1],['result-1','release/text',2]]);assert.ok(pages[0].pages>2);
-  assert.ok(longText.startsWith(pages[0].text+pages[1].text),'pages continue the text exactly');
-  const all=Array.from({length:pages[0].pages},(_,i)=>rc.detailPart({'result-1':longReply},{section:'result-1',part:'release/text',page:i+1}).text).join('');assert.equal(all,longText,'every page together is the whole text');
+  assert.deepEqual(pages.map(p=>[p.section,p.part,p.from]),[['result-1','release/text',0],['result-1','release/text',pages[0].to]]);assert.ok(pages[1].next,'more text follows');
+  assert.ok(longText.startsWith(pages[0].text+pages[1].text),'reads continue the text exactly');
+  let all='',from=0;for(;;){const r=rc.detailPart({'result-1':longReply},{section:'result-1',part:'release/text',from});all+=r.text;if(!r.next)break;from=r.next.from;}assert.equal(all,longText,'every read together is the whole text');
 });

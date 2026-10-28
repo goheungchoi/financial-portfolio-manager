@@ -88,7 +88,7 @@ test('checking inputs reports the assembled snapshot and keeps the full inputs f
 const fcall=(name,args,id)=>({type:'function_call',call_id:id,name,arguments:JSON.stringify(args)});
 test('a dry-run review logs Review size and keeps every request size and detail read with its record',async()=>{
   const {automation,events,queue,db}=harness();
-  const ask={section:'performance',part:'',page:1};
+  const ask={section:'performance',part:'',from:0};
   queue.push(()=>({toolCalls:[call('get_context_detail',ask,'d1')],continuation:[{role:'user',content:'x'},fcall('get_context_detail',ask,'d1')],usage:{inputTokens:1,outputTokens:1}}));
   const r=await automation.dryRun('review');
   const size=events.find(e=>e.title==='Review size');assert.ok(size,'logged as a live review is');const logged=JSON.parse(size.body);assert.equal(logged.dryRun,true);assert.equal(logged.limitBytes,70000);assert.ok(logged.wireBytes>0);
@@ -100,7 +100,7 @@ test('a dry-run review logs Review size and keeps every request size and detail 
 });
 test('a dry-run review condenses older results like a live review, accounts that call, and records it',async()=>{
   const {automation,queue,db}=harness();const old='{"q":"'+'"'.repeat(10000)+'"}';
-  queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',page:1},'d2')],continuation:[{role:'user',content:'x'.repeat(110000)},fcall('get_company_research',{symbol:'005930',sections:['a']},'old'),{type:'function_call_output',call_id:'old',output:old},fcall('get_context_detail',{section:'x',part:'',page:1},'d2')],usage:{inputTokens:1,outputTokens:1}}));
+  queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',from:0},'d2')],continuation:[{role:'user',content:'x'.repeat(110000)},fcall('get_company_research',{symbol:'005930',sections:['a']},'old'),{type:'function_call_output',call_id:'old',output:old},fcall('get_context_detail',{section:'x',part:'',from:0},'d2')],usage:{inputTokens:1,outputTokens:1}}));
   queue.push(()=>({summaries:[{callId:'old',summary:'Samsung research, condensed.'}],usage:{inputTokens:1,outputTokens:1}}));
   const r=await automation.dryRun('review');
   assert.ok(r.review.condensed.length>=1,'condensing recorded');assert.match(r.review.condensed[0],/compact/);
@@ -109,7 +109,7 @@ test('a dry-run review condenses older results like a live review, accounts that
 });
 test('a failed dry-run review keeps its diagnostics: sizes, transcript and the reason',async()=>{
   const {automation,queue,db}=harness();
-  queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',page:1},'d3')],continuation:[{role:'user',content:'"'.repeat(80000)},fcall('get_context_detail',{section:'x',part:'',page:1},'d3')],usage:{inputTokens:1,outputTokens:1}}));
+  queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',from:0},'d3')],continuation:[{role:'user',content:'"'.repeat(80000)},fcall('get_context_detail',{section:'x',part:'',from:0},'d3')],usage:{inputTokens:1,outputTokens:1}}));
   await assert.rejects(automation.dryRun('review'),/CONTEXT_OVER_BUDGET/);
   const stored=db.prepare('SELECT payload FROM dry_runs').all().map(x=>JSON.parse(x.payload)).at(-1);assert.equal(stored.review.failed,'CONTEXT_OVER_BUDGET');
   assert.equal(stored.review.requests.length,1,'the follow-up was not sent');assert.ok(stored.review.transcript.some(t=>t.title.startsWith('Context detail')));assert.ok(stored.review.size.wireBytes>0);
