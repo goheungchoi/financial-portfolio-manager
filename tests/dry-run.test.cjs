@@ -115,3 +115,34 @@ test('a failed dry-run review keeps its diagnostics: sizes, transcript and the r
   assert.equal(stored.review.requests.length,1,'the follow-up was not sent');assert.ok(stored.review.transcript.some(t=>t.title.startsWith('Context detail')));assert.ok(stored.review.size.wireBytes>0);
   assert.equal(automation.busy,false);
 });
+// Review of Oct 27-28: while the one-share Pentair order waited at the broker (00:25 to 03:45), four scheduled reviews
+// re-decided it ("do not submit a second buy while the order is pending"). Pending orders now wait for their fill or
+// cancellation, with backstops, and an order update starts a review at once.
+function scheduler(){
+  const h=harness();const a=h.automation;let orders=[];const reviews=[];a.engineOrders=()=>orders;a.review=async trigger=>{reviews.push({trigger,evidence:a.triggerEvidence});a.lastRun=Date.now();a.reviewSessionKey=a.sessionKey();};
+  a.schedulerStatus=()=>({label:'Monitoring'});let open=true;a.marketHours=()=>({open,markets:[{market:'US',open}],preOpen:null,next:null});a.reviewInterval.get=()=>({minutes:30});
+  const order=(status,filled=0)=>({id:'pnr',market:'US',symbol:'NYSE:PNR',side:'Buy',quantity:1,filled,status,fillPrice:filled?61.56:null,createdAt:Date.now()-60000});
+  return {a,reviews,set:list=>{orders=list;},order,setOpen:v=>{open=v;},tick:()=>{a.lastDeskCheck=0;a.tick();}};
+}
+test('a pending order defers routine reviews until it fills or is cancelled, with backstops',()=>{
+  const s=scheduler();s.set([s.order('Accepted')]);s.a.reviewSessionKey=s.a.sessionKey();
+  s.a.lastRun=Date.now()-45*60000;s.tick();assert.deepEqual(s.reviews,[],'a 30-minute schedule waits for the pending order');
+  assert.ok(s.a.nextReviewAt()===null||s.a.nextReviewAt()>=s.a.lastRun+120*60000-1000,'the next review shown is the backstop');
+  s.a.lastRun=Date.now()-121*60000;s.tick();assert.deepEqual(s.reviews.map(r=>r.trigger),['Scheduled review'],'after two hours the backstop review runs');
+  const t=scheduler();t.set([t.order('Accepted')]);t.a.reviewSessionKey='US:closed';t.a.lastRun=Date.now()-45*60000;t.tick();assert.deepEqual(t.reviews.map(r=>r.trigger),['Scheduled review'],'a market opening or closing since the last review is a backstop');
+  const u=scheduler();u.set([]);u.a.lastRun=Date.now()-45*60000;u.tick();assert.deepEqual(u.reviews.map(r=>r.trigger),['Scheduled review'],'without a pending order the schedule is unchanged');
+});
+test('an order fill or cancellation starts a review at once with the order as evidence; first sightings do not',()=>{
+  const s=scheduler();s.set([s.order('Accepted')]);s.a.lastRun=Date.now()-5*60000;s.tick();assert.deepEqual(s.reviews,[],'first seen: recorded only');
+  s.set([s.order('Filled',1)]);s.tick();assert.deepEqual(s.reviews.map(r=>r.trigger),['Order update']);
+  assert.deepEqual(s.reviews[0].evidence,{kind:'order',order:{symbol:'NYSE:PNR',market:'US',side:'Buy',quantity:1,filled:1,status:'Filled',fillPrice:61.56,placedAt:s.reviews[0].evidence.order.placedAt}});
+  s.a.lastRun=Date.now()-60000;s.tick();assert.equal(s.reviews.length,1,'once per change');
+  const c=scheduler();c.a.lastRun=Date.now()-5*60000;c.set([c.order('Accepted')]);c.tick();c.a.busy=true;c.set([c.order('Canceled')]);c.tick();assert.equal(c.reviews.length,0,'waits while a review runs');c.a.busy=false;c.a.lastRun=Date.now()-60000;c.tick();assert.deepEqual(c.reviews.map(r=>r.trigger),['Order update'],'then runs');
+  const closed=scheduler();closed.set([closed.order('Accepted')]);closed.setOpen(false);closed.a.config.closedMarketReviews='pre-open';closed.tick();closed.set([closed.order('Canceled')]);closed.tick();assert.equal(closed.reviews.length,0,'markets closed: noted, not reviewed');
+  closed.setOpen(true);closed.a.lastRun=Date.now()-60000;closed.tick();assert.deepEqual(closed.reviews.map(r=>r.trigger),['Order update'],'reviewed once a market is open');
+});
+test('the review is told how a pending order is followed',async()=>{
+  const {automation}=harness();automation.engineOrders=()=>[{id:'o',market:'KR',symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()}];
+  const {context}=await automation.assembleReviewContext({watchScope:automation.watchScope(),trigger:'Scheduled review',setStage:()=>{}});
+  assert.deepEqual(context.orderFollowUp.orders,[{symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted'}]);assert.match(context.orderFollowUp.note,/Do not re-decide a pending order in each review/);
+});
