@@ -27,11 +27,13 @@ async function start(a,token){
     a.configure({enabled:true,autoSubmit:true});
   }catch(error){if(generation===(a.launchGeneration??0))for(const row of prior){row.e.enabled=row.enabled;row.e.autoEnabled=row.autoEnabled;}throw error;}
   finally{a.launching=false;}
-  // Keep monitoring enabled after a provider failure; expose that failure separately.
-  // With every market in scope closed, the first review waits for the schedule (the pre-open review), unless set otherwise.
+  // Starting resumes the schedule: no review runs because of the button. The last review time is kept across restarts
+  // (Automation.restoreClock), so a review that ran just before waits its interval; one already due starts within
+  // seconds from the scheduler, and with every market in scope closed the pre-open review comes first (unless set otherwise).
+  a.restoreClock?.();const next=a.nextReviewAt?.()??Date.now();a.firstAfterStart=next<=Date.now()+5000;
   const hours=a.marketHours?.();if(hours&&!hours.open&&a.config.closedMarketReviews!=='keep'&&!a.emergencyState?.().active)return 'Auto trading started. Markets are closed, so the first review runs before the next open.';
-  try{await a.review('Auto trading started');return 'Auto trading started. First review completed.';}
-  catch{return 'Auto trading started, but the first review failed. Open AI console for details.';}
+  if(a.firstAfterStart)return 'Auto trading started. A review is due and starts shortly.';
+  return `Auto trading started. Next review at ${new Date(next).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST, on schedule.`;
 }
 function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;a.configure({enabled:false,autoSubmit:false});a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);return 'Auto trading stopped. Existing broker orders remain active.';}
 module.exports={launchState,start,stop};

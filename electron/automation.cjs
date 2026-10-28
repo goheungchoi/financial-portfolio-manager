@@ -32,7 +32,7 @@ class Automation {
   constructor(db,paper,provider,log) {
     this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();
     db.exec('CREATE TABLE IF NOT EXISTS routing_eval(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,account TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS shadow_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS routing_pass(id TEXT PRIMARY KEY,decidedAt INTEGER NOT NULL,payload TEXT NOT NULL)');
-    db.exec('CREATE TABLE IF NOT EXISTS dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
+    db.exec('CREATE TABLE IF NOT EXISTS dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS review_clock(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
     this.reviewInterval=new (require('./review-interval.cjs').ReviewInterval)(db);
     this.watches=new (require('./review-watches.cjs').ReviewWatches)(db);
@@ -49,6 +49,12 @@ class Automation {
   accountTag(){if(this.config.scope==='paper')return {key:'paper',label:'Paper'};try{const key=this.live?.identity();if(!key)return null;const env=this.live.getConnection?.()?.snapshot?.environment;return {key,label:env==='live'?'KIS live':env==='mock'?'KIS mock':'KIS'};}catch{return null;}}
   reviewHistory(limit=50,all=false){const key=all?null:this.accountTag()?.key;return (key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT ?").all(key,limit):this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT ?').all(limit)).map(row=>JSON.parse(row.payload));}
   watchScope(){if(this.config.scope==='paper')return 'paper';try{return this.config.scope+':'+(this.live??this.usLive).identity();}catch{return this.config.scope+':disconnected';}}
+  // The review clock: when this account and scope last had a review (run, skipped or failed) and which pre-open review
+  // already ran, kept across restarts, so starting auto trading resumes the schedule instead of reviewing again.
+  saveClock(){const scope=this.watchScope();if(scope.endsWith(':disconnected')||!(this.lastRun>0))return;
+    try{this.db.prepare('INSERT INTO review_clock VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({lastRun:this.lastRun,preOpenKey:this.preOpenKey??null}));}catch{}}
+  restoreClock(){try{const row=this.db.prepare('SELECT payload FROM review_clock WHERE scope=?').get(this.watchScope());if(!row)return;const c=JSON.parse(row.payload);
+    if(Number.isFinite(c.lastRun)&&c.lastRun<=Date.now())this.lastRun=Math.max(this.lastRun,c.lastRun);if(typeof c.preOpenKey==='string'&&!this.preOpenKey)this.preOpenKey=c.preOpenKey;}catch{}}
   saveConfig(){this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(this.config));}
   configure(value) {
     if(!value || Object.keys(value).some(key=>!Object.hasOwn(DEFAULTS,key)))throw new Error('INVALID_SETTINGS');
@@ -499,7 +505,7 @@ class Automation {
       // A size failure is remembered with its inputs so the same inputs are not retried (see the skip above).
       if(['CONTEXT_TOO_LARGE','CONTEXT_OVER_BUDGET','AI_CONTEXT_LIMIT'].includes(this.lastError)&&this.pendingInput)this.failedInput={...this.pendingInput,code:this.lastError,at:Date.now()};
       if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
-    finally{this.busy=false;this.startRequestedScout();}
+    finally{this.busy=false;this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
   }
   // A momentary OpenAI failure (connection, server error or timeout) is retried once after a short pause.
   async decisionWithRetry(context,options,pauseMs=3000){
@@ -816,7 +822,7 @@ class Automation {
     // While every market in scope is closed, nothing can execute: scheduled, news and agent-trigger reviews wait,
     // except one review shortly before the next open (unless set otherwise). Emergencies and your own requests still run.
     if(!emergency.active&&this.config.closedMarketReviews!=='keep'){const hours=this.marketHours();if(!hours.open){
-      if(this.config.closedMarketReviews==='pre-open'&&hours.preOpen&&this.preOpenKey!==hours.preOpen.key&&!this.busy){this.preOpenKey=hours.preOpen.key;void this.review('Pre-open review').catch(()=>{});}
+      if(this.config.closedMarketReviews==='pre-open'&&hours.preOpen&&this.preOpenKey!==hours.preOpen.key&&!this.busy){this.preOpenKey=hours.preOpen.key;this.saveClock();void this.review('Pre-open review').catch(()=>{});}
       return;}}
     if(this.orderQueue?.orders.size&&!this.busy&&Date.now()-this.lastRun>=30000){const list=[...this.orderQueue.orders.values()];this.orderQueue=null;
       this.triggerEvidence={kind:'order',orders:list.map(o=>({symbol:o.symbol,market:o.market??'KR',side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,fillPrice:o.fillPrice??null,placedAt:o.createdAt?new Date(o.createdAt).toISOString():null}))};
@@ -836,7 +842,7 @@ class Automation {
     const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*slow;
     if(!drift&&elapsed>=interval){const defer=this.deferForPendingOrder();if(defer){if(this.deferredAfter!==this.lastRun){this.deferredAfter=this.lastRun;const o=defer.orders[0];
       this.log(o.id,'System','Review waits for the pending order',`${o.side} ${o.quantity} ${o.symbol} is waiting at the broker (${o.status}${defer.orders.length>1?`, with ${defer.orders.length-1} more`:''}). The next review starts when it fills, partly fills or is cancelled, on a price, news or agent trigger, when a market opens or closes, or at ${new Date(defer.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST at the latest.`);}return;}}
-    if(elapsed>=interval||drift)void this.review(drift?'Price movement trigger':'Scheduled review').catch(()=>{});
+    if(elapsed>=interval||drift)void this.review(drift?'Price movement trigger':this.firstAfterStart?'Auto trading started':'Scheduled review').catch(()=>{});
   }
   approveLesson(id,approved){if(typeof id!=='string'||typeof approved!=='boolean')throw new Error('INVALID_REQUEST');this.syncLearning();if(this.learningError)throw new Error('LESSON_REVIEW_FAILED');const lifecycle=this.memory.lifecycle(id);if(lifecycle)this.memory.review(id,{expectedSignature:lifecycle.signature,action:approved?'approve':'retire'});else this.db.prepare('UPDATE lessons SET approved=? WHERE id=?').run(approved?1:0,id);return this.getState();}
 }
