@@ -290,3 +290,16 @@ test('U.S. market today: index and sector ETFs from KIS quotes, ranked; missing 
   assert.deepEqual(r.sectors.map(s=>s.label),['Technology','Energy'],'ranked strongest first');assert.equal(US_SECTOR_ETFS.length,11);
   await assert.rejects(usMarketOverview({overseasRequest:async()=>{throw new Error('x');}}),/DATA_SOURCE_UNAVAILABLE/);
 });
+// Review of 844904c: the agent view kept only the first 15 holdings, so a stock further down an ETF could not be
+// checked, and a U.S. fund read gave no sign its fund details and holdings do not exist here.
+test('review: holdings beyond the first 15 are kept compactly, and a U.S. fund read says its fund data cannot be read',async()=>{
+  const {digest,ResearchService}=require('../electron/research-service.cjs');
+  const rows=Array.from({length:40},(_,i)=>({symbol:String(100000+i),name:'Name '+i,weightPct:Math.round((40-i)*0.12*100)/100,changePct:1}));
+  const d=digest('holdings',{constituents:52,listed:40,holdings:rows,note:'KIS lists the largest 40 of 52 holdings.'});
+  assert.equal(d.holdings.length,15);assert.equal(d.moreHoldings.length,25);assert.deepEqual(d.moreHoldings[9],['100024',rows[24].weightPct],'the 25th holding and its weight');assert.match(d.moreHoldingsNote,/16 to 40/);
+  assert.equal(digest('holdings',{holdings:rows.slice(0,10)}).moreHoldings,undefined,'short lists unchanged');
+  const s=Object.create(ResearchService.prototype);s.master=null;s.identity=()=>({type:'etf'});s.profile=async(symbol,{sections})=>({name:'Semis 3x',market:'NYSE',asOf:'2026-10-28',sections:Object.fromEntries(sections.map(n=>[n,{status:'unavailable',reason:'KOREAN_LISTINGS_ONLY'}]))});
+  const us=await s.agent({symbol:'AMEX:SOXL',sections:['fund','holdings']});assert.match(us.fundData,/Korean-listed funds only.*unverified/);
+  const kr=await s.agent({symbol:'233740',sections:['fund']});assert.equal(kr.fundData,undefined);
+  const {INSTRUCTIONS}=require('../electron/scout.cjs');assert.match(INSTRUCTIONS,/fund details and holdings exist for Korean-listed funds only/);
+});

@@ -204,6 +204,7 @@ class ResearchService {
     const asked=Array.isArray(args?.sections)?args.sections.filter(s=>SECTIONS.includes(s)):[];const sections=asked.length?[...new Set(asked)]:us?US_DEFAULT:FUND_TYPES.has(this.identity(symbol).type)?FUND_DEFAULT:AGENT_DEFAULT;
     const profile=await this.profile(symbol,{sections});const out={symbol,name:profile.name,market:profile.market,asOf:profile.asOf};
     for(const [name,section] of Object.entries(profile.sections))out[name]=section.status==='ok'?digest(name,section.data):{unavailable:section.reason};
+    if(us&&sections.some(s=>s==='fund'||s==='holdings'))out.fundData='Fund details and holdings are available for Korean-listed funds only: for this U.S. listing the leverage factor, holdings and weights cannot be read here, so treat them as unverified.';
     out.note='Third-party and broker data; check dates. Analyst targets and estimates are opinions. Null fields were left out.';
     return prune(out);
   }
@@ -225,7 +226,10 @@ function digest(name,d){
   if(name==='risk')return {...d,closes:undefined,technicals:d.technicals?{...d.technicals,note:undefined}:undefined};
   if(name==='factors')return {self:d.self,peers:d.peers,rows:d.rows?.map(({symbol,name,self,scores})=>({symbol,name,self,scores})),note:d.note};
   if(name==='fund')return {...d,premiumHistory:undefined};
-  if(name==='holdings')return {...d,holdings:d.holdings?.slice(0,15).map(({symbol,name,weightPct})=>({symbol,name,weightPct}))};
+  // The first 15 holdings in full; the rest KIS lists (up to 40) as [code or name, weight %], so the weight of a stock
+  // further down can still be checked.
+  if(name==='holdings'){const rows=d.holdings??[];return {...d,holdings:rows.slice(0,15).map(({symbol,name,weightPct})=>({symbol,name,weightPct})),
+    ...(rows.length>15?{moreHoldings:rows.slice(15).map(({symbol,name,weightPct})=>[symbol||name,weightPct]),moreHoldingsNote:`Holdings 16 to ${rows.length} of the ${rows.length} KIS lists, as [code, weight %].`}:{})};}
   return d;
 }
 module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,prune,digest};
