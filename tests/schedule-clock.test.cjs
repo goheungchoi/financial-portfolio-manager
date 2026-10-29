@@ -7,7 +7,8 @@ const settle=async a=>{await new Promise(r=>setTimeout(r,20));while(a.busy)await
 // gate: when given, the provider waits for it, so a review stays in progress until the test releases it.
 function fixture({db=new DatabaseSync(':memory:'),gate=null}={}){
   const paper=new PaperEngine(db,[{symbol:'005930',name:'F',price:50000}],quote);paper.saveAccount({...paper.account(),paused:false});const calls=[];
-  const provider={request:async()=>{calls.push(1);if(gate)await gate;return {provider:'openai',decision:{action:'Hold',symbol:'',quantity:0,explanation:'x'}};}};
+  // calls counts trading reviews only: the scheduled market narrative may also run, depending on the time of day.
+  const provider={request:async op=>{if(op!=='decision')return {provider:'openai',decision:{action:'Hold',symbol:'',quantity:0,explanation:'x'}};calls.push(1);if(gate)await gate;return {provider:'openai',decision:{action:'Hold',symbol:'',quantity:0,explanation:'x'}};}};
   const a=new Automation(db,paper,provider,()=>{});a.providerStatus.aiConnected=true;a.notify=()=>{};return {db,a,calls,paper};
 }
 const clock=(db,scope)=>{const row=db.prepare('SELECT payload FROM review_clock WHERE scope=?').get(scope);return row?JSON.parse(row.payload):null;};

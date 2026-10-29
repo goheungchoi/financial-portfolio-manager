@@ -92,7 +92,7 @@ test('KIS scope blocks AI buys after the broker daily loss limit without any ord
 // a review that had run minutes before ran again. The review clock is kept and Start follows the schedule.
 test('Start auto trading resumes the schedule from the last review, also after a restart, instead of reviewing again',async()=>{
   const {db,paper,automation}=fixture({breached:false});try{
-    automation.configure({provider:'openai',intervalMinutes:60,closedMarketReviews:'keep'});let calls=0;const request=automation.provider.request;automation.provider.request=async(...a)=>{calls++;return request(...a);};
+    automation.configure({provider:'openai',intervalMinutes:60,closedMarketReviews:'keep'});let calls=0;const request=automation.provider.request;automation.provider.request=async(...a)=>{if(a[0]==='decision')calls++;return request(...a);};
     await automation.review('User request');const reviewedAt=automation.lastRun;assert.equal(calls,1);
     // A restart: a new engine on the same database.
     const b=new Automation(db,paper,automation.provider,()=>{});b.providerStatus.aiConnected=true;b.notify=()=>{};assert.equal(b.lastRun,0);

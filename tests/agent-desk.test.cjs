@@ -105,6 +105,23 @@ test('conditional orders fire through the guarded path: submitted, proposed, or 
   ({automation:a}=harness({engineCtx:()=>({...open,quotes:[{symbol:'005930',price:225000}]})}));arm(a);o=await fire(a);assert.equal(o.status,'armed','the fresh price no longer meets the condition');
   ({automation:a}=harness({engineCtx:()=>open}));a.live.propose=()=>{throw new Error('INSTRUMENT_NOT_ALLOWED');};arm(a);o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/INSTRUMENT_NOT_ALLOWED/);
 });
+test('a conditional order that meets another order being sent stays armed and fires on a later check',async()=>{
+  // 2026-10-29: a GOOGL stop-loss was closed as rejected (KIS_ORDER_BUSY) while another order held the U.S. engine.
+  const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
+  const {automation:a,events}=harness({engineCtx:()=>open});const scope=a.watchScope();
+  a.desk.setOrder(scope,{action:'add',id:'',symbol:'005930',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['005930']});
+  const armed=()=>a.desk.orders(scope)[0],waits=()=>events.filter(e=>e.title==='Conditional order · waiting').length;
+  // The engine is busy before the proposal: nothing is proposed, the order waits.
+  a.live.busy=true;await a.fireConditional(armed());
+  assert.equal(armed()?.status,'armed');assert.equal(armed().waiting,'another order in progress');assert.equal(a.calls.propose.length,0,'no proposal is left behind');
+  assert.ok(Math.abs(armed().nextCheckAt-(Date.now()+10000))<2000,'checked again in 10 seconds');assert.equal(waits(),1);
+  await a.fireConditional(armed());assert.equal(waits(),1,'one log entry while it keeps waiting');
+  // The engine becomes busy between the proposal and the submission: the same.
+  a.live.busy=false;const submit=a.live.autoSubmit;a.live.autoSubmit=async()=>{throw new Error('KIS_ORDER_BUSY');};await a.fireConditional(armed());
+  assert.equal(armed()?.status,'armed');assert.equal(a.desk.recentOrders(scope).length,0,'not closed');
+  a.live.autoSubmit=submit;await a.fireConditional(armed());assert.equal(a.desk.recentOrders(scope)[0].status,'submitted');assert.deepEqual(a.calls.submit,['P1']);
+  assert.ok(!events.some(e=>e.title==='Conditional order · rejected'));
+});
 test('the tick fires conditional orders only while auto trading is on, one at a time',async()=>{
   const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
   const {automation:a}=harness({engineCtx:()=>open});a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['005930']});
