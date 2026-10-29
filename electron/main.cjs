@@ -472,7 +472,7 @@ app.whenReady().then(async () => {
   const scoreboardAction=action=>async(event,...args)=>{authorize(event);try{await action(...args);return {ok:true,state:scoreboardState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOREBOARD_FAILED'};}};
   ipcMain.handle('scoreboard:get',scoreboardAction(()=>{if(Date.now()-closesAt>6*3600000)void refreshDecisionCloses();if(Date.now()-benchmarkAt>6*3600000)void refreshBenchmarks();}));
   ipcMain.handle('scoreboard:refresh',scoreboardAction(async()=>{await refreshBenchmarks();await refreshDecisionCloses();}));
-  const discoveryState=()=>({master:master.status(),watchlist:automation.discovery.list(),connected:Boolean(watchScope())});
+  const discoveryState=()=>({master:master.status(),watchlist:automation.discovery.list(),connected:Boolean(watchScope()),monitoring:automation.monitoring()});
   const discoveryAction=action=>async(event,...args)=>{authorize(event);try{const data=await action(...args);return {ok:true,data,state:discoveryState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED',state:discoveryState()};}};
   ipcMain.handle('discovery:get',discoveryAction(()=>null));
   // Latest quotes the app already polls for watchlist and held symbols; no extra broker calls.
