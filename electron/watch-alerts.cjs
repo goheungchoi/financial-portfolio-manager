@@ -12,34 +12,39 @@
 // leveraged ETFs on the watchlist.
 const COOLDOWN_MS=60*60000;
 const met=(watch,price)=>watch.direction==='above'?price>=watch.price:price<=watch.price;
+// A price level as the AI set it: setting it again (even at the same price) makes a new one.
+const levelKey=w=>`${w.symbol}|${w.direction}|${w.price}|${w.updatedAt??''}|${w.baseline??''}`;
 class WatchAlerts {
-  constructor(){this.anchors=new Map();this.alertedAt=new Map();this.sides=new Map();}
+  constructor(){this.anchors=new Map();this.alertedAt=new Map();this.sides=new Map();this.fired=new Set();}
   // quotes: fresh quotes in sessions that are open. held: Set of held symbols. baselines: Map of prices at the last review.
-  // watches: review watches. Returns {trigger, commit}: trigger is null or the review to start; commit() records the
-  // alerts as sent (anchors, cooldowns, crossings) and returns the price levels that fired.
-  check({quotes,held,baselines,watches,tolerance,wide,now=Date.now()}){
-    const holding=[],alerts=[],sides=new Map(),anchors=new Map();
+  // watches: review watches as they were before this check. ownFired: judge whether an entry level already fired by
+  // this object's own record instead of the watch's priceFired flag, so observation is not changed by what the rule in
+  // force did (a holding's level fires the same way under both rules, so an earlier firing by either counts).
+  // What each check sees is saved at once, alert or not: the side of each level (a crossing needs the earlier side) and a
+  // symbol's first anchor. Returns {trigger, deliver}: trigger is null or the review to start; deliver() records it as
+  // sent (anchors move to the alert prices, cooldowns start, levels are fired) and returns the symbols whose level fired.
+  check({quotes,held,baselines,watches,tolerance,wide,now=Date.now(),ownFired=false}){
+    const holding=[],alerts=[],levels=new Map(),open=(w,isHeld)=>w?.price!=null&&!(ownFired?this.fired.has(levelKey(w))||isHeld&&w.priceFired:w.priceFired);
     for(const q of quotes){const watch=watches.find(w=>w.symbol===q.symbol);
       if(held.has(q.symbol)){
-        if(watch?.price!=null&&!watch.priceFired&&met(watch,q.price))holding.push({kind:'price',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp});
+        if(open(watch,true)&&met(watch,q.price)){levels.set(q.symbol,levelKey(watch));holding.push({kind:'price',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp});}
         else{const base=watch?.baseline??baselines.get(q.symbol),limit=watch?.percent??tolerance;if(base>0&&Math.abs(q.price/base-1)*100>=limit)holding.push({kind:'percent',symbol:q.symbol,price:q.price,baseline:base,changePct:(q.price/base-1)*100,threshold:limit,timestamp:q.timestamp});}
         continue;}
-      if(watch?.price!=null&&!watch.priceFired){
-        const before=this.sides.get(q.symbol)??(watch.baseline>0?met(watch,watch.baseline):null),isMet=met(watch,q.price);sides.set(q.symbol,isMet);
-        if(before===false&&isMet)alerts.push({kind:'entry-level',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp});
+      if(open(watch)){const key=levelKey(watch);
+        const before=this.sides.get(key)??(watch.baseline>0?met(watch,watch.baseline):null),isMet=met(watch,q.price);this.sides.set(key,isMet);
+        if(before===false&&isMet){levels.set(q.symbol,key);alerts.push({kind:'entry-level',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp});}
         continue;}
-      const anchor=this.anchors.get(q.symbol)??baselines.get(q.symbol)??q.price;if(!this.anchors.has(q.symbol))anchors.set(q.symbol,anchor);
-      const limit=watch?.percent??wide,change=(q.price/anchor-1)*100;
+      if(!this.anchors.has(q.symbol))this.anchors.set(q.symbol,baselines.get(q.symbol)??q.price);
+      const anchor=this.anchors.get(q.symbol),limit=watch?.percent??wide,change=(q.price/anchor-1)*100;
       if(Math.abs(change)>=limit&&now-(this.alertedAt.get(q.symbol)??-Infinity)>=COOLDOWN_MS)alerts.push({kind:'watchlist-move',symbol:q.symbol,price:q.price,baseline:anchor,changePct:change,threshold:limit,timestamp:q.timestamp});}
     const trigger=holding.length?{...holding[0],...(holding.length>1||alerts.length?{alongside:[...holding.slice(1),...alerts]}:{})}:alerts.length?{kind:'watchlist',alerts}:null;
-    const commit=()=>{for(const [s,a] of anchors)this.anchors.set(s,a);for(const [s,v] of sides)this.sides.set(s,v);
-      const sent=trigger?[...(trigger.kind==='watchlist'?trigger.alerts:trigger.alongside??[])]:[];
+    const deliver=()=>{if(!trigger)return [];const sent=trigger.kind==='watchlist'?trigger.alerts:[trigger,...trigger.alongside??[]];
       for(const a of sent)if(a.kind==='watchlist-move'){this.anchors.set(a.symbol,a.price);this.alertedAt.set(a.symbol,now);}
-      return [...(trigger&&trigger.kind==='price'?[trigger.symbol]:[]),...sent.filter(a=>a.kind==='entry-level'||a.kind==='price').map(a=>a.symbol)];};
-    return {trigger,commit};
+      const fired=sent.filter(a=>a.kind==='entry-level'||a.kind==='price').map(a=>a.symbol);for(const s of fired)this.fired.add(levels.get(s));return fired;};
+    return {trigger,deliver};
   }
   // Anchors of symbols not held do not move with reviews, only with their own alerts; clear() is for an account change.
-  clear(){this.anchors.clear();this.alertedAt.clear();this.sides.clear();}
+  clear(){this.anchors.clear();this.alertedAt.clear();this.sides.clear();this.fired.clear();}
 }
 // Observation log: each check where the current rule or these rules would start a price review.
 class AlertObservations {

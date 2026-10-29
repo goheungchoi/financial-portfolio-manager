@@ -70,6 +70,16 @@ test('a held position whose stop loss was rejected stays unprotected until stop 
   now+=8*86400000;assert.equal(list().length,1,'time passing does not restore protection');
   assert.throws(()=>desk.dismissUnprotected('kis:a','C-nope'),/NOT_FOUND/);desk.dismissUnprotected('kis:a',half.id);assert.deepEqual(list(),[],'dismissed by the user');
 });
+test('a replacement stop that expires without firing does not settle the rejected one',()=>{
+  // Review P1 (1.5.41): rejected, replacement armed, replacement expired: the warning stayed cleared with no stop.
+  let now=Date.parse('2026-10-29T00:15:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:5};
+  const stop=hours=>desk.setOrder('kis:a',{action:'add',id:'',symbol:'NASD:GOOGL',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("NASD:GOOGL")',op:'<=',value:290}],combine:'all',purpose:'stop_loss',expiresInHours:hours,reason:'r'},{config:on,universe:['NASD:GOOGL']});
+  const held={'NASD:GOOGL':{quantity:1}};const first=stop(48);desk.update(desk.orders('kis:a').find(o=>o.id===first.id),{status:'rejected',outcome:'KIS_ORDER_BUSY',closedAt:now});
+  now+=60000;stop(2);assert.deepEqual(desk.unprotected('kis:a',held),[],'the replacement covers it');
+  now+=3*3600000;const [u]=desk.unprotected('kis:a',held);assert.equal(u?.orderId,first.id,'expired: unprotected again');assert.equal(u.coveredQuantity,0);
+  const fired=stop(4);desk.update(desk.orders('kis:a').find(o=>o.id===fired.id),{status:'submitted',outcome:'Submitted',closedAt:now+1});now+=2;
+  assert.deepEqual(desk.unprotected('kis:a',held),[],'a later stop that fired settles it');
+});
 test('limit prices land on the exchange tick',()=>{
   assert.equal(krTick(1500),1);assert.equal(krTick(150000),100);assert.equal(krTick(250000),500);assert.equal(onTick(217040,'Buy','KR'),217000);assert.equal(onTick(217040,'Sell','KR'),217500,'500-won ticks from 200,000');assert.equal(onTick(12.341,'Buy','US'),12.35);assert.equal(onTick(12.349,'Sell','US'),12.34);
 });

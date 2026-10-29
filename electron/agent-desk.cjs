@@ -77,10 +77,11 @@ class AgentDesk {
   // {symbol: {quantity}}. Only stop losses count as protection (a take-profit or other sell does not limit a fall), and
   // they must cover the shares the rejected stop was for (its quantity, at most the shares held); fewer is reported as
   // partial with the shares covered. Each stays listed until stops cover those shares, the shares are gone, or the user
-  // dismisses it: time passing does not restore protection, and nor does cancelling a later stop.
+  // dismisses it: time passing does not restore protection, and nor does a later stop that was cancelled or expired
+  // without firing (only one that fired, submitted or proposed, settles it).
   // temporary: refused for a passing reason (another order being sent, a timeout), so re-arming is expected to work.
-  unprotected(scope,positions){this.expire(scope);const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing';
-    return Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).flatMap(([symbol,p])=>{const stops=all.filter(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss');const last=stops.find(o=>!live(o)&&o.status!=='cancelled');
+  unprotected(scope,positions){this.expire(scope);const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing',lapsed=o=>o.status==='cancelled'||o.status==='expired';
+    return Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).flatMap(([symbol,p])=>{const stops=all.filter(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss');const last=stops.find(o=>!live(o)&&!lapsed(o));
       if(last?.status!=='rejected'||last.acknowledgedAt)return [];
       const needed=Math.min(p.quantity,last.quantity),covered=stops.filter(live).reduce((n,o)=>n+o.quantity,0);if(covered>=needed)return [];
       return [{symbol,orderId:last.id,quantity:needed,heldQuantity:p.quantity,coveredQuantity:covered,...(covered>0?{partial:true}:{}),rejectedAt:new Date(last.closedAt).toISOString(),outcome:last.outcome??null,temporary:TEMPORARY.test(last.outcome??'')}];});}

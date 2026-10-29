@@ -1,7 +1,7 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
 const {WatchAlerts,AlertObservations,COOLDOWN_MS}=require('../electron/watch-alerts.cjs');
 const t0=Date.parse('2026-10-29T00:00:00Z'),min=n=>t0+n*60000;const q=(symbol,price,at)=>({symbol,price,timestamp:at});
-const run=(a,quotes,{held=[],baselines=new Map(),watches=[],now=quotes[0]?.timestamp??t0}={})=>{const r=a.check({quotes,held:new Set(held),baselines,watches,tolerance:3,wide:6,now});r.commit();return r.trigger;};
+const run=(a,quotes,{held=[],baselines=new Map(),watches=[],now=quotes[0]?.timestamp??t0}={})=>{const r=a.check({quotes,held:new Set(held),baselines,watches,tolerance:3,wide:6,now});r.deliver();return r.trigger;};
 
 test('holdings keep the price move trigger from the last review price',()=>{
   const a=new WatchAlerts();const base=new Map([['028050',60000]]);
@@ -29,7 +29,7 @@ test('simultaneous watchlist alerts go into one review; a holding move carries t
 
 test('an entry level starts a review only when the price crosses it, once',()=>{
   // 2026-10-28: a 360750 level "above 25,500" fired at 25,655 on the first check.
-  const a=new WatchAlerts();const watch={symbol:'360750',price:25500,direction:'above',baseline:25655,priceFired:false};const r=(p,at)=>{const x=a.check({quotes:[q('360750',p,min(at))],held:new Set(),baselines:new Map(),watches:[watch],tolerance:3,wide:6,now:min(at)});return {t:x.trigger,fired:x.commit()};};
+  const a=new WatchAlerts();const watch={symbol:'360750',price:25500,direction:'above',baseline:25655,priceFired:false};const r=(p,at)=>{const x=a.check({quotes:[q('360750',p,min(at))],held:new Set(),baselines:new Map(),watches:[watch],tolerance:3,wide:6,now:min(at)});return {t:x.trigger,fired:x.deliver()};};
   assert.equal(r(25655,1).t,null,'set while already beyond it');assert.equal(r(25700,2).t,null);assert.equal(r(25400,3).t,null,'back below: armed');
   const hit=r(25520,4);assert.equal(hit.t.alerts[0].kind,'entry-level');assert.deepEqual(hit.fired,['360750'],'reported so the watch is marked fired');
   assert.equal(r(30000,5).t,null,'no 6% alert while an entry level is the condition');
@@ -59,4 +59,34 @@ test('the scheduler: off keeps the one rule, observe keeps it and logs the new r
   a.sessionOpen=()=>false;reset();assert.equal(a.priceTrigger('s',[{symbol:'488080',price:30000,timestamp:now}],now),null,'only in an open session');
   assert.throws(()=>a.configure({watchlistAlerts:'loud'}),/INVALID_SETTINGS/);assert.throws(()=>a.configure({watchlistMovePct:0}),/INVALID_SETTINGS/);
   assert.equal(a.watchlistAlertsState().watchlistPct,6);a.configure({watchlistMovePct:8});assert.equal(a.watchlistAlertsState().watchlistPct,8);
+});
+test('through the scheduler: checks without an alert still record which side of a level the price is on',()=>{
+  // Review P2 (1.5.41): with the rules on, sides were saved only when something alerted, so "above 25,500" set at 25,655
+  // never fired after 25,400 then 25,520.
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
+  a.watchScope=()=>'s';a.brokerPositions=()=>({});a.sessionOpen=()=>true;a.configure({watchlistAlerts:'on'});const now=Date.now();
+  a.watches.set('s',{symbol:'360750',percent:null,price:25500,direction:'above',reason:'Entry above 25,500'},{universe:[{symbol:'360750'}],quotes:[{symbol:'360750',price:25655}]});
+  const at=(price,i)=>a.priceTrigger('s',[{symbol:'360750',price,timestamp:now+i*60000}],now+i*60000);
+  assert.equal(at(25655,0),null,'set while already above it');assert.equal(at(25400,1),null,'back below, nothing to alert');
+  const hit=at(25520,2);assert.equal(hit?.alerts?.[0]?.kind,'entry-level');assert.equal(a.watches.list('s')[0].priceFired,true,'delivered: the level is fired');
+  assert.equal(at(25400,3),null);assert.equal(at(25600,4),null,'once');
+});
+test('observation: both rules read the level as it was before the check, with their own record of what fired',()=>{
+  // Review P2 (1.5.41): the rule in force marked the level fired before the selective rules read it, so the log showed
+  // current: price and proposed: null for a crossing both rules saw.
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
+  a.watchScope=()=>'s';a.brokerPositions=()=>({'NASD:GOOGL':{quantity:1}});a.sessionOpen=()=>true;const now=Date.now();
+  const rows=()=>db.prepare('SELECT payload FROM alert_observations ORDER BY id').all().map(r=>JSON.parse(r.payload));
+  const set=(symbol,price,direction,quote)=>a.watches.set('s',{symbol,percent:null,price,direction,reason:'r'},{universe:[{symbol}],quotes:[{symbol,price:quote}]});
+  const at=(symbol,price,i)=>a.priceTrigger('s',[{symbol,price,timestamp:now+i*60000}],now+i*60000);
+  set('360750',25500,'above',25400);assert.equal(at('360750',25520,0)?.kind,'price','the rule in force decides');
+  assert.deepEqual(rows()[0],{current:{kind:'price',symbols:['360750']},proposed:{kind:'watchlist',symbols:['360750']},currentHeld:false},'a crossing both rules see');
+  assert.equal(at('360750',25400,1),null);assert.equal(at('360750',25600,2),null);assert.equal(rows().length,1,'fired once under each rule');
+  set('360750',25500,'above',25655);assert.equal(at('360750',25655,3)?.kind,'price');assert.equal(rows()[1].proposed,null,'already above when set: no crossing');
+  assert.equal(at('360750',25400,4),null);assert.equal(at('360750',25520,5),null,'the rule in force fired it already');
+  assert.deepEqual(rows()[2],{current:null,proposed:{kind:'watchlist',symbols:['360750']},currentHeld:null},'the selective rule still sees the crossing');
+  set('NASD:GOOGL',280,'below',285);assert.equal(at('NASD:GOOGL',279,6)?.kind,'price');assert.equal(rows()[3].proposed.kind,'price','a holding level: the same under both');
+  a.watchAlerts.clear();assert.equal(at('NASD:GOOGL',278,7),null);assert.equal(rows().length,4,'fired earlier by the rule in force: not again after a restart');
 });
