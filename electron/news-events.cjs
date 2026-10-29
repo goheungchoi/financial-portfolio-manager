@@ -34,11 +34,13 @@ class NewsEvents {
   save(event){this.db.prepare('INSERT INTO news_events VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(event.id,event.firstSeenAt,JSON.stringify(event));}
   // Stores unseen items once; returns the newly stored events.
   ingest(items,securities,now=Date.now()){
-    // The same story often appears in several feeds under different URLs; keep the first copy.
-    const match=matcher(securities),created=[],titles=new Set(this.list(300).map(event=>event.title));
-    for(const item of items){
-      if(!item?.url||titles.has(item.title)||this.db.prepare('SELECT 1 FROM news_events WHERE id=?').get(item.url))continue;titles.add(item.title);
-      const event={id:item.url,source:item.source,kind:item.source==='DART'?'disclosure':'headline',title:item.title,url:item.url,published:item.published,receipt:item.source==='DART'?receiptOf(item.url):null,symbols:match(item),importance:importance(item),firstSeenAt:now,triggeredAt:null};
+    // The same story often appears in several feeds under different URLs; keep the first copy. A DART filing is one
+    // receipt number: a new filing with an earlier filing's title (a correction, a second contract) is new, and the
+    // same receipt under another URL is not. A headline repeating a stored title (a filing's included) is not new.
+    const match=matcher(securities),created=[],stored=this.list(300),titles=new Set(stored.map(event=>event.title)),receipts=new Set(stored.map(e=>e.receipt).filter(Boolean));
+    for(const item of items){const receipt=item?.source==='DART'?receiptOf(item.url):null;
+      if(!item?.url||(receipt?receipts.has(receipt):titles.has(item.title))||this.db.prepare('SELECT 1 FROM news_events WHERE id=?').get(item.url))continue;if(receipt)receipts.add(receipt);titles.add(item.title);
+      const event={id:item.url,source:item.source,kind:item.source==='DART'?'disclosure':'headline',title:item.title,url:item.url,published:item.published,receipt,symbols:match(item),importance:importance(item),firstSeenAt:now,triggeredAt:null};
       this.save(event);created.push(event);
     }
     this.db.prepare('DELETE FROM news_events WHERE firstSeenAt<?').run(now-RETAIN_MS);

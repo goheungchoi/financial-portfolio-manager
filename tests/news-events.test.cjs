@@ -51,3 +51,12 @@ test('news triggers batch relevant disclosures into one review per ten minutes a
   automation.lastNewsTrigger=Date.now()-601000;automation.lastRun=Date.now()-61000;automation.tick();await settle();assert.deepEqual(triggers,['News event trigger','News event trigger']);
   automation.configure({newsTrigger:'off'});automation.newsEvents.ingest([dart('005930','삼성전자 · 감자결정','20261016000023')],automation.relevantSecurities());automation.lastNewsTrigger=0;automation.lastRun=Date.now()-61000;automation.tick();await settle();assert.equal(triggers.length,2);
 });
+test('a DART filing is its receipt: a repeated title with a new receipt is new, the same receipt under another URL is not',()=>{
+  const {NewsEvents}=require('../electron/news-events.cjs');const {DatabaseSync}=require('node:sqlite');const store=new NewsEvents(new DatabaseSync(':memory:'));const sec=[{symbol:'028050',name:'삼성E&A'}];
+  const item=(receipt,url)=>({source:'DART',symbol:'028050',title:'삼성E&A 단일판매ㆍ공급계약체결',url:url??'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+receipt,published:'20261029'});
+  assert.equal(store.ingest([item('20261029000100')],sec).length,1);
+  assert.equal(store.ingest([item('20261029000200')],sec).length,1,'a second contract with the same title');
+  assert.equal(store.ingest([item('20261029000200','https://m.dart.fss.or.kr/viewer?rcpNo=20261029000200')],sec).length,0,'the same filing from another URL');
+  assert.equal(store.ingest([{source:'Yonhap',title:'삼성E&A 단일판매ㆍ공급계약체결',url:'https://news/1',published:'x'},{source:'Mk',title:'삼성E&A 단일판매ㆍ공급계약체결',url:'https://news/2',published:'x'}],sec).length,0,'a headline repeating the filing title is not new');
+  assert.equal(store.ingest([{source:'Yonhap',title:'Samsung E&A wins order',url:'https://news/3',published:'x'},{source:'Mk',title:'Samsung E&A wins order',url:'https://news/4',published:'x'}],sec).length,1,'headlines dedupe by title');
+});
