@@ -201,3 +201,21 @@ test('reviews get the desk tools with parallel calls; conditional orders only wh
   assert.equal(result.decision.action,'Hold');assert.equal(outputs.length,3);assert.ok(outputs.every(o=>/rejected/.test(o.output)));
   await assert.rejects(researchReview({context:{universe:[]},evidence:{get:async()=>({})},log:()=>{},actions:{save_note:async()=>{throw new Error('STALE_DECISION');}},request:async()=>({toolCalls:[call('save_note',{},'x')],continuation:[]})}),/STALE_DECISION/);
 });
+test('a replacement stop protects only once its sell reaches the broker',()=>{
+  // Review P1 (2b2c1cd): a replacement that became a proposal awaiting approval hid the rejection with all shares held.
+  let now=Date.parse('2026-10-29T00:15:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:5};
+  const broker={};desk.sellStatus=o=>broker[o.proposalId]??null;const held={'NASD:GOOGL':{quantity:1}};const list=()=>desk.unprotected('kis:a',held);
+  const stop=()=>desk.setOrder('kis:a',{action:'add',id:'',symbol:'NASD:GOOGL',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("NASD:GOOGL")',op:'<=',value:290}],combine:'all',purpose:'stop_loss',expiresInHours:48,reason:'r'},{config:on,universe:['NASD:GOOGL']});
+  const close=(id,status,extra={})=>{now+=60000;desk.update(desk.orders('kis:a').find(o=>o.id===id),{status,outcome:status,closedAt:now,...extra});};
+  const first=stop();close(first.id,'rejected');
+  const second=stop();close(second.id,'proposed',{proposalId:'P2'});broker.P2='Ready';
+  let [u]=list();assert.equal(u?.orderId,first.id,'awaiting approval: still unprotected');assert.deepEqual(u.replacement,{orderId:second.id,status:'proposed',brokerStatus:'Ready'});
+  delete broker.P2;assert.equal(list()[0]?.orderId,first.id,'a proposal the engine no longer lists does not count either');
+  broker.P2='Accepted';assert.deepEqual(list(),[],'approved and sent');broker.P2='Filled';assert.deepEqual(list(),[]);
+  broker.P2='Canceled';[u]=list();assert.equal(u?.orderId,first.id,'cancelled at the broker: unprotected again');assert.equal(u.replacement.brokerStatus,'Canceled');
+  const third=stop();close(third.id,'submitted',{proposalId:'P3'});broker.P3='Rejected';assert.equal(list()[0]?.replacement.orderId,third.id,'submitted but refused by the broker');
+  broker.P3='Partially filled';assert.deepEqual(list(),[]);
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
+  a.engineOrders=()=>[{id:'P9',status:'Ready'}];assert.equal(a.desk.sellStatus({proposalId:'P9'}),'Ready','the scheduler reads the engines');assert.equal(a.desk.sellStatus({}),null);
+});

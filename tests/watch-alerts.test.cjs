@@ -90,3 +90,15 @@ test('observation: both rules read the level as it was before the check, with th
   set('NASD:GOOGL',280,'below',285);assert.equal(at('NASD:GOOGL',279,6)?.kind,'price');assert.equal(rows()[3].proposed.kind,'price','a holding level: the same under both');
   a.watchAlerts.clear();assert.equal(at('NASD:GOOGL',278,7),null);assert.equal(rows().length,4,'fired earlier by the rule in force: not again after a restart');
 });
+test('observation: a review moving a level’s baseline does not make it a new level',()=>{
+  // Review P2 (2b2c1cd): the level was named by its baseline, which every review rebases, so it fired again after one.
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
+  a.watchScope=()=>'s';a.brokerPositions=()=>({});a.sessionOpen=()=>true;const now=Date.now();const count=()=>db.prepare('SELECT COUNT(*) n FROM alert_observations').get().n;
+  a.watches.set('s',{symbol:'360750',percent:null,price:25500,direction:'above',reason:'r'},{universe:[{symbol:'360750'}],quotes:[{symbol:'360750',price:25400}]});
+  const at=(price,i)=>a.priceTrigger('s',[{symbol:'360750',price,timestamp:now+i*60000}],now+i*60000);
+  at(25520,0);assert.equal(count(),1);a.watches.rebase('s',[{symbol:'360750',price:25520}]);
+  at(25400,1);at(25600,2);assert.equal(count(),1,'no second entry alert after the review');
+  a.watches.set('s',{symbol:'360750',percent:null,price:25500,direction:'above',reason:'set again'},{universe:[{symbol:'360750'}],quotes:[{symbol:'360750',price:25400}]});
+  at(25400,3);at(25550,4);assert.equal(count(),2,'set again by the AI: a new level');
+});

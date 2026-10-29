@@ -12,8 +12,9 @@
 // leveraged ETFs on the watchlist.
 const COOLDOWN_MS=60*60000;
 const met=(watch,price)=>watch.direction==='above'?price>=watch.price:price<=watch.price;
-// A price level as the AI set it: setting it again (even at the same price) makes a new one.
-const levelKey=w=>`${w.symbol}|${w.direction}|${w.price}|${w.updatedAt??''}|${w.baseline??''}`;
+// A price level as the AI set it: setting it again (even at the same price) makes a new one, and a review moving its
+// baseline does not. Watches saved before revisions existed are named by when they were set.
+const levelKey=w=>w.revision??`${w.symbol}|${w.direction}|${w.price}|${w.updatedAt??''}`;
 class WatchAlerts {
   constructor(){this.anchors=new Map();this.alertedAt=new Map();this.sides=new Map();this.fired=new Set();}
   // quotes: fresh quotes in sessions that are open. held: Set of held symbols. baselines: Map of prices at the last review.
