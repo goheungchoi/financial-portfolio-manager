@@ -51,6 +51,20 @@ test('conditional orders need the setting, valid inputs and room; the context sh
   assert.equal(desk.setOrder('kis:a',{action:'cancel',id:armed.id},{config:on}).status,'cancelled');assert.equal(desk.orders('kis:a').length,1);
   assert.deepEqual(desk.context('kis:a',off,U).conditionalOrders.allowed,false);assert.equal(desk.context('kis:a',on,U).conditionalOrders.maxSlippagePct,2);
 });
+test('a held position whose stop loss was rejected is listed as unprotected until a sell order is armed again',()=>{
+  // 2026-10-29: the GOOGL stop loss was rejected at 09:15 (KIS_ORDER_BUSY) and later reviews treated the position as if it waited on a stop.
+  let now=Date.parse('2026-10-29T00:15:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const U=['NASD:GOOGL','005930'];const on={...COND_DEFAULTS,conditionalOrders:true};
+  const stop=(symbol='NASD:GOOGL')=>desk.setOrder('kis:a',{action:'add',id:'',symbol,side:'Sell',quantity:2,limitPrice:null,conditions:[{expr:`price("${symbol}")`,op:'<=',value:290}],combine:'all',purpose:'stop_loss',expiresInHours:48,reason:'Protect the gain'},{config:on,universe:U});
+  const reject=(id,outcome)=>desk.update(desk.orders('kis:a').find(o=>o.id===id),{status:'rejected',outcome,closedAt:now});
+  const first=stop();assert.deepEqual(desk.unprotected('kis:a',['NASD:GOOGL']),[],'an armed stop protects');
+  reject(first.id,'The broker or a risk check refused it (KIS_ORDER_BUSY).');
+  const [u]=desk.unprotected('kis:a',['NASD:GOOGL','005930']);assert.equal(u.symbol,'NASD:GOOGL');assert.equal(u.orderId,first.id);assert.equal(u.temporary,true);
+  const ctx=desk.context('kis:a',on,U,['NASD:GOOGL']).conditionalOrders;assert.equal(ctx.unprotected.length,1);assert.match(ctx.unprotectedNote,/not protection/);
+  assert.equal(desk.context('kis:a',on,U,[]).conditionalOrders.unprotected,undefined,'shares gone: nothing to protect');
+  now+=3600000;const second=stop();assert.deepEqual(desk.unprotected('kis:a',['NASD:GOOGL']),[],'re-armed');
+  reject(second.id,'The broker or a risk check refused it (KIS_LIMIT_BAND).');assert.equal(desk.unprotected('kis:a',['NASD:GOOGL'])[0].temporary,false,'a lasting refusal');
+  now+=8*86400000;assert.deepEqual(desk.unprotected('kis:a',['NASD:GOOGL']),[],'listed for a week at most');
+});
 test('limit prices land on the exchange tick',()=>{
   assert.equal(krTick(1500),1);assert.equal(krTick(150000),100);assert.equal(krTick(250000),500);assert.equal(onTick(217040,'Buy','KR'),217000);assert.equal(onTick(217040,'Sell','KR'),217500,'500-won ticks from 200,000');assert.equal(onTick(12.341,'Buy','US'),12.35);assert.equal(onTick(12.349,'Sell','US'),12.34);
 });
@@ -82,6 +96,11 @@ test('a review uses compute, notes and a trigger in one round; the context carri
   assert.ok(events.some(e=>e.title==='Desk result · set_review_trigger'));
   const state=automation.getState().desk;assert.equal(state.notes[0].note,'Trim above 230,000.');assert.equal(state.triggers[0].name,'Breakout');
   await automation.review();const second=supplied.filter(([op])=>op==='decision').at(-1)[1].context.agentDesk;assert.equal(second.notes[0].note,'Trim above 230,000.');assert.equal(second.triggers.length,1);
+  // A rejected stop on the held 005930 reaches the next review and the Agent desk.
+  const scope=automation.watchScope();automation.desk.setOrder(scope,{action:'add',id:'',symbol:'005930',side:'Sell',quantity:10,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:200000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:automation.config,universe:['005930']});
+  automation.desk.update(automation.desk.orders(scope)[0],{status:'rejected',outcome:'refused (KIS_ORDER_BUSY).',closedAt:Date.now()});
+  await automation.review();assert.equal(supplied.filter(([op])=>op==='decision').at(-1)[1].context.agentDesk.conditionalOrders.unprotected[0].symbol,'005930');
+  assert.equal(automation.getState().desk.unprotected[0].temporary,true);
 });
 test('a met trigger starts a review with the values that met it',async()=>{
   const {automation,supplied,events}=harness();automation.configure({enabled:true});automation.sessionArmed=true;automation.lastRun=0;
@@ -120,7 +139,8 @@ test('conditional orders fire through the guarded path: submitted, proposed, or 
   ({automation:a}=harness({engineCtx:()=>({...open,marketSession:{open:false}})}));arm(a);o=await fire(a);assert.equal(o.status,'armed');assert.equal(o.waiting,'market closed');
   assert.ok(o.nextCheckAt-Date.now()>290000,'a closed market is not re-checked for five minutes');a.configure({enabled:true});a.sessionArmed=true;a.lastDeskCheck=0;const before=a.calls.propose.length;a.tick();await new Promise(r=>setTimeout(r,20));assert.ok(!a.firing,'no new fire while backing off');assert.equal(a.calls.propose.length,before);
   a.desk.update(a.desk.orders(a.watchScope())[0],{status:'firing',firingAt:Date.now()-180000});assert.equal(a.desk.orders(a.watchScope())[0].waiting,'interrupted; checking again','an interrupted fire returns to armed');
-  ({automation:a}=harness({engineCtx:()=>open}));arm(a,{limitPrice:200000});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above the 2% limit/);
+  ({automation:a}=harness({engineCtx:()=>open}));const sent=[];a.notify=(id,text)=>sent.push([id,text]);arm(a,{limitPrice:200000});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above the 2% limit/);
+  assert.equal(sent.length,1);assert.match(sent[0][1],/Stop loss for 005930 was rejected.*not protected/,'a rejected stop loss tells the phone');
   ({automation:a}=harness({engineCtx:()=>({...open,positions:{}})}));arm(a);o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/No shares held/);
   ({automation:a}=harness({engineCtx:()=>open}));arm(a,{side:'Buy',quantity:10});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above 10% of equity/);
   ({automation:a}=harness({engineCtx:()=>({...open,quotes:[{symbol:'005930',price:225000}]})}));arm(a);o=await fire(a);assert.equal(o.status,'armed','the fresh price no longer meets the condition');
