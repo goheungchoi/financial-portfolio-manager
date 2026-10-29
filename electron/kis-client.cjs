@@ -300,5 +300,18 @@ class KisReadOnlyClient {
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
     }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
   }
+  // Revises the price of an open order, or cancels it, for all its unfilled shares (order-rvsecncl). originalOrderId
+  // and organization are the order's current number and KRX forwarding organization; a revision gets a new number.
+  async reviseOrder({originalOrderId,organization,price,cancel=false,exchange='KRX'}) {
+    if(!/^\d{1,20}$/.test(String(originalOrderId??''))||!/^\d{0,10}$/.test(String(organization??''))||!cancel&&!(Number.isSafeInteger(price)&&price>0)||!['KRX','NXT'].includes(exchange))throw new KisError('INVALID_REQUEST');
+    await this.authenticate();await this.wait(550);
+    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,KRX_FWDG_ORD_ORGNO:String(organization??''),ORGN_ODNO:String(originalOrderId),ORD_DVSN:'00',RVSE_CNCL_DVSN_CD:cancel?'02':'01',ORD_QTY:'0',ORD_UNPR:cancel?'0':String(price),QTY_ALL_ORD_YN:'Y',EXCG_ID_DVSN_CD:exchange};
+    try {
+      const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-rvsecncl',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:this.#credentials.environment==='live'?'TTTC0013U':'VTTC0013U',custtype:'P'},body:JSON.stringify(params)});
+      if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+      if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
+      return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??String(organization??''),at:new Date().toISOString()};
+    }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
+  }
 }
 module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS};
