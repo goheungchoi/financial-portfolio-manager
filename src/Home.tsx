@@ -1,6 +1,7 @@
 import {priceBasis} from './live-change.mjs';
 import {useEffect,useState} from 'react';
 import type {PortfolioState,PortfolioRow} from './UnifiedPortfolio';
+import {pendingKRW} from './pending';
 import type {RuntimeState} from './RuntimeSettings';
 import {PortfolioProfit} from './PortfolioProfit';
 import {AllocationChart} from './AllocationChart';
@@ -22,7 +23,7 @@ export function HomeMetrics({state}:{state:PortfolioState}){
   // Korea alone counts until the U.S. account and an exchange rate are both loaded.
   const fx=state.fx?.usdKRW??null;const krLoaded=state.timestamps.KR!=null;const withUS=state.timestamps.US!=null&&fx!=null;
   const cash=(state.cash.KRW??0)+(withUS?(state.cash.USD??0)*fx!:0);
-  const equity=krLoaded?state.rows.filter(r=>r.market==='KR'||withUS).reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash:null;
+  const equity=krLoaded?state.rows.filter(r=>r.market==='KR'||withUS).reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash+(withUS?pendingKRW(state):0):null;
   const sample=state.valuationSample??Math.max(Date.parse(state.timestamps.KR??'')||0,Date.parse(state.timestamps.US??'')||0);
   const us=state.rows.filter(r=>r.market==='US');
   // Where the totals come from: a change here (a market loading, a holding moving from its balance price to a live quote)
@@ -100,7 +101,7 @@ export function HomeCalendar(){
 // Largest positions first, one line each; the full table lives on Holdings.
 export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:PortfolioState;onCompany(symbol:string):void;onAll():void;onRefresh():void;busy:boolean}){
   const fx=state.fx?.usdKRW??null;const cash=(state.cash.KRW??0)+(state.cash.USD??0)*(fx??0);
-  const equity=state.rows.reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash;
+  const equity=state.rows.reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash+pendingKRW(state);
   const rows=[...state.rows].sort((a,b)=>(b.valueKRW??0)-(a.valueKRW??0));const top=rows.slice(0,6);
   const [group,setGroup]=useDraftState('portfolio:group','Company');
   const labelOf=(r:PortfolioRow)=>group==='Sector'?r.sector:group==='Region'?r.region:group==='Market'?(r.market==='KR'?'Korea':'U.S.'):group==='Currency'?r.currency:r.name;

@@ -1,3 +1,4 @@
+import {pendingKRW} from './pending';
 import {toast} from './Toast';
 import {PortfolioProfit} from './PortfolioProfit';
 import {useEffect,useState} from 'react';
@@ -18,7 +19,7 @@ export function UnifiedPortfolio({mode='overview',onCompany}:{mode?:'overview'|'
   const rows=state.rows.filter(row=>market==='all'||row.market===market);const factor=market==='US'?state.fx?.usdKRW:null;
   const baseKnown=market==='KR'||state.fx!=null||state.totals.USD===0;const loaded=market==='KR'?state.timestamps.KR!=null:market==='US'?state.timestamps.US!=null:state.complete;
   const cashKRW=market==='KR'?state.cash.KRW??0:market==='US'?(state.cash.USD??0)*(factor??0):(state.cash.KRW??0)+(state.cash.USD??0)*(state.fx?.usdKRW??0);
-  const equity=loaded&&baseKnown?rows.reduce((sum,row)=>sum+(row.valueKRW??0),0)+cashKRW:null;
+  const equity=loaded&&baseKnown?rows.reduce((sum,row)=>sum+(row.valueKRW??0),0)+cashKRW+(market==='KR'?0:pendingKRW(state)):null;
   const buckets=new Map<string,{label:string;value:number;percent:number;color:string;members?:{name:string;symbol:string;value:number}[]}>();
   if(equity!=null){for(const row of rows){const label=group==='Sector'?row.sector:group==='Region'?row.region:group==='Market'?row.market==='KR'?'Korea':'U.S.':group==='Currency'?row.currency:row.name;const old=buckets.get(label);buckets.set(label,{label,value:(old?.value??0)+(row.valueKRW??0),percent:0,color:old?.color??row.color,members:[...(old?.members??[]),{name:row.name,symbol:row.symbol,value:row.valueKRW??0}]});}buckets.set('Cash',{label:'Cash',value:cashKRW,percent:0,color:'#7e858c'});for(const row of buckets.values())row.percent=equity?row.value/equity*100:0;}
   const sample=state.valuationSample??Math.max(Date.parse(state.timestamps.KR??'')||0,Date.parse(state.timestamps.US??'')||0);
