@@ -616,15 +616,17 @@ class Automation {
     return {mode,holdingPct:T,watchlistPct:W,symbols:Object.fromEntries((this.discovery?.list?.()??[]).map(e=>{const w=watches.find(x=>x.symbol===e.symbol);
       return [e.symbol,held.has(e.symbol)?{kind:'holding',pct:w?.percent??T}:w?.price!=null&&!w.priceFired?{kind:'entry-level',price:w.price,direction:w.direction}:{kind:'watching',pct:w?.percent??W}];}))};}
   // The price review to start, if any: the one rule for every quoted symbol (watchlistAlerts 'off'), or the selective
-  // rules of electron/watch-alerts.cjs ('on'). 'observe' keeps the one rule and logs what the selective rules would do.
+  // rules of electron/watch-alerts.cjs ('on'). 'observe' keeps the one rule and logs what the selective rules would do:
+  // both read the watches as they were before this check, and the selective rules keep their own record of fired
+  // levels, so the rule in force marking a level fired does not hide it from them.
   priceTrigger(scope,quotes,now=Date.now()){
-    const mode=this.config.watchlistAlerts??'off';const current=mode==='on'?null:this.watches.detect(scope,quotes,this.lastPrices,this.config.eventTolerancePct,now);
+    const mode=this.config.watchlistAlerts??'off';const watches=this.watches.list(scope);const current=mode==='on'?null:this.watches.detect(scope,quotes,this.lastPrices,this.config.eventTolerancePct,now);
     if(current?.kind==='price')this.watches.fired(scope,current.symbol);if(mode==='off')return current;
     const fresh=quotes.filter(q=>{const t=q.timestamp??q.retrievedAt;return !q.stale&&q.price>0&&Number.isFinite(t)&&t<=now+1000&&now-t<=90000&&this.sessionOpen(/:/.test(q.symbol)?'US':'KR',now);}).map(q=>({...q,timestamp:q.timestamp??q.retrievedAt}));
     const held=new Set(heldSymbols(this.brokerPositions()));const tolerance=this.config.eventTolerancePct;
-    const {trigger,commit}=this.watchAlerts.check({quotes:fresh,held,baselines:this.lastPrices,watches:this.watches.list(scope),tolerance,wide:this.config.watchlistMovePct??2*tolerance,now});
-    if(mode==='observe'){commit();try{this.alertObservations.record(now,{current,proposed:trigger,held});}catch{}return current;}
-    if(trigger)for(const symbol of commit())this.watches.fired(scope,symbol);return trigger;}
+    const {trigger,deliver}=this.watchAlerts.check({quotes:fresh,held,baselines:this.lastPrices,watches,tolerance,wide:this.config.watchlistMovePct??2*tolerance,now,ownFired:mode==='observe'});
+    if(mode==='observe'){deliver();try{this.alertObservations.record(now,{current,proposed:trigger,held});}catch{}return current;}
+    for(const symbol of deliver())this.watches.fired(scope,symbol);return trigger;}
   // Today's change of each holding whose market has a session open and whose quote is fresh: [{symbol, changePct}].
   // Korean quotes carry it; U.S. ones are measured against the previous close, from the quote or the daily closes.
   heldMoves(context){const quotes=context.quotes??[];const data=this.formulaData(quotes);
