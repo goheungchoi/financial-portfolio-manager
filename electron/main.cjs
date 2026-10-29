@@ -16,7 +16,21 @@ const { pathToFileURL } = require('node:url');
 const kisService = new KisService();
 let streamState={status:'disconnected',subscribed:0};
 kisService.onStatus=state=>{streamState={status:state.status,subscribed:state.subscribed,retryInMs:state.retryInMs};if(kisState.snapshot)broadcastMarket();};
+// Live Charts: each window tells the app which symbol it shows. Korean symbols join the KIS stream (after holdings);
+// U.S. symbols are polled every 10 seconds while a U.S. session the app can trade is open, and Korean ones too while the
+// stream is not connected. Ticks go only to the windows showing that symbol; they do not feed the portfolio or reviews.
+const chartWatch=new Map(),chartVolume=new Map();let chartStreamKey='',lastChartPoll=0,chartPolling=false;
+const chartSymbols=()=>[...new Set(chartWatch.values())];
+function sendChartTick(tick){for(const [id,symbol] of chartWatch){if(symbol!==tick.symbol)continue;const contents=require('electron').webContents.fromId(id);if(contents&&!contents.isDestroyed())contents.send('chart:tick',tick);}}
+function syncChartStream(){const kr=chartSymbols().filter(s=>/^\d{6}$/.test(s)).slice(0,5);const key=kisService.generation+':'+kr.join(',');if(key===chartStreamKey||!kisState.snapshot)return;chartStreamKey=key;void kisService.request('chart-stream',{symbols:kr}).catch(()=>{chartStreamKey='';});}
+async function pollCharts(){if(chartPolling)return;chartPolling=true;try{
+  for(const symbol of chartSymbols().filter(s=>s.includes(':'))){if(!automation?.sessionOpen('US'))break;try{const q=await kisService.request('us-quote',{symbol,sessions:automation.sessionOptions()});if(q?.price>0)sendChartTick({symbol,price:q.price,timestamp:q.retrievedAt,session:q.session??null,source:'poll'});}catch{}}
+  const kr=chartSymbols().filter(s=>/^\d{6}$/.test(s));if(kr.length&&streamState.status!=='connected'&&automation?.sessionOpen('KR')){try{for(const q of await kisService.request('quotes',{symbols:kr}))if(q?.price>0)sendChartTick({symbol:q.symbol,price:q.price,timestamp:q.retrievedAt,...(Number.isFinite(q.volume)?{dayVolume:q.volume}:{}),source:'poll'});}catch{}}
+}finally{chartPolling=false;}}
 kisService.onQuote=quote=>{
+  // A charted symbol's trade goes to its chart; the day's volume so far also gives this trade's volume.
+  if(chartWatch.size&&chartSymbols().includes(quote.symbol)){const before=chartVolume.get(quote.symbol);chartVolume.set(quote.symbol,quote.cumulativeVolume);
+    sendChartTick({symbol:quote.symbol,price:quote.price,timestamp:quote.timestamp,dayVolume:quote.cumulativeVolume,volume:before!=null&&quote.cumulativeVolume>before?quote.cumulativeVolume-before:0,source:'stream'});}
   if(!kisState.snapshot?.holdings.some(row=>row.symbol===quote.symbol))return;
   const previous=kisQuotes.get(quote.symbol);
   if(previous?.source==='stream' && (quote.timestamp<previous.timestamp || quote.timestamp===previous.timestamp && quote.cumulativeVolume<=previous.cumulativeVolume))return;
@@ -166,6 +180,9 @@ app.whenReady().then(async () => {
   marketProvider = new market.SyntheticMarketProvider(store.latestSnapshot().holdings);
   const startFeed = () => marketProvider.start(quote=>marketCache.accept(quote));
   const publishMarket = () => {
+    // A restarted worker (a new connection) gets the charted symbols again.
+    if(chartWatch.size)syncChartStream();
+    if(chartWatch.size&&kisState.snapshot&&!kisService.isBusy&&Date.now()-lastChartPoll>=10000){lastChartPoll=Date.now();void pollCharts();}
     paper?.tick();
     automation?.tick();if(notifier){notifier.observe([...paper.orders(),...live.orders(),...(usLive?.orders()??[])]);void notifier.tick();}
     if(kisState.snapshot && !kisService.isBusy && !live.busy && Date.now()-lastReconcile>30000){lastReconcile=Date.now();void live.reconcile().catch(()=>{}).finally(()=>automation?.observeReconcile('KR',live.reconcileHealth));if(usSnapshot)void usLive.reconcile().catch(()=>{}).finally(()=>automation?.observeReconcile('US',usLive.reconcileHealth));}
@@ -203,6 +220,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('chart:pop-out',(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))throw new Error('INVALID_REQUEST');openChartWindow(symbol);return true;});
   // Bars for the Charts technical summary, kept for a minute per symbol; the daily bars come with the company view.
   const barsCache=new Map();
+  ipcMain.handle('chart:watch',(event,symbol)=>{authorize(event);const id=event.sender.id;
+    if(symbol==null)chartWatch.delete(id);else{if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))throw new Error('INVALID_REQUEST');
+      if(!chartWatch.has(id))event.sender.once('destroyed',()=>{chartWatch.delete(id);syncChartStream();});chartWatch.set(id,symbol);lastChartPoll=0;}
+    syncChartStream();return true;});
   ipcMain.handle('chart:bars',async(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))return {error:'INVALID_REQUEST'};if(!kisState.snapshot)return {error:'KIS_NOT_CONNECTED'};
     const generation=kisGeneration,key=generation+':'+symbol,cached=barsCache.get(key);if(cached&&Date.now()-cached.timestamp<60000)return cached.value;
     try{const value=await kisService.request('chart-bars',{request:{symbol}});if(generation!==kisGeneration)return {error:'ACCOUNT_CHANGED'};if(barsCache.size>20)barsCache.clear();barsCache.set(key,{timestamp:Date.now(),value});return value;}

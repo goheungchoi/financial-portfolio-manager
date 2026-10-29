@@ -1,7 +1,9 @@
 const fs=require('node:fs/promises');
 const {KisReadOnlyClient}=require('./kis-client.cjs');
 const {KisQuoteStream,aggregateFiveMinutes}=require('./kis-stream.cjs');
-let client; let stream; let busy=false; let symbols=new Set();const prepared=new Map();
+let client; let stream; let busy=false; let symbols=new Set();let chartSymbols=[];
+// The stream follows holdings first, then the Korean symbols open on Charts, within the 20-symbol limit.
+const streamSymbols=()=>[...new Set([...symbols,...chartSymbols])].slice(0,20);const prepared=new Map();
 process.parentPort.on('message',async ({data})=>{
   const {id,operation}=data;
   if(busy) {process.parentPort.postMessage({id,ok:false,code:'BUSY'});return;}
@@ -27,6 +29,7 @@ process.parentPort.on('message',async ({data})=>{
     if(operation.startsWith('us-')) {
       const us=new (require('./kis-overseas.cjs').OverseasClient)(client);let snapshot;const sessions=require('./market-sessions.cjs');const sess=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:data.sessions??{}});
       if(operation==='us-context')snapshot=await us.context(data.symbols??[],sess);
+      else if(operation==='us-quote')snapshot={...await us.quote(data.symbol,sess?.id==='us-daytime'?'daytime':'regular'),session:sess?.id??null};
       else if(operation==='us-orders')snapshot=await us.orders(data.startDate);
       else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end);
       else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
@@ -78,6 +81,10 @@ process.parentPort.on('message',async ({data})=>{
     if(operation==='screen') {
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-rankings.cjs').rankings(client,data.request)});return;
     }
+    if(operation==='chart-stream') {
+      if(!Array.isArray(data.symbols)||data.symbols.length>5||data.symbols.some(symbol=>!/^\d{6}$/.test(symbol)))throw new Error('INVALID_REQUEST');
+      chartSymbols=[...data.symbols];stream.setSymbols(streamSymbols());process.parentPort.postMessage({id,ok:true,snapshot:{subscribed:streamSymbols()}});return;
+    }
     if(operation==='quotes') {
       const quotes=[];
       const requested=data.symbols??[...symbols];if(!Array.isArray(requested)||requested.length>20||requested.some(symbol=>!/^\d{6}$/.test(symbol)))throw new Error('INVALID_REQUEST');
@@ -93,7 +100,7 @@ process.parentPort.on('message',async ({data})=>{
     if(!['import','refresh'].includes(operation))throw new Error();
     const snapshot=await client.getBalance();
     symbols=new Set(snapshot.holdings.map(row=>row.symbol));
-    stream.setSymbols(symbols);
+    stream.setSymbols(streamSymbols());
     process.parentPort.postMessage({id,ok:true,snapshot});
   } catch(error) {
     const allowed=['INVALID_CREDENTIAL_FILE','CREDIT_ACCOUNT_REQUIRED','INVALID_RESPONSE','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','INCOMPLETE_BALANCE','INCOMPLETE_HISTORY','INVALID_DATE_RANGE','FEATURE_UNAVAILABLE','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','ORDER_UNCERTAIN'];

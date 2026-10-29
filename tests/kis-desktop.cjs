@@ -7,13 +7,14 @@ const {KisService}=require('../electron/kis-service.cjs');
 const snapshot={source:'kis',environment:'mock',timestamp:new Date().toISOString(),cash:500,reportedTotal:800,holdings:[{symbol:'005380',name:'Fixture company',quantity:2,cost:100,price:150,marketValue:300,unrealized:100}]};
 let fixtureService;
 dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path.join(process.env.PORTFOLIO_SMOKE_DATA,'fixture-only-no-file-read.json')]});
-const chartBarRequests=[];
+const chartBarRequests=[],chartStreams=[];
 const wander=(n,step,end)=>{let prev=200+10*Math.sin(-n/6);return Array.from({length:n},(_,i)=>{const close=i===n-1?200:Math.round((200+10*Math.sin((i-(n-1))/6)+3*Math.sin(i*1.7))*100)/100,open=prev;prev=close;return {timestamp:end-(n-1-i)*step,open,high:Math.max(open,close)+2,low:Math.min(open,close)-2,close,volume:100+i};});};
 KisService.prototype.request=async function(operation,payload) {
   fixtureService=this;
   if(operation==='quotes')return [{symbol:'005380',price:200,retrievedAt:Date.now()}];
   // Bars that wander around 200 and end at 200, so every timeframe of the technical summary has readings.
   if(operation==='company-chart')return {status:'available',metrics:{price:200,PER:10},candles:wander(220,86400000,Date.parse('2026-10-14T00:00:00+09:00')),data:{SMA5:null}};
+  if(operation==='chart-stream'){chartStreams.push(payload.symbols);return {subscribed:payload.symbols};}
   if(operation==='chart-bars'){const open=Date.parse(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul'}).format(new Date())+'T09:00:00+09:00');chartBarRequests.push(payload.request.symbol);
     return {symbol:payload.request.symbol,market:'KR',retrievedAt:Date.now(),frames:{'1m':wander(200,60000,open+199*60000),'1w':wander(150,7*86400000,Date.parse('2026-10-12T00:00:00+09:00')),'1M':wander(80,30*86400000,Date.parse('2026-10-01T00:00:00+09:00'))},errors:{}};}
   if(operation==='history')return [{timestamp:Date.parse('2026-10-14T00:00:00+09:00'),open:100,high:210,low:90,close:200,volume:100}];
@@ -71,6 +72,16 @@ app.once('browser-window-created',(_event,win)=>{
         assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll(".ta-card")[1].querySelectorAll("tbody tr").length'),12,frame);}
       await win.webContents.executeJavaScript('document.querySelector(".technical-summary").scrollIntoView()');await new Promise(resolve=>setTimeout(resolve,100));
       fs.writeFileSync(path.join(__dirname,'../artifacts/technical-summary.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+      // Live Charts: the charted symbol joins the stream, and its trades move the price, today's bar and the summary.
+      assert.deepEqual(chartStreams.at(-1),['005930'],'the charted symbol joins the stream');
+      fixtureService.onQuote({symbol:'005930',price:230,timestamp:Date.now(),receivedAt:Date.now(),cumulativeVolume:5000});await new Promise(resolve=>setTimeout(resolve,150));
+      fixtureService.onQuote({symbol:'005930',price:231,timestamp:Date.now()+1000,receivedAt:Date.now(),cumulativeVolume:5040});await new Promise(resolve=>setTimeout(resolve,150));
+      assert.match(await win.webContents.executeJavaScript('document.querySelector(".company-last").textContent'),/231/,'the header shows the latest trade');
+      assert.match(await win.webContents.executeJavaScript('document.querySelector(".company-last").textContent'),/Live/);
+      await win.webContents.executeJavaScript("{const select=document.querySelectorAll('.section-head select')[1];select.value='1d';select.dispatchEvent(new Event('change',{bubbles:true}));}");await new Promise(resolve=>setTimeout(resolve,150));
+      const summary=await win.webContents.executeJavaScript('document.querySelector(".candle-summary").textContent');assert.ok(summary.includes('C 231')&&summary.includes('H 231')&&summary.includes('O 230'),'the daily bar for today is built from the trades: '+summary);
+      assert.notEqual(await win.webContents.executeJavaScript('document.querySelector(".ta-frame.selected").textContent'),'','the summary is still shown');
+      fs.writeFileSync(path.join(__dirname,'../artifacts/live-chart.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Activity').click()");
       await new Promise(resolve=>setTimeout(resolve,100));
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Load history').click()");

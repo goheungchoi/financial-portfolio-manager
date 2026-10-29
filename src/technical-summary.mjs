@@ -7,7 +7,7 @@ export const MA_PERIODS=[5,10,20,50,100,200];
 export const RATINGS={'strong-buy':'Strong buy',buy:'Buy',neutral:'Neutral',sell:'Sell','strong-sell':'Strong sell'};
 export const SIGNALS={buy:'Buy',sell:'Sell',neutral:'Neutral',overbought:'Overbought',oversold:'Oversold','high-volatility':'High volatility','low-volatility':'Low volatility'};
 const sum=a=>a.reduce((x,y)=>x+y,0);
-const round=(v,d=4)=>v==null||!Number.isFinite(v)?null:Math.round(v*10**d)/10**d;
+const round=(v,d=4)=>v==null||!Number.isFinite(v)?null:Math.round(v*10**d)/10**d||0;
 // Exponential average seeded with the simple average of the first n values; one value per bar from bar n.
 function ema(values,n){if(values.length<n)return [];const k=2/(n+1);let e=sum(values.slice(0,n))/n;const out=[e];for(const v of values.slice(n)){e=v*k+e*(1-k);out.push(e);}return out;}
 function wilder(values,n){if(values.length<n)return [];let s=sum(values.slice(0,n))/n;const out=[s];for(const v of values.slice(n)){s=(s*(n-1)+v)/n;out.push(s);}return out;}
