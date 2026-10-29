@@ -67,3 +67,27 @@ test('review: a failed next-session read does not spend the budget; padded symbo
   tools.update_watchlist({action:'add',entries:[{symbol:' 233740',reason:''},{symbol:'233740',reason:'Chip lead'}]});
   assert.deepEqual(added.map(e=>e.reason),['',NEXT_SESSION_LABEL+'Chip lead'],'an empty reason stays empty, so it cannot replace an existing one');
 });
+test('a carried target is flagged for reassessment when a later trading review contradicts it or the price moved',()=>{
+  // 2026-10-29: the 09:11 plan carried an Alphabet hold thesis written before its October 28 results, after trading
+  // reviews had recommended selling on them.
+  const {staleCarried,reviewContext}=require('../electron/scout.cjs');const setAt='2026-10-28T09:53:06.475Z';const at=iso=>Date.parse(iso);
+  const t=(symbol,role)=>({symbol,name:symbol,role,targetWeightPct:10,thesis:'Accept the October 28 earnings risk.',risks:'r',carriedFrom:setAt});
+  const targets=[t('NASD:GOOGL','hold'),t('NASD:NVDA','hold'),t('NYSE:PNR','hold'),{...t('028050','hold'),carriedFrom:undefined},t('NASD:AMD','exit')];
+  const reviews=[{timestamp:at('2026-10-29T00:30:00Z'),decision:{action:'Sell',symbol:'NASD:GOOGL',planVerdicts:[]}},{timestamp:at('2026-10-29T00:20:00Z'),decision:{action:'Hold',symbol:'',planVerdicts:[{symbol:'NYSE:PNR',verdict:'passed',reason:'Release figures weaken the free-cash-flow case.'}]}},
+    {timestamp:at('2026-10-28T08:00:00Z'),decision:{action:'Sell',symbol:'NASD:NVDA',planVerdicts:[]}},{timestamp:at('2026-10-29T00:40:00Z'),decision:{action:'Buy',symbol:'NASD:AMD',planVerdicts:[]}}];
+  const closes={'NASD:NVDA':200};const stale=staleCarried(targets,{reviews,price:s=>({'NASD:NVDA':188,'NASD:GOOGL':295})[s]??null,closeBefore:s=>closes[s]??null,movePct:6});
+  assert.deepEqual(stale.map(s=>s.symbol),['NASD:GOOGL','NASD:NVDA','NYSE:PNR','NASD:AMD']);
+  assert.match(stale[0].reasons[0],/2026-10-29 00:30 UTC recommended Sell/);assert.match(stale[1].reasons[0],/moved -6\.0% since/,'the earlier NVDA sell predates the target; the move counts');
+  assert.match(stale[2].reasons[0],/passed on it: Release figures/);assert.match(stale[3].reasons[0],/recommended Buy/,'a buy against an exit target');
+  assert.deepEqual(staleCarried(targets,{reviews:[],price:()=>190,closeBefore:()=>200}).map(s=>s.symbol),[],'a 5% move is under the threshold');
+  const ctx=reviewContext({timestamp:at('2026-10-29T00:11:42Z'),plan:{summary:'s',targets}},at('2026-10-29T01:00:00Z'),{stale});
+  assert.deepEqual(ctx.targets.find(x=>x.symbol==='NASD:GOOGL').needsReassessment,stale[0].reasons);assert.equal(ctx.targets.find(x=>x.symbol==='028050').needsReassessment,undefined);
+});
+test('a closed-market run reads flagged targets without spending next-session reads, and its new target replaces only that one',async()=>{
+  const {focusTools,carryForward}=require('../electron/scout.cjs');const read=[];const tools=focusTools({research:async a=>{read.push(a.symbol);return {status:'ok'};}},{markets:['KR'],deferred:['US']},{reads:0,reassess:['NASD:GOOGL']});
+  assert.match((await tools.get_company_research({symbol:'NASD:GOOGL'})).reassessment.note,/reassess a carried target/);assert.equal((await tools.get_company_research({symbol:'NASD:MSFT'})).status,'skipped','other closed-market reads keep their budget');assert.deepEqual(read,['NASD:GOOGL']);
+  const previous={timestamp:Date.parse('2026-10-28T09:53:06Z'),plan:{targets:[{symbol:'NASD:GOOGL',role:'hold',thesis:'old'},{symbol:'NASD:NVDA',role:'hold',thesis:'t'},{symbol:'NYSE:PNR',role:'hold',thesis:'t'}]}};
+  const plan={targets:[{symbol:'028050',role:'hold',thesis:'t'},{symbol:'NASD:GOOGL',role:'trim',thesis:'Results cut the cash-flow case.'}]};const now=Date.parse('2026-10-29T00:11:42Z');
+  assert.deepEqual(carryForward(plan,previous,['US'],now,{reassessed:['NASD:GOOGL']}).targets.map(t=>`${t.symbol}:${t.role}`),['028050:hold','NASD:GOOGL:trim','NASD:NVDA:hold','NYSE:PNR:hold']);
+  assert.deepEqual(carryForward(plan,previous,['US'],now).targets.map(t=>t.symbol),['028050','NASD:GOOGL'],'unasked, a U.S. target still covers the market');
+});
