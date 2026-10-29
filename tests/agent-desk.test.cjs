@@ -51,19 +51,24 @@ test('conditional orders need the setting, valid inputs and room; the context sh
   assert.equal(desk.setOrder('kis:a',{action:'cancel',id:armed.id},{config:on}).status,'cancelled');assert.equal(desk.orders('kis:a').length,1);
   assert.deepEqual(desk.context('kis:a',off,U).conditionalOrders.allowed,false);assert.equal(desk.context('kis:a',on,U).conditionalOrders.maxSlippagePct,2);
 });
-test('a held position whose stop loss was rejected is listed as unprotected until a sell order is armed again',()=>{
+test('a held position whose stop loss was rejected stays unprotected until stop losses cover its shares or the user dismisses it',()=>{
   // 2026-10-29: the GOOGL stop loss was rejected at 09:15 (KIS_ORDER_BUSY) and later reviews treated the position as if it waited on a stop.
-  let now=Date.parse('2026-10-29T00:15:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const U=['NASD:GOOGL','005930'];const on={...COND_DEFAULTS,conditionalOrders:true};
-  const stop=(symbol='NASD:GOOGL')=>desk.setOrder('kis:a',{action:'add',id:'',symbol,side:'Sell',quantity:2,limitPrice:null,conditions:[{expr:`price("${symbol}")`,op:'<=',value:290}],combine:'all',purpose:'stop_loss',expiresInHours:48,reason:'Protect the gain'},{config:on,universe:U});
-  const reject=(id,outcome)=>desk.update(desk.orders('kis:a').find(o=>o.id===id),{status:'rejected',outcome,closedAt:now});
-  const first=stop();assert.deepEqual(desk.unprotected('kis:a',['NASD:GOOGL']),[],'an armed stop protects');
+  let now=Date.parse('2026-10-29T00:15:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const U=['NASD:GOOGL','005930'];const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:5};
+  const order=(purpose,quantity,op,value)=>desk.setOrder('kis:a',{action:'add',id:'',symbol:'NASD:GOOGL',side:'Sell',quantity,limitPrice:null,conditions:[{expr:'price("NASD:GOOGL")',op,value}],combine:'all',purpose,expiresInHours:48,reason:'r'},{config:on,universe:U});
+  const stop=(quantity=2)=>order('stop_loss',quantity,'<=',290);const reject=(id,outcome)=>desk.update(desk.orders('kis:a').find(o=>o.id===id),{status:'rejected',outcome,closedAt:now});
+  const held={'NASD:GOOGL':{quantity:2}};const list=(positions=held)=>desk.unprotected('kis:a',positions);
+  const first=stop();assert.deepEqual(list(),[],'an armed stop protects');
   reject(first.id,'The broker or a risk check refused it (KIS_ORDER_BUSY).');
-  const [u]=desk.unprotected('kis:a',['NASD:GOOGL','005930']);assert.equal(u.symbol,'NASD:GOOGL');assert.equal(u.orderId,first.id);assert.equal(u.temporary,true);
-  const ctx=desk.context('kis:a',on,U,['NASD:GOOGL']).conditionalOrders;assert.equal(ctx.unprotected.length,1);assert.match(ctx.unprotectedNote,/not protection/);
-  assert.equal(desk.context('kis:a',on,U,[]).conditionalOrders.unprotected,undefined,'shares gone: nothing to protect');
-  now+=3600000;const second=stop();assert.deepEqual(desk.unprotected('kis:a',['NASD:GOOGL']),[],'re-armed');
-  reject(second.id,'The broker or a risk check refused it (KIS_LIMIT_BAND).');assert.equal(desk.unprotected('kis:a',['NASD:GOOGL'])[0].temporary,false,'a lasting refusal');
-  now+=8*86400000;assert.deepEqual(desk.unprotected('kis:a',['NASD:GOOGL']),[],'listed for a week at most');
+  const [u]=list({...held,'005930':{quantity:1}});assert.equal(u.symbol,'NASD:GOOGL');assert.equal(u.orderId,first.id);assert.equal(u.temporary,true);assert.equal(u.quantity,2);assert.equal(u.coveredQuantity,0);
+  const ctx=desk.context('kis:a',on,U,held).conditionalOrders;assert.equal(ctx.unprotected.length,1);assert.match(ctx.unprotectedNote,/not protection/);
+  assert.equal(desk.context('kis:a',on,U,{'NASD:GOOGL':{quantity:0}}).conditionalOrders.unprotected,undefined,'shares gone: nothing to protect');
+  // Review P1: an armed take-profit cleared the warning though nothing limited a fall.
+  order('take_profit',2,'>=',400);assert.equal(list()[0].coveredQuantity,0,'a take-profit is not a replacement stop');
+  const half=stop(1);const [p]=list();assert.equal(p.partial,true);assert.equal(p.coveredQuantity,1);assert.equal(p.quantity,2);
+  const rest=stop(1);assert.deepEqual(list(),[],'two stops cover both shares');desk.cancelOrder('kis:a',rest.id);assert.equal(list()[0].coveredQuantity,1);
+  reject(half.id,'The broker or a risk check refused it (KIS_LIMIT_BAND).');const [l]=list();assert.equal(l.orderId,half.id);assert.equal(l.temporary,false,'a lasting refusal');assert.equal(l.quantity,1,'what that stop was for');
+  now+=8*86400000;assert.equal(list().length,1,'time passing does not restore protection');
+  assert.throws(()=>desk.dismissUnprotected('kis:a','C-nope'),/NOT_FOUND/);desk.dismissUnprotected('kis:a',half.id);assert.deepEqual(list(),[],'dismissed by the user');
 });
 test('limit prices land on the exchange tick',()=>{
   assert.equal(krTick(1500),1);assert.equal(krTick(150000),100);assert.equal(krTick(250000),500);assert.equal(onTick(217040,'Buy','KR'),217000);assert.equal(onTick(217040,'Sell','KR'),217500,'500-won ticks from 200,000');assert.equal(onTick(12.341,'Buy','US'),12.35);assert.equal(onTick(12.349,'Sell','US'),12.34);

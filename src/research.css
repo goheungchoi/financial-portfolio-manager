@@ -72,6 +72,7 @@ tr.flash-up td{animation:flash-up 1.4s ease-out}tr.flash-down td{animation:flash
 .desk-list small{display:block;color:var(--muted);margin-top:3px;font-size:12px}
 .desk-list .desk-reason{color:inherit;opacity:.85}
 .desk-list.compact>li{padding:6px 10px}
+.desk-alert{display:flex;justify-content:space-between;align-items:center;gap:12px}.desk-alert p{margin:4px 0}.desk-alert button{flex-shrink:0}
 .agent-desk .research-sub:first-of-type{margin-top:6px}
 .news-sources{margin-top:12px;display:grid;gap:10px}.news-sources .inline-check .switch{margin-right:6px}
 .regime{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;margin-right:6px;background:var(--control);color:var(--muted)}

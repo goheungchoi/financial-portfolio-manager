@@ -11,3 +11,13 @@ test('a shorter interval than the user\'s needs a moving holding, is at least fi
   const saved=interval.set('a',{minutes:10,reason:'E&A falling 3.4%'},auto,moving);assert.equal(saved.status,'saved');assert.equal(saved.minutes,10);assert.equal(saved.until,'2026-10-29T05:18:00.000Z');
   now+=59*60000;assert.equal(interval.get('a',auto).minutes,10);now+=60000;const back=interval.get('a',auto);assert.equal(back.minutes,30,'after an hour');assert.match(back.reason,/ended after an hour/);assert.equal(back.until,undefined);
 });
+test('review P2: a short interval saved before the rule, in an existing database, falls back to the user\'s interval',()=>{
+  // As the live database held it on 2026-10-29: the agent's 5-minute interval, saved with no end.
+  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE review_intervals(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');
+  db.prepare('INSERT INTO review_intervals VALUES(?,?)').run('a',JSON.stringify({minutes:5,reason:'Korean construction down ~5%, E&A IR profit mix unverified',updatedAt:Date.parse('2026-10-29T04:45:14Z')}));
+  db.prepare('INSERT INTO review_intervals VALUES(?,?)').run('b',JSON.stringify({minutes:45,reason:'Calm',updatedAt:1}));
+  const interval=new ReviewInterval(db,()=>Date.parse('2026-10-29T06:00:00Z'));const auto={autoReviewInterval:true,intervalMinutes:30,eventTolerancePct:3};
+  const a=interval.get('a',auto);assert.equal(a.minutes,30,'the saved 5 minutes no longer applies');assert.match(a.reason,/no longer applies/);
+  assert.equal(interval.set('a',{minutes:5,reason:'Still waiting on the presentation'},auto).status,'rejected');assert.equal(interval.get('a',auto).minutes,30,'and a refused request does not bring it back');
+  assert.equal(interval.get('b',auto).minutes,45,'a longer saved interval still applies');assert.equal(interval.get('b',{...auto,intervalMinutes:60}).minutes,60,'until the user raises theirs above it');
+});

@@ -9,6 +9,9 @@ class ReviewInterval{
   get(scope,config){const row=this.db.prepare('SELECT payload FROM review_intervals WHERE scope=?').get(scope);let selected=row?JSON.parse(row.payload):null;
     const base=Math.min(60,config.intervalMinutes);const ended=config.autoReviewInterval&&selected?.until&&this.clock()>=selected.until;
     if(ended)selected={minutes:base,reason:'The shorter interval ended after an hour; back to your interval until the agent sets another.',updatedAt:selected.until};
+    // A shorter interval saved without an end (before the rule above, or before the user raised their interval) never
+    // passed the moving-holding check: the user's interval applies until the agent sets one that does.
+    else if(config.autoReviewInterval&&selected&&!selected.until&&selected.minutes<base)selected={minutes:base,reason:'An earlier shorter interval no longer applies; back to your interval until the agent sets another.',updatedAt:selected.updatedAt};
     return {auto:config.autoReviewInterval===true,minutes:config.autoReviewInterval?selected?.minutes??base:config.intervalMinutes,reason:config.autoReviewInterval?selected?.reason??'Using your interval until the agent selects one.':'Fixed interval',updatedAt:selected?.updatedAt??null,...(config.autoReviewInterval&&selected?.until&&!ended?{until:new Date(selected.until).toISOString()}:{})};}
   // heldMoves: today's change of each holding whose market has a session open, [{symbol, changePct}].
   set(scope,value,config,{heldMoves=[]}={}){if(!config.autoReviewInterval)return {status:'rejected',reason:'AUTO_INTERVAL_DISABLED'};if(!value||Object.keys(value).sort().join()!=='minutes,reason'||!Number.isInteger(value.minutes)||value.minutes<1||value.minutes>60||typeof value.reason!=='string'||!value.reason.trim()||value.reason.length>500)return {status:'rejected',reason:'INVALID_INTERVAL'};

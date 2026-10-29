@@ -230,4 +230,6 @@ test('a trading review sees a carried target flagged once a later review recomme
   a.scoutStore.save(a.watchScope(),{summary:'s',cashTargetPct:10,focus:'f',targets:[{symbol:'005930',name:'Samsung',role:'hold',targetWeightPct:20,thesis:'Accept the results risk.',risks:'r',carriedFrom:new Date(Date.now()-3600000).toISOString()}]},{runId:'r',trigger:'t',model:'m',usage:{},rounds:1,answered:[]});
   await a.review();assert.equal(supplied.at(-1)[1].context.scoutPlan.targets[0].needsReassessment,undefined,'nothing contradicts it yet');
   action='Hold';await a.review();const target=supplied.at(-1)[1].context.scoutPlan.targets[0];assert.match(target.needsReassessment[0],/recommended Sell/);
+  a.marketQuotes=()=>[{symbol:'005930',price:70000}];const priced=a.priceTargets({targets:[{symbol:'005930',role:'hold'},{symbol:'000660',role:'candidate'},{symbol:'NASD:NVDA',role:'hold',carriedFrom:'2026-10-28T09:53:06.475Z',priceWhenSet:200}]},5);
+  assert.deepEqual(priced.targets.map(t=>[t.priceWhenSet,t.priceWhenSetAt]),[[70000,5],[undefined,undefined],[200,undefined]],'new targets keep the price they were written at; carried ones keep theirs');
 });

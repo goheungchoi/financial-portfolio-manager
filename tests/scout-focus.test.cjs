@@ -75,11 +75,14 @@ test('a carried target is flagged for reassessment when a later trading review c
   const targets=[t('NASD:GOOGL','hold'),t('NASD:NVDA','hold'),t('NYSE:PNR','hold'),{...t('028050','hold'),carriedFrom:undefined},t('NASD:AMD','exit')];
   const reviews=[{timestamp:at('2026-10-29T00:30:00Z'),decision:{action:'Sell',symbol:'NASD:GOOGL',planVerdicts:[]}},{timestamp:at('2026-10-29T00:20:00Z'),decision:{action:'Hold',symbol:'',planVerdicts:[{symbol:'NYSE:PNR',verdict:'passed',reason:'Release figures weaken the free-cash-flow case.'}]}},
     {timestamp:at('2026-10-28T08:00:00Z'),decision:{action:'Sell',symbol:'NASD:NVDA',planVerdicts:[]}},{timestamp:at('2026-10-29T00:40:00Z'),decision:{action:'Buy',symbol:'NASD:AMD',planVerdicts:[]}}];
-  const closes={'NASD:NVDA':200};const stale=staleCarried(targets,{reviews,price:s=>({'NASD:NVDA':188,'NASD:GOOGL':295})[s]??null,closeBefore:s=>closes[s]??null,movePct:6});
+  targets[1]={...targets[1],priceWhenSet:200,priceWhenSetAt:at(setAt)};const stale=staleCarried(targets,{reviews,price:s=>({'NASD:NVDA':188,'NASD:GOOGL':295})[s]??null,movePct:6});
   assert.deepEqual(stale.map(s=>s.symbol),['NASD:GOOGL','NASD:NVDA','NYSE:PNR','NASD:AMD']);
-  assert.match(stale[0].reasons[0],/2026-10-29 00:30 UTC recommended Sell/);assert.match(stale[1].reasons[0],/moved -6\.0% since/,'the earlier NVDA sell predates the target; the move counts');
+  assert.match(stale[0].reasons[0],/2026-10-29 00:30 UTC recommended Sell/);assert.match(stale[1].reasons[0],/moved -6\.0% since the target was written \(200 at 2026-10-28 09:53 UTC\)/,'the earlier NVDA sell predates the target; the move counts');
   assert.match(stale[2].reasons[0],/passed on it: Release figures/);assert.match(stale[3].reasons[0],/recommended Buy/,'a buy against an exit target');
-  assert.deepEqual(staleCarried(targets,{reviews:[],price:()=>190,closeBefore:()=>200}).map(s=>s.symbol),[],'a 5% move is under the threshold');
+  assert.deepEqual(staleCarried(targets,{reviews:[],price:()=>190}).map(s=>s.symbol),[],'a 5% move is under the threshold');
+  // Review P2: a target written after a 10% rally, unchanged since, is not a move; one without a stored price gets no comparison.
+  const rally=[{...t('005930','hold'),priceWhenSet:110,priceWhenSetAt:at(setAt)},t('000660','hold')];assert.deepEqual(staleCarried(rally,{price:()=>110}),[],'measured from the price when written');
+  assert.deepEqual(staleCarried(rally,{price:()=>300}).map(s=>s.symbol),['005930'],'no baseline, no claimed move');
   const ctx=reviewContext({timestamp:at('2026-10-29T00:11:42Z'),plan:{summary:'s',targets}},at('2026-10-29T01:00:00Z'),{stale});
   assert.deepEqual(ctx.targets.find(x=>x.symbol==='NASD:GOOGL').needsReassessment,stale[0].reasons);assert.equal(ctx.targets.find(x=>x.symbol==='028050').needsReassessment,undefined);
 });

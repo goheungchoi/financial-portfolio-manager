@@ -159,18 +159,19 @@ function carryForward(plan,previous,deferred,now=Date.now(),{reassessed=[]}={}){
 }
 // Carried targets whose thesis newer evidence contradicts: a later trading review that recommended the opposite trade or
 // passed on the target, or a price move of movePct or more since the target was set. reviews: newest first, as stored.
-// closeBefore(symbol, iso): the last close before that time; price(symbol): the latest price.
+// price(symbol): the latest price, compared with the price stored when the target was written (priceWhenSet); a target
+// without one (written before it was stored) gets no price comparison.
 // 2026-10-29: the morning plan carried an Alphabet hold thesis that accepted the October 28 earnings risk, after five
 // trading reviews had recommended selling on those results.
 const KEEPS=['hold','add','candidate'],CUTS=['trim','exit'];
-function staleCarried(targets,{reviews=[],price=()=>null,closeBefore=()=>null,movePct=6}={}){
+function staleCarried(targets,{reviews=[],price=()=>null,movePct=6}={}){
   const day=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
   return (targets??[]).filter(t=>t.carriedFrom).flatMap(t=>{const since=Date.parse(t.carriedFrom);const reasons=[];
     for(const r of reviews){if(!(r.timestamp>since))continue;const d=r.decision;
       if(d?.symbol===t.symbol&&(d.action==='Sell'&&KEEPS.includes(t.role)||d.action==='Buy'&&CUTS.includes(t.role))){reasons.push(`A trading review at ${day(r.timestamp)} recommended ${d.action}.`);break;}
       const v=d?.planVerdicts?.find(x=>x.symbol===t.symbol);if(v?.verdict==='passed'&&KEEPS.includes(t.role)){reasons.push(`A trading review at ${day(r.timestamp)} passed on it: ${String(v.reason??'').slice(0,160)}`);break;}}
-    const then=closeBefore(t.symbol,t.carriedFrom),last=price(t.symbol);
-    if(then>0&&last>0){const m=(last/then-1)*100;if(Math.abs(m)>=movePct)reasons.push(`The price moved ${m>0?'+':''}${m.toFixed(1)}% since the target was set.`);}
+    const then=t.priceWhenSet,last=price(t.symbol);
+    if(then>0&&last>0){const m=(last/then-1)*100;if(Math.abs(m)>=movePct)reasons.push(`The price moved ${m>0?'+':''}${m.toFixed(1)}% since the target was written (${then} at ${day(t.priceWhenSetAt)}).`);}
     return reasons.length?[{symbol:t.symbol,role:t.role,setAt:t.carriedFrom,reasons}]:[];});
 }
 module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,dueSlot,ScoutStore,reviewContext,runScout};

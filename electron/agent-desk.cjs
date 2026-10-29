@@ -73,22 +73,28 @@ class AgentDesk {
     this.write('conditional_orders',o);return {status:'armed',id:o.id,expiresAt:new Date(o.expiresAt).toISOString(),note:config.conditionalAutoSubmit&&config.autoSubmit?'It will be submitted automatically when the conditions are met and every check passes.':'When the conditions are met it becomes a proposal that waits for approval.'};
   }
   update(order,patch){return this.write('conditional_orders',{...order,...patch});}
-  // Held positions whose latest stop loss was rejected and that have no armed sell order since: protection the AI meant to
-  // have but does not. Each stays listed until a sell order is armed for the symbol, the shares are gone, or a week passes.
+  // Held positions whose latest stop loss was rejected: protection the AI meant to have but does not. positions:
+  // {symbol: {quantity}}. Only stop losses count as protection (a take-profit or other sell does not limit a fall), and
+  // they must cover the shares the rejected stop was for (its quantity, at most the shares held); fewer is reported as
+  // partial with the shares covered. Each stays listed until stops cover those shares, the shares are gone, or the user
+  // dismisses it: time passing does not restore protection, and nor does cancelling a later stop.
   // temporary: refused for a passing reason (another order being sent, a timeout), so re-arming is expected to work.
-  unprotected(scope,held){this.expire(scope);const now=this.clock();const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing';
-    return held.flatMap(symbol=>{const stop=all.find(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss'&&!live(o));
-      if(stop?.status!=='rejected'||now-(stop.closedAt??0)>7*86400000||all.some(o=>o.symbol===symbol&&o.side==='Sell'&&live(o)))return [];
-      return [{symbol,orderId:stop.id,quantity:stop.quantity,rejectedAt:new Date(stop.closedAt).toISOString(),outcome:stop.outcome??null,temporary:TEMPORARY.test(stop.outcome??'')}];});}
+  unprotected(scope,positions){this.expire(scope);const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing';
+    return Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).flatMap(([symbol,p])=>{const stops=all.filter(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss');const last=stops.find(o=>!live(o)&&o.status!=='cancelled');
+      if(last?.status!=='rejected'||last.acknowledgedAt)return [];
+      const needed=Math.min(p.quantity,last.quantity),covered=stops.filter(live).reduce((n,o)=>n+o.quantity,0);if(covered>=needed)return [];
+      return [{symbol,orderId:last.id,quantity:needed,heldQuantity:p.quantity,coveredQuantity:covered,...(covered>0?{partial:true}:{}),rejectedAt:new Date(last.closedAt).toISOString(),outcome:last.outcome??null,temporary:TEMPORARY.test(last.outcome??'')}];});}
+  // The user has seen an unprotected holding and accepts it; the rejected stop stops being listed.
+  dismissUnprotected(scope,orderId){const o=this.rows('conditional_orders',scope,'rejected').find(x=>x.id===orderId);if(!o)throw new Error('NOT_FOUND');this.update(o,{acknowledgedAt:this.clock()});}
   cancelOrder(scope,id){const o=this.orders(scope).find(x=>x.id===id);if(!o)throw new Error('NOT_FOUND');this.update(o,{status:'cancelled',closedAt:this.clock(),closedBy:'user'});}
   // What a review sees of its desk.
-  context(scope,config,symbols,held=[]){
-    const unprotected=this.unprotected(scope,held);const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString()}));
+  context(scope,config,symbols,positions={}){
+    const unprotected=this.unprotected(scope,positions);const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString()}));
     return {notes:relevant,triggers:this.triggers(scope).map(t=>({id:t.id,name:t.name,conditions:t.conditions,combine:t.combine,expires:new Date(t.expiresAt).toISOString()})),
       conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxActive:config.conditionalMaxActive,maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours}:{}),
         armed:this.orders(scope).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString()})),
         recent:this.recentOrders(scope,5).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,purpose:o.purpose,status:o.status,outcome:o.outcome??null,at:new Date(o.closedAt??o.createdAt).toISOString()})),
-        ...(unprotected.length?{unprotected,unprotectedNote:'These holdings are not protected: their stop loss was rejected and nothing replaced it. A rejected order is not protection. Re-arm a stop loss (temporary: true means the refusal was passing, such as another order being sent), sell, or say in this review why the position stays unprotected. This stays listed until a sell order is armed or the shares are gone.'}:{})}};
+        ...(unprotected.length?{unprotected,unprotectedNote:'These holdings are not protected: their stop loss was rejected and nothing replaced it. A rejected order is not protection. Only a stop loss counts: a take-profit does not limit a fall. quantity is the shares the rejected stop was for and coveredQuantity what armed stop losses cover now (partial: true when some are). Re-arm a stop loss for the uncovered shares (temporary: true means the refusal was passing, such as another order being sent), sell, or say in this review why the position stays unprotected. This stays listed until stop losses cover those shares, the shares are gone, or the user dismisses it.'}:{})}};
   }
 }
 // Korean limit prices must sit on the exchange tick for their price band.
