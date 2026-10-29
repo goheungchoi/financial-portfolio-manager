@@ -206,3 +206,14 @@ test('an order cancelled or rejected after partial fills records when it was see
   try{await e.reconcile();}catch{}const saved=e.orders().find(o=>o.id==='o1');
   assert.equal(saved?.status,'Canceled');assert.ok(Number.isFinite(saved.filledObservedAt),'fills seen with the cancellation are timed');
 });
+test('an unsettled U.S. sale is not a withdrawal: the U.S. reading counts its pending proceeds, so settlement is not a deposit either',()=>{
+  // After a U.S. sale fills, KIS keeps the proceeds out of the deposit until settlement (pending); reading cash
+  // alone, the detector recorded "U.S. cash fell with no matching trade" for the sale's amount.
+  const sale={id:'g1',market:'US',side:'Sell',symbol:'NASD:CTSO',status:'Filled',filled:1,fillPrice:269.18,resultCosts:{netCash:268.47},createdAt:at('2026-10-22T22:31:00+09:00')};
+  const run=usCashAfter=>{const {d,tick}=setup();tick('2026-10-22T22:20:00+09:00');d.observe('acct',{krCash:426730,usCash:0,fx:1336.3,orders:[]});
+    const out=[];for(const [time,usCash] of [['2026-10-23T00:20:00+09:00',usCashAfter],['2026-10-23T02:30:00+09:00',usCashAfter],['2026-10-23T05:00:00+09:00',usCashAfter],['2026-10-24T09:00:00+09:00',267.63]]){tick(time);out.push(...d.observe('acct',{krCash:426730,usCash,fx:1336.3,orders:[{...sale,filledObservedAt:at('2026-10-23T00:18:30+09:00')}]}));}
+    return {flows:out,pending:d.pending('acct')};};
+  const before=run(0);assert.equal(before.flows[0]?.amount,-268.47,'cash alone: the false withdrawal, reproduced');
+  const now=run(0+267.63);assert.deepEqual(now.flows,[],'cash plus pending proceeds: nothing to record, through the sale and its settlement');assert.deepEqual(now.pending,[]);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'\?usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\):null/);
+});
