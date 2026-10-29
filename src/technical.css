@@ -1,0 +1,26 @@
+.technical-summary .ta-frames{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin:12px 0}
+.technical-summary .ta-frame{display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:8px;border:1px solid var(--border);border-radius:8px;background:transparent;color:inherit;text-align:center}
+.technical-summary .ta-frame small{color:var(--muted)}
+.technical-summary .ta-frame.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.ta-pill{display:inline-block;padding:3px 8px;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;background:color-mix(in srgb,var(--muted) 18%,transparent);color:inherit}
+.ta-pill.ta-buy,.ta-pill.ta-strong-buy{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.ta-pill.ta-strong-buy,.ta-pill.ta-strong-sell{outline:1px solid currentColor}
+.ta-pill.ta-sell,.ta-pill.ta-strong-sell{background:color-mix(in srgb,#d96c6c 18%,transparent);color:#d96c6c}
+.ta-pill.ta-none{color:var(--muted);font-weight:400}
+.technical-summary .ta-overall{display:flex;flex-wrap:wrap;align-items:center;gap:12px 28px;padding:10px 0 14px}
+.technical-summary .ta-overall>div{display:flex;align-items:center;gap:8px}
+.technical-summary .ta-overall>div>small:first-child{color:var(--muted)}
+.technical-summary .ta-basis{margin-left:auto}
+.technical-summary .ta-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.technical-summary .ta-card{border:1px solid var(--border);border-radius:8px;padding:10px 12px;min-width:0}
+.technical-summary .ta-card h3{margin:0 0 8px;font-size:14px}
+.ta-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.ta-table th,.ta-table td{padding:5px 4px;border-top:1px solid var(--border);text-align:right;font-weight:400}
+.ta-table thead th{border-top:0;color:var(--muted);font-size:12px}
+.ta-table th:first-child{text-align:left}
+.ta-table td>span:first-child{margin-right:6px}
+.ta-table td .ta-pill{font-size:11px;padding:2px 6px}
+.ta-pivots .ta-level-r td{color:var(--accent)}
+.ta-pivots .ta-level-s td{color:#d96c6c}
+.ta-pivots .ta-level-p th,.ta-pivots .ta-level-p td{font-weight:700}
+@media (max-width:1100px){.technical-summary .ta-grid{grid-template-columns:1fr}.technical-summary .ta-frames{grid-template-columns:repeat(4,minmax(0,1fr))}}

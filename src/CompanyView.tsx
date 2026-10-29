@@ -1,6 +1,7 @@
 import {useEffect,useState,useRef} from 'react';
 import {PaperReplay} from './PaperReplay';
 import {CandleChart} from './CandleChart';
+import {TechnicalSummary} from './TechnicalSummary';
 import {useDraftState} from './useDraftState';
 import {ResearchPanel,type ResearchProfile} from './ResearchPanel';
 export function CompanyView({initialSymbol,standalone=false,autoRefreshMs=0,onSymbolChange}:{initialSymbol?:string;standalone?:boolean;autoRefreshMs?:number;onSymbolChange?(symbol:string):void}){
@@ -57,7 +58,8 @@ export function CompanyView({initialSymbol,standalone=false,autoRefreshMs=0,onSy
   </div>:null;
   const status=loading?<div className="load-status" role="status" aria-live="polite"><div className="load-line"><span className="spinner"/><b>Loading {loadingName}</b><small className="muted">Price, valuation and price history from KIS</small></div><div className="load-bar"><span/></div><div className="company-stats skeleton-stats" aria-hidden="true">{Array.from({length:10},(_,i)=><div key={i}><i/><i/></div>)}</div></div>:error?<p role="alert" className="error">{error}</p>:null;
   const chart=<CandleChart rows={list} symbol={symbol} interval={interval} onSymbol={choose} onInterval={setInterval} candles={candles} source="kis" loading={loading} name={name}/>;
-  const indicators=<section><h2>Technical indicators · {interval==='1d'?'Daily':'1-minute'} completed bars</h2><div className={`company-stats ${loading?'is-loading':''}`}>{[['MA5',technical.SMA5],['MA10',technical.SMA10],['MA20',technical.SMA20],['STOCH K (14)',technical.stochastic?.K],['STOCH D (3)',technical.stochastic?.D]].map(([name,n])=><div key={name}><small>{name}</small><b>{loading?<i className="skeleton-text"/>:format(n)}</b></div>)}</div><small>{loading?'Calculating from the price history…':technical.asOf?`Last completed bar: ${new Date(technical.asOf).toLocaleString()}`:'No completed-bar evidence available'}{technical.stale?' · Stale data':''} · Fast stochastic (14,3)</small></section>;
+  // The technical summary reads daily bars from this view and fetches the other timeframes itself.
+  const indicators=<TechnicalSummary symbol={symbol} daily={daily}/>;
   // The pop-out window leads with the chart; the Charts tab keeps company details first.
   if(standalone)return <><section>{header}{status??<>{price}{aboutBlock}</>}</section>{!status&&chart}{!status&&<section>{stats}</section>}{!status&&indicators}{!status&&<ResearchPanel symbol={symbol}/>}</>;
   return <><section>{header}{status??<>{price}{aboutBlock}{stats}</>}</section>{chart}{indicators}<ResearchPanel symbol={symbol}/><PaperReplay key={symbol} symbol={symbol} candles={replayCandles}/></>;

@@ -7,10 +7,15 @@ const {KisService}=require('../electron/kis-service.cjs');
 const snapshot={source:'kis',environment:'mock',timestamp:new Date().toISOString(),cash:500,reportedTotal:800,holdings:[{symbol:'005380',name:'Fixture company',quantity:2,cost:100,price:150,marketValue:300,unrealized:100}]};
 let fixtureService;
 dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path.join(process.env.PORTFOLIO_SMOKE_DATA,'fixture-only-no-file-read.json')]});
+const chartBarRequests=[];
+const wander=(n,step,end)=>{let prev=200+10*Math.sin(-n/6);return Array.from({length:n},(_,i)=>{const close=i===n-1?200:Math.round((200+10*Math.sin((i-(n-1))/6)+3*Math.sin(i*1.7))*100)/100,open=prev;prev=close;return {timestamp:end-(n-1-i)*step,open,high:Math.max(open,close)+2,low:Math.min(open,close)-2,close,volume:100+i};});};
 KisService.prototype.request=async function(operation,payload) {
   fixtureService=this;
   if(operation==='quotes')return [{symbol:'005380',price:200,retrievedAt:Date.now()}];
-  if(operation==='company-chart')return {status:'available',metrics:{price:200,PER:10},candles:[{timestamp:Date.parse('2026-10-14T00:00:00+09:00'),open:100,high:210,low:90,close:200,volume:100}],data:{SMA5:null}};
+  // Bars that wander around 200 and end at 200, so every timeframe of the technical summary has readings.
+  if(operation==='company-chart')return {status:'available',metrics:{price:200,PER:10},candles:wander(220,86400000,Date.parse('2026-10-14T00:00:00+09:00')),data:{SMA5:null}};
+  if(operation==='chart-bars'){const open=Date.parse(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul'}).format(new Date())+'T09:00:00+09:00');chartBarRequests.push(payload.request.symbol);
+    return {symbol:payload.request.symbol,market:'KR',retrievedAt:Date.now(),frames:{'1m':wander(200,60000,open+199*60000),'1w':wander(150,7*86400000,Date.parse('2026-10-12T00:00:00+09:00')),'1M':wander(80,30*86400000,Date.parse('2026-10-01T00:00:00+09:00'))},errors:{}};}
   if(operation==='history')return [{timestamp:Date.parse('2026-10-14T00:00:00+09:00'),open:100,high:210,low:90,close:200,volume:100}];
   if(operation==='orders')return {source:'kis',environment:'mock',startDate:payload.startDate,endDate:payload.endDate,retrievedAt:new Date().toISOString(),orders:[
     {id:'buy',orderId:'1',originalOrderId:null,symbol:'005380',name:'Fixture buy',timestamp:Date.now(),side:'Buy',quantity:10,filled:4,remaining:6,rejected:0,executionAmount:600,averagePrice:150,orderPrice:150,status:'Partially filled'},
@@ -57,6 +62,15 @@ app.once('browser-window-created',(_event,win)=>{
       assert.ok((await win.webContents.executeJavaScript('document.querySelector(".candles").closest("section").querySelector("p").textContent')).includes('intraday'));
       assert.ok((await win.webContents.executeJavaScript('document.querySelector(".candle-summary").textContent')).includes('C 200'));
       fs.writeFileSync(path.join(__dirname,'../artifacts/kis-chart-fixture.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+      // The technical summary: a rating for each timeframe, then the selected timeframe's tables.
+      await new Promise(resolve=>setTimeout(resolve,300));assert.equal(chartBarRequests.length,1,'bars are fetched once for the symbol');
+      assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll(".ta-frame").length'),7);
+      assert.deepEqual(await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".ta-frame")).filter(b=>b.querySelector(".ta-none")).map(b=>b.querySelector("small").textContent)'),['Hourly'],'200 minutes make four hourly bars: too few to rate');
+      for(const frame of ['Daily','5 min']){await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.ta-frame')).find(b=>b.textContent.startsWith(${JSON.stringify(frame)})).click()`);await new Promise(resolve=>setTimeout(resolve,100));
+        assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll(".ta-card").length'),3,frame);assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll(".ta-pivots tbody tr").length'),7,frame);
+        assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll(".ta-card")[1].querySelectorAll("tbody tr").length'),12,frame);}
+      await win.webContents.executeJavaScript('document.querySelector(".technical-summary").scrollIntoView()');await new Promise(resolve=>setTimeout(resolve,100));
+      fs.writeFileSync(path.join(__dirname,'../artifacts/technical-summary.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Activity').click()");
       await new Promise(resolve=>setTimeout(resolve,100));
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Load history').click()");
