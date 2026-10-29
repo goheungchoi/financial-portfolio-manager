@@ -81,3 +81,11 @@ test('the trading review and the scout see open orders; the scout is told an ope
   a.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});await a.scout();
   assert.ok(seen,'the scout ran');assert.equal(seen.openOrders?.orders?.[0]?.symbol,'NASD:GOOGL');assert.match(seen.openOrders.note,/placed but not filled/);
 });
+test('your revision in KIS, as the mock account recorded it, stops the tracker and shows the agents your price',async()=>{
+  // 2026-10-30: the app's mock buy 0000040527 at $174.37 was revised by the user in KIS to $175 as 40551; history kept
+  // 40527 with nothing left on it and 40551 open.
+  const {a,engine,add,history,revisions}=setup();history.orders=[{orderId:'40527',originalOrderId:null,kind:'order',status:'Pending',orderPrice:174.37,filled:0,remaining:0,quantity:1},{orderId:'40551',originalOrderId:'40527',kind:'revision',status:'Pending',orderPrice:175,filled:0,remaining:1,quantity:1}];
+  add({symbol:'NASD:AAPL',side:'Buy',limitPrice:174.37,brokerOrderId:'0000040527'});await engine.reconcile();const o=engine.orders()[0];
+  assert.deepEqual([o.status,o.currentBrokerOrderId,o.currentPrice],['Accepted','0000040551',175],'open, under your number and price');assert.equal(o.handsOff.changes[0].kind,'revision');
+  await a.trackOrders();assert.deepEqual(revisions(),[],'left to you');const view=a.openOrderView(o);assert.deepEqual([view.price,view.tracked,view.takenOverByUser],[175,false,true]);
+});
