@@ -109,3 +109,20 @@ test('a decision for a closed market places nothing: it is kept as a pending dec
   const first=await automation.review();assert.deepEqual(proposed,[]);assert.equal(reads,0,'no book read for a closed market');assert.match(first.executionNote,/market is closed/);assert.equal(automation.reviewRequested,undefined);
   assert.equal(automation.pending.active(automation.watchScope())[0].symbol,'NASD:AAPL');const again=await automation.review();assert.match(again.executionNote,/pending since/);assert.equal(automation.pending.active(automation.watchScope())[0].reviews,2);db.close();
 });
+test('unsettled U.S. sale proceeds count in the total until they settle, never as spendable cash and never twice',async()=>{
+  // After a U.S. sale KIS reports the proceeds in frcr_sll_amt_smtl with a deposit of 0, and its own total
+  // asset figure includes them; the app's total used to drop by that amount until settlement.
+  const read=async row=>(await fixture({output2:[{crcy_cd:'USD',frcr_dncl_amt_2:'1000',...row}]}).client.balance());
+  const none=await read({});assert.equal(none.reportedTotal,3000,'no field: as before');assert.equal(none.pendingSaleProceeds,undefined);
+  const sold=await read({frcr_sll_amt_smtl:'267.630000'});assert.equal(sold.reportedTotal,3267.63);assert.equal(sold.pendingSaleProceeds,267.63);assert.equal(sold.cash,1000,'cash stays what can be spent');
+  const settled=await read({frcr_dncl_amt_2:'1267.63',frcr_sll_amt_smtl:'0.000000'});assert.equal(settled.reportedTotal,3267.63,'settled: in the deposit, counted once');assert.equal(settled.pendingSaleProceeds,undefined);
+  assert.equal((await read({frcr_sll_amt_smtl:''})).reportedTotal,3000,'blank: none');
+  assert.equal((await read({frcr_sll_amt_smtl:'267.63',frcr_buy_amt_smtl:'150.000000'})).reportedTotal,3267.63,'an unsettled buy alongside does not change how the sale counts');
+  await assert.rejects(read({frcr_sll_amt_smtl:'abc'}),/INVALID_RESPONSE|BALANCE/,'a value that is not a number is refused, not guessed');
+});
+test('the review sees pending sale proceeds as part of U.S. equity, not as cash',async()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const db=new DatabaseSync(':memory:');const balance={accountKey:'acct:US',environment:'mock',reportedTotal:547.10,cash:0,pendingSaleProceeds:267.63,holdings:[{symbol:'NASD:CNTS',name:'CNTS',quantity:1,cost:204.58,price:213.66,marketValue:213.66}]};
+  const e=new LiveEngine(db,{request:async op=>op==='live-context'?{balance,quotes:[],marketSession:{open:true,status:'open'}}:{}},()=>({status:'connected',snapshot:balance}),{market:'US'});
+  const ctx=await e.context();assert.equal(ctx.equity,547.10);assert.equal(ctx.cash,0,'not spendable yet');assert.equal(ctx.pendingSaleProceeds,267.63);
+  const {pendingSaleProceeds,...none}=balance;const n=new LiveEngine(db,{request:async op=>op==='live-context'?{balance:{...none,reportedTotal:279.47},quotes:[],marketSession:{open:true}}:{}},()=>({status:'connected',snapshot:none}),{market:'US'});assert.equal((await n.context()).pendingSaleProceeds,undefined);
+});
