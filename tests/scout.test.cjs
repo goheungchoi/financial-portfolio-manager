@@ -221,3 +221,13 @@ test('review: duplicate substitutions and alternatives are merged so the Scout p
   const p=scout.validatePlan({summary:'s',cashTargetPct:null,focus:'f',targets:[],briefAnswers:[],retrospective:'',substitutions:[{forSymbol:'000660',why:'a',alternatives:[alt('091160','chosen'),alt('091160','rejected')]},{forSymbol:'000660',why:'b',alternatives:[alt('396500','chosen')]}]});
   assert.equal(p.substitutions.length,1);assert.deepEqual(p.substitutions[0].alternatives.map(a=>[a.symbol,a.verdict]),[['091160','chosen']]);
 });
+test('a trading review sees a carried target flagged once a later review recommended against it',async()=>{
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
+  const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[{symbol:'005930',name:'Samsung',quantity:2,cost:140000,price:70000}]};
+  const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[{symbol:'005930',price:70000,retrievedAt:Date.now()}],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot}));
+  const supplied=[];let action='Sell';const provider={request:async(operation,payload)=>{supplied.push([operation,payload]);return {decision:{action,symbol:action==='Sell'?'005930':'',quantity:action==='Sell'?1:0,explanation:'Results cut the thesis.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
+  const a=new Automation(db,paper,provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  a.scoutStore.save(a.watchScope(),{summary:'s',cashTargetPct:10,focus:'f',targets:[{symbol:'005930',name:'Samsung',role:'hold',targetWeightPct:20,thesis:'Accept the results risk.',risks:'r',carriedFrom:new Date(Date.now()-3600000).toISOString()}]},{runId:'r',trigger:'t',model:'m',usage:{},rounds:1,answered:[]});
+  await a.review();assert.equal(supplied.at(-1)[1].context.scoutPlan.targets[0].needsReassessment,undefined,'nothing contradicts it yet');
+  action='Hold';await a.review();const target=supplied.at(-1)[1].context.scoutPlan.targets[0];assert.match(target.needsReassessment[0],/recommended Sell/);
+});

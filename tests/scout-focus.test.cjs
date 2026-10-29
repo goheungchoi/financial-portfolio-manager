@@ -67,3 +67,27 @@ test('review: a failed next-session read does not spend the budget; padded symbo
   tools.update_watchlist({action:'add',entries:[{symbol:' 233740',reason:''},{symbol:'233740',reason:'Chip lead'}]});
   assert.deepEqual(added.map(e=>e.reason),['',NEXT_SESSION_LABEL+'Chip lead'],'an empty reason stays empty, so it cannot replace an existing one');
 });
+test('a carried target is flagged for reassessment when a later trading review contradicts it or the price moved',()=>{
+  // A morning plan can carry a hold thesis written before the company's results, after trading reviews had
+  // recommended selling on them.
+  const {staleCarried,reviewContext}=require('../electron/scout.cjs');const setAt='2026-10-21T09:50:00.000Z';const at=iso=>Date.parse(iso);
+  const t=(symbol,role)=>({symbol,name:symbol,role,targetWeightPct:10,thesis:'Accept the October 28 earnings risk.',risks:'r',carriedFrom:setAt});
+  const targets=[t('NASD:CTSO','hold'),t('NASD:FBRK','hold'),t('NYSE:NWWR','hold'),{...t('999001','hold'),carriedFrom:undefined},t('NASD:AMD','exit')];
+  const reviews=[{timestamp:at('2026-10-22T00:30:00Z'),decision:{action:'Sell',symbol:'NASD:CTSO',planVerdicts:[]}},{timestamp:at('2026-10-22T00:20:00Z'),decision:{action:'Hold',symbol:'',planVerdicts:[{symbol:'NYSE:NWWR',verdict:'passed',reason:'Release figures weaken the free-cash-flow case.'}]}},
+    {timestamp:at('2026-10-21T08:00:00Z'),decision:{action:'Sell',symbol:'NASD:FBRK',planVerdicts:[]}},{timestamp:at('2026-10-22T00:40:00Z'),decision:{action:'Buy',symbol:'NASD:AMD',planVerdicts:[]}}];
+  const closes={'NASD:NVDA':200};const stale=staleCarried(targets,{reviews,price:s=>({'NASD:NVDA':188,'NASD:GOOGL':295})[s]??null,closeBefore:s=>closes[s]??null,movePct:6});
+  assert.deepEqual(stale.map(s=>s.symbol),['NASD:CTSO','NASD:FBRK','NYSE:NWWR','NASD:AMD']);
+  assert.match(stale[0].reasons[0],/2026-10-29 00:30 UTC recommended Sell/);assert.match(stale[1].reasons[0],/moved -6\.0% since/,'the earlier NVDA sell predates the target; the move counts');
+  assert.match(stale[2].reasons[0],/passed on it: Release figures/);assert.match(stale[3].reasons[0],/recommended Buy/,'a buy against an exit target');
+  assert.deepEqual(staleCarried(targets,{reviews:[],price:()=>190,closeBefore:()=>200}).map(s=>s.symbol),[],'a 5% move is under the threshold');
+  const ctx=reviewContext({timestamp:at('2026-10-22T00:10:00Z'),plan:{summary:'s',targets}},at('2026-10-22T01:00:00Z'),{stale});
+  assert.deepEqual(ctx.targets.find(x=>x.symbol==='NASD:CTSO').needsReassessment,stale[0].reasons);assert.equal(ctx.targets.find(x=>x.symbol==='999001').needsReassessment,undefined);
+});
+test('a closed-market run reads flagged targets without spending next-session reads, and its new target replaces only that one',async()=>{
+  const {focusTools,carryForward}=require('../electron/scout.cjs');const read=[];const tools=focusTools({research:async a=>{read.push(a.symbol);return {status:'ok'};}},{markets:['KR'],deferred:['US']},{reads:0,reassess:['NASD:CTSO']});
+  assert.match((await tools.get_company_research({symbol:'NASD:CTSO'})).reassessment.note,/reassess a carried target/);assert.equal((await tools.get_company_research({symbol:'NASD:MSFT'})).status,'skipped','other closed-market reads keep their budget');assert.deepEqual(read,['NASD:CTSO']);
+  const previous={timestamp:Date.parse('2026-10-21T09:50:00Z'),plan:{targets:[{symbol:'NASD:CTSO',role:'hold',thesis:'old'},{symbol:'NASD:FBRK',role:'hold',thesis:'t'},{symbol:'NYSE:NWWR',role:'hold',thesis:'t'}]}};
+  const plan={targets:[{symbol:'999001',role:'hold',thesis:'t'},{symbol:'NASD:CTSO',role:'trim',thesis:'Results cut the cash-flow case.'}]};const now=Date.parse('2026-10-22T00:10:00Z');
+  assert.deepEqual(carryForward(plan,previous,['US'],now,{reassessed:['NASD:CTSO']}).targets.map(t=>`${t.symbol}:${t.role}`),['999001:hold','NASD:CTSO:trim','NASD:FBRK:hold','NYSE:NWWR:hold']);
+  assert.deepEqual(carryForward(plan,previous,['US'],now).targets.map(t=>t.symbol),['999001','NASD:CTSO'],'unasked, a U.S. target still covers the market');
+});
