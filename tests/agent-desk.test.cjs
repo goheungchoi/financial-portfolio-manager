@@ -130,6 +130,12 @@ test('a market counts as open in its regular session, or in an extended session 
   a.configure({sessionUsDaytime:true});assert.equal(a.sessionOpen('US',at('2026-10-29T00:15:33Z')),false,'not on a mock account');
   a.live.getConnection=()=>({snapshot:{environment:'live'}});assert.equal(a.sessionOpen('US',at('2026-10-29T00:15:33Z')),true,'switched on, live');
 });
+test('held moves for the interval rule: open sessions and fresh quotes only; U.S. against the previous close',()=>{
+  const {automation:a}=harness();a.configure({scope:'both'});const open={KR:true,US:true};a.sessionOpen=m=>open[m];a.series={closes:s=>s==='NASD:GOOGL'?[{date:'2020-01-02',close:300}]:null};
+  const ctx={positions:{'028050':{quantity:3},'NASD:GOOGL':{quantity:2},'000270':{quantity:0},'005930':{quantity:1}},quotes:[{symbol:'028050',price:30000,changePct:-3.4},{symbol:'NASD:GOOGL',price:291},{symbol:'000270',price:1,changePct:9},{symbol:'005930',price:1,changePct:5,stale:true}]};
+  assert.deepEqual(a.heldMoves(ctx),[{symbol:'028050',changePct:-3.4},{symbol:'NASD:GOOGL',changePct:-3}]);
+  open.US=false;assert.deepEqual(a.heldMoves(ctx).map(m=>m.symbol),['028050'],'no U.S. session');
+});
 test('conditional orders fire through the guarded path: submitted, proposed, or refused with a reason',async()=>{
   const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
   const arm=(a,args={})=>a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:10,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop',...args},{config:a.config,universe:['005930']});
