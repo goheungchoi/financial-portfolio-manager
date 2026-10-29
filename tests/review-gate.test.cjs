@@ -85,7 +85,9 @@ test('baselines persist per scope, across restarts; the log summarizes what the 
   const no={needsReview:false,reasons:[],degraded:[]},yes={needsReview:true,reasons:[{kind:'backstop'}],degraded:[]};
   g.log(min(1),{trigger:'Scheduled review',oldSkip:true,ran:false,gate:no});g.log(min(5),{trigger:'Scheduled review',oldSkip:false,ran:true,reviewId:'R2',gate:no});
   g.log(min(9),{trigger:'Scheduled review',oldSkip:false,ran:true,reviewId:'R3',gate:yes});g.log(min(9),{trigger:'User request',oldSkip:false,ran:true,gate:yes});
-  assert.deepEqual(g.summary(t0),{since:new Date(t0).toISOString(),checks:4,scheduled:3,ran:2,oldSkips:1,gateSkips:2,wouldAvoid:1,estimatedUSD:.15,backstops:1,riskReasons:0,degraded:0});
+  g.complete('R2',{completed:true,orderId:null,research:{fetched:0,refreshed:0,reused:14,researchReads:2,detailReads:0},change:{changed:false,parts:[]}});g.complete('R3',{completed:true,orderId:'O1',research:{fetched:2,reused:1},change:{changed:true,parts:['action']}});
+  const {reviews,ai,research,...rest}=g.summary(t0);assert.deepEqual(rest,{since:new Date(t0).toISOString(),checks:4,scheduled:3,ran:2,oldSkips:1,gateSkips:2,wouldAvoid:1,estimatedUSD:.15,backstops:1,riskReasons:0,degraded:0});
+  assert.deepEqual(reviews,{ran:2,completed:2,episodes:1,trades:1},'polls, reviews, decision episodes and trades counted apart');assert.equal(ai.calls,1);assert.equal(ai.usd,.15);assert.deepEqual(research,{fetched:2,refreshed:0,reused:15,researchReads:2,detailReads:0});
 });
 
 // The scheduler: observation leaves the old skip deciding; the baseline moves only after a successful decision.
@@ -145,4 +147,14 @@ test('through the scheduler: focused routine reviews carry reviewScope; full one
   await a.review('User request');assert.equal(contexts.at(-1).reviewScope.kind,'broad');assert.throws(()=>a.configure({routineReviews:'narrow'}),/INVALID_SETTINGS/);
   const {decisionSchema,validateDecision}=require('../electron/ai-client.cjs');assert.match(JSON.stringify(decisionSchema(['005930'])),/"carried"/);
   assert.equal(validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:'',strategyCheck:[{strategy:'long-term',idea:'',verdict:'carried',reason:'Routine review'}]},['005930']).strategyCheck[0].verdict,'carried');
+});
+test('decision changes: the trade, its size, timing, invalidation and verdicts; wording is not a change',async()=>{
+  const {decisionChange}=require('../electron/review-gate.cjs');const hold={action:'Hold',symbol:'',quantity:0,explanation:'Hold.',plan:{invalidation:'x'},planVerdicts:[{symbol:'028050',verdict:'waiting'}]};
+  assert.deepEqual(decisionChange(hold,{...hold,explanation:'Still holding.'}),{changed:false,parts:[]});assert.deepEqual(decisionChange(null,hold).parts,['first decision']);
+  assert.deepEqual(decisionChange(hold,{...hold,action:'Sell',symbol:'028050',quantity:1}).parts,['action']);
+  const sell={...hold,action:'Sell',symbol:'028050',quantity:1};assert.deepEqual(decisionChange(sell,{...sell,quantity:2}).parts,['size']);
+  assert.deepEqual(decisionChange(hold,{...hold,plan:{invalidation:'y'},planVerdicts:[{symbol:'028050',verdict:'acted'}]}).parts,['invalidation','verdicts: 028050']);
+  const {a,db}=harness();a.configure({skipUnchanged:false});await a.review('Scheduled review');await a.review('Scheduled review');
+  const rows=db.prepare('SELECT payload FROM review_gate_log ORDER BY id').all().map(r=>JSON.parse(r.payload));assert.deepEqual(rows.map(r=>r.outcome?.change?.changed),[true,false],'the second Hold repeats the first');
+  assert.equal(rows[1].outcome.research.fetched,0);assert.equal(a.reviewGateState().summary.reviews.episodes,1);
 });
