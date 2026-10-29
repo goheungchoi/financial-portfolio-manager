@@ -4,7 +4,7 @@ class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
     this.market=options.market??'KR';this.day=this.market==='US'?require('./kis-overseas.cjs').localDate:seoulDate;this.validSymbol=symbol=>this.market==='US'?/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(symbol):/^\d{6}$/.test(symbol);this.validPrice=price=>Number.isFinite(price)&&price>=1&&(this.market==='US'?Math.abs(price*100-Math.round(price*100))<1e-7:Number.isSafeInteger(price));
     this.db=db;this.broker=broker;this.getConnection=getConnection;this.enabled=false;this.autoEnabled=false;this.busy=false;
-    db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);');
+    db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_orders(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,day TEXT NOT NULL,seenAt INTEGER NOT NULL,payload TEXT NOT NULL);');
   }
   identity(){const connection=this.getConnection();if(!connection.snapshot?.accountKey)throw new Error('KIS_NOT_CONNECTED');return connection.snapshot.accountKey;}
   policy(){const key=this.identity();const row=this.db.prepare('SELECT payload FROM live_policy WHERE accountKey=?').get(key);return row?JSON.parse(row.payload):null;}
@@ -105,22 +105,38 @@ class LiveEngine {
   // The day's starting value plus that day's deposits less withdrawals, so a deposit neither hides a loss nor a
   // withdrawal looks like one. flowsToday is supplied by the app (performance history) in this market's currency.
   adjustedBaseline(policy){const flows=Number(this.flowsToday?.())||0;return policy.baseline+flows;}
+  // An app order brought up to date from KIS history, following revisions and cancellations (electron/order-chain.cjs).
+  // A revision or cancellation the app did not make means you took the order over: tracking stops (handsOff).
+  applyHistory(order,rows){const {resolve}=require('./order-chain.cjs');let res=resolve(order,rows);if(!res)return order;
+    // After an unclear revise or cancel reply: a link from that number matching what was asked is the app's own (adopt
+    // it); no new link means nothing happened. Either way tracking resumes; any other link is still a takeover.
+    if(order.unconfirmed){const u=order.unconfirmed,own=res.outside.find(x=>x.from===u.from&&(u.cancel?x.kind==='cancel':x.kind==='revision'&&Math.abs((x.price??0)-u.price)<1e-6));
+      const {unconfirmed,trackingStopped,...rest}=order;order={...rest,...(own?{brokerOrderIds:[...new Set([order.brokerOrderId,...(order.brokerOrderIds??[]),own.orderId])]}:{})};res=resolve(order,rows);}
+    // Korean order history reports the average execution price as averagePrice; U.S. history as fillPrice.
+    const fillPrice=res.fillPrice;const resultCosts=res.filled>0&&fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:res.filled,price:fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,classification:this.costs?.classify?.(order.symbol)??null}):null;
+    const closed=['Filled','Canceled','Rejected'].includes(res.status);
+    const next={...order,resultCosts,fillPrice,reconciledAt:Date.now(),...((res.status==='Filled'||res.filled>0&&closed)&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:res.filled,status:res.status,reason:null,
+      ...(res.closedReason?{closedReason:res.closedReason}:{}),currentBrokerOrderId:res.current,...(res.currentPrice?{currentPrice:res.currentPrice}:{}),chain:res.chain,...(res.outside.length&&!order.handsOff?{handsOff:{at:Date.now(),changes:res.outside}}:{})};
+    this.save(next);return next;}
   orderReconciliation(){
     if(!this.orders().some(row=>['Accepted','Uncertain','Submitting','Partially filled'].includes(row.status)))return null;const h=this.reconcileHealth??{failures:0};
     return {status:h.failures?'unconfirmed':'confirmed',lastConfirmedAt:h.lastSuccessAt?new Date(h.lastSuccessAt).toISOString():null,...(h.failures?{failedChecks:h.failures,failingSince:new Date(h.since).toISOString(),error:h.error,
       note:'KIS order history could not be read, so these open-order statuses are not confirmed. An order listed as open may already be filled: compare positions before treating it as additional exposure. New orders in this market, including stop-losses, are blocked until the status is confirmed.'}:{})};
   }
+  // Every order KIS lists for the account on a day, whoever placed it (the app or you in KIS), kept with its revision
+  // and cancellation links.
+  recordHistory(report,day){let key;try{key=this.identity();}catch{return;}const st=this.db.prepare('INSERT INTO broker_orders VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET seenAt=excluded.seenAt,payload=excluded.payload');
+    for(const r of report?.orders??[])st.run(`${key}|${day}|${r.orderId}`,key,day,Date.now(),JSON.stringify({...r,market:this.market}));}
+  history(day=this.day()){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT payload FROM broker_orders WHERE accountKey=? AND day=? ORDER BY rowid').all(key,day).map(r=>JSON.parse(r.payload));}
+  async syncHistory(day=this.day()){const report=await this.broker.request('orders',{startDate:day,endDate:day});this.recordHistory(report,day);return report;}
   async reconcile() {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;
     try {
       const open=this.orders().filter(row=>['Submitting','Uncertain','Accepted','Partially filled'].includes(row.status));
       for(const day of new Set(open.map(row=>row.day))) {
-        const report=await this.broker.request('orders',{startDate:day,endDate:day});
-        for(const order of open.filter(row=>row.day===day)) {
-          const found=order.brokerOrderId?report.orders.find(row=>row.orderId===order.brokerOrderId):null;
-          // Korean order history reports the average execution price as averagePrice; U.S. history as fillPrice.
-          if(found){const fillPrice=found.fillPrice??(found.averagePrice>0?found.averagePrice:null);const resultCosts=found.filled>0&&fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:found.filled,price:fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,classification:this.costs?.classify?.(order.symbol)??null}):null;this.save({...order,resultCosts,fillPrice,reconciledAt:Date.now(),...((found.status==='Filled'||found.filled>0&&/cancel|reject/i.test(found.status))&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:found.filled,status:found.status==='Filled'?'Filled':found.status==='Rejected'?'Rejected':/cancel/i.test(found.status)?'Canceled':found.filled>0?'Partially filled':'Accepted',reason:null});}
-        }
+        const report=await this.broker.request('orders',{startDate:day,endDate:day});this.recordHistory(report,day);
+        for(const order of open.filter(row=>row.day===day)){const next=this.applyHistory(order,report.orders??[]);
+          if(day<this.day()&&['Accepted','Partially filled'].includes(next.status)&&next.brokerOrderId)this.save({...next,status:'Canceled',closedReason:'expired at the session end',reconciledAt:Date.now()});}
       }
       this.reconcileHealth={failures:0,lastSuccessAt:Date.now()};
       return this.getState();
@@ -161,6 +177,24 @@ class LiveEngine {
     return updated;
   }
   // Proposals that need approval stay Ready for the user instead of being submitted automatically.
+  // Moves an open app order to a new limit price, or cancels it, at KIS, for its unfilled shares. Each number KIS gives
+  // a revision joins the order's own chain (brokerOrderIds), so history follows it as the app's. One KIS order action at
+  // a time (busy). Refused for an order you took over in KIS (handsOff). An unclear reply stops tracking the order
+  // until history shows what happened.
+  async revise(id,{price=null,cancel=false}={}){
+    if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;let order=null;
+    try{order=this.orders().find(row=>row.id===id);if(!order)throw new Error('UNKNOWN_ORDER');
+      if(!['Accepted','Partially filled'].includes(order.status)||!order.brokerOrderId)throw new Error('ORDER_NOT_OPEN');if(order.handsOff)throw new Error('ORDER_TAKEN_OVER');if(order.trackingStopped)throw new Error('TRACKING_STOPPED');
+      if(order.session&&!/regular/.test(order.session))throw new Error('FEATURE_UNAVAILABLE');
+      if(!cancel&&!this.validPrice(price))throw new Error('INVALID_ORDER');
+      const remaining=order.quantity-(order.filled??0);if(remaining<1)throw new Error('ORDER_NOT_OPEN');const from=order.currentBrokerOrderId??order.brokerOrderId;
+      const result=await this.broker.request('revise-order',{command:{originalOrderId:from,organization:order.currentOrganization??order.organization??'',symbol:order.symbol,side:order.side,quantity:remaining,price,cancel}});
+      order={...order,brokerOrderIds:[...new Set([order.brokerOrderId,...(order.brokerOrderIds??[]),result.brokerOrderId])],currentBrokerOrderId:result.brokerOrderId,...(result.organization?{currentOrganization:result.organization}:{}),
+        ...(cancel?{cancelRequestedAt:Date.now()}:{currentPrice:price}),revisions:[...(order.revisions??[]),{at:Date.now(),from,to:result.brokerOrderId,...(cancel?{cancel:true}:{price})}]};
+      this.save(order);return order;}
+    catch(error){if(order&&error.message==='ORDER_UNCERTAIN'){order={...order,trackingStopped:{at:Date.now(),reason:'KIS did not confirm a '+(cancel?'cancellation':'revision')},unconfirmed:{from:order.currentBrokerOrderId??order.brokerOrderId,cancel,...(cancel?{}:{price})}};this.save(order);}throw error;}
+    finally{this.busy=false;}
+  }
   async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');

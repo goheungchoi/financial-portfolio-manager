@@ -33,6 +33,7 @@ process.parentPort.on('message',async ({data})=>{
       else if(operation==='us-orders')snapshot=await us.orders(data.startDate);
       else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end);
       else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
+      else if(operation==='us-revise-order')snapshot=await us.revise(data.command??{});
       else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
       else if(operation==='us-place-order'){const entry=prepared.get(data.ticket);prepared.delete(data.ticket);if(!entry||entry.market!=='US'||entry.expiresAt<Date.now())throw new Error();if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
       else throw new Error();
@@ -60,6 +61,9 @@ process.parentPort.on('message',async ({data})=>{
       // The session must still be open at placement (the same one the order was prepared for).
       if(entry.session&&!entry.session.regular){const now=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[require('./market-sessions.cjs').TOGGLES[entry.session.id]]:true}});if(now?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}
       process.parentPort.postMessage({id,ok:true,snapshot:await client.placeOrder(entry.command,entry.session)});return;
+    }
+    if(operation==='revise-order') {
+      process.parentPort.postMessage({id,ok:true,snapshot:await client.reviseOrder(data.command??{})});return;
     }
     if(operation==='charges') {
       process.parentPort.postMessage({id,ok:true,snapshot:await client.getOrderCharges(data.day,data.orderId)});return;
