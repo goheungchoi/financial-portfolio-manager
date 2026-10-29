@@ -129,3 +129,20 @@ test('review findings: cash flips need a cash change, mid-review closes count, n
   assert.equal(gate(settled(ctx(order([o('000270','Buy'),o('000270','Buy')]))),ctx(order([o('000270','Buy')]))).reasons[0].kind,'order','one of two identical orders gone');
   const noUS=ctx();noUS.markets=[noUS.markets[0]];assert.equal(gate(settled(),noUS).needsReview,false,'U.S. data missing is not a session change');
 });
+test('review scope: routine reviews get what changed; starts, requests, the backstop and no baseline are broad',()=>{
+  const {reviewScope}=require('../electron/review-gate.cjs');const base=settled();
+  const moved=gate(base,quote(ctx(),'028050',{price:60300*1.02}));const s=reviewScope(moved,'Scheduled review',base);
+  assert.equal(s.kind,'routine');assert.equal(s.since,new Date(t0).toISOString());assert.deepEqual(s.changedSymbols,['028050']);assert.match(s.changes[0],/028050 \+2%/);
+  assert.equal(reviewScope(gate(base,ctx(),{trigger:'User request'}),'User request',base).kind,'broad');
+  assert.equal(reviewScope(compare(base,decisionState(ctx()),{config,now:min(120)}),'Scheduled review',base).why,'No full review for 120 minutes');
+  assert.equal(reviewScope(compare(null,decisionState(ctx()),{config,now:t0}),'Scheduled review',null).kind,'broad');
+  const price=gate(base,quote(ctx(),'028050',{price:60300*1.02}),{trigger:'Price movement trigger'});assert.deepEqual(reviewScope(price,'Price movement trigger',base).changes,[price.reasons[1].detail],'the trigger itself is not a change');
+});
+test('through the scheduler: focused routine reviews carry reviewScope; full ones do not; carried is a strategy verdict',async()=>{
+  const contexts=[];const {a}=harness();a.provider.request=async(op,payload)=>{contexts.push(payload.context);return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};};
+  a.configure({skipUnchanged:false});await a.review('Scheduled review');assert.equal(contexts.at(-1).reviewScope,undefined,'full by default');
+  a.configure({routineReviews:'focused'});await a.review('Scheduled review');assert.deepEqual(contexts.at(-1).reviewScope.kind,'routine');
+  await a.review('User request');assert.equal(contexts.at(-1).reviewScope.kind,'broad');assert.throws(()=>a.configure({routineReviews:'narrow'}),/INVALID_SETTINGS/);
+  const {decisionSchema,validateDecision}=require('../electron/ai-client.cjs');assert.match(JSON.stringify(decisionSchema(['005930'])),/"carried"/);
+  assert.equal(validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:'',strategyCheck:[{strategy:'long-term',idea:'',verdict:'carried',reason:'Routine review'}]},['005930']).strategyCheck[0].verdict,'carried');
+});
