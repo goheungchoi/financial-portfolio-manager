@@ -34,7 +34,7 @@ test('an unrelated holding’s failed stop reviews while another symbol waits',(
 test('rewording a missing-data wait does not restart it; data the tools cannot read stops being re-read',()=>{
   const {w,at}=setup();const gap=(unresolved,earliestCheck='')=>verdict('028050',{kind:'data',waitReason:'missing_data',unresolved,earliestCheck},{dataGap:{cause:'insufficient',metric:'op'}});
   w.record('s',{planVerdicts:[gap('Project-level operating profit','2026-10-29T16:00+09:00')]},{context:plan});const first=w.active('s')[0];
-  at(h(2));w.record('s',{planVerdicts:[gap('How much of Q3 operating profit repeats','2026-10-31T09:00+09:00')]},{context:plan});
+  at(h(1));w.record('s',{planVerdicts:[gap('How much of Q3 operating profit repeats','2026-10-31T09:00+09:00')]},{context:plan});
   const [again]=w.active('s');assert.equal(again.id,first.id,'same symbol and reason: the same wait');assert.equal(again.reviews,2);assert.equal(again.earliestCheckAt,first.earliestCheckAt,'a later time in new words does not push it back');
   assert.equal(again.expiresAt,first.expiresAt);assert.equal(again.createdAt,t0);assert.match(again.question,/repeats/,'the wording is kept up to date');
   assert.equal(w.guard('s','028050'),null,'inconclusive data does not hold research');
@@ -72,4 +72,13 @@ test('through the scheduler: research on a waiting symbol is answered with the w
   await run({gateMode:'observe'});assert.equal(reads.at(-1),'000270');assert.ok(events.some(e=>e.title==='Research would wait'));
   await run({gateMode:'on',gate:{changedSymbols:['000270']}});await run({gateMode:'on',trigger:'User request'});await run({gateMode:'on',emergency:true});await run({gateMode:'off'});
   assert.equal(reads.filter(s=>s==='000270').length,5,'overridden, your request, an emergency, gate off');
+  await run({gateMode:'on',gate:null});assert.equal(reads.filter(s=>s==='000270').length,6,'no gate result: nothing held');
+});
+test('a check that came due can be renewed when the document is still not out; one still ahead cannot be pushed back',()=>{
+  const {w,at}=setup();const v=t=>verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(t).toISOString()});
+  w.record('s',{planVerdicts:[v(h(3))]},{context:plan});at(h(1));w.record('s',{planVerdicts:[v(h(10))]},{context:plan});assert.equal(w.active('s')[0].earliestCheckAt,h(3),'ahead: kept');
+  at(h(4));w.record('s',{planVerdicts:[v(h(30))]},{context:plan});const [x]=w.active('s');assert.equal(x.earliestCheckAt,h(30),'due: renewed');assert.equal(x.expiresAt,h(54));
+  assert.equal(w.guard('s','000270')?.status,'waiting','held again until the new time');
+  at(h(31));w.record('s',{planVerdicts:[v(h(160))]},{context:plan});assert.equal(w.active('s')[0].expiresAt,t0+7*86400000,'never past a week from its start');
+  at(h(161));w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:''})]},{context:plan});assert.equal(w.active('s')[0].earliestCheckAt,h(160),'no new time: the passed one stays');assert.equal(w.guard('s','000270'),null,'and nothing is held');
 });
