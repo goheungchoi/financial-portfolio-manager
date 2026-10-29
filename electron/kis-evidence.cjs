@@ -40,6 +40,28 @@ async function fetchEvidence(client,{symbol,dataset},includeCandles=false){
     });
   }
   const data=technicals(candles,daily?'1d':'1m',dataset,Date.now(),market);
-  return {...meta,status:data.bars?'available':'unavailable',data,...(includeCandles?{candles:candles.filter(c=>['timestamp','open','high','low','close','volume'].every(k=>Number.isFinite(c[k]))&&c.low>0).sort((a,b)=>a.timestamp-b.timestamp).slice(daily?-100*pages:-120)}:{})};
+  return {...meta,status:data.bars?'available':'unavailable',data,...(includeCandles?{candles:clean(candles).slice(daily?-100*pages:-120)}:{})};
 }
-module.exports={fetchEvidence};
+const clean=candles=>candles.filter(c=>['timestamp','open','high','low','close','volume'].every(k=>Number.isFinite(c[k]))&&c.low>0).sort((a,b)=>a.timestamp-b.timestamp);
+// Bars for the Charts technical summary, besides the daily bars the chart already has. Korea: today's one-minute bars
+// (the app combines them into 5-, 15-, 30- and 60-minute bars), 200 weekly and 100 monthly bars. U.S.: 120 bars of each
+// intraday interval, including earlier days, and the same weekly and monthly bars. A timeframe that fails is reported on
+// its own; the others still arrive.
+async function fetchBars(client,{symbol}){
+  const us=/^(NASD|NYSE|AMEX):([A-Z][A-Z0-9.-]{0,14})$/.exec(symbol);if(!us&&!/^\d{6}$/.test(symbol))throw new Error('INVALID_REQUEST');
+  const params=us?{AUTH:'',EXCD:{NASD:'NAS',NYSE:'NYS',AMEX:'AMS'}[us[1]],SYMB:us[2]}:null;const out={symbol,market:us?'US':'KR',retrievedAt:Date.now(),frames:{},errors:{}};
+  const numeric=value=>value==null||String(value).trim()===''?NaN:Number(value);const day=d=>`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+  // U.S. weekly (GUBN 1) and monthly (GUBN 2) rows, newest first; a second page continues before the oldest row.
+  const usPeriod=async(gubn,pages)=>{const rows=[];let bymd='';for(let page=0;page<pages;page++){const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/dailyprice','HHDFS76240000',{...params,GUBN:gubn,BYMD:bymd,MODP:'1'});
+      if(!Array.isArray(body.output2))throw new Error('INVALID_RESPONSE');const batch=body.output2.filter(r=>/^\d{8}$/.test(r?.xymd??''));rows.push(...batch);const oldest=batch.map(r=>r.xymd).sort()[0];if(batch.length<90||!oldest)break;
+      bymd=new Date(Date.parse(day(oldest)+'T00:00:00Z')-86400000).toISOString().slice(0,10).replaceAll('-','');}
+    const seen=new Set();return clean(rows.filter(r=>!seen.has(r.xymd)&&seen.add(r.xymd)).map(r=>({timestamp:Date.parse(day(r.xymd)+'T12:00:00Z'),open:numeric(r.open),high:numeric(r.high),low:numeric(r.low),close:numeric(r.clos),volume:numeric(r.tvol)})));};
+  const usMinutes=async n=>{const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice','HHDFS76950200',{...params,NMIN:String(n),PINC:'1',NEXT:'',NREC:'120',FILL:'',KEYB:''});
+    if(!Array.isArray(body.output2))throw new Error('INVALID_RESPONSE');const seen=new Set();
+    return clean(body.output2.filter(r=>/^\d{8}$/.test(r?.kymd??'')&&/^\d{6}$/.test(r?.khms??'')&&!seen.has(r.kymd+r.khms)&&seen.add(r.kymd+r.khms)).map(r=>({timestamp:exchangeTimestamp(r.kymd,r.khms),open:numeric(r.open),high:numeric(r.high),low:numeric(r.low),close:numeric(r.last),volume:numeric(r.evol)})));};
+  const jobs=us?[['5m',()=>usMinutes(5)],['15m',()=>usMinutes(15)],['30m',()=>usMinutes(30)],['1h',()=>usMinutes(60)],['1w',()=>usPeriod('1',2)],['1M',()=>usPeriod('2',1)]]
+    :[['1m',()=>client.getMinuteDay(symbol)],['1w',()=>client.getDailyHistory(symbol,2,'W')],['1M',()=>client.getDailyHistory(symbol,1,'M')]];
+  for(const [id,job] of jobs){try{out.frames[id]=clean(await job());}catch(error){out.errors[id]=/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'REQUEST_FAILED';}}
+  return out;
+}
+module.exports={fetchEvidence,fetchBars};

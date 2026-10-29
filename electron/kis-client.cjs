@@ -9,6 +9,8 @@ function parseCredentials(text) {
     return Object.fromEntries(keys.map(key=>[key,value[key]]));
   } catch { throw new KisError('INVALID_CREDENTIAL_FILE'); }
 }
+// HHMMSS in Seoul, as KIS minute requests take it.
+const seoulClock=value=>new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(value).replaceAll(':','');
 function amount(value) {
   if(typeof value!=='string' && typeof value!=='number') throw new KisError('INVALID_RESPONSE');
   if(String(value).trim()==='' || !/^-?\d+(\.\d+)?$/.test(String(value))) throw new KisError('INVALID_RESPONSE');
@@ -94,7 +96,20 @@ class KisReadOnlyClient {
   invalidateStreamApproval(){this.#streamConfig=null;this.#streamConfigUntil=0;}
   async getMinuteHistory(symbol) {
     if(typeof symbol!=='string' || !/^[A-Z0-9]{6}$/.test(symbol))throw new KisError('INVALID_INSTRUMENT');
-    const hour=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date()).replaceAll(':','');
+    return (await this.minutePage(symbol,seoulClock(new Date()))).slice(-30);
+  }
+  // Today's one-minute bars from the open: KIS returns 30 bars up to a given time, so pages step back before the
+  // oldest bar until the open or the page limit.
+  async getMinuteDay(symbol,maxPages=14,now=new Date()) {
+    if(typeof symbol!=='string' || !/^[A-Z0-9]{6}$/.test(symbol))throw new KisError('INVALID_INSTRUMENT');
+    const day=t=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul'}).format(new Date(t));const today=day(now.getTime());const rows=new Map();let hour=seoulClock(now);
+    for(let page=0;page<maxPages;page++){
+      const batch=await this.minutePage(symbol,hour),todays=batch.filter(c=>day(c.timestamp)===today);for(const c of todays)rows.set(c.timestamp,c);
+      if(!todays.length||todays.length<batch.length||batch.length<30)break;const oldest=Math.min(...todays.map(c=>c.timestamp));hour=seoulClock(new Date(oldest-60000));if(hour<'090000')break;
+    }
+    return [...rows.values()].sort((a,b)=>a.timestamp-b.timestamp);
+  }
+  async minutePage(symbol,hour) {
     const body=await this.quotation('inquire-time-itemchartprice','FHKST03010200',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_HOUR_1:hour,FID_PW_DATA_INCU_YN:'Y',FID_ETC_CLS_CODE:''});
     if(!Array.isArray(body.output2))throw new KisError('INVALID_RESPONSE');
     const {exchangeTimestamp}=require('./kis-stream.cjs');const seen=new Set();
@@ -105,7 +120,7 @@ class KisReadOnlyClient {
       const candle={timestamp,open:amount(row.stck_oprc),high:amount(row.stck_hgpr),low:amount(row.stck_lwpr),close:amount(row.stck_prpr),volume:amount(row.cntg_vol)};
       if(candle.low<=0 || candle.high<Math.max(candle.open,candle.close) || candle.low>Math.min(candle.open,candle.close) || candle.volume<0)throw new KisError('INVALID_RESPONSE');
       return candle;
-    }).sort((a,b)=>a.timestamp-b.timestamp).slice(-30);
+    }).sort((a,b)=>a.timestamp-b.timestamp);
   }
   // market: J = KRX, NX = Nextrade (its pre- and after-market prices).
   async getQuote(symbol,market='J') {
@@ -116,23 +131,24 @@ class KisReadOnlyClient {
     const o=body.output??{};const n=v=>{const x=Number(v);return v!=null&&String(v).trim()!==''&&Number.isFinite(x)?x:null;};
     return {symbol,price,retrievedAt:Date.now(),previousClose:n(o.stck_sdpr),changePct:n(o.prdy_ctrt),volume:n(o.acml_vol)};
   }
-  // KIS returns at most 100 daily rows per request; extra pages continue before the earliest row.
-  async getDailyHistory(symbol,pages=1) {
+  // KIS returns at most 100 rows per request; extra pages continue before the earliest row. period: D daily, W weekly, M monthly.
+  async getDailyHistory(symbol,pages=1,period='D') {
     if(typeof symbol!=='string' || !/^[A-Z0-9]{6}$/.test(symbol))throw new KisError('INVALID_INSTRUMENT');
     const rows=new Map();let end=new Date();
     for(let page=0;page<pages;page++){
-      const batch=await this.dailyPage(symbol,end);for(const candle of batch)rows.set(candle.timestamp,candle);
+      const batch=await this.dailyPage(symbol,end,period);for(const candle of batch)rows.set(candle.timestamp,candle);
       if(batch.length<90)break;end=new Date(Math.min(...batch.map(c=>c.timestamp))-86400000);
     }
     return [...rows.values()].sort((a,b)=>a.timestamp-b.timestamp).slice(-100*pages);
   }
-  async dailyPage(symbol,end) {
-    const start=new Date(end.getTime()-180*86400000);
+  // A window long enough for 100 rows of the period.
+  async dailyPage(symbol,end,period='D') {
+    const start=new Date(end.getTime()-({D:180,W:760,M:3100}[period]??180)*86400000);
     const date=value=>{
       const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(value);
       return ['year','month','day'].map(type=>parts.find(part=>part.type===type).value).join('');
     };
-    const body=await this.quotation('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:date(start),FID_INPUT_DATE_2:date(end),FID_PERIOD_DIV_CODE:'D',FID_ORG_ADJ_PRC:'0'});
+    const body=await this.quotation('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:date(start),FID_INPUT_DATE_2:date(end),FID_PERIOD_DIV_CODE:['D','W','M'].includes(period)?period:'D',FID_ORG_ADJ_PRC:'0'});
     if(!Array.isArray(body.output2))throw new KisError('INVALID_RESPONSE');
     const dates=new Set();
     return body.output2.filter(row=>row.stck_bsop_date).map(row=>{

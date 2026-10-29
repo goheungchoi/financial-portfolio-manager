@@ -21,6 +21,7 @@ process.parentPort.on('message',async ({data})=>{
       client=new KisReadOnlyClient(parseCredentials(text));text=null;
       stream=new KisQuoteStream(client,quote=>process.parentPort.postMessage({type:'quote',quote}),state=>process.parentPort.postMessage({type:'stream',state}));
     } else if(!client) throw new Error('KIS_NOT_CONNECTED');
+    if(operation==='chart-bars'){const snapshot=await require('./kis-evidence.cjs').fetchBars(client,data.request);process.parentPort.postMessage({id,ok:true,snapshot});return;}
     if(operation==='company-chart'){const snapshot=await require('./kis-evidence.cjs').fetchEvidence(client,data.request,true);process.parentPort.postMessage({id,ok:true,snapshot});return;}
     if(operation==='market-evidence'){const snapshot=await require('./kis-evidence.cjs').fetchEvidence(client,data.request);process.parentPort.postMessage({id,ok:true,snapshot});return;}
     if(operation.startsWith('us-')) {
