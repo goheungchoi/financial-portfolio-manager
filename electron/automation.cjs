@@ -48,7 +48,7 @@ class Automation {
     // Observation only: records when event-driven scheduling would run beside the current schedule; changes nothing.
     this.scheduleObserver=new (require('./schedule-observer.cjs').ScheduleObserver)(db);
     this.researchGaps=new (require('./research-gaps.cjs').ResearchGaps)(db);
-    {const W=require('./watch-alerts.cjs');this.watchAlerts=new W.WatchAlerts();this.alertObservations=new W.AlertObservations(db);}this.reviewGate=new (require('./review-gate.cjs').ReviewGate)(db);this.waits=new (require('./waits.cjs').Waits)(db);
+    {const W=require('./watch-alerts.cjs');this.watchAlerts=new W.WatchAlerts();this.alertObservations=new W.AlertObservations(db);}this.reviewGate=new (require('./review-gate.cjs').ReviewGate)(db);this.waits=new (require('./waits.cjs').Waits)(db);this.pending=new (require('./pending-decisions.cjs').PendingDecisions)(db);
     this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db,Date.now,()=>{try{return this.live?.identity()??null;}catch{return null;}});this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);this.desk=new (require('./agent-desk.cjs').AgentDesk)(db);this.desk.sellStatus=o=>{const id=o.orderId??o.proposalId;return id?this.engineOrders().find(r=>r.id===id)?.status??null:null;};this.narratives=new (require('./narrative.cjs').NarrativeStore)(db);this.replays=new (require('./replay.cjs').ReplayStore)(db);this.episodes=new (require('./episodes.cjs').EpisodeLibrary)(db);db.exec('CREATE TABLE IF NOT EXISTS narrative_slots(id INTEGER PRIMARY KEY CHECK(id=1),slot TEXT NOT NULL)');
     const row=db.prepare('SELECT payload FROM automation_settings WHERE id=1').get();this.config={...DEFAULTS,...(row?JSON.parse(row.payload):{})};this.sessionArmed=false;this.lastError=null;this.lastSuccess=0;this.savedAt=null;if(!row)this.saveConfig();
   }
@@ -413,7 +413,7 @@ class Automation {
         if(!Number.isFinite(context.equity))reasons.push('total equity unavailable (a market or the exchange rate is missing)');context.equityReliability={reliable:!reasons.length,...(reasons.length?{reasons}:{})};}
       // Data gaps that persisted across reviews, with the research already tried (electron/research-gaps.cjs).
       if(context.environment!=='local-paper'){const gaps=this.researchGaps.context(watchScope);if(gaps.length)context.researchGaps=gaps;}
-      {const open=this.waits.context(watchScope,{enforced:this.config.reviewGate==='on'});if(open.length)context.waits=open;}
+      {const open=this.waits.context(watchScope,{enforced:this.config.reviewGate==='on'});if(open.length)context.waits=open;const pending=this.pending.context(watchScope);if(pending.length)context.pendingDecisions=pending;}
       // The previous review on this account, so a reversal (Hold to Buy, waiting to acted) explains what changed.
       if(context.environment!=='local-paper'){const key=this.accountTag()?.key;const prev=key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT 1").get(key):null;
         if(prev){const r=JSON.parse(prev.payload),d=r.decision??{};context.previousReview={at:new Date(r.timestamp).toISOString(),action:d.withheld?'Buy withheld (incomplete plan)':d.action,...(d.action!=='Hold'||d.withheld?{symbol:d.withheld?.symbol??d.symbol,quantity:d.withheld?.quantity??d.quantity}:{}),verdicts:Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict])),explanation:String(d.explanation??'').slice(0,400)};}}
@@ -432,7 +432,7 @@ class Automation {
       // the skip above; 'on' lets it decide. Either way its reasons are logged for every scheduled review.
       // News is read once, with the context: the baseline marks seen only what this review could have seen.
       const gateMode=this.config.reviewGate??'off';let gate=null;const gateEvents=gateMode!=='off'?this.newsEvents.list(300):[];
-      if(gateMode!=='off'&&!externalDecision)try{const RG=require('./review-gate.cjs');gate=RG.compare(this.reviewGate.baseline(watchScope),RG.decisionState(context),{trigger,config:this.config,events:gateEvents,waits:this.waits.all(watchScope)});}catch{gate=null;}
+      if(gateMode!=='off'&&!externalDecision)try{const RG=require('./review-gate.cjs');gate=RG.compare(this.reviewGate.baseline(watchScope),RG.decisionState(context),{trigger,config:this.config,events:gateEvents,waits:this.waits.all(watchScope),pending:this.pending.active(watchScope)});}catch{gate=null;}
       const skippable=this.config.provider==='openai'&&!externalDecision&&!emergency.active;
       const oldSkip=skippable&&saver.shouldSkip({trigger,config:this.config,fingerprint:hash,last:this.lastFingerprint?.scope===watchScope?this.lastFingerprint:null});
       const gateLog=(ran,extra={})=>{if(gate)try{this.reviewGate.log(Date.now(),{scope:watchScope,trigger,mode:gateMode,oldSkip,ran,reviewId:ran?id:null,...extra,gate});}catch{}};
@@ -529,7 +529,7 @@ class Automation {
       if(this.config.scope!=='paper')try{const events=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.runId')=?").all(id).map(r=>JSON.parse(r.payload));this.researchGaps.record(watchScope,result.decision.planVerdicts,require('./research-gaps.cjs').researchFromEvents(events));}catch{}
       try{this.waits.record(watchScope,result.decision,{reviewId:id,context});}catch{}
       if(this.config.scope!=='paper')try{const cost=this.db.prepare('SELECT payload FROM ai_calls').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===id&&!c.kind).reduce((a,c)=>a+(c.accountedMicro??c.estimatedMicro??0),0)/1e6;this.scheduleObserver.recordReview(recorded,cost);}catch{}
-      let proposal=null,order=null,executionNote=null;
+      let proposal=null,order=null,executionNote=null,pendingAlready=null;
       if(result.decision.action!=='Hold') {
         if(context.environment==='kis-combined')execution=/^\d{6}$/.test(result.decision.symbol)?this.live:this.usLive;
         if(context.environment==='local-paper'&&context.paperVersion!==this.paper.account().version)throw new Error('STALE_DECISION');
@@ -537,7 +537,9 @@ class Automation {
         const lossBreached=context.environment==='kis-combined'?(context.emergency.activeMarkets??[]).includes(execution.market):Boolean(context.emergency.active);
         if(result.decision.action==='Buy'&&lossBreached&&this.config.lossAction!=='review'){executionNote='Guardrail: new buys are blocked after the daily loss limit. Recommendation recorded; no order proposal was made.';this.log(id,'System','Guardrail · buys blocked',executionNote);this.trip('buys-blocked',`Blocked a ${result.decision.symbol} buy after the daily loss limit was reached.`);}
         else if(result.decision.credit&&result.decision.credit!=='none'&&(context.environment==='local-paper'||execution.market!=='KR')){executionNote='Credit orders (margin buying, short selling) are only available for Korean live accounts. Recommendation recorded; no order proposal was made.';this.log(id,'System','Review only · credit order',executionNote);}
-        else if(context.environment!=='local-paper'&&(selected?.executionEnabled===false||!execution.enabled)){executionNote=(execution.market==='US'?'U.S.':'Korea')+' trading session is off. Recommendation recorded; no order proposal or submission was made.';this.log(id,'System','Review only · execution off',executionNote);}else{
+        else if(context.environment!=='local-paper'&&(selected?.executionEnabled===false||!execution.enabled)){executionNote=(execution.market==='US'?'U.S.':'Korea')+' trading session is off. Recommendation recorded; no order proposal or submission was made.';this.log(id,'System','Review only · execution off',executionNote);}
+        // The same Buy or Sell already pending while its market is closed: one proposal, reassessed when it opens.
+        else if(pendingAlready=this.pending.repeats(watchScope,result.decision,this.marketOpenIn(context))){executionNote=`${result.decision.action} ${result.decision.symbol} has been pending since ${new Date(pendingAlready.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST${pendingAlready.proposalId?` (proposal ${pendingAlready.proposalId})`:''}; it is reassessed when its market opens. No new proposal was made.`;this.log(id,'System','Pending decision kept',executionNote);}else{
         proposal=context.environment!=='local-paper'?execution.propose({...(result.decision.credit&&result.decision.credit!=='none'?{credit:{kind:result.decision.credit,...(result.decision.loanDate?{loanDate:result.decision.loanDate}:{})}}:{}),symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity,limitPrice:(context.currency==='USD'||execution?.market==='US')?(result.decision.action==='Buy'?Math.ceil:Math.floor)(context.quotes.find(row=>row.symbol===result.decision.symbol).price*100)/100:context.quotes.find(row=>row.symbol===result.decision.symbol).price}):this.paper.propose({symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity});
         this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...recorded,proposalId:proposal.id}),id);
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
@@ -555,6 +557,7 @@ class Automation {
       // Shadow evaluation: the cheaper model decides the same frozen inputs in the background; it changes nothing.
       if(shadowRun)this.shadowTask=shadowRun.then(shadow=>this.recordShadow(review,assessed,shadow,anchor)).catch(()=>null);
       this.lastFingerprint={...hash,scope:watchScope,completedAt:Date.now()};
+      try{this.pending.record(watchScope,{decision:result.decision,reviewId:id,proposalId:proposal?.id??null,orderId:order?.id??null,context,marketOpen:this.marketOpenIn(context)});}catch{}
       if(gateMode!=='off')try{this.reviewGate.settle(watchScope,require('./review-gate.cjs').decisionState(context),{decision:{action:result.decision?.action,symbol:result.decision?.symbol,orderId:order?.id??proposal?.id??null},contextAt:startedAt,events:gateEvents.filter(e=>e.firstSeenAt<=startedAt)});}catch{}
       this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
     }catch(error){this.lastRun=Date.now();this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+(error.detail?` Size: ${error.detail.wireBytes} of ${error.detail.limitBytes} bytes; largest ${error.detail.largest.slice(0,5).join(', ')}.`:'');
@@ -622,6 +625,8 @@ class Automation {
     const all=[...quotes,...live];
     return {price:sym=>all.find(q=>q.symbol===sym&&Number.isFinite(q.price))?.price??null,previousClose:sym=>all.find(q=>q.symbol===sym)?.previousClose??null,closes:sym=>this.series?.closes(sym)??null};
   }
+  // Whether a market's session was open in a review's context.
+  marketOpenIn(context){return market=>context.environment==='kis-combined'?context.markets?.find(row=>row.market===market)?.marketSession?.open===true:context.marketSession?.open!==false;}
   // Company research for a live review, held back by an open wait on its symbol (electron/waits.cjs): answered with the
   // wait while the review gate is on, logged as what would be held while it observes. Your own requests, emergencies
   // and anything the gate saw change about the symbol read as usual.

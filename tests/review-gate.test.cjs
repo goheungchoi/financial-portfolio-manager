@@ -75,8 +75,8 @@ test('entry levels known at the decision review when crossed; the backstop revie
 });
 test('a decision the closed market could not carry out reviews when it opens',()=>{
   // 2026-10-29: five Sell NASD:GOOGL decisions while the U.S. market was closed, none with an order.
-  const base=settled(ctx(),{decision:{action:'Sell',symbol:'NASD:GOOGL',orderId:null}});const open=ctx();open.markets=[open.markets[0],{...open.markets[1],marketSession:{open:true}}];
-  assert.deepEqual(gate(base,open).reasons.map(r=>r.kind),['session','pending-decision']);assert.equal(gate(base,ctx()).needsReview,false,'still closed');
+  const base=settled();const pending=[{symbol:'NASD:GOOGL',action:'Sell'}];const open=ctx();open.markets=[open.markets[0],{...open.markets[1],marketSession:{open:true}}];
+  assert.deepEqual(gate(base,open,{pending}).reasons.map(r=>r.kind),['session','pending-decision']);assert.equal(gate(base,ctx(),{pending}).needsReview,false,'still closed');
 });
 test('baselines persist per scope, across restarts; the log summarizes what the gate would do',()=>{
   const db=new DatabaseSync(':memory:');const g=new ReviewGate(db);g.settle('kis:a',decisionState(ctx()),{at:t0,decision:{action:'Hold',symbol:''},events:[{receipt:'1'}]});
