@@ -113,3 +113,13 @@ test('after an unclear reply, history settles it: the asked-for revision is adop
   const c=mk();await assert.rejects(c.e.revise('o1',{price:279.5}));c.history.orders=[row('B1',{quantity:3,remaining:0}),row('Y1',{originalOrderId:'B1',kind:'revision',quantity:3,remaining:3,orderPrice:275})];await c.e.reconcile();o=c.e.orders()[0];assert.ok(o.handsOff,'a different price: you changed it');
   const d=mk();await assert.rejects(d.e.revise('o1',{cancel:true}));d.history.orders=[row('B1',{quantity:3,remaining:0}),row('C1',{originalOrderId:'B1',kind:'cancel',quantity:3,status:'Canceled'})];await d.e.reconcile();o=d.e.orders()[0];assert.equal(o.status,'Canceled');assert.equal(o.handsOff,undefined,'its own cancellation');
 });
+test('order numbers match without their leading zeros, as the KIS mock account lists them',async()=>{
+  // 2026-10-30 mock test: placed 0000040476, revised to 0000040478, cancelled as 0000040479; history listed 40476,
+  // 40478 (original 40476) and 40479 (original 40478), with the first two still marked Pending.
+  const rows=[{orderId:'40476',originalOrderId:null,kind:'order',quantity:1,filled:0,remaining:1,orderPrice:174.58,status:'Pending'},{orderId:'40478',originalOrderId:'40476',kind:'revision',quantity:1,filled:0,remaining:1,orderPrice:157.12,status:'Pending'},{orderId:'40479',originalOrderId:'40478',kind:'cancel',quantity:1,filled:0,remaining:0,orderPrice:0,status:'Canceled'}];
+  const mine=resolve({brokerOrderId:'0000040476',brokerOrderIds:['0000040476','0000040478','0000040479'],quantity:1},rows);
+  assert.equal(mine.status,'Canceled');assert.deepEqual(mine.chain,['0000040476','0000040478','0000040479'],'in the form KIS gave the app');assert.deepEqual(mine.outside,[]);assert.equal(mine.current,'0000040479');
+  const yours=resolve({brokerOrderId:'0000040476',quantity:1},rows);assert.deepEqual(yours.outside.map(o=>[o.orderId,o.from,o.kind]),[['0000040478','0000040476','revision'],['0000040479','0000040478','cancel']],'padded like the app’s numbers');
+  assert.equal(resolve({brokerOrderId:'0000040476',quantity:1},rows.slice(0,1)).current,'0000040476');
+  const {e,add,history}=engine();add({brokerOrderId:'0000040476',quantity:1});history.orders=rows;await e.reconcile();assert.equal(e.orders()[0].status,'Canceled','the engine matches it too');
+});
