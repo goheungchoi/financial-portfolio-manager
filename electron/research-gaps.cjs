@@ -5,10 +5,16 @@
 // two gaps however similar the sentences. Without structured fields the exact normalized wording is the identity. A
 // different gap for the same symbol starts a new count and replaces the old one. After RETRY_LIMIT reviews the gap has
 // reached its retry limit, and reviews are told to stop repeating the same wait: try a source not yet tried, or say the
-// tools cannot supply the data and decide under that uncertainty, or research another candidate. A verdict that no
-// longer waits on data closes the gap.
+// tools cannot supply the data and decide under that uncertainty, or research another candidate.
+// The symbol's wait is also counted as a whole (streak): every data wait since the symbol last stopped waiting, whatever
+// gap it names, so rewording the question cannot reset it. 2026-10-29: Samsung E&A waited on its project-level profit
+// for two hours under four wordings, and the gap never passed two reviews. A wait on an event or the market keeps the
+// streak without adding to it; acting or passing on the symbol closes the gap and the streak. At STREAK_LIMIT data waits
+// the retry limit is reached whatever the gap.
 const {createHash}=require('node:crypto');
-const RETRY_LIMIT=3;
+const RETRY_LIMIT=3,STREAK_LIMIT=6;
+// Why the data is missing, as the review states it in dataGap.cause.
+const CAUSES=['not-yet-published','not-retrievable','insufficient'];
 // Lowercase words without punctuation or a plural s; only exact abbreviations are expanded.
 const ABBREVIATION={capex:'capital expenditure',fcf:'free cash flow',eps:'earnings per share'};
 const norm=text=>String(text??'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,'').split(/\s+/).filter(Boolean).map(w=>ABBREVIATION[w]??w).join(' ').split(' ').map(w=>w.length>3?w.replace(/s$/,''):w).join(' ');
@@ -29,12 +35,18 @@ class ResearchGaps {
       if(v.verdict==='waiting'&&v.condition?.kind==='data'){
         const identity=gapIdentity(v.symbol,v);const prior=open?.id===identity.id?open:null;
         const tried=[...new Set([...(prior?.sourcesTried??[]),...research.filter(r=>r.symbol===v.symbol).map(r=>r.source)])].slice(-12);
-        const gap={...identity,symbol:v.symbol,firstSeen:prior?.firstSeen??now,lastSeen:now,reviews:(prior?.reviews??0)+1,unresolved:String(v.condition.unresolved??'').slice(0,240),sourcesTried:tried,...(open&&!prior?{replaced:{id:open.id??null,metric:open.metric??null,unresolved:open.unresolved,reviews:open.reviews}}:{})};
+        const before=open?.streak??(open?{reviews:open.reviews,since:open.firstSeen,wordings:[]}:null);const wording=identity.metric||norm(v.condition.unresolved).slice(0,80);
+        const streak={reviews:(before?.reviews??0)+1,since:before?.since??now,wordings:[...new Set([...(before?.wordings??[]),wording].filter(Boolean))].slice(-4)};
+        const cause=CAUSES.includes(v.dataGap?.cause)?v.dataGap.cause:null;
+        const gap={...identity,symbol:v.symbol,firstSeen:prior?.firstSeen??now,lastSeen:now,reviews:(prior?.reviews??0)+1,unresolved:String(v.condition.unresolved??'').slice(0,240),sourcesTried:tried,cause,streak,...(open&&!prior?{replaced:{id:open.id??null,metric:open.metric??null,unresolved:open.unresolved,reviews:open.reviews}}:{})};
         this.db.prepare('INSERT INTO research_gaps VALUES(?,?,?) ON CONFLICT(scope,symbol) DO UPDATE SET payload=excluded.payload').run(scope,v.symbol,JSON.stringify(gap));}
-      else if(open)this.db.prepare('DELETE FROM research_gaps WHERE scope=? AND symbol=?').run(scope,v.symbol);}
+      // Waiting on an event or the market keeps the gap and its streak; acting, passing or no condition closes them.
+      else if(open&&!(v.verdict==='waiting'&&['event','market'].includes(v.condition?.kind)))this.db.prepare('DELETE FROM research_gaps WHERE scope=? AND symbol=?').run(scope,v.symbol);}
   }
-  context(scope){return this.db.prepare('SELECT payload FROM research_gaps WHERE scope=?').all(scope).map(r=>JSON.parse(r.payload)).sort((a,b)=>b.reviews-a.reviews).slice(0,10)
-    .map(g=>({id:g.id??null,symbol:g.symbol,...(g.metric?{metric:g.metric,period:g.period,document:g.document}:{}),reviews:g.reviews,since:new Date(g.firstSeen).toISOString(),unresolved:g.unresolved,sourcesTried:g.sourcesTried,status:g.reviews>=RETRY_LIMIT?'retry limit reached':'retrying'}));}
+  context(scope){const streakOf=g=>g.streak?.reviews??g.reviews;return this.db.prepare('SELECT payload FROM research_gaps WHERE scope=?').all(scope).map(r=>JSON.parse(r.payload)).sort((a,b)=>streakOf(b)-streakOf(a)).slice(0,10)
+    .map(g=>({id:g.id??null,symbol:g.symbol,...(g.metric?{metric:g.metric,period:g.period,document:g.document}:{}),reviews:g.reviews,since:new Date(g.firstSeen).toISOString(),unresolved:g.unresolved,cause:g.cause??null,sourcesTried:g.sourcesTried,
+      symbolWait:{dataReviews:streakOf(g),since:new Date(g.streak?.since??g.firstSeen).toISOString(),...(g.streak?.wordings?.length>1?{earlierWordings:g.streak.wordings.slice(0,-1)}:{})},
+      status:g.reviews>=RETRY_LIMIT||streakOf(g)>=STREAK_LIMIT?'retry limit reached':'retrying'}));}
 }
 // The research a review asked for, from its logged requests: {symbol, source} such as "get_company_research:financials+risk".
 function researchFromEvents(events){
@@ -42,4 +54,4 @@ function researchFromEvents(events){
     if(typeof a?.symbol!=='string')return [];const what=Array.isArray(a.sections)?a.sections.slice().sort().join('+'):a.dataset??'';
     return [{symbol:a.symbol,source:`${e.title==='Market data request'?'get_market_evidence':'get_company_research'}:${what}`}];});
 }
-module.exports={ResearchGaps,researchFromEvents,gapIdentity,RETRY_LIMIT};
+module.exports={ResearchGaps,researchFromEvents,gapIdentity,RETRY_LIMIT,STREAK_LIMIT,CAUSES};

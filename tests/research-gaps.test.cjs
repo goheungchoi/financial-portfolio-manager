@@ -46,5 +46,26 @@ test('review fix: a gap is identified by metric, period and document, not wordin
 test('reviews are asked to name the missing metric, period and document for a data wait',()=>{
   const {validateDecision}=require('../electron/ai-client.cjs');const d=validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'x',credit:'none',loanDate:'',planVerdicts:[{...wait('NASD:AMZN'),dataGap:{material:true,why:'w',otherSource:'o',alternative:'a',retry:'r',metric:'Operating income',period:'FY2026 Q3',document:'10-Q'},minimumPosition:null}]},['NASD:AMZN']);
   assert.deepEqual([d.planVerdicts[0].dataGap.metric,d.planVerdicts[0].dataGap.period,d.planVerdicts[0].dataGap.document],['Operating income','FY2026 Q3','10-Q']);
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');assert.match(src,/required:\['material','why','otherSource','alternative','retry','metric','period','document'\]/);assert.match(src,/a different metric, period or document is a different gap/);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');assert.match(src,/required:\['material','why','otherSource','alternative','retry','metric','period','document','cause'\]/);assert.match(src,/a different metric, period or document is a different gap/);
+});
+test('rewording, event waits and market waits do not reset a symbol wait; it reaches the limit and acting closes it',()=>{
+  // 2026-10-29, Samsung E&A as reviewed: event waits all morning, then data waits under four wordings with two market waits
+  // between them. The gap showed two reviews at 15:11 after two hours of the same wait.
+  let now=Date.parse('2026-10-29T04:11:00Z');const g=new ResearchGaps(new DatabaseSync(':memory:'),()=>now);
+  const data=(metric,period='2026 Q3',document='October 29 results presentation',cause='not-retrievable')=>({...wait('028050','How much Q3 operating profit is repeatable?'),dataGap:{material:true,why:'w',otherSource:'',alternative:'',retry:'',metric,period,document,cause}});
+  const other=kind=>({symbol:'028050',verdict:'waiting',reason:'r',condition:{kind,unresolved:'u',evidence:'e',recheck:'k'}});
+  const seq=[other('event'),data('project-level operating profit composition and revised outlook'),data('projectlevel operating profit composition and revised outlook'),other('event'),
+    data('project-level operating-profit composition'),other('market'),data('project-level recurring operating profit','Q3 2026'),data('project-level operating profit and contract economics','FY2026 Q3')];
+  for(const v of seq){g.record('s',[v]);now+=7*60000;}
+  let [gap]=g.context('s');assert.equal(gap.reviews,1,'the latest wording is a new gap');assert.equal(gap.symbolWait.dataReviews,5,'but the symbol has waited on data five times');assert.equal(gap.status,'retrying');
+  assert.equal(gap.cause,'not-retrievable');assert.equal(gap.symbolWait.since,'2026-10-29T04:18:00.000Z','from the first data wait');assert.deepEqual(gap.symbolWait.earlierWordings,['projectlevel operating profit composition and revised outlook','projectlevel operatingprofit composition','projectlevel recurring operating profit']);
+  g.record('s',[data('project-level profit by project')]);[gap]=g.context('s');assert.equal(gap.symbolWait.dataReviews,6);assert.equal(gap.status,'retry limit reached','whatever the wording');
+  const issue=verdictIssues({researchGaps:[gap]},{action:'Hold',plan:{invalidation:'x'},planVerdicts:[data('yet another wording')]});assert.match(issue.join(),/028050: still waiting on data after 6 reviews/);
+  assert.deepEqual(verdictIssues({researchGaps:[gap]},{action:'Hold',plan:{invalidation:'x'},planVerdicts:[other('event')]}),[],'a dated event is the expected change');
+  g.record('s',[{symbol:'028050',verdict:'acted',reason:'Trimmed under the stated uncertainty',condition:{kind:'none'}}]);assert.deepEqual(g.context('s'),[],'acting closes the wait');
+  g.record('s',[data('anything')]);assert.equal(g.context('s')[0].symbolWait.dataReviews,1,'a new wait starts from one');
+});
+test('a data wait states why the data is missing; an unknown cause is dropped',()=>{
+  const {validateDecision}=require('../electron/ai-client.cjs');const d=cause=>validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'x',credit:'none',loanDate:'',planVerdicts:[{...wait('028050'),dataGap:{material:true,why:'w',otherSource:'',alternative:'',retry:'',metric:'m',period:'',document:'',cause},minimumPosition:null}]},['028050']).planVerdicts[0].dataGap.cause;
+  assert.equal(d('not-yet-published'),'not-yet-published');assert.equal(d('insufficient'),'insufficient');assert.equal(d('because'),undefined);
 });
