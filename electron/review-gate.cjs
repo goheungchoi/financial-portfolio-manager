@@ -104,6 +104,14 @@ function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},
   const changedSymbols=[...new Set(reasons.flatMap(r=>r.symbols))],requiredEvidence=[...new Set(reasons.flatMap(r=>r.evidence))];
   return {needsReview:reasons.length>0,reasons:reasons.map(({evidence,...r})=>r),changedSymbols,requiredEvidence,degraded:[...new Set(degraded)],nextBackstopAt};
 }
+// What kind of review this is, for the trading review (setting routineReviews 'focused'): broad when it starts trading,
+// is the pre-open review, your request or an emergency, or when the gate has nothing to compare with, reached its
+// backstop or saw guidelines change; routine otherwise, with what changed since the last successful decision.
+const BROAD_TRIGGERS=['Auto trading started','Pre-open review','User request','Emergency loss response'];
+function reviewScope(gate,trigger,base){
+  const broad=BROAD_TRIGGERS.includes(trigger)?trigger:(gate.reasons.find(r=>['baseline','backstop','instructions'].includes(r.kind))?.detail??null);
+  if(broad||!base)return {kind:'broad',why:broad??'No earlier decision'};
+  return {kind:'routine',since:new Date(base.at).toISOString(),changes:gate.reasons.filter(r=>r.kind!=='trigger').map(r=>r.detail).slice(0,12),changedSymbols:gate.changedSymbols,...(gate.degraded.length?{degraded:gate.degraded}:{})};}
 // Baselines (one per account scope, kept across restarts) and a log of every check.
 class ReviewGate {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS review_gate(scope TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS review_gate_log(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
@@ -126,4 +134,4 @@ class ReviewGate {
       backstops:scheduled.filter(r=>kinds(r).has('backstop')).length,riskReasons:scheduled.filter(r=>kinds(r).has('risk')||kinds(r).has('protection')).length,
       degraded:scheduled.filter(r=>r.gate?.degraded?.length).length};}
 }
-module.exports={ReviewGate,decisionState,compare,newsKey,GATE_DEFAULTS};
+module.exports={ReviewGate,decisionState,compare,reviewScope,newsKey,GATE_DEFAULTS,BROAD_TRIGGERS};
