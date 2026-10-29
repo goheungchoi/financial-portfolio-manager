@@ -42,7 +42,12 @@ class OverseasClient{
     const usd=await stage('CASH',async()=>{if(!Object.hasOwn(present.body,'output2'))throw new Error('INVALID_RESPONSE');return records(present.body.output2).find(row=>row.crcy_cd?.trim()==='USD');});const cash=await stage('CASH',async()=>usd?numeric(usd.frcr_dncl_amt_2):0);
     // Broker buying power (foreign-only and integrated) for one reference stock; a failure leaves it unknown, not zero.
     let brokerBuyingPower=null;try{const ref=holdings[0]??null;const {exchange:ex,ticker:tk}=instrument(ref?.symbol??'NASD:AAPL');const {body}=await this.query('inquire-psamount',this.tr('TTTS3007R','VTTS3007R'),{OVRS_EXCG_CD:ex,OVRS_ORD_UNPR:(ref?.price>0?ref.price:100).toFixed(2),ITEM_CD:tk});brokerBuyingPower=require('./buying-power.cjs').brokerFigures(body.output);}catch{}
-    return {...this.identity(),source:'kis-us',currency:'USD',...(brokerBuyingPower?{brokerBuyingPower}:{}),fx:usdRate(usd,present.body.output1),timestamp:new Date().toISOString(),cash,reportedTotal:Math.round((cash+holdings.reduce((sum,row)=>sum+row.marketValue,0))*100)/100,holdings,
+    // Proceeds of U.S. sales not yet settled, in USD (frcr_sll_amt_smtl, net of fees): an asset KIS has not yet paid into
+    // the deposit, so the total counts them (as KIS's own total asset figure does) while cash stays what can be spent.
+    // 2026-10-30: after the GOOGL sale the total dropped by its $279.01 proceeds until settlement.
+    // Missing or blank (some accounts leave it out) means none; a value that is there but not a number is refused.
+    const pendingSale=await stage('CASH',async()=>usd&&usd.frcr_sll_amt_smtl!=null&&String(usd.frcr_sll_amt_smtl).trim()!==''?Math.max(0,numeric(usd.frcr_sll_amt_smtl)):0);
+    return {...this.identity(),source:'kis-us',currency:'USD',...(brokerBuyingPower?{brokerBuyingPower}:{}),fx:usdRate(usd,present.body.output1),timestamp:new Date().toISOString(),cash,...(pendingSale>0?{pendingSaleProceeds:pendingSale}:{}),reportedTotal:Math.round((cash+pendingSale+holdings.reduce((sum,row)=>sum+row.marketValue,0))*100)/100,holdings,
       // Unsettled U.S. buys and sales in KRW (electron/integrated-settlement.cjs); absent when KIS does not report them.
       ...(present.body.output3&&typeof present.body.output3==='object'&&!Array.isArray(present.body.output3)?{unsettled:{buyKRW:numeric(present.body.output3.ustl_buy_amt_smtl)||0,sellKRW:numeric(present.body.output3.ustl_sll_amt_smtl)||0}}:{})};
   }
