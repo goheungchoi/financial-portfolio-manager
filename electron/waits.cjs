@@ -32,8 +32,11 @@ class Waits {
       const reason=reasonOf(v);if(!reason)continue;const c=v.condition??{},cause=v.dataGap?.cause??null,role=roles.get(v.symbol)??null;
       let prev=mine.find(w=>w.reason===reason);if(prev&&context.scoutPlan&&prev.role!==role){this.save({...prev,status:'invalidated',closedAt:now,closedBy:'scout role changed'});prev=null;}
       const t=Date.parse(c.earliestCheck??''),given=Number.isFinite(t)&&t>now&&t<=now+MAX_MS?t:null;
-      const earliest=cause==='not-retrievable'&&reason==='missing_data'?null:prev?(prev.earliestCheckAt!=null&&given!=null?Math.min(prev.earliestCheckAt,given):prev.earliestCheckAt??given):given;
-      const expiresAt=prev?.expiresAt??Math.min(now+MAX_MS,earliest!=null?earliest+DAY:now+2*DAY);
+      // A check still ahead can only move earlier; one that has passed (the review it called for ran) can be renewed,
+      // and the expiry moves with it, within a week of the wait's start.
+      const due=prev?.earliestCheckAt!=null&&prev.earliestCheckAt<=now;
+      const earliest=cause==='not-retrievable'&&reason==='missing_data'?null:!prev?given:due?given??prev.earliestCheckAt:prev.earliestCheckAt!=null&&given!=null?Math.min(prev.earliestCheckAt,given):prev.earliestCheckAt??given;
+      const expiresAt=!prev?Math.min(now+MAX_MS,earliest!=null?earliest+DAY:now+2*DAY):due&&earliest!=null?Math.min(prev.createdAt+MAX_MS,Math.max(prev.expiresAt,earliest+DAY)):prev.expiresAt;
       this.save({id:prev?.id??'W-'+randomUUID().slice(0,8),scope,symbol:v.symbol,status:'active',reason,cause,question:String(c.unresolved??'').slice(0,240),resolvesOn:String(c.recheck??'').slice(0,160),
         evidence:String(c.evidence??'').slice(0,240),sources:[...new Set([...(prev?.sources??[]),...[v.dataGap?.otherSource,v.dataGap?.document].filter(Boolean)])].slice(0,6),
         earliestCheckAt:earliest,expiresAt,overrides:'A filing, important news, a price move past the review gate’s limit, a holding or order change, a lost stop loss or a risk limit for this symbol; your own request; an emergency.',

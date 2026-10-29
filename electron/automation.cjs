@@ -636,7 +636,8 @@ class Automation {
   // wait while the review gate is on, logged as what would be held while it observes. Your own requests, emergencies
   // and anything the gate saw change about the symbol read as usual.
   researchFor({watchScope,trigger,emergency,gate,gateMode,id}){return args=>{
-    const held=gateMode!=='off'&&!emergency&&!['User request','Emergency loss response'].includes(trigger)?this.waits.guard(watchScope,args?.symbol,{overridden:new Set(gate?.changedSymbols??[]),isOpen:m=>this.sessionOpen(m)}):null;
+    // Without a gate result (it failed) nothing could override a wait, so nothing is held.
+    const held=gateMode!=='off'&&gate&&!emergency&&!['User request','Emergency loss response'].includes(trigger)?this.waits.guard(watchScope,args?.symbol,{overridden:new Set(gate?.changedSymbols??[]),isOpen:m=>this.sessionOpen(m)}):null;
     if(held){if(gateMode==='on'){this.log(id,'System','Research waits',`${held.symbol}: ${held.reason.replace('_',' ')} until ${held.until}.`);return held;}this.log(id,'System','Research would wait',`${held.symbol}: ${held.reason.replace('_',' ')} until ${held.until}; the review gate is observing, so it is read.`);}
     return this.discovery.research(args);};}
   // The review gate for the settings page: its mode and what it found over the last 7 days.
