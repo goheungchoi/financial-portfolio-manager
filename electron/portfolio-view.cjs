@@ -7,9 +7,11 @@ function combinePortfolio(korea,us,fx,metadata={}){
   // conservative figure; the part that may have been USD-funded is reported as uncertain).
   const {unsettledKRW:committed,uncertainKRW}=require('./integrated-settlement.cjs').settlement(us);
   const krCash=korea?(Number.isFinite(korea.settledCash)?korea.settledCash:korea.cash)-committed:null;
-  const krEquity=korea?krCash+rows.filter(row=>row.market==='KR').reduce((sum,row)=>sum+row.nativeValue,0):null;const usEquity=us?us.cash+rows.filter(row=>row.market==='US').reduce((sum,row)=>sum+row.nativeValue,0):null;
+  const krEquity=korea?krCash+rows.filter(row=>row.market==='KR').reduce((sum,row)=>sum+row.nativeValue,0):null;
+  // U.S. sale proceeds KIS has not settled yet count in U.S. equity (not in cash): electron/kis-overseas.cjs readBalance.
+  const pendingUSD=us?.pendingSaleProceeds>0?us.pendingSaleProceeds:0;const usEquity=us?us.cash+pendingUSD+rows.filter(row=>row.market==='US').reduce((sum,row)=>sum+row.nativeValue,0):null;
   const complete=krEquity!=null&&usEquity!=null;const equityKRW=complete&&(rate!=null||usEquity===0)?krEquity+usEquity*(rate??0):null;
-  return {rows,depositCash:{KRW:korea?.cash??null},...(committed?{committedKRW:committed}:{}),...(uncertainKRW?{settlementUncertainKRW:uncertainKRW}:{}),cash:{KRW:krCash,USD:us?.cash??null},totals:{KRW:krEquity,USD:usEquity,equityKRW},fx:rate?fx:null,complete,timestamps:{KR:korea?.timestamp??null,US:us?.timestamp??null}};
+  return {rows,depositCash:{KRW:korea?.cash??null},...(committed?{committedKRW:committed}:{}),...(uncertainKRW?{settlementUncertainKRW:uncertainKRW}:{}),cash:{KRW:krCash,USD:us?.cash??null},...(pendingUSD?{pendingSettlement:{USD:pendingUSD}}:{}),totals:{KRW:krEquity,USD:usEquity,equityKRW},fx:rate?fx:null,complete,timestamps:{KR:korea?.timestamp??null,US:us?.timestamp??null}};
 }
 class PortfolioView{
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS instrument_metadata(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
