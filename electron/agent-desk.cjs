@@ -12,6 +12,8 @@ const cut=(text,n)=>String(text??'').trim().replace(/\s+/g,' ').slice(0,n);
 const isSymbol=s=>typeof s==='string'&&/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(s);
 const fail=reason=>({status:'rejected',reason});
 const TEMPORARY=/KIS_ORDER_BUSY|TIMEOUT|NETWORK|RATE_LIMIT/;
+// Broker order statuses of a sell that was sent: a stop whose sell got this far did its job.
+const SENT=new Set(['Accepted','Partially filled','Filled']);
 const describe=e=>e?.code?`${e.code}${e.detail?`: ${e.detail}`:''}`:'INVALID';
 class AgentDesk {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS agent_note_history(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,replacedAt INTEGER NOT NULL,reason TEXT NOT NULL);CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
@@ -77,14 +79,20 @@ class AgentDesk {
   // {symbol: {quantity}}. Only stop losses count as protection (a take-profit or other sell does not limit a fall), and
   // they must cover the shares the rejected stop was for (its quantity, at most the shares held); fewer is reported as
   // partial with the shares covered. Each stays listed until stops cover those shares, the shares are gone, or the user
-  // dismisses it: time passing does not restore protection, and nor does a later stop that was cancelled or expired
-  // without firing (only one that fired, submitted or proposed, settles it).
+  // dismisses it: time passing does not restore protection. A later stop settles it only once its sell reached the
+  // broker (sellStatus says Accepted, Partially filled or Filled); one that was cancelled, expired, is still waiting for
+  // approval, or that the broker refused or cancelled does not, and is reported as replacement with that status.
   // temporary: refused for a passing reason (another order being sent, a timeout), so re-arming is expected to work.
-  unprotected(scope,positions){this.expire(scope);const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing',lapsed=o=>o.status==='cancelled'||o.status==='expired';
-    return Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).flatMap(([symbol,p])=>{const stops=all.filter(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss');const last=stops.find(o=>!live(o)&&!lapsed(o));
-      if(last?.status!=='rejected'||last.acknowledgedAt)return [];
+  unprotected(scope,positions){this.expire(scope);const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing';
+    const broker=o=>{try{return this.sellStatus?.(o)??null;}catch{return null;}};
+    // What a closed stop did: rejected, settled (its sell is at or through the broker), or nothing yet.
+    const result=o=>{if(o.status==='rejected')return 'rejected';if(o.status!=='submitted'&&o.status!=='proposed')return null;const s=broker(o);return (s?SENT.has(s):o.status==='submitted')?'settled':null;};
+    return Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).flatMap(([symbol,p])=>{const stops=all.filter(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss');const at=stops.findIndex(o=>!live(o)&&result(o)),last=stops[at];
+      if(!last||result(last)!=='rejected'||last.acknowledgedAt)return [];
       const needed=Math.min(p.quantity,last.quantity),covered=stops.filter(live).reduce((n,o)=>n+o.quantity,0);if(covered>=needed)return [];
-      return [{symbol,orderId:last.id,quantity:needed,heldQuantity:p.quantity,coveredQuantity:covered,...(covered>0?{partial:true}:{}),rejectedAt:new Date(last.closedAt).toISOString(),outcome:last.outcome??null,temporary:TEMPORARY.test(last.outcome??'')}];});}
+      const later=stops.slice(0,at).find(o=>!live(o));
+      return [{symbol,orderId:last.id,quantity:needed,heldQuantity:p.quantity,coveredQuantity:covered,...(covered>0?{partial:true}:{}),rejectedAt:new Date(last.closedAt).toISOString(),outcome:last.outcome??null,temporary:TEMPORARY.test(last.outcome??''),
+        ...(later?{replacement:{orderId:later.id,status:later.status,...(broker(later)?{brokerStatus:broker(later)}:{})}}:{})}];});}
   // The user has seen an unprotected holding and accepts it; the rejected stop stops being listed.
   dismissUnprotected(scope,orderId){const o=this.rows('conditional_orders',scope,'rejected').find(x=>x.id===orderId);if(!o)throw new Error('NOT_FOUND');this.update(o,{acknowledgedAt:this.clock()});}
   cancelOrder(scope,id){const o=this.orders(scope).find(x=>x.id===id);if(!o)throw new Error('NOT_FOUND');this.update(o,{status:'cancelled',closedAt:this.clock(),closedBy:'user'});}
@@ -95,7 +103,7 @@ class AgentDesk {
       conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxActive:config.conditionalMaxActive,maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours}:{}),
         armed:this.orders(scope).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString()})),
         recent:this.recentOrders(scope,5).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,purpose:o.purpose,status:o.status,outcome:o.outcome??null,at:new Date(o.closedAt??o.createdAt).toISOString()})),
-        ...(unprotected.length?{unprotected,unprotectedNote:'These holdings are not protected: their stop loss was rejected and nothing replaced it. A rejected order is not protection. Only a stop loss counts: a take-profit does not limit a fall. quantity is the shares the rejected stop was for and coveredQuantity what armed stop losses cover now (partial: true when some are). Re-arm a stop loss for the uncovered shares (temporary: true means the refusal was passing, such as another order being sent), sell, or say in this review why the position stays unprotected. This stays listed until stop losses cover those shares, the shares are gone, or the user dismisses it.'}:{})}};
+        ...(unprotected.length?{unprotected,unprotectedNote:'These holdings are not protected: their stop loss was rejected and nothing replaced it. A rejected order is not protection. Only a stop loss counts: a take-profit does not limit a fall. quantity is the shares the rejected stop was for and coveredQuantity what armed stop losses cover now (partial: true when some are). replacement is a later stop that has not protected it yet (status proposed: its sell awaits the user’s approval; brokerStatus is what the broker did with it). Re-arm a stop loss for the uncovered shares (temporary: true means the refusal was passing, such as another order being sent), sell, or say in this review why the position stays unprotected. This stays listed until stop losses cover those shares, the shares are gone, or the user dismisses it.'}:{})}};
   }
 }
 // Korean limit prices must sit on the exchange tick for their price band.

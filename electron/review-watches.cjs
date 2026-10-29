@@ -5,7 +5,8 @@ class ReviewWatches {
   set(scope,value,context){
     if(!value||Object.keys(value).sort().join(',')!=='direction,percent,price,reason,symbol'||!context.universe.some(row=>row.symbol===value.symbol)||!['above','below'].includes(value.direction)||typeof value.reason!=='string'||value.reason.length>500||value.percent!==null&&(!Number.isFinite(value.percent)||value.percent<.1||value.percent>50)||value.price!==null&&(!Number.isFinite(value.price)||value.price<=0||value.price>1e9))return {status:'rejected',reason:'INVALID_WATCH'};
     const quote=context.quotes.find(row=>row.symbol===value.symbol);
-    const watch={...value,baseline:Number.isFinite(quote?.price)&&quote.price>0?quote.price:null,updatedAt:Date.now(),priceFired:false};
+    // revision: new each time the watch is set, kept by rebase and fired, so it names this watch as the AI set it.
+    const watch={...value,baseline:Number.isFinite(quote?.price)&&quote.price>0?quote.price:null,updatedAt:Date.now(),revision:require('node:crypto').randomUUID(),priceFired:false};
     this.db.prepare('INSERT INTO review_watches VALUES(?,?,?) ON CONFLICT(scope,symbol) DO UPDATE SET payload=excluded.payload').run(scope,value.symbol,JSON.stringify(watch));return {status:'saved',watch};
   }
   reset(scope){this.db.prepare('DELETE FROM review_watches WHERE scope=?').run(scope);}
