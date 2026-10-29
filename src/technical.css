@@ -24,3 +24,6 @@
 .ta-pivots .ta-level-s td{color:#d96c6c}
 .ta-pivots .ta-level-p th,.ta-pivots .ta-level-p td{font-weight:700}
 @media (max-width:1100px){.technical-summary .ta-grid{grid-template-columns:1fr}.technical-summary .ta-frames{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.live-dot{display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:middle;animation:live-dot 1.6s ease-in-out infinite}
+@keyframes live-dot{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.live-dot{animation:none}}

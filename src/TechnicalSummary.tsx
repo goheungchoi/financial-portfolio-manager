@@ -2,6 +2,7 @@ import {useEffect,useMemo,useState} from 'react';
 import {useDraftState} from './useDraftState';
 import type {Candle} from './CandleChart';
 import {TIMEFRAMES,RATINGS,SIGNALS,summarize,aggregate} from './technical-summary.mjs';
+import {applyTick,type Tick} from './live-bars.mjs';
 import './technical.css';
 type Bars={frames?:Record<string,Candle[]>;errors?:Record<string,string>;retrievedAt?:number;error?:string};
 // Investing-style technical summary for the charted symbol: a rating per timeframe, then the selected timeframe's moving
@@ -10,6 +11,10 @@ export function TechnicalSummary({symbol,daily}:{symbol:string;daily:Candle[]}){
   const [bars,setBars]=useState<Bars|null>(null);const [loading,setLoading]=useState(false);const [frame,setFrame]=useDraftState('technical:frame','1d');const [reload,setReload]=useState(0);
   useEffect(()=>{let alive=true;setBars(null);setLoading(true);window.portfolio?.getChartBars(symbol).then(v=>{if(alive)setBars(v);}).catch(()=>{if(alive)setBars({error:'REQUEST_FAILED'});}).finally(()=>{if(alive)setLoading(false);});return()=>{alive=false;};},[symbol,reload]);
   const us=symbol.includes(':');
+  // Live ticks move the latest bar of each fetched timeframe (daily bars come live from the chart above).
+  useEffect(()=>window.portfolio?.onChartTick?.((t:Tick)=>{if(t.symbol!==symbol)return;const market=symbol.includes(':')?'US':'KR';
+    setBars(prev=>{if(!prev?.frames)return prev;const frames:Record<string,Candle[]>={};for(const [id,list] of Object.entries(prev.frames)){const minutes=id==='1m'?1:TIMEFRAMES.find(f=>f.id===id)?.minutes;
+      frames[id]=applyTick(list,t,{period:minutes?minutes*60000:'last',market});}return {...prev,frames};});}),[symbol]);
   // Candles per timeframe: Korean intraday bars are combined from today's one-minute bars.
   const series=useMemo(()=>{const f=bars?.frames??{};const out:Record<string,Candle[]>={'1d':daily,'1w':f['1w']??[],'1M':f['1M']??[]};
     for(const t of TIMEFRAMES)if(t.minutes)out[t.id]=us?(f[t.id]??[]):aggregate(f['1m']??[],t.minutes);return out;},[bars,daily,us]);

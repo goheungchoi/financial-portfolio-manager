@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getResearch:(symbol,sections,refresh)=>ipcRenderer.invoke('research:company',symbol,sections,refresh),
   openFiling:url=>ipcRenderer.invoke('research:open-filing',url),
   getMarketOverview:refresh=>ipcRenderer.invoke('research:market',refresh),getUSMarketOverview:refresh=>ipcRenderer.invoke('research:us-market',refresh),
-  openChartWindow:symbol=>ipcRenderer.invoke('chart:pop-out',symbol),getChartBars:symbol=>ipcRenderer.invoke('chart:bars',symbol),
+  openChartWindow:symbol=>ipcRenderer.invoke('chart:pop-out',symbol),getChartBars:symbol=>ipcRenderer.invoke('chart:bars',symbol),watchChart:symbol=>ipcRenderer.invoke('chart:watch',symbol),onChartTick:callback=>{const listener=(_event,tick)=>callback(tick);ipcRenderer.on('chart:tick',listener);return()=>ipcRenderer.removeListener('chart:tick',listener);},
   getMacro:()=>ipcRenderer.invoke('macro:get'),
   getAttention:()=>ipcRenderer.invoke('workspace:attention'),
   getUpdates:()=>ipcRenderer.invoke('update:get'),checkForUpdates:()=>ipcRenderer.invoke('update:check'),downloadUpdate:()=>ipcRenderer.invoke('update:download'),installUpdate:()=>ipcRenderer.invoke('update:install'),saveUpdateSettings:value=>ipcRenderer.invoke('update:settings',value),
