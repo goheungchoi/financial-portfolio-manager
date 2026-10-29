@@ -35,7 +35,7 @@ function dryRunSummary(c,{assembledAt=Date.now(),account=null,scope=null}={}){
 }
 class Automation {
   constructor(db,paper,provider,log) {
-    this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();
+    this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
     db.exec('CREATE TABLE IF NOT EXISTS routing_eval(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,account TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS shadow_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS routing_pass(id TEXT PRIMARY KEY,decidedAt INTEGER NOT NULL,payload TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS review_clock(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
@@ -100,6 +100,17 @@ class Automation {
   }
   // Markets in the review scope that accept orders now; Korean holidays come from KIS session checks during reviews.
   // Extended sessions you switched on (live accounts only), as passed to the broker worker and the session schedule.
+  // U.S. quotes from a refresh, as price triggers see them. With no U.S. session the app can trade open, a quote is a
+  // broker snapshot (overnight the regular feed keeps an old price), so it is stale and starts no review. The regular and
+  // daytime feeds can differ by several percent at the same moment, so when a symbol's feed changes, its baselines start
+  // again from the new feed's price instead of counting the difference as a move.
+  acceptUSQuotes(value){
+    const open=value?.marketSession?.open===true,switched=[];
+    this.usQuotes=(value?.quotes??[]).map(row=>{const venue=row.venue??'regular',before=this.usVenues.get(row.symbol);this.usVenues.set(row.symbol,venue);
+      if(before&&before!==venue&&row.price>0)switched.push(row);return {...row,venue,timestamp:row.retrievedAt,stale:!open};});
+    if(switched.length){for(const row of switched)this.lastPrices.set(row.symbol,row.price);this.watches.rebase(this.watchScope(),switched);}
+    return this.usQuotes;
+  }
   sessionOptions(){return {krNxt:this.config.sessionKrNxt,krxSingle:this.config.sessionKrxSingle,usPre:this.config.sessionUsPre,usAfter:this.config.sessionUsAfter,usDaytime:this.config.sessionUsDaytime};}
   marketHours(now=Date.now()){this.closedDays??=new Set();const closed=new Set([...this.closedDays,...(this.officialClosedDays?.()??[])]);const mh=require('./market-hours.cjs');const base=mh.marketHours(this.config.scope,now,closed);
     const enabled=this.sessionOptions();if(!Object.values(enabled).some(Boolean))return base;
