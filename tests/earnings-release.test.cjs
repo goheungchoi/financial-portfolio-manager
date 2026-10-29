@@ -169,3 +169,10 @@ test('review P2: a shortened research result keeps every guidance statement whol
   assert.ok(longText.startsWith(pages[0].text+pages[1].text),'reads continue the text exactly');
   let all='',from=0;for(;;){const r=rc.detailPart({'result-1':longReply},{section:'result-1',part:'release/text',from});all+=r.text;if(!r.next)break;from=r.next.from;}assert.equal(all,longText,'every read together is the whole text');
 });
+test('a long-term horizon of up to 10 years is accepted; one outside 1 to 3,650 days is held back with that reason',()=>{
+  // 2026-10-30: every review's three-year MediaAlpha Buy (1,095 days) was dropped by a 1,000-day limit and held back as
+  // "no horizon", so the agent could not tell what to fix.
+  const sourced={evidence:[read]};for(const days of [1095,3650,1])assert.equal(buy({...sourced,horizonDays:days}).action,'Buy',`${days} days`);
+  assert.equal(buy({...sourced,horizonDays:1095}).plan.horizonDays,1095);
+  for(const [days,why] of [[3651,/horizonDays 3651 is outside 1 to 3,650 days/],[0,/horizonDays 0 is outside/],[2.5,/horizonDays 2.5 is outside/],[null,/no horizon/]]){const d=buy({...sourced,horizonDays:days});assert.equal(d.action,'Hold',String(days));assert.match(d.withheld.reason,why);}
+});
