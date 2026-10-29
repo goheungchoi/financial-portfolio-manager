@@ -126,3 +126,13 @@ test('the review sees pending sale proceeds as part of U.S. equity, not as cash'
   const ctx=await e.context();assert.equal(ctx.equity,547.10);assert.equal(ctx.cash,0,'not spendable yet');assert.equal(ctx.pendingSaleProceeds,267.63);
   const {pendingSaleProceeds,...none}=balance;const n=new LiveEngine(db,{request:async op=>op==='live-context'?{balance:{...none,reportedTotal:279.47},quotes:[],marketSession:{open:true}}:{}},()=>({status:'connected',snapshot:none}),{market:'US'});assert.equal((await n.context()).pendingSaleProceeds,undefined);
 });
+test('the combined total (Home, history) counts unsettled U.S. sale proceeds; cash does not',()=>{
+  // 1.5.44 counted the receivable in the U.S. account total, but the combined view summed cash and holdings
+  // itself and still left it out.
+  const {combinePortfolio}=require('../electron/portfolio-view.cjs');const kr={cash:426730,settledCash:426730,holdings:[{symbol:'990020',quantity:3,price:98800,cost:58700}]};
+  const holdings=[{symbol:'NASD:CNTS',quantity:1,price:213.66,cost:204.58},{symbol:'NYSE:NWWR',quantity:1,price:65.84,cost:62.79}];
+  const pending=combinePortfolio(kr,{cash:0,pendingSaleProceeds:267.63,holdings},{usdKRW:1336.3});
+  assert.equal(Math.round(pending.totals.USD*100)/100,547.13);assert.equal(pending.cash.USD,0,'not cash');assert.deepEqual(pending.pendingSettlement,{USD:267.63});
+  assert.equal(Math.round(pending.totals.equityKRW),Math.round(426730+296400+547.13*1336.3));
+  const settled=combinePortfolio(kr,{cash:267.63,holdings},{usdKRW:1336.3});assert.equal(Math.round(settled.totals.USD*100)/100,547.13,'settled: the same total, now as cash');assert.equal(settled.pendingSettlement,undefined);
+});
