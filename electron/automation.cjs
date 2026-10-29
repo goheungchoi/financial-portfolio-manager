@@ -608,6 +608,7 @@ class Automation {
   async fireConditional(order){
     const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);return saved;};
     const us=/:/.test(order.symbol);const engine=us?this.usLive:this.live;if(!engine)return note('rejected','No account for this market.');
+    const BUSY='another order in progress';const busy=()=>{if(order.waiting!==BUSY)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): another order for this market is being sent; checking again in 10 seconds.`);this.desk.update(order,{status:'armed',waiting:BUSY,nextCheckAt:Date.now()+10000});};
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
       const ctx=await engine.context(us?await this.refreshUS():null);
@@ -617,6 +618,9 @@ class Automation {
       if(!check.met){this.desk.update(order,{status:'armed',waiting:null,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
       const market=us?'US':'KR';const {onTick}=require('./agent-desk.cjs');const limit=onTick(order.limitPrice??quote.price,order.side,market);
       const drift=Math.abs(limit/quote.price-1)*100;if(drift>this.config.conditionalMaxSlippagePct)return note('rejected',`Limit ${limit} is ${drift.toFixed(2)}% from the price ${quote.price}, above the ${this.config.conditionalMaxSlippagePct}% limit.`,{results:check.results});
+      // Another order for this market is being sent (the engine sends one at a time): the order stays armed and is checked
+      // again shortly, with its conditions re-read. Checked before proposing, so no proposal is left behind.
+      if(engine.busy)return busy();
       let quantity=order.quantity;
       if(order.side==='Sell'){const held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return note('rejected','No shares held to sell.',{results:check.results});quantity=Math.min(quantity,held);}
       const notional=quantity*limit;
@@ -630,7 +634,7 @@ class Automation {
       const auto=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval&&!capReached;
       if(auto){const placed=await engine.autoSubmit(proposal.id);return note('submitted',`Submitted at ${limit} for ${quantity} shares.`,{proposalId:proposal.id,orderId:placed?.id??null,results:check.results});}
       return note('proposed',capReached?`Daily automatic order limit reached; proposal ${proposal.id} awaits approval.`:`Proposal at ${limit} for ${quantity} shares awaits approval.`,{proposalId:proposal.id,results:check.results});
-    }catch(error){const code=/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'ORDER_FAILED';return note('rejected',`The broker or a risk check refused it (${code}).`);}
+    }catch(error){const code=/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'ORDER_FAILED';if(code==='KIS_ORDER_BUSY')return busy();return note('rejected',`The broker or a risk check refused it (${code}).`);}
   }
   deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
