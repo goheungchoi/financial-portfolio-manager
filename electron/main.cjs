@@ -342,6 +342,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('desk:cancel-trigger',deskAction((scope,id)=>automation.desk.cancelTrigger(scope,String(id))));
   ipcMain.handle('desk:delete-note',deskAction((scope,symbol)=>automation.desk.deleteNote(scope,String(symbol??''))));
   ipcMain.handle('desk:cancel-order',deskAction((scope,id)=>automation.desk.cancelOrder(scope,String(id))));
+  ipcMain.handle('desk:dismiss-unprotected',deskAction((scope,id)=>automation.desk.dismissUnprotected(scope,String(id))));
   ipcMain.handle('research:open-filing',(event,url)=>{authorize(event);if(typeof url==='string'&&(/^https:\/\/dart\.fss\.or\.kr\/dsaf001\/main\.do\?rcpNo=\d{14}$/.test(url)||/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/\d{1,10}\/\d{18}\/[A-Za-z0-9._-]{1,120}$/.test(url)))void shell.openExternal(url);});
   ipcMain.handle('research:company',async(event,symbol,sections,refresh)=>{authorize(event);if(typeof symbol!=='string'||!/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol))throw new Error('INVALID_REQUEST');return research.profile(symbol,{sections:Array.isArray(sections)?sections.filter(s=>typeof s==='string').slice(0,12):undefined,refresh:refresh===true});});
   // The scout plan's live Korean targets are always quoted and reviewable, alongside the watchlist or starter list.

@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   cancelTrigger: id => ipcRenderer.invoke('desk:cancel-trigger',id),
   deleteNote: symbol => ipcRenderer.invoke('desk:delete-note',symbol),
   cancelConditionalOrder: id => ipcRenderer.invoke('desk:cancel-order',id),
+  dismissUnprotected: id => ipcRenderer.invoke('desk:dismiss-unprotected',id),
   searchSecurities: (query, market) => ipcRenderer.invoke('discovery:search', query, market),
   screenMarket: query => ipcRenderer.invoke('discovery:screen', query),
   updateWatchlist: (action, symbol, value) => ipcRenderer.invoke('discovery:watch', action, symbol, value),
