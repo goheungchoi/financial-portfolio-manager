@@ -219,3 +219,12 @@ test('a replacement stop protects only once its sell reaches the broker',()=>{
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
   a.engineOrders=()=>[{id:'P9',status:'Ready'}];assert.equal(a.desk.sellStatus({proposalId:'P9'}),'Ready','the scheduler reads the engines');assert.equal(a.desk.sellStatus({}),null);
 });
+test('a fired conditional order goes in at the best bid and gives the tracker its limitPrice as the bound',async()=>{
+  const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
+  const {automation:a}=harness({engineCtx:()=>open});const notes=[];a.live.annotate=(id,patch)=>notes.push([id,patch]);
+  a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:216000,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['005930']});
+  await a.fireConditional(a.desk.orders(a.watchScope())[0]);assert.equal(a.calls.propose[0].limitPrice,217000,'the bid, above the floor');assert.deepEqual(notes,[['P1',{tracking:{bound:216000}}]]);
+  const {automation:b}=harness({engineCtx:()=>open});const none=[];b.live.annotate=(id,patch)=>none.push(patch);
+  b.desk.setOrder(b.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:b.config,universe:['005930']});
+  await b.fireConditional(b.desk.orders(b.watchScope())[0]);assert.deepEqual(none,[],'no limitPrice: no bound, it fills at any price');
+});

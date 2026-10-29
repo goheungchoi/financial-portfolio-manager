@@ -177,6 +177,8 @@ class LiveEngine {
     return updated;
   }
   // Proposals that need approval stay Ready for the user instead of being submitted automatically.
+  // Adds fields to an app order (the agent's execution bounds for the tracker), before or after it is sent.
+  annotate(id,patch){const order=this.orders().find(row=>row.id===id);if(!order)return null;const next={...order,...patch};this.save(next);return next;}
   // Moves an open app order to a new limit price, or cancels it, at KIS, for its unfilled shares. Each number KIS gives
   // a revision joins the order's own chain (brokerOrderIds), so history follows it as the app's. One KIS order action at
   // a time (busy). Refused for an order you took over in KIS (handsOff). An unclear reply stops tracking the order

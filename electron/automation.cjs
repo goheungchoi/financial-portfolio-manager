@@ -532,7 +532,7 @@ class Automation {
       if(this.config.scope!=='paper')try{const events=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.runId')=?").all(id).map(r=>JSON.parse(r.payload));this.researchGaps.record(watchScope,result.decision.planVerdicts,require('./research-gaps.cjs').researchFromEvents(events));}catch{}
       try{this.waits.record(watchScope,result.decision,{reviewId:id,context});}catch{}
       if(this.config.scope!=='paper')try{const cost=this.db.prepare('SELECT payload FROM ai_calls').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===id&&!c.kind).reduce((a,c)=>a+(c.accountedMicro??c.estimatedMicro??0),0)/1e6;this.scheduleObserver.recordReview(recorded,cost);}catch{}
-      let proposal=null,order=null,executionNote=null,pendingAlready=null,placement=null;
+      let proposal=null,order=null,executionNote=null,pendingAlready=null,placement=null,bounds=null;
       if(result.decision.action!=='Hold') {
         if(context.environment==='kis-combined')execution=/^\d{6}$/.test(result.decision.symbol)?this.live:this.usLive;
         if(context.environment==='local-paper'&&context.paperVersion!==this.paper.account().version)throw new Error('STALE_DECISION');
@@ -546,10 +546,12 @@ class Automation {
         // opens (a proposal made now would expire unused, and pricing it would wait for a book that is not there).
         else if(context.environment!=='local-paper'&&!this.marketOpenIn(context)(/:/.test(result.decision.symbol)?'US':'KR')){pendingAlready=this.pending.repeats(watchScope,result.decision,this.marketOpenIn(context));executionNote=`The ${/:/.test(result.decision.symbol)?'U.S.':'Korean'} market is closed: ${result.decision.action} ${result.decision.symbol} is kept as a pending decision${pendingAlready?` (pending since ${new Date(pendingAlready.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST)`:''} and reassessed when it opens. No order was placed.`;this.log(id,'System','Pending decision kept',executionNote);}
         // KIS orders are priced from a fresh order book; without one for a minute nothing is placed and a review follows.
-        else if(context.environment!=='local-paper'&&!(placement=await this.placementPrice({symbol:result.decision.symbol,side:result.decision.action,bound:null,id,still:()=>!this.disposed&&revision===this.revision&&watchScope===this.watchScope()}))){executionNote=`No usable order book for ${result.decision.symbol} for a minute; no order was placed. A review decides again.`;}
+        else if(context.environment!=='local-paper'&&!(placement=await this.placementPrice({symbol:result.decision.symbol,side:result.decision.action,bound:(bounds=this.executionBounds(result.decision,context.quotes.find(row=>row.symbol===result.decision.symbol)?.price,id))?.bound??null,id,still:()=>!this.disposed&&revision===this.revision&&watchScope===this.watchScope()}))){executionNote=`No usable order book for ${result.decision.symbol} for a minute; no order was placed. A review decides again.`;}
         else if(pendingAlready=this.pending.repeats(watchScope,result.decision,this.marketOpenIn(context))){executionNote=`${result.decision.action} ${result.decision.symbol} has been pending since ${new Date(pendingAlready.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST${pendingAlready.proposalId?` (proposal ${pendingAlready.proposalId})`:''}; it is reassessed when its market opens. No new proposal was made.`;this.log(id,'System','Pending decision kept',executionNote);}else{
         proposal=context.environment!=='local-paper'?execution.propose({...(result.decision.credit&&result.decision.credit!=='none'?{credit:{kind:result.decision.credit,...(result.decision.loanDate?{loanDate:result.decision.loanDate}:{})}}:{}),symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity,limitPrice:placement.price}):this.paper.propose({symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity});
         this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...recorded,proposalId:proposal.id}),id);
+        // The order carries its bounds for the tracker, saved before it can be submitted.
+        if(bounds&&context.environment!=='local-paper')execution.annotate?.(proposal.id,{tracking:bounds});
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
         if(result.decision.action==='Buy'&&result.decision.plan&&context.environment!=='local-paper')this.followPlan(watchScope,result.decision,id);
         const autoEligible=this.config.autoSubmit && (context.environment==='local-paper'||execution.autoEnabled!==false) && proposal.status==='Ready' && (context.environment==='kis-combined'?context.markets.find(row=>row.market===execution.market)?.marketSession.open===true:context.marketSession?.open!==false);
@@ -638,11 +640,12 @@ class Automation {
   // The price to place an order at, from a freshly read order book (electron/order-pricing.cjs): the best bid for a
   // sale, the best ask for a purchase, held at the agent's bound. Without a usable book it retries every 3 seconds for
   // up to a minute (still(): whether placing is still wanted), then gives up (null) and asks for a review.
-  async placementPrice({symbol,side,bound=null,id,still=()=>true}){const P=require('./order-pricing.cjs');const market=/:/.test(symbol)?'US':'KR';const until=Date.now()+60000;let why=null;
-    for(;;){let reply=null;try{reply=await this.orderBook?.(symbol);}catch(error){reply={status:'unavailable',reason:error.message};}
+  async placementPrice({symbol,side,bound=null,id,still=()=>true}){const P=require('./order-pricing.cjs');const market=/:/.test(symbol)?'US':'KR';let why=null;
+    // 21 reads 3 seconds apart: 0, 3, ... 60 seconds.
+    for(let attempt=0;;attempt++){let reply=null;try{reply=await this.orderBook?.(symbol);}catch(error){reply={status:'unavailable',reason:error.message};}
       const book=P.usableBook(reply);if(book){const t=P.target({side,book,bound,market});this.log(id,'System','Order priced',`${side} ${symbol} at ${t.price}: ${side==='Sell'?'best bid':'best ask'} ${t.best}${t.atBound?`, held at your bound ${bound}`:''} (book read ${new Date(book.retrievedAt).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST).`);return {...t,book};}
       if(!why){why=reply?.reason??(reply?.status==='available'?'stale or one-sided book':'no order book');this.log(id,'System','Order waits for the order book',`${side} ${symbol}: ${why}. Trying again every 3 seconds for up to a minute.`);}
-      if(Date.now()+3000>until||!still()){if(still())this.requestReview('Order not placed',`${side} ${symbol} could not be priced for a minute (${why}); decide again.`,symbol);return null;}
+      if(attempt>=20||!still()){if(still())this.requestReview('Order not placed',`${side} ${symbol} could not be priced for a minute (${why}); decide again.`,symbol);return null;}
       await this.wait(3000);}}
   wait(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
   // The order tracker. Every open app order (not one you took over in KIS, not paused after an unclear reply, not
@@ -672,6 +675,14 @@ class Automation {
     if(code==='BROKER_REJECTED')try{await engine.reconcile();}catch{}}
   // Notes about a tracked order, each logged at most once every 5 minutes.
   noteTrack(o,text){const key=o.id+'|'+text,now=Date.now();this.trackNotes??=new Map();if(now-(this.trackNotes.get(key)??-Infinity)<300000)return;this.trackNotes.set(key,now);this.log(o.id,'System','Order tracking',`${o.side} ${o.symbol}: ${text}.`);}
+  // The agent's execution bounds for an order (decision.execution), checked before use: a bound within 50% of the
+  // price, a stop time within the next 7 days, cancel conditions the formula engine accepts (at most 5). What fails is
+  // dropped and logged, never used. Returns {bound?, cancelAfter?, cancelIf?} or null.
+  executionBounds(decision,price,id){const e=decision?.execution;if(!e)return null;const out={},dropped=[];
+    if(e.bound!=null){if(e.bound>0&&price>0&&Math.abs(e.bound/price-1)<=0.5)out.bound=e.bound;else dropped.push(`bound ${e.bound} (more than 50% from ${price})`);}
+    if(e.cancelAfter){const t=Date.parse(e.cancelAfter);if(t>Date.now()&&t<=Date.now()+7*86400000)out.cancelAfter=new Date(t).toISOString();else dropped.push(`cancelAfter ${e.cancelAfter} (not within the next 7 days)`);}
+    if(e.cancelIf?.length){try{out.cancelIf=require('./formula.cjs').readConditions(e.cancelIf,5).conditions.map(({ast,...c})=>c);}catch(error){dropped.push(`cancelIf (${error.code??'invalid'})`);}}
+    if(dropped.length)this.log(id,'System','Execution bounds dropped',`${decision.action} ${decision.symbol}: ${dropped.join('; ')}.`);return Object.keys(out).length?out:null;}
   // A review the app asks for itself (an order that could not be priced); it starts when nothing else runs.
   // At most one per symbol every 15 minutes, so a book that stays unreadable cannot start a review a minute.
   requestReview(trigger,reason,symbol=null){const now=Date.now();this.requested??=new Map();if(symbol&&now-(this.requested.get(symbol)??-Infinity)<15*60000)return false;if(symbol)this.requested.set(symbol,now);this.reviewRequested={trigger,reason,at:now};return true;}
@@ -769,7 +780,7 @@ class Automation {
         if(!(ctx.cash>=notional*1.005))return note('rejected','Not enough cash for the order and fees.',{results:check.results});
         const emergency=this.emergencyState();if((emergency.activeMarkets??(emergency.active?[market]:[])).includes(market)&&this.config.lossAction!=='review')return note('rejected','New buys are blocked after the daily loss limit.',{results:check.results});
       }
-      const proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit});
+      const proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit});if(order.limitPrice>0)engine.annotate?.(proposal.id,{tracking:{bound:order.limitPrice}});
       const cap=this.config.maxAutoOrdersPerDay;const capReached=cap>0&&this.guardrails.autoOrdersToday()>=cap;
       const auto=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval&&!capReached;
       if(auto){const placed=await engine.autoSubmit(proposal.id);return note('submitted',`Submitted at ${limit} for ${quantity} shares.`,{proposalId:proposal.id,orderId:placed?.id??null,results:check.results});}
