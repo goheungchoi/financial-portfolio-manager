@@ -119,6 +119,9 @@ class Automation {
     if(markets.some(m=>{const s=ms.tradableNow(m,now,opts(m));return s&&!s.regular;}))return {...base,open:true,preOpen:null};
     let next=base.next;for(const m of markets){const s=ms.marketStatus(m,now,opts(m));const start=[...s.sessions,...ms.sessionsOn(m,ms.localDay(now+86400000,s.timeZone),opts(m))].filter(x=>x.tradable==='app'&&x.startAt>now).sort((a,b)=>a.startAt-b.startAt)[0];if(start&&(!next||start.startAt<next.at))next={market:m,at:start.startAt};}
     const preOpen=next&&next.at-now<=mh.PRE_OPEN_MS?{market:next.market,at:next.at-mh.PRE_OPEN_MS,key:`${next.market}:${next.at}`}:null;return {...base,next,preOpen};}
+  // Whether a session the app can trade is open in this market now (an extended session counts when you switched it on).
+  sessionOpen(market,now=Date.now()){const ms=require('./market-sessions.cjs');const environment=this.live?.getConnection?.()?.snapshot?.environment??'mock';
+    const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);return Boolean(ms.tradableNow(market,now,{environment,enabled:this.sessionOptions(),...(market==='KR'?{closedDays:closed}:{})}));}
   noteSessions(context){const {krOpen,seoulDay}=require('./market-hours.cjs');const kr=context?.environment==='kis-combined'?context.markets?.find(m=>m.market==='KR')?.marketSession:this.config.scope==='kis'?context?.marketSession:null;
     if(kr&&kr.open===false&&kr.status==='closed'&&krOpen(Date.now(),this.closedDays??=new Set()))this.closedDays.add(seoulDay(Date.now()));}
   // When the next scheduled review is due: while markets are closed, the pre-open review or the open itself.
@@ -865,7 +868,7 @@ class Automation {
       this.triggerEvidence={kind:'order',orders:list.map(o=>({symbol:o.symbol,market:o.market??'KR',side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,fillPrice:o.fillPrice??null,placedAt:o.createdAt?new Date(o.createdAt).toISOString():null}))};
       this.log(list[0].id,'System','Order update',list.map(o=>`${o.status}: ${o.side} ${o.symbol}, ${o.filled??0}/${o.quantity} shares`).join('; ')+'. A review starts now.');void this.review('Order update').catch(()=>{});return;}
     // Agent triggers: met conditions start a review with the values that met them.
-    if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData());if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
+    if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const open={KR:this.sessionOpen('KR'),US:this.sessionOpen('US')};const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData(),t=>(t.symbols??[]).every(sym=>open[/:/.test(sym)?'US':'KR']));if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
     const elapsed=Date.now()-this.lastRun;
     if(emergency.active){if((this.lastEmergencyAttempt??0)<this.emergencyStartedAt||elapsed>=60000){this.lastEmergencyAttempt=Date.now();void this.review('Emergency loss response').catch(()=>{});}return;}
     if(elapsed<60000)return;
