@@ -112,6 +112,13 @@ function reviewScope(gate,trigger,base){
   const broad=BROAD_TRIGGERS.includes(trigger)?trigger:(gate.reasons.find(r=>['baseline','backstop','instructions'].includes(r.kind))?.detail??null);
   if(broad||!base)return {kind:'broad',why:broad??'No earlier decision'};
   return {kind:'routine',since:new Date(base.at).toISOString(),changes:gate.reasons.filter(r=>r.kind!=='trigger').map(r=>r.detail).slice(0,12),changedSymbols:gate.changedSymbols,...(gate.degraded.length?{degraded:gate.degraded}:{})};}
+// How a decision differs from the one before it: the trade, its size, its plan's timing and invalidation, and the
+// verdicts on scout targets. Wording alone is not a change.
+function decisionChange(prev,next){if(!prev)return {changed:true,parts:['first decision']};const parts=[],p=prev??{},n=next??{};
+  if(p.action!==n.action||(p.symbol||'')!==(n.symbol||''))parts.push('action');else if(p.action!=='Hold'&&p.quantity!==n.quantity)parts.push('size');
+  if((p.plan?.invalidation??'')!==(n.plan?.invalidation??''))parts.push('invalidation');if(JSON.stringify([p.plan?.entry??null,p.plan?.expiresAt??p.plan?.horizon??null])!==JSON.stringify([n.plan?.entry??null,n.plan?.expiresAt??n.plan?.horizon??null]))parts.push('timing');
+  const verdicts=d=>Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict]));const a=verdicts(p),b=verdicts(n);const moved=[...new Set([...Object.keys(a),...Object.keys(b)])].filter(s=>a[s]!==b[s]);if(moved.length)parts.push('verdicts: '+moved.join(', '));
+  return {changed:parts.length>0,parts};}
 // Baselines (one per account scope, kept across restarts) and a log of every check.
 class ReviewGate {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS review_gate(scope TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS review_gate_log(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
@@ -122,6 +129,9 @@ class ReviewGate {
     const value={...state,at,contextAt,decision:decision?{action:decision.action??null,symbol:decision.symbol??null,orderId:decision.orderId??null}:null,seen:[...new Set(events.map(newsKey))]};
     this.db.prepare('INSERT INTO review_gate VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify(value));return value;}
   log(at,entry){this.db.prepare('INSERT INTO review_gate_log(at,payload) VALUES(?,?)').run(at,JSON.stringify(entry));this.db.prepare('DELETE FROM review_gate_log WHERE at<?').run(at-30*86400000);}
+  // What a review that ran produced: research reused or fetched, the order it placed, and how its decision changed.
+  complete(reviewId,outcome){const row=this.db.prepare("SELECT id,payload FROM review_gate_log WHERE json_extract(payload,'$.reviewId')=? ORDER BY id DESC LIMIT 1").get(reviewId);if(!row)return;
+    this.db.prepare('UPDATE review_gate_log SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(row.payload),outcome}),row.id);}
   // Since a time: scheduled checks, what the token-saver skip and this gate did or would do, the reviews this gate
   // would add to the skips, their recorded AI cost (every call of those reviews: trading, shadow, compression, research),
   // and how often the backstop or a risk reason forced a review.
@@ -129,9 +139,16 @@ class ReviewGate {
     const scheduled=rows.filter(r=>r.trigger==='Scheduled review'),kinds=r=>new Set((r.gate?.reasons??[]).map(x=>x.kind));
     const extra=scheduled.filter(r=>!r.oldSkip&&r.ran&&!r.gate?.needsReview);let micro=0;
     if(extra.length){const ids=new Set(extra.map(r=>r.reviewId).filter(Boolean));for(const row of this.db.prepare('SELECT payload FROM ai_calls WHERE json_extract(payload,\'$.timestamp\')>=?').all(since)){const c=JSON.parse(row.payload);if(ids.has(c.reviewId))micro+=c.cost?.micro??0;}}
+    // Polls, reviews, decision episodes (a review whose decision differs from the one before), AI calls and trades are
+    // separate counts; calls, tokens and cost cover every call of the logged reviews (trading, shadow, compression).
+    const ran=rows.filter(r=>r.ran&&r.reviewId),ids=new Set(ran.map(r=>r.reviewId)),calls={calls:0,inputTokens:0,cachedTokens:0,outputTokens:0,micro:0};
+    if(ids.size)for(const row of this.db.prepare("SELECT payload FROM ai_calls WHERE json_extract(payload,'$.timestamp')>=?").all(since)){const c=JSON.parse(row.payload);if(!ids.has(c.reviewId))continue;calls.calls++;calls.inputTokens+=c.usage?.inputTokens??0;calls.cachedTokens+=c.usage?.cachedTokens??0;calls.outputTokens+=c.usage?.outputTokens??0;calls.micro+=c.cost?.micro??0;}
+    const done=ran.filter(r=>r.outcome),research=k=>done.reduce((n,r)=>n+(r.outcome.research?.[k]??0),0);
     return {since:new Date(since).toISOString(),checks:rows.length,scheduled:scheduled.length,ran:scheduled.filter(r=>r.ran).length,oldSkips:scheduled.filter(r=>r.oldSkip).length,
       gateSkips:scheduled.filter(r=>!r.gate?.needsReview).length,wouldAvoid:extra.length,estimatedUSD:Math.round(micro/1e4)/100,
       backstops:scheduled.filter(r=>kinds(r).has('backstop')).length,riskReasons:scheduled.filter(r=>kinds(r).has('risk')||kinds(r).has('protection')).length,
-      degraded:scheduled.filter(r=>r.gate?.degraded?.length).length};}
+      degraded:scheduled.filter(r=>r.gate?.degraded?.length).length,
+      reviews:{ran:ran.length,completed:done.length,episodes:done.filter(r=>r.outcome.change?.changed).length,trades:done.filter(r=>r.outcome.orderId).length},
+      ai:{...calls,usd:Math.round(calls.micro/1e4)/100},research:{fetched:research('fetched'),refreshed:research('refreshed'),reused:research('reused'),researchReads:research('researchReads'),detailReads:research('detailReads')}};}
 }
-module.exports={ReviewGate,decisionState,compare,reviewScope,newsKey,GATE_DEFAULTS,BROAD_TRIGGERS};
+module.exports={ReviewGate,decisionState,compare,reviewScope,decisionChange,newsKey,GATE_DEFAULTS,BROAD_TRIGGERS};
