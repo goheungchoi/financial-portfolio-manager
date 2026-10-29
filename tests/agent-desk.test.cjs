@@ -86,9 +86,30 @@ test('a review uses compute, notes and a trigger in one round; the context carri
 test('a met trigger starts a review with the values that met it',async()=>{
   const {automation,supplied,events}=harness();automation.configure({enabled:true});automation.sessionArmed=true;automation.lastRun=0;
   automation.desk.setTrigger(automation.watchScope(),{action:'add',id:'',name:'Dip',conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',expiresInHours:4,reason:'Add on dips'},{universe:['005930']});
-  automation.schedulerStatus=()=>({label:'Monitoring'});automation.marketHours=()=>({open:true,markets:[],preOpen:null,next:null});automation.tick();await new Promise(r=>setTimeout(r,30));
+  automation.schedulerStatus=()=>({label:'Monitoring'});automation.marketHours=()=>({open:true,markets:[],preOpen:null,next:null});automation.sessionOpen=()=>true;automation.tick();await new Promise(r=>setTimeout(r,30));
   const review=supplied.find(([op])=>op==='decision');assert.ok(review,'a review ran');assert.equal(review[1].context.triggerEvidence.kind,'agent-trigger');assert.equal(review[1].context.triggerEvidence.results[0].actual,217000);
   assert.ok(events.some(e=>e.title==='Agent trigger met'));assert.equal(automation.desk.triggers(automation.watchScope()).length,0);
+});
+test('an agent trigger is checked only while every market it names has a session open',async()=>{
+  // 2026-10-29: reviews started from U.S. prices while no U.S. session was open; triggers wait for the session.
+  const {automation:a}=harness();a.configure({scope:'both',enabled:true});a.sessionArmed=true;a.schedulerStatus=()=>({label:'Monitoring'});a.marketHours=()=>({open:true,markets:[],preOpen:null,next:null});
+  a.watchScope=()=>'both:acct';a.usQuotes=[{symbol:'NASD:GOOGL',price:294.86,timestamp:Date.now(),retrievedAt:Date.now(),stale:true}];
+  const reviews=[];a.review=async trigger=>{reviews.push(trigger);};const open={KR:false,US:false};a.sessionOpen=m=>open[m];
+  const add=(name,expr,value)=>a.desk.setTrigger(a.watchScope(),{action:'add',id:'',name,conditions:[{expr,op:'<=',value}],combine:'all',expiresInHours:4,reason:'x'},{universe:['005930','NASD:GOOGL']});
+  add('Both','price("005930")+price("NASD:GOOGL")',300000);
+  const tick=async()=>{a.lastRun=Date.now()-120000;a.lastDeskCheck=0;a.tick();await new Promise(r=>setTimeout(r,10));};
+  await tick();assert.deepEqual(reviews,[],'both markets closed');
+  open.KR=true;await tick();assert.deepEqual(reviews,[],'the U.S. session is still closed');assert.equal(a.desk.triggers(a.watchScope()).length,1,'the trigger stays active');
+  open.US=true;await tick();assert.deepEqual(reviews,['Agent trigger']);assert.equal(a.desk.triggers(a.watchScope()).length,0);
+  add('Korea','price("005930")',218000);open.KR=false;await tick();assert.equal(reviews.length,1,'a Korean trigger waits for the Korean session');
+  open.KR=true;await tick();assert.equal(reviews.length,2);
+});
+test('a market counts as open in its regular session, or in an extended session switched on for a live account',()=>{
+  const {automation:a}=harness();const at=iso=>Date.parse(iso);
+  assert.equal(a.sessionOpen('KR',at('2026-10-29T00:15:33Z')),true,'09:15 KST');assert.equal(a.sessionOpen('KR',at('2026-10-29T12:00:00Z')),false,'21:00 KST');
+  assert.equal(a.sessionOpen('US',at('2026-10-29T14:00:00Z')),true,'10:00 New York');assert.equal(a.sessionOpen('US',at('2026-10-29T00:15:33Z')),false,'the daytime session is off');
+  a.configure({sessionUsDaytime:true});assert.equal(a.sessionOpen('US',at('2026-10-29T00:15:33Z')),false,'not on a mock account');
+  a.live.getConnection=()=>({snapshot:{environment:'live'}});assert.equal(a.sessionOpen('US',at('2026-10-29T00:15:33Z')),true,'switched on, live');
 });
 test('conditional orders fire through the guarded path: submitted, proposed, or refused with a reason',async()=>{
   const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
