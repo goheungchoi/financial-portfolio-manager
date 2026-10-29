@@ -60,3 +60,24 @@ test('a session KIS will not revise in is noted once, not every 3 seconds',async
   const s=setup({revise:()=>{throw new Error('SESSION_CLOSED');}});s.add();for(let i=0;i<4;i++)await s.a.trackOrders();
   assert.equal(s.events.filter(e=>/regular session/.test(e.body)).length,1);assert.equal(s.events.filter(e=>e.title==='Order not revised').length,0);
 });
+test('the agents see each open order as it is: its price now, revisions, bounds, and whether the app still moves it',()=>{
+  const {a}=setup();const o={symbol:'NASD:GOOGL',side:'Sell',quantity:1,filled:0,status:'Accepted',limitPrice:287.64,currentPrice:279.1,revisions:[{price:285.32},{price:279.1},{cancel:true}],tracking:{bound:270}};
+  assert.deepEqual(a.openOrderView(o),{symbol:'NASD:GOOGL',side:'Sell',quantity:1,filled:0,status:'Accepted',placedAt:287.64,price:279.1,revisions:2,bounds:{bound:270},tracked:true});
+  assert.deepEqual([a.openOrderView({...o,handsOff:{at:1}}).tracked,a.openOrderView({...o,handsOff:{at:1}}).takenOverByUser],[false,true],'you took it over in KIS');
+  assert.equal(a.openOrderView({...o,trackingStopped:{reason:'KIS did not confirm a revision'}}).paused,'KIS did not confirm a revision');assert.equal(a.openOrderView({...o,cancelRequestedAt:1}).cancelling,true);
+  a.configure({orderTracking:false});assert.equal(a.openOrderView(o).tracked,false,'switched off');assert.equal(a.openOrderView({...o,currentPrice:undefined}).price,287.64);
+});
+test('the trading review and the scout see open orders; the scout is told an open Sell has not sold anything',async()=>{
+  // 2026-10-29 22:40: the scout read the acted GOOGL verdict as a completed sale while the order was still open.
+  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');
+  assert.match(src,/context\.orderFollowUp=\{orders:pending\.map\(o=>this\.openOrderView\(o\)\)/,'trading review');
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
+  const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
+  live.exposure={policy:()=>({leveragedEtps:{enabled:false},margin:{enabled:false},short:{enabled:false}}),context:()=>({products:[],warnings:[],leveragedEtps:{allowed:false}}),creditRisk:()=>null};let seen=null;
+  const a=new Automation(db,paper,{request:async(op,payload)=>{seen=payload.context;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}},()=>{});
+  a.live=live;a.usLive={identity:()=>'acct:US',context:async()=>({market:'US',currency:'USD',equity:500,cash:0,positions:{'NASD:GOOGL':{quantity:1}}}),getState:()=>({})};a.refreshUS=async()=>({});a.providerStatus.aiConnected=true;a.discovery={list:()=>[],symbols:()=>[]};
+  a.pendingOrders=()=>[{symbol:'NASD:GOOGL',side:'Sell',quantity:1,filled:0,status:'Accepted',limitPrice:287.64}];
+  a.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});await a.scout();
+  assert.ok(seen,'the scout ran');assert.equal(seen.openOrders?.orders?.[0]?.symbol,'NASD:GOOGL');assert.match(seen.openOrders.note,/placed but not filled/);
+});

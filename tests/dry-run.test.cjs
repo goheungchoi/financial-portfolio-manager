@@ -150,7 +150,7 @@ test('an order fill or cancellation starts a review at once with the order as ev
 test('the review is told how a pending order is followed',async()=>{
   const {automation}=harness();automation.live.orders=()=>[{id:'o',market:'KR',symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()}];
   const {context}=await automation.assembleReviewContext({watchScope:automation.watchScope(),trigger:'Scheduled review',setStage:()=>{}});
-  assert.deepEqual(context.orderFollowUp.orders,[{symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted'}]);assert.match(context.orderFollowUp.note,/Do not re-decide a pending order in each review/);
+  assert.deepEqual(context.orderFollowUp.orders,[{symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',revisions:0,tracked:true}]);assert.match(context.orderFollowUp.note,/Do not re-decide a pending order in each review/);
 });
 // Review of 40d7666..7e2539f: the order-update review reached the model without the order (context assembly passed
 // trigger evidence only for price, news and agent triggers), and orders of a market outside the review delayed it.
