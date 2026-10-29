@@ -1,4 +1,4 @@
-const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
+const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');require('./fixtures/order-book.cjs');
 // A KIS-scope automation with a fake provider: queued replies script the model's tool calls and decision.
 function harness(){
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');
