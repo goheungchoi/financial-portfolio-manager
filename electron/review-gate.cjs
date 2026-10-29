@@ -42,9 +42,10 @@ function affordable(state,symbol,price){if(!(price>0))return null;const c=state.
   if(marketOf(symbol)==='KR')return (c.KRW??0)>=price;const usd=(c.USD??0)+(state.usdKRW?(c.KRW??0)/state.usdKRW:0);return usd>=price;}
 // base: the saved state at the last successful decision, with at (when it completed), contextAt (when its context was
 // read), decision {action,symbol,orderId}
-// and seen (news keys known then). next: decisionState of the current context. events: stored news events.
+// and seen (news keys known then). next: decisionState of the current context. events: stored news events. waits:
+// the scope's waits (electron/waits.cjs).
 // Returns {needsReview, reasons:[{kind,detail,symbols}], changedSymbols, requiredEvidence, degraded, nextBackstopAt}.
-function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},events=[]}={}){
+function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},events=[],waits=[]}={}){
   const reasons=[],degraded=[],add=(kind,detail,symbols=[],evidence=[])=>reasons.push({kind,detail,symbols,evidence});
   const tolerance=config.eventTolerancePct??3,maxSkip=(config.maxSkipMinutes??120)*60000,opts={...GATE_DEFAULTS,...(config.reviewGateThresholds??{})};
   const nextBackstopAt=base?base.at+maxSkip:now;
@@ -94,6 +95,10 @@ function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},
     const relevant=new Set([...Object.keys(next.positions),...next.candidates]),seen=new Set(base.seen??[]),fresh=new Map();
     for(const e of events){const syms=(e.symbols??[]).filter(s=>relevant.has(s));if(!syms.length)continue;
       if(!(e.importance==='high'||e.kind==='disclosure'&&syms.some(s=>s in next.positions)))continue;const key=newsKey(e);if(!seen.has(key)&&!fresh.has(key))fresh.set(key,{...e,syms});}
+    // Waits (electron/waits.cjs) whose check time came, or that lapsed, since the decision.
+    for(const w of waits){const label=`${w.symbol}: waiting (${w.reason.replace('_',' ')})`;
+      if(w.status==='active'&&w.earliestCheckAt!=null&&w.earliestCheckAt>base.at&&w.earliestCheckAt<=now)add('wait-due',`${label} reached its check time`,[w.symbol],['wait:'+w.symbol]);
+      if((w.status==='active'||w.status==='expired')&&w.expiresAt>base.at&&w.expiresAt<=now)add('wait-expired',`${label} lapsed; reassess it`,[w.symbol],['wait:'+w.symbol]);}
     for(const e of fresh.values())add('news',`${e.kind==='disclosure'?'Filing':'News'}: ${String(e.title).slice(0,80)}`,e.syms,[e.receipt?'filing:'+e.receipt:'news:'+e.id]);
   }
   const changedSymbols=[...new Set(reasons.flatMap(r=>r.symbols))],requiredEvidence=[...new Set(reasons.flatMap(r=>r.evidence))];

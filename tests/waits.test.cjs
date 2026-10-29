@@ -1,0 +1,75 @@
+const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
+const {Waits,reasonOf}=require('../electron/waits.cjs');const RG=require('../electron/review-gate.cjs');
+const t0=Date.parse('2026-10-29T05:00:00Z'),h=n=>t0+n*3600000,iso=t=>new Date(t).toISOString();
+const verdict=(symbol,condition,extra={})=>({symbol,verdict:'waiting',reason:'r',condition:{kind:'event',unresolved:'Q3 operating profit',evidence:'The results release',recheck:'After the release',...condition},dataGap:null,...extra});
+const setup=()=>{let now=t0;const db=new DatabaseSync(':memory:');const w=new Waits(db,()=>now);return {w,db,at:t=>{now=t;}};};
+const plan={scoutPlan:{asOf:'2026-10-29T00:11:42Z',targets:[{symbol:'000270',role:'hold'},{symbol:'064350',role:'candidate'},{symbol:'NASD:GOOGL',role:'trim'}]}};
+
+test('the reason comes from the review, else from the condition kind and data-gap cause',()=>{
+  assert.equal(reasonOf(verdict('000270',{waitReason:'publication_pending'})),'publication_pending');
+  assert.equal(reasonOf(verdict('000270',{kind:'data'},{dataGap:{cause:'not-yet-published'}})),'publication_pending');
+  assert.equal(reasonOf(verdict('000270',{kind:'data'},{dataGap:{cause:'not-retrievable'}})),'missing_data');
+  assert.equal(reasonOf(verdict('000270',{kind:'market'})),'entry_condition');assert.equal(reasonOf({verdict:'waiting',condition:{kind:'none'}}),null);
+});
+test('waiting for earnings tomorrow holds research on that symbol, not on others, until the release',()=>{
+  // 2026-10-29: Kia's earnings were due the next day; reviews researched it again every few minutes.
+  const {w,at}=setup();w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-30T15:30+09:00'})]},{reviewId:'R1',context:plan});
+  for(const m of [5,10,15]){at(t0+m*60000);const held=w.guard('s','000270');assert.equal(held?.status,'waiting',`${m} minutes later`);assert.equal(held.until,'2026-10-30T06:30:00.000Z');}
+  assert.equal(w.guard('s','064350'),null,'another candidate is not held');
+  at(Date.parse('2026-10-30T06:31:00Z'));assert.equal(w.guard('s','000270'),null,'due: research again');
+});
+test('early publication, a price move or any change the gate sees about the symbol overrides the wait',()=>{
+  const {w}=setup();w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-30T15:30+09:00'})]},{context:plan});
+  assert.equal(w.guard('s','000270',{overridden:new Set(['000270'])}),null);
+  const base={...RG.decisionState({positions:{'000270':{quantity:1}},quotes:[{symbol:'000270',price:107600}]}),at:t0,seen:[]};
+  const g=RG.compare(base,RG.decisionState({positions:{'000270':{quantity:1}},quotes:[{symbol:'000270',price:107600}]}),{now:h(1),config:{maxSkipMinutes:300},events:[{id:'u',kind:'disclosure',receipt:'20261029000500',title:'기아 영업(잠정)실적',symbols:['000270'],importance:'high'}],waits:w.all('s')});
+  assert.deepEqual(g.changedSymbols,['000270'],'the early filing is a gate reason, which lifts the hold');
+});
+test('an unrelated holding’s failed stop reviews while another symbol waits',()=>{
+  const {w}=setup();w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-30T15:30+09:00'})]},{context:plan});
+  const ctx=unprotected=>({positions:{'000270':{quantity:1},'NASD:GOOGL':{quantity:1}},quotes:[],agentDesk:{conditionalOrders:{unprotected,recent:[]}}});
+  const g=RG.compare({...RG.decisionState(ctx([])),at:t0,seen:[]},RG.decisionState(ctx([{symbol:'NASD:GOOGL'}])),{now:h(1),config:{maxSkipMinutes:300},waits:w.all('s')});
+  assert.equal(g.needsReview,true);assert.deepEqual(g.changedSymbols,['NASD:GOOGL']);
+});
+test('rewording a missing-data wait does not restart it; data the tools cannot read stops being re-read',()=>{
+  const {w,at}=setup();const gap=(unresolved,earliestCheck='')=>verdict('028050',{kind:'data',waitReason:'missing_data',unresolved,earliestCheck},{dataGap:{cause:'insufficient',metric:'op'}});
+  w.record('s',{planVerdicts:[gap('Project-level operating profit','2026-10-29T16:00+09:00')]},{context:plan});const first=w.active('s')[0];
+  at(h(2));w.record('s',{planVerdicts:[gap('How much of Q3 operating profit repeats','2026-10-31T09:00+09:00')]},{context:plan});
+  const [again]=w.active('s');assert.equal(again.id,first.id,'same symbol and reason: the same wait');assert.equal(again.reviews,2);assert.equal(again.earliestCheckAt,first.earliestCheckAt,'a later time in new words does not push it back');
+  assert.equal(again.expiresAt,first.expiresAt);assert.equal(again.createdAt,t0);assert.match(again.question,/repeats/,'the wording is kept up to date');
+  assert.equal(w.guard('s','028050'),null,'inconclusive data does not hold research');
+  const {w:x}=setup();x.record('s',{planVerdicts:[verdict('028050',{kind:'data',waitReason:'missing_data'},{dataGap:{cause:'not-retrievable',otherSource:'DART viewer'}})]},{context:plan});
+  const held=x.guard('s','028050');assert.equal(held.reason,'missing_data');assert.match(held.note,/Decide under the uncertainty/);assert.deepEqual(x.active('s')[0].sources,['DART viewer']);
+});
+test('expired and invalidated waits are reassessed; acting or passing closes them',()=>{
+  const {w,at}=setup();w.record('s',{planVerdicts:[verdict('064350',{waitReason:'entry_condition',kind:'market'})]},{context:plan});const [e]=w.active('s');assert.equal(e.expiresAt,h(48),'two days without a time');
+  const base={...RG.decisionState({}),at:h(1),seen:[]};at(h(49));
+  assert.equal(RG.compare(base,RG.decisionState({}),{now:h(49),config:{maxSkipMinutes:6000},waits:w.all('s')}).reasons[0].kind,'wait-expired');
+  assert.equal(w.active('s').length,0);assert.equal(w.all('s')[0].status,'expired');
+  const due={...RG.decisionState({}),at:t0,seen:[]};const {w:d,at:atD}=setup();d.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:iso(h(3))})]},{context:plan});
+  atD(h(2));assert.equal(RG.compare(due,RG.decisionState({}),{now:h(2),config:{maxSkipMinutes:6000},waits:d.all('s')}).needsReview,false,'not yet due');
+  atD(h(3));assert.equal(RG.compare(due,RG.decisionState({}),{now:h(3),config:{maxSkipMinutes:6000},waits:d.all('s')}).reasons[0].kind,'wait-due');
+  assert.equal(RG.compare({...due,at:h(3)+1},RG.decisionState({}),{now:h(4),config:{maxSkipMinutes:6000},waits:d.all('s')}).needsReview,false,'once: the next decision saw it');
+  const role=r=>({scoutPlan:{asOf:'later',targets:[{symbol:'000270',role:r}]}});d.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending'})]},{context:role('exit')});
+  assert.equal(d.all('s').find(x=>x.status==='invalidated')?.symbol,'000270','a new thesis replaces the wait');
+  d.record('s',{planVerdicts:[{symbol:'000270',verdict:'passed',reason:'r',condition:{kind:'none'}}]},{context:role('exit')});assert.equal(d.active('s').length,0,'passed: closed');
+});
+test('a closed market holds research until it opens; restart keeps waits',()=>{
+  const {w,db}=setup();w.record('s',{planVerdicts:[verdict('NASD:GOOGL',{waitReason:'market_closed',kind:'market'})]},{context:plan});
+  assert.equal(w.guard('s','NASD:GOOGL',{isOpen:m=>m!=='US'})?.until,'when its market opens');assert.equal(w.guard('s','NASD:GOOGL',{isOpen:()=>true}),null);
+  const again=new Waits(db,()=>t0);assert.equal(again.active('s').length,1,'kept across a restart');assert.equal(again.active('other').length,0,'not shared between accounts');
+  assert.deepEqual(Object.keys(again.context('s')[0]),['symbol','reason','question','resolvesOn','earliestCheck','expires','since','reviews','holdsResearch']);
+  assert.equal(again.context('s')[0].holdsResearch,false,'observing: nothing is held');assert.equal(again.context('s',{enforced:true})[0].holdsResearch,true);
+});
+test('through the scheduler: research on a waiting symbol is answered with the wait when on, read and logged when observing',async()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');const events=[];
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},(id,kind,title,body)=>events.push({title,body}));
+  const reads=[];a.discovery={research:async args=>{reads.push(args.symbol);return {status:'ok'};}};a.sessionOpen=()=>true;
+  a.waits.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(Date.now()+86400000).toISOString()})]},{context:plan});
+  const run=(opts,symbol='000270')=>a.researchFor({watchScope:'s',trigger:'Scheduled review',emergency:false,gate:{changedSymbols:[]},id:'R',...opts})({symbol});
+  assert.equal((await run({gateMode:'on'})).status,'waiting');assert.deepEqual(reads,[],'held');
+  await run({gateMode:'on'},'064350');assert.deepEqual(reads,['064350'],'another symbol is read');
+  await run({gateMode:'observe'});assert.equal(reads.at(-1),'000270');assert.ok(events.some(e=>e.title==='Research would wait'));
+  await run({gateMode:'on',gate:{changedSymbols:['000270']}});await run({gateMode:'on',trigger:'User request'});await run({gateMode:'on',emergency:true});await run({gateMode:'off'});
+  assert.equal(reads.filter(s=>s==='000270').length,5,'overridden, your request, an emergency, gate off');
+});
