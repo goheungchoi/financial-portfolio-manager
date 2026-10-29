@@ -532,7 +532,7 @@ class Automation {
       if(this.config.scope!=='paper')try{const events=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.runId')=?").all(id).map(r=>JSON.parse(r.payload));this.researchGaps.record(watchScope,result.decision.planVerdicts,require('./research-gaps.cjs').researchFromEvents(events));}catch{}
       try{this.waits.record(watchScope,result.decision,{reviewId:id,context});}catch{}
       if(this.config.scope!=='paper')try{const cost=this.db.prepare('SELECT payload FROM ai_calls').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===id&&!c.kind).reduce((a,c)=>a+(c.accountedMicro??c.estimatedMicro??0),0)/1e6;this.scheduleObserver.recordReview(recorded,cost);}catch{}
-      let proposal=null,order=null,executionNote=null,pendingAlready=null;
+      let proposal=null,order=null,executionNote=null,pendingAlready=null,placement=null;
       if(result.decision.action!=='Hold') {
         if(context.environment==='kis-combined')execution=/^\d{6}$/.test(result.decision.symbol)?this.live:this.usLive;
         if(context.environment==='local-paper'&&context.paperVersion!==this.paper.account().version)throw new Error('STALE_DECISION');
@@ -542,8 +542,13 @@ class Automation {
         else if(result.decision.credit&&result.decision.credit!=='none'&&(context.environment==='local-paper'||execution.market!=='KR')){executionNote='Credit orders (margin buying, short selling) are only available for Korean live accounts. Recommendation recorded; no order proposal was made.';this.log(id,'System','Review only · credit order',executionNote);}
         else if(context.environment!=='local-paper'&&(selected?.executionEnabled===false||!execution.enabled)){executionNote=(execution.market==='US'?'U.S.':'Korea')+' trading session is off. Recommendation recorded; no order proposal or submission was made.';this.log(id,'System','Review only · execution off',executionNote);}
         // The same Buy or Sell already pending while its market is closed: one proposal, reassessed when it opens.
+        // A KIS decision for a closed market places nothing: it is kept as a pending decision and reassessed when the market
+        // opens (a proposal made now would expire unused, and pricing it would wait for a book that is not there).
+        else if(context.environment!=='local-paper'&&!this.marketOpenIn(context)(/:/.test(result.decision.symbol)?'US':'KR')){pendingAlready=this.pending.repeats(watchScope,result.decision,this.marketOpenIn(context));executionNote=`The ${/:/.test(result.decision.symbol)?'U.S.':'Korean'} market is closed: ${result.decision.action} ${result.decision.symbol} is kept as a pending decision${pendingAlready?` (pending since ${new Date(pendingAlready.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST)`:''} and reassessed when it opens. No order was placed.`;this.log(id,'System','Pending decision kept',executionNote);}
+        // KIS orders are priced from a fresh order book; without one for a minute nothing is placed and a review follows.
+        else if(context.environment!=='local-paper'&&!(placement=await this.placementPrice({symbol:result.decision.symbol,side:result.decision.action,bound:null,id,still:()=>!this.disposed&&revision===this.revision&&watchScope===this.watchScope()}))){executionNote=`No usable order book for ${result.decision.symbol} for a minute; no order was placed. A review decides again.`;}
         else if(pendingAlready=this.pending.repeats(watchScope,result.decision,this.marketOpenIn(context))){executionNote=`${result.decision.action} ${result.decision.symbol} has been pending since ${new Date(pendingAlready.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST${pendingAlready.proposalId?` (proposal ${pendingAlready.proposalId})`:''}; it is reassessed when its market opens. No new proposal was made.`;this.log(id,'System','Pending decision kept',executionNote);}else{
-        proposal=context.environment!=='local-paper'?execution.propose({...(result.decision.credit&&result.decision.credit!=='none'?{credit:{kind:result.decision.credit,...(result.decision.loanDate?{loanDate:result.decision.loanDate}:{})}}:{}),symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity,limitPrice:(context.currency==='USD'||execution?.market==='US')?(result.decision.action==='Buy'?Math.ceil:Math.floor)(context.quotes.find(row=>row.symbol===result.decision.symbol).price*100)/100:context.quotes.find(row=>row.symbol===result.decision.symbol).price}):this.paper.propose({symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity});
+        proposal=context.environment!=='local-paper'?execution.propose({...(result.decision.credit&&result.decision.credit!=='none'?{credit:{kind:result.decision.credit,...(result.decision.loanDate?{loanDate:result.decision.loanDate}:{})}}:{}),symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity,limitPrice:placement.price}):this.paper.propose({symbol:result.decision.symbol,side:result.decision.action,quantity:result.decision.quantity});
         this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...recorded,proposalId:proposal.id}),id);
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
         if(result.decision.action==='Buy'&&result.decision.plan&&context.environment!=='local-paper')this.followPlan(watchScope,result.decision,id);
@@ -630,6 +635,19 @@ class Automation {
     const all=[...quotes,...live];
     return {price:sym=>all.find(q=>q.symbol===sym&&Number.isFinite(q.price))?.price??null,previousClose:sym=>all.find(q=>q.symbol===sym)?.previousClose??null,closes:sym=>this.series?.closes(sym)??null};
   }
+  // The price to place an order at, from a freshly read order book (electron/order-pricing.cjs): the best bid for a
+  // sale, the best ask for a purchase, held at the agent's bound. Without a usable book it retries every 3 seconds for
+  // up to a minute (still(): whether placing is still wanted), then gives up (null) and asks for a review.
+  async placementPrice({symbol,side,bound=null,id,still=()=>true}){const P=require('./order-pricing.cjs');const market=/:/.test(symbol)?'US':'KR';const until=Date.now()+60000;let why=null;
+    for(;;){let reply=null;try{reply=await this.orderBook?.(symbol);}catch(error){reply={status:'unavailable',reason:error.message};}
+      const book=P.usableBook(reply);if(book){const t=P.target({side,book,bound,market});this.log(id,'System','Order priced',`${side} ${symbol} at ${t.price}: ${side==='Sell'?'best bid':'best ask'} ${t.best}${t.atBound?`, held at your bound ${bound}`:''} (book read ${new Date(book.retrievedAt).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST).`);return {...t,book};}
+      if(!why){why=reply?.reason??(reply?.status==='available'?'stale or one-sided book':'no order book');this.log(id,'System','Order waits for the order book',`${side} ${symbol}: ${why}. Trying again every 3 seconds for up to a minute.`);}
+      if(Date.now()+3000>until||!still()){if(still())this.requestReview('Order not placed',`${side} ${symbol} could not be priced for a minute (${why}); decide again.`,symbol);return null;}
+      await this.wait(3000);}}
+  wait(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+  // A review the app asks for itself (an order that could not be priced); it starts when nothing else runs.
+  // At most one per symbol every 15 minutes, so a book that stays unreadable cannot start a review a minute.
+  requestReview(trigger,reason,symbol=null){const now=Date.now();this.requested??=new Map();if(symbol&&now-(this.requested.get(symbol)??-Infinity)<15*60000)return false;if(symbol)this.requested.set(symbol,now);this.reviewRequested={trigger,reason,at:now};return true;}
   // Whether a market's session was open in a review's context.
   marketOpenIn(context){return market=>context.environment==='kis-combined'?context.markets?.find(row=>row.market===market)?.marketSession?.open===true:context.marketSession?.open!==false;}
   // Company research for a live review, held back by an open wait on its symbol (electron/waits.cjs): answered with the
@@ -708,7 +726,10 @@ class Automation {
       const quote=ctx.quotes.find(q=>q.symbol===order.symbol);if(!(quote?.price>0)){this.desk.update(order,{status:'armed',waiting:'no fresh quote',nextCheckAt:Date.now()+60000});return;}
       const formula=require('./formula.cjs');const base=this.formulaData(ctx.quotes);const check=formula.checkConditions(order.conditions,order.combine,{...base,price:sym=>ctx.quotes.find(q=>q.symbol===sym)?.price??base.price(sym)});
       if(!check.met){this.desk.update(order,{status:'armed',waiting:null,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
-      const market=us?'US':'KR';const {onTick}=require('./agent-desk.cjs');const limit=onTick(order.limitPrice??quote.price,order.side,market);
+      // Priced from a fresh order book with limitPrice as the bound (a sale's floor, a purchase's cap); without a book for a
+      // minute the order stays armed and a review is asked for.
+      const placement=await this.placementPrice({symbol:order.symbol,side:order.side,bound:order.limitPrice??null,id:order.id,still:()=>this.watchScope()===scope});
+      if(!placement){this.desk.update(order,{status:'armed',waiting:'no order book',nextCheckAt:Date.now()+60000});return;}const limit=placement.price;
       const drift=Math.abs(limit/quote.price-1)*100;if(drift>this.config.conditionalMaxSlippagePct)return note('rejected',`Limit ${limit} is ${drift.toFixed(2)}% from the price ${quote.price}, above the ${this.config.conditionalMaxSlippagePct}% limit.`,{results:check.results});
       // Another order for this market is being sent (the engine sends one at a time): the order stays armed and is checked
       // again shortly, with its conditions re-read. Checked before proposing, so no proposal is left behind.
@@ -935,6 +956,7 @@ class Automation {
       for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}
     }
     if(this.schedulerStatus().label!=='Monitoring')return;
+    if(this.reviewRequested&&!this.busy&&this.config.scope!=='paper'){const r=this.reviewRequested;this.reviewRequested=null;this.triggerEvidence={kind:'placement',reason:r.reason};this.log(randomUUID(),'System',r.trigger,r.reason);void this.review(r.trigger).catch(()=>{});return;}
     // Order updates are noted every 5 seconds, also while markets are closed, and start a review when one can run.
     // Each order keeps its latest update; the queue belongs to the scope it was noted in.
     if(deskDue&&this.config.scope!=='paper'){const events=this.orderEvents();if(events.length){if(this.orderQueue?.scope!==this.config.scope)this.orderQueue={scope:this.config.scope,orders:new Map()};for(const o of events)this.orderQueue.orders.set(o.id,o);}}

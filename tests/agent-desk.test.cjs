@@ -1,4 +1,4 @@
-const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
+const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');require('./fixtures/order-book.cjs');
 const formula=require('../electron/formula.cjs');const {AgentDesk,onTick,krTick,COND_DEFAULTS}=require('../electron/agent-desk.cjs');
 const days=n=>Array.from({length:n},(_,i)=>new Date(Date.parse('2026-06-01T00:00:00Z')+i*86400000).toISOString().slice(0,10));
 const series=(n,f)=>days(n).map((date,i)=>({date,close:f(i),value:1e9+i}));
@@ -160,7 +160,7 @@ test('conditional orders fire through the guarded path: submitted, proposed, or 
   ({automation:a}=harness({engineCtx:()=>({...open,marketSession:{open:false}})}));arm(a);o=await fire(a);assert.equal(o.status,'armed');assert.equal(o.waiting,'market closed');
   assert.ok(o.nextCheckAt-Date.now()>290000,'a closed market is not re-checked for five minutes');a.configure({enabled:true});a.sessionArmed=true;a.lastDeskCheck=0;const before=a.calls.propose.length;a.tick();await new Promise(r=>setTimeout(r,20));assert.ok(!a.firing,'no new fire while backing off');assert.equal(a.calls.propose.length,before);
   a.desk.update(a.desk.orders(a.watchScope())[0],{status:'firing',firingAt:Date.now()-180000});assert.equal(a.desk.orders(a.watchScope())[0].waiting,'interrupted; checking again','an interrupted fire returns to armed');
-  ({automation:a}=harness({engineCtx:()=>open}));const sent=[];a.notify=(id,text)=>sent.push([id,text]);arm(a,{limitPrice:200000});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above the 2% limit/);
+  ({automation:a}=harness({engineCtx:()=>open}));const sent=[];a.notify=(id,text)=>sent.push([id,text]);arm(a,{limitPrice:225000});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above the 2% limit/,'a floor 3.7% above the bid');
   assert.equal(sent.length,1);assert.match(sent[0][1],/Stop loss for 005930 was rejected.*not protected/,'a rejected stop loss tells the phone');
   ({automation:a}=harness({engineCtx:()=>({...open,positions:{}})}));arm(a);o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/No shares held/);
   ({automation:a}=harness({engineCtx:()=>open}));arm(a,{side:'Buy',quantity:10});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above 10% of equity/);

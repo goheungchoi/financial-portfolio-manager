@@ -1,4 +1,4 @@
-const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
+const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');require('./fixtures/order-book.cjs');
 const pr=require('../electron/portfolio-risk.cjs');
 const series=(n,f)=>Array.from({length:n},(_,i)=>({date:new Date(Date.parse('2026-06-01T00:00:00Z')+i*86400000).toISOString().slice(0,10),close:f(i),high:f(i)+1,low:f(i)-1}));
 test('exposure: sector weights with cash, concentration, weighted beta and holdings that move together',()=>{

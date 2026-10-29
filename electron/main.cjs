@@ -263,6 +263,7 @@ app.whenReady().then(async () => {
     }
     const generation=kisGeneration;const result=await kisService.request('market-evidence',{request:args});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');return result;
   });
+  automation.orderBook=async symbol=>{const generation=kisGeneration;const result=await kisService.request('market-evidence',{request:{symbol,dataset:'order_book'}});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');return result;};
   automation.marketQuotes=()=>[...kisQuotes.values()];
   // Market discovery. Tests never download: they serve master files from PORTFOLIO_MASTER_DIR or skip the master.
   const masterDir=process.env.PORTFOLIO_SMOKE_DATA?process.env.PORTFOLIO_MASTER_DIR:null;
