@@ -43,9 +43,9 @@ function affordable(state,symbol,price){if(!(price>0))return null;const c=state.
 // base: the saved state at the last successful decision, with at (when it completed), contextAt (when its context was
 // read), decision {action,symbol,orderId}
 // and seen (news keys known then). next: decisionState of the current context. events: stored news events. waits:
-// the scope's waits (electron/waits.cjs).
+// the scope's waits (electron/waits.cjs). pending: its pending decisions (electron/pending-decisions.cjs).
 // Returns {needsReview, reasons:[{kind,detail,symbols}], changedSymbols, requiredEvidence, degraded, nextBackstopAt}.
-function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},events=[],waits=[]}={}){
+function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},events=[],waits=[],pending=[]}={}){
   const reasons=[],degraded=[],add=(kind,detail,symbols=[],evidence=[])=>reasons.push({kind,detail,symbols,evidence});
   const tolerance=config.eventTolerancePct??3,maxSkip=(config.maxSkipMinutes??120)*60000,opts={...GATE_DEFAULTS,...(config.reviewGateThresholds??{})};
   const nextBackstopAt=base?base.at+maxSkip:now;
@@ -69,8 +69,8 @@ function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},
     for(const m of Object.keys(next.markets)){if(!(m in base.markets))continue;const a=base.markets[m],b=next.markets[m];
       if(a.open!==b.open)add('session',`${m} market ${b.open?'opened':'closed'}`,[],['session:'+m]);
       if(a.execution!==b.execution||a.automatic!==b.automatic)add('execution',`${m} order execution ${b.execution?b.automatic?'automatic':'manual':'off'}`,[],['execution:'+m]);}
-    // A decision the closed market could not carry out becomes executable when that market opens.
-    const d=base.decision;if(d&&(d.action==='Buy'||d.action==='Sell')&&d.symbol&&!d.orderId){const m=marketOf(d.symbol);if(base.markets[m]&&!base.markets[m].open&&next.markets[m]?.open)add('pending-decision',`${d.action} ${d.symbol} can be carried out now`,[d.symbol],['quote:'+d.symbol,'account:positions','orders:'+d.symbol]);}
+    // A decision the closed market could not carry out (electron/pending-decisions.cjs) is reassessed when it opens.
+    for(const p of pending){const m=marketOf(p.symbol);if(base.markets[m]&&!base.markets[m].open&&next.markets[m]?.open)add('pending-decision',`${p.action} ${p.symbol}, decided while ${m} was closed, can be reassessed now`,[p.symbol],['quote:'+p.symbol,'account:positions','orders:'+p.symbol,'account:risk']);}
     // Risk and protection.
     if(base.risk.emergency!==next.risk.emergency||base.risk.breached!==next.risk.breached)add('risk',next.risk.emergency||next.risk.breached?'Daily loss limit reached':'Daily loss limit cleared',[],['account:risk']);
     for(const m of new Set([...Object.keys(base.risk.lossLimits??{}),...Object.keys(next.risk.lossLimits??{})]))if(base.risk.lossLimits?.[m]!==next.risk.lossLimits?.[m])add('risk',`${m} loss limit settings changed`,[],['account:risk']);
