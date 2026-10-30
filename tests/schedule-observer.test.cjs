@@ -45,8 +45,9 @@ test('in the app, observation records only: no AI or broker calls, no schedule c
   let brokerCalls=0;const live=new LiveEngine(db,{request:async()=>{brokerCalls++;return {balance:snapshot,quotes:[{symbol:'005930',price:217000,retrievedAt:Date.now()}],marketSession:{open:true,status:'open'}};}},()=>({status:'connected',snapshot}));
   const supplied=[];const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:1}],()=>[]),{request:async(op,p)=>{supplied.push(op);return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}},()=>{});
   a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now()}];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',enabled:true,narrativeEnabled:false,scoutEnabled:false});a.sessionArmed=true;
-  // A review just ran, so the tick schedules nothing whatever the time of day; the observation still records.
+  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',enabled:true,narrativeEnabled:false,scoutEnabled:false,orderTracking:false});a.sessionArmed=true;
+  // The order tracker reads KIS order history once a minute while a market is open; it is off here so only the
+  // observation is measured. A review just ran, so the tick schedules nothing whatever the time of day; the observation still records.
   a.lastRun=Date.now();const lastRun=a.lastRun,next=a.nextReviewAt();a.tick();
   assert.equal(db.prepare("SELECT COUNT(*) n FROM schedule_observations WHERE kind='proposed-run'").get().n,1,'first observation recorded');
   assert.equal(supplied.length,0,'no AI call');assert.equal(brokerCalls,0,'no broker call');assert.equal(a.lastRun,lastRun);// With no earlier review, the next review during an open session is "now", which moves between two reads: compare within a second.
