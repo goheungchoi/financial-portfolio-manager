@@ -1,7 +1,7 @@
 const {randomUUID}=require('node:crypto');
 // Order statuses that start a review when an order changes into them, statuses of an order still waiting at the broker,
 // and how long routine reviews may wait for a pending order.
-const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000;const {seoulDate}=require('./kis-activity.cjs');
+const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000;const {seoulDate}=require('./kis-activity.cjs');
 const DEFAULTS={unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithAI:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionKrxSingle:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,modelRouting:'fixed',routineModel:'gpt-6-luna',routineEffort:'none',complexityThreshold:40,spotCheckPct:25,lunaMaxRuns:4,lunaMaxMinutes:120,shadowEvaluation:false,shadowPct:100,shadowUSDPerDay:1,degradeNearBudget:true,scoutEnabled:false,scoutSchedule:'twice',scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,...require('./agent-desk.cjs').COND_DEFAULTS};
 const LOG_LIMIT=30000;
 // Two runs of one review (a cheaper model's and the confirming one): tokens and research counts add up.
@@ -421,7 +421,7 @@ class Automation {
     return {context,emergency,usValue,execution,lessonIds};
   }
   async review(trigger='User request',externalDecision) {
-    if(this.busy)throw new Error('REVIEW_BUSY');const startedAt=Date.now();this.restoreClock();this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();let context;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
+    if(this.busy)throw new Error('REVIEW_BUSY');const startedAt=Date.now();this.restoreClock();this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();let context,decided=false;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
       costRevision=JSON.stringify(this.costs?.get());
       let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;}}));
@@ -448,12 +448,13 @@ class Automation {
       // After a failure on the app's own size limit, a review tries again only when something that can change a decision
       // changed (electron/size-retry.cjs); the skip is logged once per failure and every retry says what allowed it.
       const failed=this.failedInput?.scope===watchScope?this.failedInput:null;const inputState=require('./review-gate.cjs').decisionState(context);
-      if(failed){const verdict=require('./size-retry.cjs').retryAfterSizeFailure(failed,{trigger,emergency:emergency.active,version:this.appVersion(),state:inputState,events:this.newsEvents.list(300),config:this.config});
-        if(!verdict.retry){gateLog(false,{failedInputs:true});this.lastRun=Date.now();failed.skipped=(failed.skipped??0)+1;
-          if(failed.skipped===1)this.log(id,'System','Review skipped · same inputs as a failed review',`The review at ${new Date(failed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST failed (${failed.code}) and ${verdict.why.replace(/^nothing/,'nothing')}. No AI call was made. A fill, an order change, a lost stop loss, a risk limit, a filing, a price move past the review gate's limits, an app update, your own request or an emergency tries again; so does a 30-minute backstop. Later skips for this failure are not logged.`);
+      const eventKeys=require('./size-retry.cjs').eventKeys(context.triggerEvidence);
+      if(failed){const verdict=require('./size-retry.cjs').retryAfterSizeFailure(failed,{trigger,evidence:context.triggerEvidence,emergency:emergency.active,version:this.appVersion(),state:inputState,events:this.newsEvents.list(300),config:this.config});
+        if(!verdict.retry){gateLog(false,{failedInputs:true});this.lastRun=Date.now();failed.skipped=(failed.skipped??0)+1;failed.eventKeys=[...new Set([...(failed.eventKeys??[]),...eventKeys])];this.restoreEvents(watchScope,context.triggerEvidence);
+          if(failed.skipped===1)this.log(id,'System','Review skipped · same inputs as a failed review',`The review at ${new Date(failed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST failed (${failed.code}) and ${verdict.why.replace(/^nothing/,'nothing')}. No AI call was made. A fill, an order change, a lost stop loss, a risk limit, a filing, a price move past the review gate's limits, a newly reached price level or met agent trigger, an app update, your own request or an emergency tries again; so does a 30-minute backstop. Later skips for this failure are not logged.`);
           return {skipped:true,id};}
         this.log(id,'System','Retrying after a size failure',`${failed.code} at ${new Date(failed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST${failed.skipped?` (${failed.skipped} checks skipped since)`:''}; retried because: ${verdict.why}.`);}
-      this.pendingInput={...hash,cash:require('./review-context.cjs').cashOf(context),scope:watchScope,state:inputState,version:this.appVersion(),seen:this.newsEvents.list(300).map(require('./review-gate.cjs').newsKey)};
+      this.pendingInput={...hash,cash:require('./review-context.cjs').cashOf(context),scope:watchScope,state:inputState,version:this.appVersion(),seen:this.newsEvents.list(300).map(require('./review-gate.cjs').newsKey),eventKeys:[...new Set([...(failed?.eventKeys??[]),...eventKeys])]};
       // Routine reviews focus on what changed (setting routineReviews 'focused'); broad ones compare every strategy.
       if(gate&&this.config.routineReviews==='focused')try{context.reviewScope=require('./review-gate.cjs').reviewScope(gate,trigger,this.reviewGate.baseline(watchScope));}catch{}
       gateLog(true);if(gate&&trigger==='Scheduled review')this.log(id,'System',gate.needsReview?'Why this review runs':'Review gate · would skip',gate.needsReview?gate.reasons.map(r=>r.detail).join('; '):`Nothing decision-relevant changed since the last decision; ${gateMode==='on'?'':'the review gate is observing, so '}the review runs.`);
@@ -520,7 +521,7 @@ class Automation {
       } else if(this.config.provider==='external')throw new Error('EXTERNAL_DECISION_REQUIRED');
       else result={decision:this.localDecision(context),provider:'local'};
       if(this.disposed)return;if(watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
-      stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+(routing?.confirmedBy||routing?.spotCheck||routing?.verdictChange?this.config.reasoningEffort:routing?.effort??this.config.reasoningEffort)+(routing?.confirmedBy?` (confirmed ${routing.confirmed?'unchanged':'with changes'})`:''));
+      decided=true;stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+(routing?.confirmedBy||routing?.spotCheck||routing?.verdictChange?this.config.reasoningEffort:routing?.effort??this.config.reasoningEffort)+(routing?.confirmedBy?` (confirmed ${routing.confirmed?'unchanged':'with changes'})`:''));
       this.log(id,'Agent','Decision',JSON.stringify(result.decision,null,2));
       if(result.decision.withheld)this.log(id,'System','Buy held back · trade plan',`${result.decision.withheld.quantity} ${result.decision.withheld.symbol}: ${result.decision.withheld.reason}.`);
       // A Buy whose stop is not below the current price is held back too.
@@ -575,10 +576,15 @@ class Automation {
       if(gateMode!=='off')try{const RG=require('./review-gate.cjs'),m=result.metrics??{};const prev=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)).find(r=>r.id!==id&&r.scope===this.config.scope&&r.decision);
         this.reviewGate.complete(id,{completed:true,orderId:order?.id??null,proposalId:proposal?.id??null,research:{toolCalls:m.toolCalls??0,researchReads:m.researchReads??0,detailReads:m.detailReads??0,fetched:m.fetched??0,refreshed:m.refreshed??0,reused:m.reused??0},change:RG.decisionChange(prev?.decision,result.decision)});}catch{}
       if(gateMode!=='off')try{this.reviewGate.settle(watchScope,require('./review-gate.cjs').decisionState(context),{decision:{action:result.decision?.action,symbol:result.decision?.symbol,orderId:order?.id??proposal?.id??null},contextAt:startedAt,events:gateEvents.filter(e=>e.firstSeenAt<=startedAt)});}catch{}
-      this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
+      this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
     }catch(error){this.lastRun=Date.now();this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+require('./ai-errors.cjs').sizeDetail(error);
       // A size failure is remembered with its inputs so the same inputs are not retried (see the skip above).
-      if(require('./ai-errors.cjs').SIZE_CODES.includes(this.lastError)&&this.pendingInput)this.failedInput={...this.pendingInput,code:this.lastError,at:Date.now()};
+      const sizeFailed=require('./ai-errors.cjs').SIZE_CODES.includes(this.lastError)&&this.pendingInput;if(sizeFailed)this.failedInput={...this.pendingInput,code:this.lastError,at:Date.now()};
+      // A review that reached no decision does not use up its one-off events (levels, agent triggers, filings). After a
+      // size failure they are held until it clears; after any other failure, for EVENT_RETRY_MS, so a failing provider
+      // is not called again every minute.
+      if(!decided&&context?.triggerEvidence){this.restoreEvents(watchScope,context.triggerEvidence);const keys=require('./size-retry.cjs').eventKeys(context.triggerEvidence);
+        if(!sizeFailed&&keys.length){const before=this.eventHold?.scope===watchScope&&Date.now()<this.eventHold.until?this.eventHold.keys:[];this.eventHold={scope:watchScope,keys:new Set([...before,...keys]),until:Date.now()+EVENT_RETRY_MS};if(!this.disposed)this.log(id,'System','Trigger kept for a later review',`No decision was made, so ${require('./size-retry.cjs').eventItems(context.triggerEvidence).map(e=>e.label).join('; ')} ${keys.length>1?'are':'is'} kept and tried again from ${new Date(this.eventHold.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST.`);}}
       if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
     finally{this.busy=false;this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
   }
@@ -695,6 +701,15 @@ class Automation {
   openOrderView(o){const tracked=this.config.orderTracking!==false&&!o.handsOff&&!o.trackingStopped&&!o.cancelRequestedAt;
     return {symbol:o.symbol,side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,...(o.limitPrice!=null?{placedAt:o.limitPrice,price:o.currentPrice??o.limitPrice}:{}),revisions:(o.revisions??[]).filter(r=>!r.cancel).length,
       ...(o.tracking?{bounds:o.tracking}:{}),tracked,...(o.handsOff?{takenOverByUser:true}:{}),...(o.trackingStopped?{paused:o.trackingStopped.reason}:{}),...(o.cancelRequestedAt?{cancelling:true}:{})};}
+  // One-off events (a level reached or crossed, an agent trigger met, a filing) whose review made no decision are put
+  // back, so a review that never decided does not use them up (electron/size-retry.cjs eventItems). They are held
+  // (heldEvents) without rebuilding a review, then fire again. The selective alerts' own record is touched only when
+  // they are the rule in force ('on'); in 'observe' it stays independent.
+  restoreEvents(scope,evidence){for(const e of require('./size-retry.cjs').eventItems(evidence)){try{
+    if(e.type==='agent')this.desk.reopenTrigger(scope,e.id);else if(e.type==='news')this.newsEvents.unmark([e.id]);else{this.watches.unfire(scope,e.symbol,e.revision);if(e.revision&&this.config.watchlistAlerts==='on')this.watchAlerts.restore(e.revision);}}catch{}}}
+  // Events held in this scope: those a size failure already had, until it clears, and those kept after any other
+  // failure, until their retry time (EVENT_RETRY_MS).
+  heldEvents(scope,now=Date.now()){const f=this.failedInput,h=this.eventHold;return new Set([...(f?.scope===scope?f.eventKeys??[]:[]),...(h?.scope===scope&&now<h.until?h.keys:[])]);}
   // The installed app version (a size failure is tried again after an update).
   appVersion(){try{return require('../package.json').version;}catch{return null;}}
   // Whether a market's session was open in a review's context.
@@ -721,12 +736,14 @@ class Automation {
   // rules of electron/watch-alerts.cjs ('on'). 'observe' keeps the one rule and logs what the selective rules would do:
   // both read the watches as they were before this check, and the selective rules keep their own record of fired
   // levels, so the rule in force marking a level fired does not hide it from them.
-  priceTrigger(scope,quotes,now=Date.now()){
-    const mode=this.config.watchlistAlerts??'off';const watches=this.watches.list(scope);const current=mode==='on'?null:this.watches.detect(scope,quotes,this.lastPrices,this.config.eventTolerancePct,now);
+  // skipLevels: level events held while a size failure stands (electron/size-retry.cjs); they apply to the rule in force
+  // only, so observation records what its rules would do whatever happened to live reviews.
+  priceTrigger(scope,quotes,now=Date.now(),{skipLevels=new Set()}={}){
+    const mode=this.config.watchlistAlerts??'off';const watches=this.watches.list(scope);const current=mode==='on'?null:this.watches.detect(scope,quotes,this.lastPrices,this.config.eventTolerancePct,now,skipLevels);
     if(current?.kind==='price')this.watches.fired(scope,current.symbol);if(mode==='off')return current;
     const fresh=quotes.filter(q=>{const t=q.timestamp??q.retrievedAt;return !q.stale&&q.price>0&&Number.isFinite(t)&&t<=now+1000&&now-t<=90000&&this.sessionOpen(/:/.test(q.symbol)?'US':'KR',now);}).map(q=>({...q,timestamp:q.timestamp??q.retrievedAt}));
     const held=new Set(heldSymbols(this.brokerPositions()));const tolerance=this.config.eventTolerancePct;
-    const {trigger,deliver}=this.watchAlerts.check({quotes:fresh,held,baselines:this.lastPrices,watches,tolerance,wide:this.config.watchlistMovePct??2*tolerance,now,ownFired:mode==='observe'});
+    const {trigger,deliver}=this.watchAlerts.check({quotes:fresh,held,baselines:this.lastPrices,watches,tolerance,wide:this.config.watchlistMovePct??2*tolerance,now,ownFired:mode==='observe',skipLevels:mode==='on'?skipLevels:new Set()});
     if(mode==='observe'){deliver();try{this.alertObservations.record(now,{current,proposed:trigger,held});}catch{}return current;}
     for(const symbol of deliver())this.watches.fired(scope,symbol);return trigger;}
   // Today's change of each holding whose market has a session open and whose quote is fresh: [{symbol, changePct}].
@@ -1023,17 +1040,17 @@ class Automation {
       this.triggerEvidence={kind:'order',orders:list.map(o=>({symbol:o.symbol,market:o.market??'KR',side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,fillPrice:o.fillPrice??null,placedAt:o.createdAt?new Date(o.createdAt).toISOString():null}))};
       this.log(list[0].id,'System','Order update',list.map(o=>`${o.status}: ${o.side} ${o.symbol}, ${o.filled??0}/${o.quantity} shares`).join('; ')+'. A review starts now.');void this.review('Order update').catch(()=>{});return;}
     // Agent triggers: met conditions start a review with the values that met them.
-    if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const open={KR:this.sessionOpen('KR'),US:this.sessionOpen('US')};const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData(),t=>(t.symbols??[]).every(sym=>open[/:/.test(sym)?'US':'KR']));if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
+    if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const open={KR:this.sessionOpen('KR'),US:this.sessionOpen('US')};const held=this.heldEvents(this.watchScope());const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData(),t=>!held.has('agent:'+t.id)&&(t.symbols??[]).every(sym=>open[/:/.test(sym)?'US':'KR']));if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
     const elapsed=Date.now()-this.lastRun;
     if(emergency.active){if((this.lastEmergencyAttempt??0)<this.emergencyStartedAt||elapsed>=60000){this.lastEmergencyAttempt=Date.now();void this.review('Emergency loss response').catch(()=>{});}return;}
     if(elapsed<60000)return;
     const quotes=this.config.scope==='both'?[...(this.usQuotes??[]),...(this.marketQuotes?.()??[])]:this.config.scope==='us'?(this.usQuotes??[]):this.config.scope==='kis'?(this.marketQuotes?.()??[]):this.paper.getState().quotes;
     const scope=this.watchScope();if(this.lastWatchScope!==scope){this.lastPrices.clear();this.watchAlerts.clear();this.lastWatchScope=scope;}
-    let drift=this.priceTrigger(scope,quotes);
+    let drift=this.priceTrigger(scope,quotes,Date.now(),{skipLevels:this.heldEvents(scope)});
     const sizeFailed=this.failedInput?.scope===scope?this.failedInput:null;
-    if(drift&&sizeFailed&&!require('./size-retry.cjs').priceTriggerMoved(sizeFailed,drift,{tolerance:this.config.eventTolerancePct??3})){if(!sizeFailed.priceHeld){sizeFailed.priceHeld=true;this.log(randomUUID(),'System','Price trigger held · size failure',`A price trigger (${drift.symbol??(drift.alerts??[]).map(a=>a.symbol).join(', ')}) was not rebuilt into a review: since the size failure at ${new Date(sizeFailed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST its price has not moved past the review gate's limit. Logged once.`);}drift=null;}
+    if(drift&&sizeFailed&&!require('./size-retry.cjs').priceTriggerMoved(sizeFailed,drift,{tolerance:this.config.eventTolerancePct??3})){this.restoreEvents(scope,drift);if(!sizeFailed.priceHeld){sizeFailed.priceHeld=true;this.log(randomUUID(),'System','Price trigger held · size failure',`A price trigger (${drift.symbol??(drift.alerts??[]).map(a=>a.symbol).join(', ')}) was not rebuilt into a review: since the size failure at ${new Date(sizeFailed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST its price has not moved past the review gate's limit. Logged once.`);}drift=null;}
     if(drift)this.triggerEvidence=drift;
-    if(!drift&&this.config.newsTrigger!=='off'&&Date.now()-(this.lastNewsTrigger??0)>=600000){const pending=this.newsEvents.pending(this.config.newsTrigger);if(pending.length){this.lastNewsTrigger=Date.now();this.newsEvents.markTriggered(pending.map(event=>event.id));this.triggerEvidence={kind:'news',events:pending.slice(0,5).map(({title,source,published,symbols,importance})=>({title,source,published,symbols,importance}))};void this.review('News event trigger').catch(()=>{});return;}}
+    if(!drift&&this.config.newsTrigger!=='off'&&Date.now()-(this.lastNewsTrigger??0)>=600000){const held=this.heldEvents(scope);const pending=this.newsEvents.pending(this.config.newsTrigger).filter(event=>!held.has('news:'+event.id)).slice(0,5);if(pending.length){this.lastNewsTrigger=Date.now();this.newsEvents.markTriggered(pending.map(event=>event.id));this.triggerEvidence={kind:'news',events:pending.map(({id,title,source,published,symbols,importance})=>({id,title,source,published,symbols,importance}))};void this.review('News event trigger').catch(()=>{});return;}}
     // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping.
     const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*this.slowFactor();
     if(!drift&&elapsed>=interval){const defer=this.deferForPendingOrder();if(defer){if(this.deferredAfter!==this.lastRun){this.deferredAfter=this.lastRun;const o=defer.orders[0];

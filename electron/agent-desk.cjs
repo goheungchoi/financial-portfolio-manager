@@ -38,6 +38,8 @@ class AgentDesk {
   // First active trigger whose conditions are met; it is closed so it fires once. usable: whether a trigger may be checked
   // now (the app checks a trigger only while every market it names has a session open).
   checkTriggers(scope,data,usable=()=>true){for(const t of this.triggers(scope)){if(!usable(t))continue;const check=formula.checkConditions(t.conditions,t.combine,data);if(check.met){this.write('agent_triggers',{...t,status:'fired',firedAt:this.clock(),results:check.results});return {trigger:t,results:check.results};}}return null;}
+  // A trigger that fired for a review that made no decision (a size failure) is active again, unless it has expired.
+  reopenTrigger(scope,id){const t=this.rows('agent_triggers',scope,'fired').find(x=>x.id===id);if(!t||t.expiresAt<=this.clock())return false;const {firedAt,results,...rest}=t;this.write('agent_triggers',{...rest,status:'active'});return true;}
   cancelTrigger(scope,id){const t=this.rows('agent_triggers',scope,'active').find(x=>x.id===id);if(!t)throw new Error('NOT_FOUND');this.write('agent_triggers',{...t,status:'cancelled',closedAt:this.clock(),closedBy:'user'});}
   // Notes
   notes(scope){this.expire(scope);return this.db.prepare('SELECT payload FROM agent_notes WHERE scope=?').all(scope).map(r=>JSON.parse(r.payload)).sort((a,b)=>b.updatedAt-a.updatedAt);}

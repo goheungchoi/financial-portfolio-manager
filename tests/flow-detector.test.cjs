@@ -175,7 +175,7 @@ test('review P1: the reading where the U.S. balance first loads still compares K
   assert.deepEqual(read('2026-10-28T10:01:00+09:00',{krCash:1500000,usCash:0}),[]);
   assert.deepEqual(d.pending('acct').map(p=>[p.market,p.amount,p.usBalanceUnseen]),[['KR',500000,true]],'held, marked as seen without the U.S. side');
   const found=read('2026-10-28T12:30:00+09:00',{krCash:1500000,usCash:0});assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['KR',500000,true]]);
-  assert.match(found[0].note,/U\.S\. balance was not loaded/,'the user is told the U.S. side was not seen');
+  assert.match(found[0].note,/U\.S\. balance could not be compared/,'the user is told the U.S. side was not seen');
   assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0,'the U.S. baseline starts here');
   // A U.S. fill in the same interval is still not judged against U.S. cash; the Korean side alone is compared.
   const t=settling();const g={id:'g',market:'US',symbol:'NASD:GOOGL',side:'Buy',quantity:1,filled:1,fillPrice:300,status:'Filled',createdAt:at('2026-10-28T09:59:00+09:00')};
@@ -244,9 +244,22 @@ test('a Korean basis change starts again and drops every held change; no basis a
     assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:914148,usCash:279.85}),[],'a ₩500k rise against the old basis is not compared');assert.deepEqual(d.pending('acct'),[],JSON.stringify(basis));
     read('2026-10-30T12:00:00+09:00',{krCash:914148,usCash:279.85});assert.equal(perf.flows('acct').length,0,'the held fall is dropped, not recorded: '+JSON.stringify(basis));}
 });
-test('a reading saved by 1.5.46 (one name for both) is the current basis: compared, not restarted',()=>{
-  const {perf,db,read}=saved('net-of-confirmed',{usCash:279.85});
-  read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:379.85});const found=read('2026-10-30T10:20:00+09:00',{krCash:414148,usCash:379.85});
-  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['US',100]],'a $100 deposit across the upgrade is found');assert.equal(perf.flows('acct').length,1);
+// Review of 4bf7185..1dfddb9, P2: builds before 1.5.46 wrote the same single name for U.S. cash alone, so an upgrade
+// straight from one of them took $0.84 -> $279.85 (cash plus the $279.01 unsettled) for a deposit.
+test('a reading saved under the single name has an unknown U.S. basis: upgrading from before 1.5.46 records no false deposit',()=>{
+  const {d,perf,db,read}=saved('net-of-confirmed',{pending:{US:{amount:-279.01,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+  assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(d.pending('acct'),[],'the U.S. change held on the old basis is dropped');
+  assert.deepEqual(read('2026-10-30T10:20:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(read('2026-10-30T13:00:00+09:00',{krCash:414148,usCash:279.85}),[]);
+  assert.equal(perf.flows('acct').length,0,'no $279.01 or $279.85 deposit, no withdrawal');
   assert.deepEqual(JSON.parse(db.prepare('SELECT payload FROM flow_watch').get().payload).basis,{KR:'net-of-confirmed',US:'with-pending-sales'},'saved under the new names');
+  // A genuine U.S. deposit afterwards is found.
+  read('2026-10-30T13:30:00+09:00',{krCash:414148,usCash:379.85});const found=read('2026-10-30T15:31:00+09:00',{krCash:414148,usCash:379.85});
+  assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['US',100,true]]);
+});
+test('the single-name upgrade still compares Korean cash, marked as unchecked against the U.S. side, and keeps a held Korean change',()=>{
+  const {perf,read}=saved('net-of-confirmed',{pending:{KR:{amount:200000,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+  assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:1214148,usCash:279.85}),[]);
+  const found=read('2026-10-30T10:30:00+09:00',{krCash:1214148,usCash:279.85});
+  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',1000000]],'the ₩800k now plus the ₩200k held');assert.match(found[0].note,/could not be compared/);assert.ok(found[0].note.length<=200);
+  assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0);
 });

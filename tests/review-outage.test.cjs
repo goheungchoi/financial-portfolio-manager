@@ -193,3 +193,144 @@ test('the mandatory size counts the compacted costs, and mandatory data over the
   assert.equal(rc.sizeFailure(tight).message,'CONTEXT_MANDATORY_TOO_LARGE');
   const between=rc.shape(c,{limit:Math.floor((tight.mandatoryBytes+full.mandatoryBytes)/2)});assert.notEqual(rc.sizeFailure(between).message,'CONTEXT_MANDATORY_TOO_LARGE','fits once costs are compact');
 });
+
+// Review of 4bf7185..1dfddb9, P1: after a size failure, an entry level crossed by less than the percentage threshold
+// and a newly met agent trigger were dropped (the level was already marked fired; the trigger lost its identity in a
+// comparison as a scheduled review). Each is a one-off event: it retries, and stays pending if no decision completes.
+const over=base=>({...base,environment:'local-paper',agentDesk:{notes:[{note:fill(80000)}]}});
+const watchRow=(a,scope,w)=>a.db.prepare('INSERT INTO review_watches VALUES(?,?,?) ON CONFLICT(scope,symbol) DO UPDATE SET payload=excluded.payload').run(scope,w.symbol,JSON.stringify(w));
+test('after a size failure, an entry level crossed by less than the percentage threshold retries, and stays pending while no decision completes',async()=>{
+  const {retryAfterSizeFailure,priceTriggerMoved}=require('../electron/size-retry.cjs');const RG=require('../electron/review-gate.cjs');
+  const base=fixture(),cand=base.quotes.map(q=>q.symbol).find(s=>!(s in base.positions));const then=RG.decisionState(base).quotes[cand].price;
+  const level=Math.round(then*1.001*100)/100,crossed=Math.round(then*1.002*100)/100;
+  const alert={kind:'entry-level',symbol:cand,price:crossed,threshold:level,direction:'above',watchRevision:'rev-1'},evidence={kind:'watchlist',alerts:[alert]};
+  const failed={at:Date.now()-60000,code:'CONTEXT_OVER_BUDGET',version:'1.5.46',state:RG.decisionState(base),seen:[]};
+  assert.equal(priceTriggerMoved(failed,{kind:'watchlist',alerts:[{...alert,kind:'watchlist-move'}]}),false,'a 0.2% move alone is held');
+  assert.equal(priceTriggerMoved(failed,evidence),true,'a newly crossed level is rebuilt however small the move');
+  const v=retryAfterSizeFailure(failed,{trigger:'Price movement trigger',evidence,state:RG.decisionState(base),config:{eventTolerancePct:3}});assert.equal(v.retry,true);assert.match(v.why,/crossed its entry level .*new since the failure/);
+  assert.equal(retryAfterSizeFailure({...failed,eventKeys:['level:rev-1']},{trigger:'Price movement trigger',evidence,state:RG.decisionState(base),config:{eventTolerancePct:3}}).retry,false,'the same crossing again is not new');
+  // Through the review path.
+  const small={...base,environment:'local-paper'};const {a,events,calls}=harness([over(base),{...over(base),triggerEvidence:evidence},{...over(base),triggerEvidence:evidence},small]);
+  const scope=a.watchScope();watchRow(a,scope,{symbol:cand,direction:'above',price:level,percent:null,reason:'entry',baseline:then,updatedAt:1,revision:'rev-1',priceFired:true});
+  await assert.rejects(a.review('Scheduled review'));assert.equal(a.lastError,'CONTEXT_OVER_BUDGET');
+  await assert.rejects(a.review('Price movement trigger'));
+  assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/crossed its entry level/.test(e.body)),'retried, saying it was the level');
+  const watch=()=>a.watches.list(scope).find(w=>w.symbol===cand);
+  assert.equal(watch().priceFired,false,'no decision completed: the level is put back');assert.deepEqual([...a.heldEvents(scope)],['level:rev-1'],'held while the failure stands');
+  assert.equal((await a.review('Price movement trigger')).skipped,true,'the same crossing does not retry');assert.equal(watch().priceFired,false,'still pending');
+  // While held, the tick does not rebuild it, and it does not hide another symbol's move.
+  const now=Date.now(),q=price=>({symbol:cand,price,timestamp:now});
+  assert.equal(a.watches.detect(scope,[q(crossed)],new Map(),3,now,a.heldEvents(scope)),null,'held, not rebuilt every minute');
+  const other=base.quotes.find(x=>x.symbol!==cand);assert.equal(a.watches.detect(scope,[q(crossed),{symbol:other.symbol,price:other.price*1.05,timestamp:now}],new Map([[other.symbol,other.price]]),3,now,a.heldEvents(scope)).symbol,other.symbol);
+  assert.equal(calls.length,0,'no AI call while over budget');
+  // A decision completes (the context fits again): the failure clears and the level fires for a review of its own.
+  await a.review('User request');assert.equal(a.failedInput,null);assert.equal(a.heldEvents(scope).size,0);
+  const again=a.watches.detect(scope,[q(crossed)],new Map(),3,now,a.heldEvents(scope));assert.equal(again?.kind,'price');assert.equal(again.watchRevision,'rev-1');
+});
+test('after a size failure, a newly met agent trigger retries with unchanged account state, and stays pending while no decision completes',async()=>{
+  const {retryAfterSizeFailure}=require('../electron/size-retry.cjs');const RG=require('../electron/review-gate.cjs');const base=fixture();
+  const evidence={kind:'agent-trigger',trigger:{id:'T-ab12cd',name:'MAX under 9.50',reason:'entry'},results:[{expr:'price(NYSE:MAX)',op:'<',value:9.5,actual:9.48,met:true}]};
+  const failed={at:Date.now()-60000,code:'CONTEXT_OVER_BUDGET',version:'1.5.46',state:RG.decisionState(base),seen:[]};
+  const v=retryAfterSizeFailure(failed,{trigger:'Agent trigger',evidence,state:RG.decisionState(base),config:{eventTolerancePct:3}});
+  assert.equal(v.retry,true,'not judged as a scheduled review');assert.match(v.why,/agent trigger MAX under 9.50 met, new since the failure/);
+  assert.equal(retryAfterSizeFailure(failed,{trigger:'Agent trigger',evidence:null,state:RG.decisionState(base),config:{eventTolerancePct:3}}).retry,false,'without its evidence it would have been dropped');
+  const small={...base,environment:'local-paper'};const {a,events}=harness([over(base),{...over(base),triggerEvidence:evidence},{...over(base),triggerEvidence:evidence},small]);
+  const scope=a.watchScope(),now=Date.now();
+  a.desk.write('agent_triggers',{id:'T-ab12cd',scope,status:'fired',name:'MAX under 9.50',conditions:[{expr:'price(NYSE:MAX)',op:'<',value:9.5}],symbols:['NYSE:MAX'],combine:'all',reason:'entry',createdAt:now-3600000,expiresAt:now+3600000,firedAt:now,results:evidence.results});
+  await assert.rejects(a.review('Scheduled review'));await assert.rejects(a.review('Agent trigger'));
+  assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/agent trigger MAX under 9\.50 met/.test(e.body)));
+  const active=()=>a.desk.triggers(scope).map(t=>t.id);assert.deepEqual(active(),['T-ab12cd'],'no decision completed: active again');assert.ok(a.heldEvents(scope).has('agent:T-ab12cd'));
+  assert.ok(!('firedAt' in a.desk.triggers(scope)[0]),'its firing is not left on it');
+  assert.equal((await a.review('Agent trigger')).skipped,true,'the same trigger does not retry');assert.deepEqual(active(),['T-ab12cd'],'still pending');
+  await a.review('User request');assert.equal(a.heldEvents(scope).size,0,'a completed decision clears the hold: the trigger is checked again');
+  // An expired trigger is not brought back.
+  a.desk.write('agent_triggers',{id:'T-old',scope,status:'fired',name:'old',conditions:[],symbols:[],combine:'all',reason:'',createdAt:now-7200000,expiresAt:now-1000,firedAt:now-2000});
+  assert.equal(a.desk.reopenTrigger(scope,'T-old'),false);
+});
+test('selective alerts: a held level is skipped (its side unchanged), and a put-back level crosses again',()=>{
+  const {WatchAlerts}=require('../electron/watch-alerts.cjs');const w=new WatchAlerts(),now=Date.now();const watch={symbol:'NYSE:MAX',direction:'above',price:10.01,revision:'r9',baseline:10,priceFired:false};
+  const check=(price,skip=new Set())=>w.check({quotes:[{symbol:'NYSE:MAX',price,timestamp:now}],held:new Set(),baselines:new Map(),watches:[watch],tolerance:3,wide:6,now,skipLevels:skip});
+  const first=check(10.02);assert.equal(first.trigger.alerts[0].kind,'entry-level');assert.equal(first.trigger.alerts[0].watchRevision,'r9');first.deliver();
+  assert.equal(check(10.02).trigger,null,'fired once');w.restore('r9');
+  assert.equal(check(10.02,new Set(['level:r9'])).trigger,null,'held while the failure stands');
+  assert.equal(check(10.02).trigger.alerts[0].kind,'entry-level','put back: a crossing again once no longer held');
+});
+
+// Through the scheduler (tick): the trigger evidence reaches the review as in production (assembleReviewContext attaches
+// this.triggerEvidence for price, news, agent and order triggers).
+function scheduler(sequence,{alerts='observe'}={}){const h=harness([]);const a=h.a;let i=0;const started=[];
+  a.assembleReviewContext=async({trigger})=>{const c=structuredClone(sequence[Math.min(i++,sequence.length-1)]);if(['Price movement trigger','News event trigger','Agent trigger','Order update'].includes(trigger))c.triggerEvidence=a.triggerEvidence;else delete c.triggerEvidence;
+    return {context:c,emergency:{active:false},execution:null,usValue:null,lessonIds:[]};};
+  a.configure({scope:'both',enabled:true,watchlistAlerts:alerts,newsTrigger:'off'});a.sessionArmed=true;a.schedulerStatus=()=>({label:'Monitoring'});a.marketHours=()=>({open:true,markets:[],preOpen:null,next:null});
+  a.sessionOpen=()=>true;a.watchScope=()=>'both:acct';a.marketQuotes=()=>[];a.deferForPendingOrder=()=>null;
+  const review=a.review.bind(a);a.review=async(trigger,...rest)=>{started.push(trigger);return review(trigger,...rest);};
+  const tick=async()=>{a.lastRun=Date.now()-120000;a.lastDeskCheck=0;a.tick();await new Promise(r=>setTimeout(r,40));};
+  return {...h,a,tick,started};}
+for(const alerts of ['observe','on'])test(`scheduler (${alerts}): a level reached by a 0.2% move after a size failure retries, is held without masking other symbols, and fires again once a decision completes`,async()=>{
+  const base=fixture();const cand=base.quotes.map(q=>q.symbol).find(s=>/:/.test(s)&&!(s in base.positions))??'NASD:T002';const then=100,level=100.1;
+  const big={...over(base),quotes:[...base.quotes.filter(q=>q.symbol!==cand),{symbol:cand,price:then,timestamp:Date.now()}]};const small={...big,agentDesk:{notes:[]}};
+  const {a,tick,started,events}=scheduler([big,big,big,small,small]);const scope='both:acct';
+  watchRow(a,scope,{symbol:cand,direction:'above',price:level,percent:null,reason:'entry',baseline:then,updatedAt:1,revision:'rev-7',priceFired:false});
+  await assert.rejects(a.review('Scheduled review'));assert.equal(a.lastError,'CONTEXT_OVER_BUDGET');
+  const quote=(symbol,price)=>({symbol,price,timestamp:Date.now(),retrievedAt:Date.now()});
+  a.lastPrices=new Map([[cand,then]]);a.usQuotes=[quote(cand,100.2)];
+  // In 'on' the candidate's earlier side is needed for a crossing: one check below the level first.
+  if(alerts==='on'){a.usQuotes=[quote(cand,99.9)];await tick();a.usQuotes=[quote(cand,100.2)];}
+  await tick();assert.equal(started.at(-1),'Price movement trigger','the 0.2% level is rebuilt into a review');
+  assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/new since the failure/.test(e.body)),'and retried as a new event');
+  const watch=()=>a.watches.list(scope).find(w=>w.symbol===cand);assert.equal(watch().priceFired,false,'the review failed again: the level is put back');assert.ok(a.heldEvents(scope).has('level:rev-7'));
+  const n=started.length;await tick();await tick();assert.equal(started.length,n,'held: not rebuilt every minute');assert.equal(watch().priceFired,false);
+  // Another symbol's move is not hidden by the held level.
+  const other=base.quotes.find(q=>/:/.test(q.symbol)&&q.symbol!==cand&&q.symbol in base.positions)??base.quotes.find(q=>q.symbol!==cand);
+  a.lastPrices=new Map([[cand,then],[other.symbol,other.price]]);a.usQuotes=[quote(cand,100.2),quote(other.symbol,other.price*1.06)];
+  await tick();assert.equal(started.length,n+1,'the other symbol starts its own price review');a.usQuotes=[quote(cand,100.2)];a.lastPrices=new Map([[cand,then]]);
+  // A completed decision clears the failure; the held level then fires for a review of its own, which decides and uses it up.
+  await a.review('User request');assert.equal(a.failedInput,null);
+  await tick();assert.equal(started.at(-1),'Price movement trigger');assert.equal(a.failedInput,null,'decided');assert.equal(watch().priceFired,true,'used up only by a completed decision');
+});
+test('scheduler: a newly met agent trigger after a size failure retries with unchanged account state, is held, survives a restart and fires again',async()=>{
+  const base=fixture();const big=over(base),small={...big,agentDesk:{notes:[]}};const {a,tick,started,events}=scheduler([big,big,small,small]);const scope='both:acct';
+  a.usQuotes=[{symbol:'NASD:GOOGL',price:280,timestamp:Date.now(),retrievedAt:Date.now()}];
+  a.desk.setTrigger(scope,{action:'add',id:'',name:'GOOGL under 285',conditions:[{expr:'price("NASD:GOOGL")',op:'<=',value:285}],combine:'all',expiresInHours:4,reason:'re-entry'},{universe:['NASD:GOOGL']});
+  const id=a.desk.triggers(scope)[0].id;
+  await assert.rejects(a.review('Scheduled review'));
+  await tick();assert.equal(started.at(-1),'Agent trigger');assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/agent trigger GOOGL under 285 met/.test(e.body)));
+  assert.deepEqual(a.desk.triggers(scope).map(t=>t.id),[id],'failed again: active');const n=started.length;await tick();assert.equal(started.length,n,'held while the failure stands');
+  // A restart loses the in-memory failure; the trigger is still active in the database and fires.
+  a.failedInput=null;await tick();assert.equal(started.at(-1),'Agent trigger');assert.equal(a.failedInput,null,'decided');assert.equal(a.desk.triggers(scope).length,0,'used up by the completed decision');
+});
+test('scheduler: observation state is not changed by a live-rule size failure',async()=>{
+  const base=fixture();const cand='NASD:T902';const big={...over(base),quotes:[...base.quotes,{symbol:cand,price:100,timestamp:Date.now()}]};
+  const {a,tick}=scheduler([big,big,big],{alerts:'observe'});const scope='both:acct';
+  watchRow(a,scope,{symbol:cand,direction:'above',price:100.1,percent:null,reason:'entry',baseline:100,updatedAt:1,revision:'rev-8',priceFired:false});
+  await assert.rejects(a.review('Scheduled review'));a.lastPrices=new Map([[cand,100]]);
+  const quote=p=>({symbol:cand,price:p,timestamp:Date.now(),retrievedAt:Date.now()});a.usQuotes=[quote(99.9)];await tick();a.usQuotes=[quote(100.2)];
+  const fired=[...a.watchAlerts.fired],sides=[...a.watchAlerts.sides];await tick();
+  assert.ok(a.watchAlerts.fired.has('rev-8'),'the observer recorded its own crossing');const after=[...a.watchAlerts.fired];
+  await tick();assert.deepEqual([...a.watchAlerts.fired],after,'the live review failing and the level being held do not reset the observer');void fired;void sides;
+});
+
+// Stage 1 (2026-10-30): a suppressed or failed review must not silently consume a signal, whatever the failure.
+test('scheduler: a review that fails for another reason keeps its agent trigger, holds it five minutes, then tries again',async()=>{
+  const base=fixture();const small={...base,environment:'local-paper'};const {a,tick,started,events}=scheduler([small]);const scope='both:acct';
+  a.usQuotes=[{symbol:'NASD:GOOGL',price:280,timestamp:Date.now(),retrievedAt:Date.now()}];
+  a.desk.setTrigger(scope,{action:'add',id:'',name:'GOOGL under 285',conditions:[{expr:'price("NASD:GOOGL")',op:'<=',value:285}],combine:'all',expiresInHours:4,reason:'re-entry'},{universe:['NASD:GOOGL']});
+  const id=a.desk.triggers(scope)[0].id;let fail=true;const request=a.provider.request.bind(a.provider);a.provider.request=async(...x)=>{if(fail)throw new Error('PROVIDER_REQUEST_FAILED');return request(...x);};
+  await tick();assert.equal(started.at(-1),'Agent trigger');assert.equal(a.lastError,'PROVIDER_REQUEST_FAILED');
+  assert.deepEqual(a.desk.triggers(scope).map(t=>t.id),[id],'no decision: the trigger is active again');assert.ok(events.some(e=>e.title==='Trigger kept for a later review'&&/agent trigger GOOGL under 285 met/.test(e.body)));
+  const n=started.length;await tick();assert.equal(started.length,n,'held for five minutes: the failing provider is not called every minute');
+  a.eventHold.until=Date.now()-1;fail=false;await tick();assert.equal(started.at(-1),'Agent trigger');assert.equal(a.lastError,null,'decided');assert.equal(a.desk.triggers(scope).length,0,'used up by the completed decision');assert.equal(a.eventHold,null);
+});
+test('scheduler: a news review marks only the filings it shows, and a failed one leaves them pending',async()=>{
+  const base=fixture();const small={...base,environment:'local-paper'};const {a,tick,started}=scheduler([small]);a.configure({newsTrigger:'disclosures',unlimitedCalls:true,unlimitedBudget:true});const now=Date.now();
+  const sym=Object.keys(base.positions)[0];for(let i=0;i<7;i++)a.newsEvents.save({id:'F'+i,source:'DART',kind:'disclosure',title:'Filing '+i,url:'F'+i,published:new Date(now).toISOString(),symbols:[sym],importance:'high',firstSeenAt:now-i*1000,triggeredAt:null});
+  let fail=true;const request=a.provider.request.bind(a.provider);a.provider.request=async(...x)=>{if(fail)throw new Error('PROVIDER_REQUEST_FAILED');return request(...x);};
+  a.lastNewsTrigger=0;await tick();assert.equal(started.at(-1),'News event trigger');assert.equal(a.triggerEvidence.events.length,5);assert.ok(a.triggerEvidence.events.every(e=>e.id),'each filing named by id');
+  const pending=()=>a.newsEvents.pending('disclosures').map(e=>e.id).sort();
+  assert.deepEqual(pending(),['F0','F1','F2','F3','F4','F5','F6'],'the review failed: the five shown are pending again, and the two not shown were never used up');
+  // The next news review (after its ten-minute spacing) takes the two not held, then the held five once their hold ends.
+  a.lastNewsTrigger=0;await tick();assert.deepEqual(a.triggerEvidence.events.map(e=>e.id).sort(),['F5','F6']);
+  assert.deepEqual([...a.heldEvents('both:acct')].sort(),['news:F0','news:F1','news:F2','news:F3','news:F4','news:F5','news:F6'],'a second failure adds to the hold, not replaces it');
+  fail=false;a.eventHold.until=Date.now()-1;a.lastNewsTrigger=0;await tick();assert.equal(a.lastError,null);assert.deepEqual(a.triggerEvidence.events.map(e=>e.id).sort(),['F0','F1','F2','F3','F4']);
+  assert.deepEqual(pending(),['F5','F6'],'the two from the failed review still wait');a.lastNewsTrigger=0;await tick();assert.equal(a.lastError,null);assert.deepEqual(pending(),[],'every filing reached a completed decision');
+});

@@ -10,7 +10,7 @@
 //   once per COOLDOWN_MS. Alerts in the same check go into one review.
 // 2026-10-29: of 16 price reviews since 2026-10-20, eight were 3-5% moves in symbols not held, five of them in two
 // leveraged ETFs on the watchlist.
-const COOLDOWN_MS=60*60000;
+const COOLDOWN_MS=60*60000;const {levelEvent}=require('./review-watches.cjs');
 const met=(watch,price)=>watch.direction==='above'?price>=watch.price:price<=watch.price;
 // A price level as the AI set it: setting it again (even at the same price) makes a new one, and a review moving its
 // baseline does not. Watches saved before revisions existed are named by when they were set.
@@ -24,16 +24,18 @@ class WatchAlerts {
   // What each check sees is saved at once, alert or not: the side of each level (a crossing needs the earlier side) and a
   // symbol's first anchor. Returns {trigger, deliver}: trigger is null or the review to start; deliver() records it as
   // sent (anchors move to the alert prices, cooldowns start, levels are fired) and returns the symbols whose level fired.
-  check({quotes,held,baselines,watches,tolerance,wide,now=Date.now(),ownFired=false}){
-    const holding=[],alerts=[],levels=new Map(),open=(w,isHeld)=>w?.price!=null&&!(ownFired?this.fired.has(levelKey(w))||isHeld&&w.priceFired:w.priceFired);
+  // skipLevels: level events held while a size failure stands (electron/size-retry.cjs); their symbols are checked as if
+  // they had no level.
+  check({quotes,held,baselines,watches,tolerance,wide,now=Date.now(),ownFired=false,skipLevels=new Set()}){
+    const holding=[],alerts=[],levels=new Map(),open=(w,isHeld)=>w?.price!=null&&!skipLevels.has(levelEvent(w))&&!(ownFired?this.fired.has(levelKey(w))||isHeld&&w.priceFired:w.priceFired);
     for(const q of quotes){const watch=watches.find(w=>w.symbol===q.symbol);
       if(held.has(q.symbol)){
-        if(open(watch,true)&&met(watch,q.price)){levels.set(q.symbol,levelKey(watch));holding.push({kind:'price',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp});}
+        if(open(watch,true)&&met(watch,q.price)){levels.set(q.symbol,levelKey(watch));holding.push({kind:'price',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp,...(watch.revision?{watchRevision:watch.revision}:{})});}
         else{const base=watch?.baseline??baselines.get(q.symbol),limit=watch?.percent??tolerance;if(base>0&&Math.abs(q.price/base-1)*100>=limit)holding.push({kind:'percent',symbol:q.symbol,price:q.price,baseline:base,changePct:(q.price/base-1)*100,threshold:limit,timestamp:q.timestamp});}
         continue;}
       if(open(watch)){const key=levelKey(watch);
         const before=this.sides.get(key)??(watch.baseline>0?met(watch,watch.baseline):null),isMet=met(watch,q.price);this.sides.set(key,isMet);
-        if(before===false&&isMet){levels.set(q.symbol,key);alerts.push({kind:'entry-level',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp});}
+        if(before===false&&isMet){levels.set(q.symbol,key);alerts.push({kind:'entry-level',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp,...(watch.revision?{watchRevision:watch.revision}:{})});}
         continue;}
       if(!this.anchors.has(q.symbol))this.anchors.set(q.symbol,baselines.get(q.symbol)??q.price);
       const anchor=this.anchors.get(q.symbol),limit=watch?.percent??wide,change=(q.price/anchor-1)*100;
@@ -44,6 +46,9 @@ class WatchAlerts {
       const fired=sent.filter(a=>a.kind==='entry-level'||a.kind==='price').map(a=>a.symbol);for(const s of fired)this.fired.add(levels.get(s));return fired;};
     return {trigger,deliver};
   }
+  // A level fired for a review that made no decision (a size failure) is put back: not fired, and on its earlier side,
+  // so the price still beyond it is a crossing again once the level is no longer held.
+  restore(key){this.fired.delete(key);this.sides.set(key,false);}
   // Anchors of symbols not held do not move with reviews, only with their own alerts; clear() is for an account change.
   clear(){this.anchors.clear();this.alertedAt.clear();this.sides.clear();this.fired.clear();}
 }

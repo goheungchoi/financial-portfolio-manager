@@ -25,9 +25,10 @@ const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=1
 // 2026-10-30: 1.5.46 added the unsettled proceeds without a new basis; its first reading took the $279.85 already
 // counted as a withdrawal (cash alone) for a deposit.
 const BASIS={KR:'net-of-confirmed',US:'with-pending-sales'};
-// Readings saved under the single name were written up to 1.5.46, which already included the unsettled proceeds (the
-// reading is rewritten every minute, so a saved one is the last build's); readings without a name predate both.
-const basisOf=b=>typeof b==='string'?{KR:b,US:'with-pending-sales'}:b&&typeof b==='object'?b:{};
+// Readings saved under the single name name only the Korean basis: builds before 1.5.46 wrote it for U.S. cash alone and
+// 1.5.46 for cash plus unsettled proceeds, and nothing saved tells them apart, so their U.S. basis is unknown (an upgrade
+// need not pass through 1.5.46). Readings without a name predate both.
+const basisOf=b=>typeof b==='string'?{KR:b,US:null}:b&&typeof b==='object'?b:{};
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 // An order's cash effect in its market currency: the broker's net cash when known, otherwise the gross amount.
 function cashEffect(order){
@@ -149,7 +150,7 @@ class FlowDetector {
     for(const m of ['KR','US']){const q=p[m];if(!q)continue;const age=now.at-q.since,krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;
       const couldSettle=now.provisionalKRW>0&&(m==='KR'?q.amount<0:q.amount>0)&&(krw==null||Math.abs(krw)<=now.provisionalKRW*1.05+THRESHOLD_KRW);
       if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
-      const unseen=q.usUnseen?' The U.S. balance was not loaded before this change, so money moved to or from the U.S. account cannot be ruled out.':'';
+      const unseen=q.usUnseen?' The U.S. balance could not be compared before this change, so money moved to or from the U.S. account cannot be ruled out.':'';
       out.push(this.performance.addFlow(account,{day:seoulDate(q.since),market:m,amount:q.amount,detected:true,note:`Detected: ${label(m)} cash ${q.amount>0?'rose':'fell'} with no matching trade.${unseen} Confirm or remove.`}));delete p[m];}
     return out;
   }
