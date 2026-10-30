@@ -8,13 +8,17 @@ const ALWAYS=['User request','Emergency loss response','Auto trading started'];
 const BACKSTOP_MS=30*60000;
 const hhmm=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'});
 // One-off events in a review's trigger evidence: a price level reached or crossed (a holding's review-watch level, a
-// candidate's entry level), an agent trigger whose conditions were met and a filing that started a news review. Each happens once, so a size failure must not
+// candidate's entry level), an agent trigger whose conditions were met, a filing that started a news review and an
+// order update (a fill, partial fill, cancellation or rejection). Each happens once, so a size failure must not
 // swallow it: one the failed review did not have is a reason to retry, and one that gets no decision is put back
 // (electron/automation.cjs restoreEvents). Repeated percentage moves are not events: the price comparison covers them.
 // Review of 4bf7185..1dfddb9, P1: an entry level crossed by 0.1% and a newly met agent trigger were both dropped.
 const LEVELS=['price','entry-level'];
+// An order update as an event: the order in its status and filled quantity (a later fill is a new event).
+const orderEventKey=o=>`order:${o.id}|${o.status}|${o.filled??0}`;
 const levelOf=x=>'level:'+(x.watchRevision??`${x.symbol}|${x.direction}|${x.threshold}`);
 function eventItems(evidence){if(!evidence||typeof evidence!=='object')return [];
+  if(evidence.kind==='order')return (evidence.orders??[]).filter(o=>o?.id).map(o=>({key:orderEventKey(o),type:'order',id:o.id,label:`${o.status} ${o.side} ${o.symbol} (${o.filled??0}/${o.quantity})`}));
   if(evidence.kind==='news')return (evidence.events??[]).filter(e=>e?.id).map(e=>({key:'news:'+e.id,type:'news',id:e.id,label:`filing “${String(e.title??'').slice(0,60)}”`}));
   if(evidence.kind==='agent-trigger')return evidence.trigger?.id?[{key:'agent:'+evidence.trigger.id,type:'agent',id:evidence.trigger.id,label:`agent trigger ${evidence.trigger.name??evidence.trigger.id} met`}]:[];
   const items=evidence.kind==='watchlist'?evidence.alerts??[]:[evidence,...(evidence.alongside??[])];
@@ -44,4 +48,4 @@ function priceTriggerMoved(failed,trigger,{tolerance=3}={}){if(!failed?.state||!
   // Only levels the failed review already had: held.
   const items=all.filter(x=>!LEVELS.includes(x.kind));if(!items.length)return false;
   return items.some(x=>{const then=failed.state.quotes?.[x.symbol]?.price;if(!(then>0))return true;const limit=x.symbol in (failed.state.positions??{})?Math.max(.1,tolerance/2):tolerance;return Math.abs(x.price/then-1)*100>=limit;});}
-module.exports={retryAfterSizeFailure,priceTriggerMoved,eventItems,eventKeys,BACKSTOP_MS,ALWAYS};
+module.exports={retryAfterSizeFailure,priceTriggerMoved,eventItems,eventKeys,orderEventKey,BACKSTOP_MS,ALWAYS};

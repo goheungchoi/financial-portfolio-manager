@@ -81,7 +81,16 @@ function validateDecision(value,symbols,{requirePlan=false}={}) {
   let complexity=null;if(value&&typeof value==='object'&&'complexity' in value){const {complexity:raw,...rest}=value;value=rest;if(raw&&Number.isFinite(raw.score))complexity={score:Math.max(0,Math.min(100,Math.round(raw.score))),reason:String(raw.reason??'').trim().slice(0,200)};}
   let plan=null;if(value&&typeof value==='object'&&'plan' in value){const {plan:raw,...rest}=value;value=rest;plan=normalizePlan(raw);}
   // Execution bounds keep their shape here; the app checks them against the price and time when it places the order.
-  let execution=null;if(value&&typeof value==='object'&&'execution' in value){const {execution:raw,...rest}=value;value=rest;if(raw&&typeof raw==='object'){const bound=Number.isFinite(raw.bound)&&raw.bound>0?raw.bound:null,cancelAfter=String(raw.cancelAfter??'').trim().slice(0,40),cancelIf=(Array.isArray(raw.cancelIf)?raw.cancelIf:[]).slice(0,5).filter(c=>c&&typeof c.expr==='string'&&['>','>=','<','<='].includes(c.op)&&Number.isFinite(c.value)).map(c=>({expr:c.expr.slice(0,200),op:c.op,value:c.value}));if(bound!=null||cancelAfter||cancelIf.length)execution={bound,cancelAfter,cancelIf};}}
+  let execution=null;if(value&&typeof value==='object'&&'execution' in value){const {execution:raw,...rest}=value;value=rest;if(raw&&typeof raw==='object'){
+    // A restriction supplied but malformed is kept as invalid (the app then withholds the order), never dropped: an
+    // order without the restriction the agent asked for is not the order it decided.
+    const invalid=[],rawIf=Array.isArray(raw.cancelIf)?raw.cancelIf:[],okIf=c=>c&&typeof c.expr==='string'&&c.expr.length<=200&&['>','>=','<','<='].includes(c.op)&&Number.isFinite(c.value);
+    const bound=Number.isFinite(raw.bound)&&raw.bound>0?raw.bound:null;if(raw.bound!=null&&bound==null)invalid.push(`bound ${String(raw.bound).slice(0,20)}`);
+    const cancelAfter=String(raw.cancelAfter??'').trim();if(cancelAfter.length>40)invalid.push('cancelAfter (too long)');
+    if(raw.cancelIf!=null&&!Array.isArray(raw.cancelIf))invalid.push('cancelIf (not a list)');if(rawIf.length>5)invalid.push(`cancelIf (${rawIf.length} conditions, at most 5)`);
+    rawIf.forEach((c,i)=>{if(!okIf(c))invalid.push(`cancelIf ${i+1} (malformed)`);});
+    const cancelIf=rawIf.slice(0,5).filter(okIf).map(c=>({expr:c.expr,op:c.op,value:c.value}));
+    if(bound!=null||cancelAfter||cancelIf.length||invalid.length)execution={bound,cancelAfter:cancelAfter.slice(0,40),cancelIf,...(invalid.length?{invalid}:{})};}}
   let decision=checkDecision(value,symbols);
   if(requirePlan&&decision.action==='Buy'&&planGap(plan,{cover:decision.credit==='cover'}))decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a Buy of ${decision.quantity} ${decision.symbol}: ${planGap(plan,{cover:decision.credit==='cover'})}. A Buy needs a thesis, an invalidation point, a stop price, a horizon, the before-and-after portfolio comparison and sourced evidence.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:planGap(plan,{cover:decision.credit==='cover'})}};
   return {...decision,...(execution&&(decision.action==='Buy'||decision.action==='Sell')?{execution}:{}),...(plan?{plan}:{}),...(complexity?{complexity}:{}),...(strategyCheck?.length?{strategyCheck}:{}),...(verdicts?{planVerdicts:verdicts}:{}),...(brief?{scoutBrief:brief}:{})};
