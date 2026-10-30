@@ -115,8 +115,8 @@ test('a dry-run review records its research counts like a live review',async()=>
 test('a failed dry-run review keeps its diagnostics: sizes, transcript and the reason',async()=>{
   const {automation,queue,db}=harness();
   queue.push(()=>({toolCalls:[call('get_context_detail',{section:'x',part:'',from:0},'d3')],continuation:[{role:'user',content:'"'.repeat(80000)},fcall('get_context_detail',{section:'x',part:'',from:0},'d3')],usage:{inputTokens:1,outputTokens:1}}));
-  await assert.rejects(automation.dryRun('review'),/CONTEXT_OVER_BUDGET/);
-  const stored=db.prepare('SELECT payload FROM dry_runs').all().map(x=>JSON.parse(x.payload)).at(-1);assert.equal(stored.review.failed,'CONTEXT_OVER_BUDGET');
+  await assert.rejects(automation.dryRun('review'),/CONTINUATION_OVER_BUDGET/,'a research round over the limit has its own code');
+  const stored=db.prepare('SELECT payload FROM dry_runs').all().map(x=>JSON.parse(x.payload)).at(-1);assert.equal(stored.review.failed,'CONTINUATION_OVER_BUDGET');
   assert.equal(stored.review.research.detailReads,1,'a failed dry run keeps what it researched');
   assert.equal(stored.review.requests.length,1,'the follow-up was not sent');assert.ok(stored.review.transcript.some(t=>t.title.startsWith('Context detail')));assert.ok(stored.review.size.wireBytes>0);
   assert.equal(automation.busy,false);
