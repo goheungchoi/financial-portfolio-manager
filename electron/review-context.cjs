@@ -30,6 +30,12 @@ const SUMMARIES={
 };
 // Section-specific compression, used only while the request is over budget, in this order.
 const COMPRESS=[
+  // Sections added 2026-10-29 had no compressor, so a review over budget could not shorten them and failed
+  // (2026-10-30 09:00 KST: 71,236 of 70,000 bytes, assessments 5,428). The full sections stay readable as detail.
+  ['assessments',a=>Array.isArray(a)?a.map(x=>({symbol:x.symbol,updated:x.updated,strategy:x.strategy,horizon:x.horizon,thesis:clip(x.thesis,160),invalidation:clip(x.invalidation,120),stale:x.stale,...(x.staleBecause?{staleBecause:x.staleBecause}:{}),...(x.conflict?{conflict:x.conflict}:{}),held:x.held,sources:(x.evidence??[]).length})):a],
+  ['waits',w=>Array.isArray(w)?w.map(x=>({symbol:x.symbol,reason:x.reason,question:clip(x.question,100),earliestCheck:x.earliestCheck,expires:x.expires,holdsResearch:x.holdsResearch})):w],
+  ['pendingDecisions',p=>Array.isArray(p)?p.map(x=>({symbol:x.symbol,action:x.action,quantity:x.quantity,since:x.since,reviews:x.reviews,rationale:clip(x.rationale,160)})):p],
+  ['reviewScope',s=>s&&Array.isArray(s.changes)?{...s,changes:s.changes.map(c=>clip(c,100)).slice(0,6)}:s],
   ['marketNarrative',n=>n&&typeof n==='object'?{asOf:n.asOf,regime:n.regime,summary:clip(n.summary,400),drivers:(n.drivers??[]).map(d=>({kind:d.kind,title:d.title,...(d.sectors?{sectors:d.sectors}:{})}))}:n],
   ['scoutPlan',s=>s&&typeof s==='object'?{...s,summary:clip(s.summary,300),focus:clip(s.focus,200),targets:(s.targets??[]).map(t=>({...t,...(t.thesis?{thesis:clip(t.thesis,160)}:{}),...(t.watch?{watch:clip(t.watch,120)}:{})}))}:s],
   ['positionSizing',s=>s&&Array.isArray(s.rows)?{...s,rows:s.rows.map(r=>({symbol:r.symbol,maxShares:r.maxShares,limitedBy:r.limitedBy,suggestedStop:r.suggestedStop,maxWeightPct:r.maxWeightPct}))}:s],

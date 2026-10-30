@@ -56,7 +56,7 @@ test('section compression keeps every symbol and the binding facts; summaries ke
 test('if the mandatory snapshot alone cannot fit, the review is not sent and nothing mandatory is cut',()=>{
   const huge=failedLike(12);const combined={...huge,...rc.combineTradingCosts(huge.markets)};const s=rc.shape(combined);
   assert.equal(s.fits,false);assert.ok(s.mandatoryBytes>0);for(const k of MANDATORY_SAME)assert.deepEqual(s.context[k],huge[k]);
-  assert.match(require('../electron/ai-errors.cjs').messages.CONTEXT_OVER_BUDGET,/mandatory review data alone exceeds/);
+  assert.match(require('../electron/ai-errors.cjs').messages.CONTEXT_OVER_BUDGET,/over the app byte limit even after shortening/);
 });
 test('point 1: detail is read in bounded, selectable parts; a large section never brings the overflow back',async()=>{
   const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');
@@ -215,4 +215,15 @@ test('review: names containing a slash are readable by their path; every stored 
     if(round===3)return {toolCalls:[{name:'get_context_detail',args:{section:'result-1',part:'',from:0},callId:'d'}],continuation:[]};return {decision:{action:'Hold'}};};
   await researchReview({context:{universe:[]},evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async a=>({symbol:a.symbol})}});
   assert.equal(JSON.parse(outputs.find(o=>o.call_id==='d').output).data.symbol,'A','the first result is still result-1');
+});
+test('the sections added for waits, pending decisions, assessments and review scope shorten when a review is over budget',()=>{
+  // 2026-10-30 09:00 KST: every review failed at 71,236 of 70,000 bytes; assessments (5,428) could not be shortened.
+  const {shape,wire,COMPRESS}=require('../electron/review-context.cjs');const pad=n=>'x'.repeat(n);
+  for(const key of ['assessments','waits','pendingDecisions','reviewScope'])assert.ok(COMPRESS.some(([k])=>k===key),key);
+  const assessment=i=>({symbol:'S'+i,updated:'2026-10-30T00:00:00Z',strategy:'long-term',horizon:'3 years',thesis:pad(500),invalidation:pad(240),evidence:Array.from({length:4},(_,k)=>({claim:pad(200),sourceId:'src'+k,published:'2026-10-28',retrieved:'2026-10-30'})),assumptions:pad(400),unresolved:[pad(200),pad(200)],nextCatalyst:{event:'Results',date:'2026-11-05'},refreshWhen:pad(200),stale:[],held:i<2});
+  const context={environment:'kis',userGuidelines:pad(42000),universe:[],quotes:[],assessments:Array.from({length:8},(_,i)=>assessment(i)),waits:Array.from({length:6},(_,i)=>({symbol:'S'+i,reason:'publication_pending',question:pad(240),resolvesOn:pad(160),earliestCheck:null,expires:'2026-11-01',since:'2026-10-30',reviews:3,holdsResearch:false})),pendingDecisions:[{symbol:'S1',action:'Sell',quantity:1,since:'x',reviews:4,rationale:pad(400)}]};
+  assert.ok(wire(context)>70000,'over the limit to start');const shaped=shape(context,{limit:70000});
+  assert.equal(shaped.fits,true);assert.ok(shaped.detailAvailable===undefined);assert.ok(shaped.context.detailAvailable.includes('assessments'),'readable in full on request');
+  assert.equal(shaped.detail.assessments[0].evidence.length,4,'the full section is kept as detail');assert.equal(shaped.context.assessments[0].sources,4);assert.ok(shaped.context.assessments[0].thesis.length<=160);
+  assert.deepEqual(Object.keys(shape({...context,assessments:context.assessments.slice(0,1),userGuidelines:'g'},{limit:70000}).context.assessments[0]).includes('evidence'),true,'under budget: left whole');
 });
