@@ -1,8 +1,11 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
-const {Waits,reasonOf}=require('../electron/waits.cjs');const RG=require('../electron/review-gate.cjs');
+const {Waits,reasonOf,outcomes}=require('../electron/waits.cjs');const RG=require('../electron/review-gate.cjs');
 const t0=Date.parse('2026-10-29T05:00:00Z'),h=n=>t0+n*3600000,iso=t=>new Date(t).toISOString();
 const verdict=(symbol,condition,extra={})=>({symbol,verdict:'waiting',reason:'r',condition:{kind:'event',unresolved:'Q3 operating profit',evidence:'The results release',recheck:'After the release',...condition},dataGap:null,...extra});
 const setup=()=>{let now=t0;const db=new DatabaseSync(':memory:');const w=new Waits(db,()=>now);return {w,db,at:t=>{now=t;}};};
+// What a review's research showed: a section confirmed absent (or a temporary failure, or read).
+const gone=(symbol,section,reason='NO_EARNINGS_RELEASE',sources='dart')=>({symbol,section,reason,sources,confirmed:require('../electron/waits.cjs').CONFIRMED.has(reason)});
+const readOk=(symbol,section)=>({symbol,section,read:true});
 const plan={scoutPlan:{asOf:'2026-10-29T00:11:42Z',targets:[{symbol:'000270',role:'hold'},{symbol:'064350',role:'candidate'},{symbol:'NASD:GOOGL',role:'trim'}]}};
 
 test('the reason comes from the review, else from the condition kind and data-gap cause',()=>{
@@ -11,12 +14,13 @@ test('the reason comes from the review, else from the condition kind and data-ga
   assert.equal(reasonOf(verdict('000270',{kind:'data'},{dataGap:{cause:'not-retrievable'}})),'missing_data');
   assert.equal(reasonOf(verdict('000270',{kind:'market'})),'entry_condition');assert.equal(reasonOf({verdict:'waiting',condition:{kind:'none'}}),null);
 });
-test('waiting for earnings tomorrow holds research on that symbol, not on others, until the release',()=>{
+test('waiting for earnings tomorrow holds the release section that was unavailable, not other sections or symbols, until the release',()=>{
   // 2026-10-29: Kia's earnings were due the next day; reviews researched it again every few minutes.
-  const {w,at}=setup();w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-30T15:30+09:00'})]},{reviewId:'R1',context:plan});
-  for(const m of [5,10,15]){at(t0+m*60000);const held=w.guard('s','000270');assert.equal(held?.status,'waiting',`${m} minutes later`);assert.equal(held.until,'2026-10-30T06:30:00.000Z');}
-  assert.equal(w.guard('s','064350'),null,'another candidate is not held');
-  at(Date.parse('2026-10-30T06:31:00Z'));assert.equal(w.guard('s','000270'),null,'due: research again');
+  const {w,at}=setup();w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-30T15:30+09:00'})]},{reviewId:'R1',context:plan,research:[gone('000270','release'),readOk('000270','valuation')]});
+  for(const m of [5,10,15]){at(t0+m*60000);const held=w.guard('s','000270',{sections:['release']});assert.equal(held?.status,'waiting',`${m} minutes later`);assert.equal(held.until,'2026-10-30T06:30:00.000Z');}
+  assert.equal(w.guard('s','000270',{sections:['valuation']}),null,'an unrelated section is read');assert.equal(w.guard('s','000270'),null,'a request naming no section cannot be matched: read');
+  assert.equal(w.guard('s','064350',{sections:['release']}),null,'another candidate is not held');
+  at(Date.parse('2026-10-30T06:31:00Z'));assert.equal(w.guard('s','000270',{sections:['release']}),null,'due: research again');
 });
 test('early publication, a price move or any change the gate sees about the symbol overrides the wait',()=>{
   const {w}=setup();w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-30T15:30+09:00'})]},{context:plan});
@@ -37,9 +41,9 @@ test('rewording a missing-data wait does not restart it; data the tools cannot r
   at(h(1));w.record('s',{planVerdicts:[gap('How much of Q3 operating profit repeats','2026-10-31T09:00+09:00')]},{context:plan});
   const [again]=w.active('s');assert.equal(again.id,first.id,'same symbol and reason: the same wait');assert.equal(again.reviews,2);assert.equal(again.earliestCheckAt,first.earliestCheckAt,'a later time in new words does not push it back');
   assert.equal(again.expiresAt,first.expiresAt);assert.equal(again.createdAt,t0);assert.match(again.question,/repeats/,'the wording is kept up to date');
-  assert.equal(w.guard('s','028050'),null,'inconclusive data does not hold research');
-  const {w:x}=setup();x.record('s',{planVerdicts:[verdict('028050',{kind:'data',waitReason:'missing_data'},{dataGap:{cause:'not-retrievable',otherSource:'DART viewer'}})]},{context:plan});
-  const held=x.guard('s','028050');assert.equal(held.reason,'missing_data');assert.match(held.note,/Decide under the uncertainty/);assert.deepEqual(x.active('s')[0].sources,['DART viewer']);
+  assert.equal(w.guard('s','028050',{sections:['financials']}),null,'nothing confirmed unavailable: nothing held');
+  const {w:x}=setup();x.record('s',{planVerdicts:[verdict('028050',{kind:'data',waitReason:'missing_data'},{dataGap:{cause:'not-retrievable',otherSource:'DART viewer'}})]},{context:plan,research:[gone('028050','release','NO_RELEASE_EXHIBIT')]});
+  const held=x.guard('s','028050',{sections:['release']});assert.equal(held.reason,'missing_data');assert.match(held.note,/decide under the uncertainty/);assert.deepEqual(x.active('s')[0].sources,['DART viewer']);
 });
 test('expired and invalidated waits are reassessed; acting or passing closes them',()=>{
   const {w,at}=setup();w.record('s',{planVerdicts:[verdict('064350',{waitReason:'entry_condition',kind:'market'})]},{context:plan});const [e]=w.active('s');assert.equal(e.expiresAt,h(48),'two days without a time');
@@ -65,8 +69,8 @@ test('through the scheduler: research on a waiting symbol is answered with the w
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');const events=[];
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},(id,kind,title,body)=>events.push({title,body}));
   const reads=[];a.discovery={research:async args=>{reads.push(args.symbol);return {status:'ok'};}};a.sessionOpen=()=>true;
-  a.waits.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(Date.now()+86400000).toISOString()})]},{context:plan});
-  const run=(opts,symbol='000270')=>a.researchFor({watchScope:'s',trigger:'Scheduled review',emergency:false,gate:{changedSymbols:[]},id:'R',...opts})({symbol});
+  a.waits.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(Date.now()+86400000).toISOString()})]},{context:plan,research:[{...gone('000270','release'),since:Date.now()}]});
+  const run=(opts,symbol='000270')=>a.researchFor({watchScope:'s',trigger:'Scheduled review',emergency:false,gate:{changedSymbols:[]},id:'R',...opts})({symbol,sections:['release']});
   assert.equal((await run({gateMode:'on'})).status,'waiting');assert.deepEqual(reads,[],'held');
   await run({gateMode:'on'},'064350');assert.deepEqual(reads,['064350'],'another symbol is read');
   await run({gateMode:'observe'});assert.equal(reads.at(-1),'000270');assert.ok(events.some(e=>e.title==='Research would wait'));
@@ -76,9 +80,56 @@ test('through the scheduler: research on a waiting symbol is answered with the w
 });
 test('a check that came due can be renewed when the document is still not out; one still ahead cannot be pushed back',()=>{
   const {w,at}=setup();const v=t=>verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(t).toISOString()});
-  w.record('s',{planVerdicts:[v(h(3))]},{context:plan});at(h(1));w.record('s',{planVerdicts:[v(h(10))]},{context:plan});assert.equal(w.active('s')[0].earliestCheckAt,h(3),'ahead: kept');
+  w.record('s',{planVerdicts:[v(h(3))]},{context:plan,research:[gone('000270','release')]});at(h(1));w.record('s',{planVerdicts:[v(h(10))]},{context:plan});assert.equal(w.active('s')[0].earliestCheckAt,h(3),'ahead: kept');
   at(h(4));w.record('s',{planVerdicts:[v(h(30))]},{context:plan});const [x]=w.active('s');assert.equal(x.earliestCheckAt,h(30),'due: renewed');assert.equal(x.expiresAt,h(54));
-  assert.equal(w.guard('s','000270')?.status,'waiting','held again until the new time');
+  assert.equal(w.guard('s','000270',{sections:['release']})?.status,'waiting','held again until the new time');
   at(h(31));w.record('s',{planVerdicts:[v(h(160))]},{context:plan});assert.equal(w.active('s')[0].expiresAt,t0+7*86400000,'never past a week from its start');
-  at(h(161));w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:''})]},{context:plan});assert.equal(w.active('s')[0].earliestCheckAt,h(160),'no new time: the passed one stays');assert.equal(w.guard('s','000270'),null,'and nothing is held');
+  at(h(161));w.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:''})]},{context:plan});assert.equal(w.active('s')[0].earliestCheckAt,h(160),'no new time: the passed one stays');assert.equal(w.guard('s','000270',{sections:['release']}),null,'and nothing is held');
+});
+// Review of 8ef1be1, P2: after a missing-data wait and then an entry-condition wait, an unrelated valuation request got
+// the old missing-data message and no research ran.
+test('review repro: an entry-condition verdict supersedes the missing-data wait, and an unrelated valuation request is read',()=>{
+  const {w,at}=setup();const missing=verdict('028050',{kind:'data',waitReason:'missing_data',unresolved:'Project margins'},{dataGap:{cause:'not-retrievable',metric:'project margin'}});
+  w.record('s',{planVerdicts:[missing]},{reviewId:'R1',context:plan,research:[gone('028050','release','NO_RELEASE_EXHIBIT')]});const first=w.active('s')[0];
+  assert.equal(w.guard('s','028050',{sections:['valuation']}),null,'valuation was never unavailable');
+  at(h(2));w.record('s',{planVerdicts:[verdict('028050',{kind:'market',waitReason:'entry_condition',unresolved:'Price back under 25,000'})]},{reviewId:'R2',context:plan});
+  const all=w.all('s'),now=w.active('s');assert.equal(now.length,1,'one active wait');assert.equal(now[0].reason,'entry_condition');
+  assert.equal(all.find(x=>x.id===first.id).status,'superseded');assert.match(all.find(x=>x.id===first.id).closedBy,/superseded by entry_condition in review R2/);
+  assert.equal(now[0].createdAt,first.createdAt,'its start is kept');assert.equal(now[0].reviews,2,'its review count continues');assert.deepEqual(now[0].history.map(x=>[x.reason,x.reviews]),[['missing_data',1]]);assert.deepEqual(now[0].supersedes,[first.id]);
+  for(const s of [['valuation'],['release'],['valuation','release']])assert.equal(w.guard('s','028050',{sections:s}),null,`entry conditions hold no research: ${s}`);
+  // Flipping reasons never extends the week a wait may last.
+  at(h(20));w.record('s',{planVerdicts:[missing]},{reviewId:'R3',context:plan});assert.ok(w.active('s')[0].expiresAt<=t0+7*86400000);assert.equal(w.active('s')[0].history.length,2);
+});
+test('a mixed request reads the available sections and names the skipped ones; other sections and tools are not held',async()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');const events=[];
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},(id,kind,title,body)=>events.push({title,body}));
+  const asked=[];a.discovery={research:async args=>{asked.push(args.sections);return {symbol:args.symbol,provenance:Object.fromEntries(args.sections.map(s=>[s,{from:'kis'}])),...Object.fromEntries(args.sections.map(s=>[s,{ok:true}]))};}};a.sessionOpen=()=>true;
+  a.waits.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(Date.now()+86400000).toISOString()})]},{context:plan,research:[gone('000270','release')]});
+  const run=args=>a.researchFor({watchScope:'s',trigger:'Scheduled review',emergency:false,gate:{changedSymbols:[]},gateMode:'on',id:'R'})(args);
+  const r=await run({symbol:'000270',sections:['valuation','release','analysts']});assert.deepEqual(asked.at(-1),['valuation','analysts'],'available sections read');
+  assert.deepEqual(r.skippedSections.map(x=>[x.section,x.unavailable]),[['release','NO_EARNINGS_RELEASE']],'and the skipped one named with why');assert.match(r.skippedNote,/another section, tool or source/);
+  assert.ok(events.some(e=>e.title==='Research waits'&&/release \(NO_EARNINGS_RELEASE\).*reading valuation, analysts/.test(e.body)));
+  const only=await run({symbol:'000270',sections:['release']});assert.equal(only.status,'waiting');assert.equal(asked.length,1,'only the held section asked: nothing read');
+  // The same information from another section (DART filings under events) is another source and is read.
+  assert.equal(a.waits.guard('s','000270',{sections:['events']}),null);
+});
+test('only confirmed absences block; temporary failures and a section read later do not; one missing metric never blocks a section',()=>{
+  const {w,at}=setup();const v=verdict('000270',{waitReason:'missing_data',kind:'data'},{dataGap:{cause:'not-retrievable',metric:'segment margin'}});
+  w.record('s',{planVerdicts:[v]},{context:plan,research:[gone('000270','release','DART_RATE_LIMITED'),gone('000270','financials','DATA_SOURCE_UNAVAILABLE'),gone('000270','valuation','KIS_NOT_CONNECTED')]});
+  assert.deepEqual(w.active('s')[0].blocked,[],'rate limits, outages and a missing connection open no block');for(const s of ['release','financials','valuation'])assert.equal(w.guard('s','000270',{sections:[s]}),null);
+  // The agent's missing metric (segment margin) is not a section the tools confirmed absent: financials stay readable.
+  at(h(1));w.record('s',{planVerdicts:[v]},{context:plan,research:[readOk('000270','financials'),gone('000270','peers','NO_PEERS')]});
+  assert.deepEqual(w.active('s')[0].blocked.map(b=>b.section),['peers']);assert.equal(w.guard('s','000270',{sections:['financials']}),null);
+  // Repeating or rewording the same gap keeps the wait, its expiry and the block; a later successful read lifts it.
+  const before=w.active('s')[0];at(h(2));w.record('s',{planVerdicts:[{...v,condition:{...v.condition,unresolved:'Margins by segment, reworded'}}]},{context:plan,research:[gone('000270','peers','NO_PEERS')]});
+  const again=w.active('s')[0];assert.equal(again.id,before.id);assert.equal(again.expiresAt,before.expiresAt,'original expiry kept');assert.equal(again.blocked.length,1,'the same gap is not listed twice');
+  assert.equal(w.guard('s','000270',{sections:['peers']})?.status,'waiting');
+  at(h(3));w.record('s',{planVerdicts:[v]},{context:plan,research:[readOk('000270','peers')]});assert.deepEqual(w.active('s')[0].blocked,[],'newly available: no longer held');
+  assert.equal(w.guard('s','000270',{sections:['peers']}),null);
+});
+test('outcomes reads a research reply: unavailable sections with reason and sources, read sections, nothing for a failed reply',()=>{
+  const TRACE=Symbol.for('fpm.research-trace');const reply={symbol:'000270',release:{unavailable:'NO_EARNINGS_RELEASE'},valuation:{per:5},provenance:{release:{from:null,cache:'unavailable'},valuation:{from:'kis',cache:'fetched'}}};
+  reply[TRACE]={reads:{release:[{origin:'dart',cache:'fetched'}],valuation:[{origin:'kis',cache:'fetched'}]}};
+  assert.deepEqual(outcomes({symbol:'000270'},reply),[{symbol:'000270',section:'release',reason:'NO_EARNINGS_RELEASE',sources:'dart',confirmed:true},{symbol:'000270',section:'valuation',read:true}]);
+  assert.deepEqual(outcomes({symbol:'X'},{status:'unavailable',reason:'UNKNOWN_SYMBOL'}),[],'no sections: nothing recorded, nothing held');assert.deepEqual(outcomes({},null),[]);
 });
