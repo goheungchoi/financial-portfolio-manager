@@ -38,8 +38,10 @@ test('placement retries every 3 s for up to a minute without a book, then asks f
 });
 test('a requested review starts once when nothing else runs, with the reason as its evidence',async()=>{
   const {a}=automation();const started=[];a.review=async trigger=>{started.push([trigger,a.triggerEvidence]);};a.schedulerStatus=()=>({label:'Monitoring'});a.config.scope='kis';
-  a.requestReview('Order not placed','Sell NASD:GOOGL could not be priced');a.tick();assert.deepEqual(started,[['Order not placed',{kind:'placement',reason:'Sell NASD:GOOGL could not be priced'}]]);
-  a.tick();assert.equal(started.length,1,'once');a.requestReview('Order not placed','x');a.busy=true;a.tick();assert.equal(started.length,1,'not while a review runs');
+  // Only the requested reviews are counted: while a market is open the tick may also start a scheduled one.
+  const asked=()=>started.filter(s=>s[0]==='Order not placed');a.lastRun=Date.now();
+  a.requestReview('Order not placed','Sell NASD:GOOGL could not be priced');a.tick();assert.deepEqual(asked(),[['Order not placed',{kind:'placement',reason:'Sell NASD:GOOGL could not be priced'}]]);
+  a.tick();assert.equal(asked().length,1,'once');a.requestReview('Order not placed','x');a.busy=true;a.tick();assert.equal(asked().length,1,'not while a review runs');
 });
 test('an unreadable book asks for at most one review per symbol every 15 minutes',async()=>{
   const {a}=automation();a.orderBook=async()=>({status:'unavailable'});let clock=Date.now();const realNow=Date.now;Date.now=()=>clock;a.wait=async ms=>{clock+=ms;};
