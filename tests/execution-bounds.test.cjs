@@ -28,10 +28,10 @@ test('the app checks the restrictions before use: what is out of range or malfor
   assert.equal(events.filter(e=>e.title==='Execution withheld · invalid restrictions').length,7,'each is logged');assert.deepEqual(a.executionBounds(base,285,'R'),{bounds:null,invalid:[]},'none supplied: no restriction');
 });
 // Both-market review with fake KIS engines that record proposals, annotations and submissions in order.
-async function review(decision,{bid=278.4,ask=278.6,usOpen=true,book=null,wait=null}={}){const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'Fixture',price:100}],()=>[]);const log=[];
+async function review(decision,{bid=278.4,ask=278.6,usOpen=true,book=null,wait=null,during=null,live=null}={}){const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'Fixture',price:100}],()=>[]);const log=[];
   const make=(market,open,symbol,price)=>({market,enabled:true,getState:()=>({loss:null}),context:async()=>({environment:'kis',market,currency:market==='US'?'USD':'KRW',equity:1000,cash:500,positions:{'NASD:GOOGL':{quantity:1}},universe:[{symbol,price}],quotes:[{symbol,price,stale:!open}],orders:[],risk:{baseline:1000,lossLimit:{mode:'off',value:0}},marketSession:{open,status:open?'open':'closed'}}),
     propose:command=>{log.push(['propose',command]);return {id:'P1',status:'Ready'};},annotate:(id,patch)=>{log.push(['annotate',id,patch]);},autoSubmit:async id=>{log.push(['submit',id]);return {id:'O1'};},autoEnabled:true,identity:()=>'acct'+market});
-  const a=new Automation(db,paper,{request:async()=>({provider:'openai',decision})},()=>{});a.live=make('KR',false,'005930',70000);a.usLive=make('US',usOpen,'NASD:GOOGL',285);a.refreshUS=async()=>{};a.fx=()=>({usdKRW:1400,source:'fixture'});a.providerStatus.aiConnected=true;
+  let a;a=new Automation(db,paper,{request:async()=>{await during?.(a);return {provider:'openai',decision};}},()=>{});if(live)a.usQuotes=live;a.live=make('KR',false,'005930',70000);a.usLive=make('US',usOpen,'NASD:GOOGL',285);a.refreshUS=async()=>{};a.fx=()=>({usdKRW:1400,source:'fixture'});a.providerStatus.aiConnected=true;
   a.orderBook=book??(async()=>({status:'available',retrievedAt:Date.now(),data:{bid,ask}}));if(wait)a.wait=wait;a.configure({scope:'both',provider:'openai',shareKisWithAI:true,autoSubmit:true});await a.review();db.close();return log;}
 test('a Sell with a floor above the bid goes in at the floor, and its bounds are on the order before it is submitted',async()=>{
   const soon=new Date(Date.now()+3600000).toISOString();const log=await review({...base,execution:{bound:280,cancelAfter:soon,cancelIf:[]}});
@@ -58,4 +58,18 @@ test('a stop time that passes while the order book is awaited withholds the orde
 });
 test('a conditional order carries its limitPrice to the tracker as its bound',()=>{
   const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.match(src,/if\(order\.limitPrice>0\)engine\.annotate\?\.\(proposal\.id,\{tracking:\{bound:order\.limitPrice\}\}\)/);
+});
+
+// Edge case: a cancel condition met while the review was running. The recheck used the review's own quotes, read when it
+// started, ahead of the live ones, so a price that crossed the condition during the review did not stop the order.
+test('a cancel condition met during the review stops the order, judged on the fresh live price, not the snapshot',async()=>{
+  const cond={bound:null,cancelAfter:'',cancelIf:[{expr:'price("NASD:GOOGL")',op:'<=',value:275}]};const q=(price,extra={})=>[{symbol:'NASD:GOOGL',price,timestamp:Date.now(),retrievedAt:Date.now(),...extra}];
+  // The review starts at 285 (context and live); while the provider decides, the live price falls to 274.
+  const crossed=await review({...base,execution:cond},{live:q(285),during:a=>{a.usQuotes=q(274);}});assert.deepEqual(crossed,[],'met during the review: nothing proposed');
+  const steady=await review({...base,execution:cond},{live:q(285),during:a=>{a.usQuotes=q(284);}});assert.deepEqual(steady.map(x=>x[0]),['propose','annotate','submit'],'not met: placed as usual');
+  // A stale live quote is not trusted over the snapshot; with no live quote the snapshot decides.
+  const stale=await review({...base,execution:cond},{live:q(285),during:a=>{a.usQuotes=q(274,{stale:true});}});assert.deepEqual(stale.map(x=>x[0]),['propose','annotate','submit'],'a stale live price does not cancel');
+  const none=await review({...base,execution:cond},{during:a=>{a.usQuotes=[];}});assert.deepEqual(none.map(x=>x[0]),['propose','annotate','submit'],'no live quote: the snapshot (285) decides');
+  // Met at the snapshot, back above it live: the fresh price decides, so the order is placed.
+  const recovered=await review({...base,execution:{...cond,cancelIf:[{expr:'price("NASD:GOOGL")',op:'>=',value:285}]}},{live:q(285),during:a=>{a.usQuotes=q(280);}});assert.deepEqual(recovered.map(x=>x[0]),['propose','annotate','submit'],'no longer met: placed');
 });
