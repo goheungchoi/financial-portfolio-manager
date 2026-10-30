@@ -4,17 +4,28 @@ const {createHash}=require('node:crypto');
 const VOLATILE=/^(timestamp|retrievedAt|updatedAt|fetchedAt|generatedAt|heartbeat|savedAt|at|asOfTimestamp)$|At$/;
 const IGNORED=new Set(['performance','decisionScoreboard','triggerEvidence','reviewInterval','reviewWatches','paperVersion']);
 const MONEY=/price|last|close|value|equity|cash|amount|total|marketValue|pnl|gain|profit|cost|notional|evaluation|usdKRW|rate/i;
-// Background the agents read but that moves every day without changing what to do; it never blocks a skip on its own.
-const BACKGROUND=['marketNarrative','similarEpisodes','positionSizing','risk','portfolioExposure','eventCalendar','macro','research','opportunitySet','tradingNotes','agentDesk','scoutBrief','scoutPlan','planGap','orderBooks','previousReview','researchGaps','sectorLeads','orderFollowUp','waits','pendingDecisions','reviewScope','assessments','openOrders'];
-// What a skip compares: holdings, cash and prices (within tolerance), sessions, lessons, the regime label, and only
-// headlines marked important. Other headlines, even about your symbols, arrive hourly; important ones also start
-// their own review through the news trigger.
-function decisionView(context){const view={...context};for(const k of BACKGROUND)delete view[k];
-  if(view.marketRegime)view.marketRegime=view.marketRegime.regime??null;
-  if(Array.isArray(view.news))view.news=view.news.filter(n=>n?.importance==='high').map(n=>n.title);
+// What a skip compares, as an explicit list of decision-relevant fields; every other section (background the agents
+// read, derived figures) is left out, and stays in the model's inputs. Holdings, cash and prices are compared within
+// the tolerance; sessions, execution switches, orders, the emergency state, lessons, guidelines, the regime label and
+// headlines marked important exactly. Other headlines arrive hourly; important ones also start their own review.
+// Review of 8ef1be1, P2: every field outside a background list had to match exactly, so a quote's running volume going
+// from 1,000 to 1,001 forced a paid scheduled review. Quotes now count by price and freshness only: change % follows
+// the price, and volume has no defined signal yet (a relative-volume signal is a separate, later change). Trading costs
+// and the emergency loss amount are recomputed from prices on every quote, so only their settings and state count.
+const same=v=>v;
+const COMPARED={environment:same,market:same,currency:same,baseCurrency:same,objective:same,userGuidelines:same,reviewedLessons:same,lessonConflicts:same,
+  positions:same,cash:same,equity:same,buyingPower:same,fx:same,orders:same,orderReconciliation:same,equityReliability:same,equityUncertainty:same,
+  marketSession:same,markets:same,executionEnabled:same,automaticExecutionEnabled:same,productRisk:same,
+  quotes:q=>Array.isArray(q)?q.map(x=>({symbol:x?.symbol,price:x?.price,stale:x?.stale})):q,
+  universe:u=>Array.isArray(u)?u.map(x=>x?.symbol).sort():u,
+  discovery:d=>Array.isArray(d?.watchlist)?{enabled:d.enabled,symbols:d.watchlist.map(x=>x?.symbol).sort()}:d,
+  tradingCosts:t=>Array.isArray(t?.markets)?t.markets.map(m=>({market:m.market,settings:m.settings})):t?.settings??t?.basis??null,
+  emergency:e=>e&&typeof e==='object'?{active:e.active,scope:e.scope,...(e.activeMarkets?{activeMarkets:e.activeMarkets}:{}),breached:e.loss?.breached??null,policy:e.loss?.policy??null}:e,
+  marketRegime:r=>r?.regime??null,
+  news:n=>Array.isArray(n)?n.filter(x=>x?.importance==='high').map(x=>x.title):n,
   // A new top story changes the view; its coverage counts growing does not.
-  if(Array.isArray(view.topStories))view.topStories=view.topStories.map(s=>s.terms?.[0]).sort();
-  return view;}
+  topStories:t=>Array.isArray(t)?t.map(s=>s.terms?.[0]).sort():t};
+function decisionView(context){return Object.fromEntries(Object.entries(COMPARED).filter(([k])=>context?.[k]!==undefined).map(([k,f])=>[k,f(context[k])]));}
 // Money-like numbers are kept as {money:value} so comparison can allow a tolerance; everything else must match exactly.
 function canonical(value,key=''){
   if(Array.isArray(value))return value.map(item=>canonical(item));

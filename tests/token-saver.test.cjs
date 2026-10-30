@@ -56,3 +56,35 @@ test('routing: fixed keeps the configured model; auto sends routine reviews to t
   assert.equal(route(auto,{trigger:'News event trigger',triggerEvidence:{kind:'news',events:[{importance:'high'}]}}).reason,'important disclosure');assert.equal(route(auto,{trigger:'News event trigger',triggerEvidence:{kind:'news',events:[{importance:'normal'}]}}).tier,'routine');
   assert.equal(nearBudget({...DEFAULTS,maxUSDPerDay:1},{calls:0,reservedMicro:800000}),true);assert.equal(nearBudget({...DEFAULTS,maxCallsPerDay:20},{calls:15,reservedMicro:0}),false);assert.equal(nearBudget({...DEFAULTS,unlimitedBudget:true,unlimitedCalls:true},{calls:1e6,reservedMicro:1e12}),false);
 });
+// Review of 8ef1be1, P2: the skip compared every field outside a background list exactly, so volume 1,000 -> 1,001
+// with an unchanged price and portfolio forced another paid scheduled review.
+test('the skip compares an explicit list: volume-only and derived updates skip; price moves, account changes, risk events and triggers do not',()=>{
+  const ctx=(over={})=>({environment:'kis-combined',currency:'MULTI',cash:500000,equity:1400000,positions:{'005930':{quantity:3,costTotal:180000}},
+    quotes:[{symbol:'005930',price:60000,previousClose:59500,changePct:0.84,volume:1000,timestamp:1,stale:false},{symbol:'NASD:GOOGL',price:280,changePct:-0.4,volume:5000,timestamp:1,stale:false}],
+    marketSession:{open:true,status:'open'},markets:[{market:'KR',cash:500000,equity:900000,marketSession:{open:true,status:'open'},executionEnabled:true}],
+    emergency:{active:false,scope:'both',loss:{policy:{mode:'percent',value:3},baseline:1400000,equity:1400000,loss:0,lossPct:0,breached:false}},
+    tradingCosts:{markets:[{market:'KR',settings:{krCommissionPct:0.015},oneShare:[{symbol:'005930',buy:{gross:60000,commission:9,netCash:-60009}}],heldSale:[{symbol:'005930',quantity:3,netCash:179600,annualTaxChangeKRW:0}]}]},
+    news:[{title:'Routine story',importance:'normal'}],...over});
+  const config={skipUnchanged:true,maxSkipMinutes:60,eventTolerancePct:3},last={...fingerprint(ctx()),completedAt:Date.now()-60000};
+  const skip=(c,trigger='Scheduled review')=>shouldSkip({trigger,config,fingerprint:fingerprint(c),last});
+  const q=(i,patch)=>{const c=ctx();c.quotes=c.quotes.map((x,j)=>j===i?{...x,...patch}:x);return c;};
+  assert.equal(skip(q(0,{volume:1001})),true,'volume 1,000 -> 1,001: skipped');
+  assert.equal(skip(q(1,{volume:9000,changePct:-0.41,timestamp:2})),true,'volume, change % and quote time only');
+  // Derived figures recomputed from a small price move do not block a skip either.
+  const small=q(0,{price:60100,changePct:1.01});small.tradingCosts.markets[0].oneShare[0].buy={gross:60100,commission:9.02,netCash:-60109.02};small.emergency.loss={...small.emergency.loss,loss:300,lossPct:0.02};
+  assert.equal(skip(small),true,'0.17% move with its recomputed costs and loss: within tolerance');
+  assert.equal(skip(ctx({news:[{title:'Routine story',importance:'normal'},{title:'Another routine story',importance:'normal'}]})),true,'an ordinary headline');
+  // What must still run.
+  assert.equal(skip(q(0,{price:61500})),false,'a 2.5% move, past half the 3% tolerance');
+  assert.equal(skip(ctx({positions:{'005930':{quantity:2,costTotal:120000}}})),false,'a fill changed the holding');
+  assert.equal(skip(ctx({cash:400000})),false,'cash moved 20%');
+  assert.equal(skip(ctx({emergency:{...ctx().emergency,loss:{...ctx().emergency.loss,breached:true}}})),false,'the loss limit breached');
+  assert.equal(skip(ctx({emergency:{...ctx().emergency,active:true}})),false,'an emergency');
+  assert.equal(skip(ctx({markets:[{...ctx().markets[0],executionEnabled:false}]})),false,'execution switched off');
+  assert.equal(skip(q(0,{stale:true})),false,'a quote went stale');
+  assert.equal(skip(ctx({news:[{title:'Merger filing',importance:'high'}]})),false,'an important filing');
+  assert.equal(skip(ctx({tradingCosts:{markets:[{market:'KR',settings:{krCommissionPct:0.02}}]}})),false,'the fee plan changed');
+  for(const trigger of ['Price movement trigger','Agent trigger','News event trigger','Order update','User request'])assert.equal(skip(q(0,{volume:1001}),trigger),false,`${trigger} is never skipped`);
+  // Volume stays in what the model reads.
+  assert.equal(compact(q(0,{volume:1001})).quotes[0].volume,1001,'kept in the model input');
+});
