@@ -127,3 +127,69 @@ test('after a size failure: routine quote changes and new trigger evidence do no
   assert.equal(events.filter(e=>e.title==='Review skipped · same inputs as a failed review').length,1,'logged once');
   await assert.rejects(a.review('Price movement trigger'));assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/2 checks skipped since.*3 → 2 shares/.test(e.body)),'the retry says why');assert.equal(calls.length,0,'no AI call at any point');
 });
+
+// Trading costs (2026-10-30 13:11 KST input: 87,375 bytes shaped to 65,199 of 70,000, every background section and the
+// tighter step already used; tradingCosts 9,421 bytes, never shortened). Made-up rows in the shape the app builds.
+const MISSING_US=['KRW acquisition basis','gains realized at other brokers this year (enter 0 if none)'];
+const costRow=(symbol,us,i)=>us?{symbol,buy:{gross:200+i,commission:0.5,netCash:-(200.5+i)},sell:{gross:200+i,commission:0.5,transactionTax:0.01,netCash:199.49+i,incomeTax:{status:'incomplete',missingInputs:MISSING_US}}}
+  :{symbol,buy:{gross:50000+i,commission:8,netCash:-(50008+i)},sell:{gross:50000+i,commission:8,transactionTax:i%3?100:0,netCash:49892+i,gainAfterFees:-216,capitalGainsTaxKRW:0,gainAfterEstimatedTax:-216,incomeTax:{status:i%4===0?'unsupported':'estimated'}}};
+function tradingCosts(nKR=13,nUS=6){
+  const kr=Array.from({length:nKR},(_,i)=>String(200000+i)),us=Array.from({length:nUS},(_,i)=>`NYSE:C${i}`);
+  const settings={krCommissionPct:0.015,usCommissionPct:0.25,usSellFeePct:0.0021,usSellFeeMinimum:0.01,taxYear:2026,taxMethod:'moving-average'};
+  return {taxModel:'Taxes come from the app (rules kr-tax-2026-10-25); use its figures and status, never a flat rate. incomeTax.status: estimated, incomplete (the tax is unknown, not zero), unsupported.',acquisitionFeeAssumption:'Broker average prices exclude acquisition commissions.',ruleVersion:'kr-tax-2026-10-25',
+    markets:[{market:'KR',currency:'KRW',settings,krSaleTaxPct:0.2,tax:{applicability:{status:'supported'},assumptions:['acquisition commission estimated from the current fee plan'],
+        classification:Object.fromEntries(kr.map((s,i)=>[s,i%3?{instrument:'kr-listed-share',transactionTax:'taxable',incomeTax:'minority-listed-exempt'}:{instrument:'kr-etf',transactionTax:'exempt',incomeTax:'unknown'}]))},
+      heldSale:[{symbol:kr[1],quantity:3,netCash:149676,annualTaxChangeKRW:0,gainAfterEstimatedTax:4375,incomeTax:{status:'estimated'}}],oneShare:kr.map((s,i)=>costRow(s,false,i))},
+      {market:'US',currency:'USD',settings:{...settings,taxBasisKRW:{[us[0]]:81723}},krSaleTaxPct:0.2,allUSHoldingsSale:{status:'incomplete',missingInputs:[MISSING_US[1]]},
+        tax:{applicability:{status:'supported'},annual:{status:'incomplete',missingInputs:[MISSING_US[1]]},assumptions:['exchange rate: the current market rate'],classification:Object.fromEntries(us.map(s=>[s,{instrument:'foreign-share',transactionTax:'exempt',incomeTax:'overseas-capital-gains'}]))},
+        heldSale:[{symbol:us[0],quantity:1,netCash:65.67,taxableGainKRW:5966,incomeTax:{status:'incomplete',missingInputs:[MISSING_US[1]]}}],oneShare:us.map((s,i)=>costRow(s,true,i))}]};
+}
+const costContext=()=>({...fixture(),tradingCosts:tradingCosts()});
+// The limit whose target (92%) is the given request size.
+const limitFor=wireBytes=>Math.ceil(wireBytes/0.92);
+// The request size once the summaries and every background compressor have run, and nothing else.
+function afterBackground(c){const all=rc.shape(c,{limit:1000});const keys=all.steps.filter(x=>x.kind!=='summary').filter(x=>x.kind==='compressed').map(x=>x.section);
+  let s=rc.shape(c,{limit:1e9}).context;for(const k of keys)s={...s,[k]:rc.COMPRESS.find(([key])=>key===k)[1](s[k])};
+  return rc.wire({...s,detailAvailable:[...new Set([...(s.detailAvailable??[]),...keys])]});}
+test('trading costs are compacted only after every background section, before the tighter step, and only while still over the target',()=>{
+  const c=costContext();const all=rc.shape(c,{limit:1000});const kinds=all.steps.map(s=>s.kind);
+  assert.ok(kinds.indexOf('compacted')>kinds.lastIndexOf('compressed')&&kinds.indexOf('compacted')<kinds.indexOf('tightened'),'order: '+all.steps.map(s=>s.kind+':'+s.section).join(', '));
+  assert.equal(kinds.filter(k=>k==='compacted').length,1);const saving=all.steps.find(s=>s.kind==='compacted').bytesSaved;const size=afterBackground(c);
+  // Background compression meets the target: cost rows untouched, nothing tightened.
+  const lo=rc.shape(c,{limit:limitFor(size+20)});
+  assert.ok(lo.steps.some(s=>s.kind==='compressed'),'background compressed');assert.ok(!lo.steps.some(s=>s.kind==='compacted'||s.kind==='tightened'),lo.steps.map(s=>s.kind+':'+s.section).join(', '));
+  assert.deepEqual(lo.context.tradingCosts,c.tradingCosts,'cost rows unchanged when not needed');
+  // Background compression is not enough but compaction is: assessments and waits keep their compressed form.
+  const mid=rc.shape(c,{limit:limitFor(size-Math.floor(saving/2))});
+  assert.ok(mid.steps.some(s=>s.kind==='compacted'),'costs compacted');assert.ok(!mid.steps.some(s=>s.kind==='tightened'),'not tightened');
+  assert.ok(rc.wire(mid.context)<=mid.report.limitBytes*0.92,'within the target with the headroom, as sent (with its list of readable sections)');
+});
+test('compacted cost rows keep every total, tax figure, tax status and missing input; only fee breakdowns go, and the full section reads back',()=>{
+  const c=costContext();const s=rc.shape(c,{limit:1000});const t=s.context.tradingCosts,o=c.tradingCosts;
+  for(const k of ['taxModel','acquisitionFeeAssumption','ruleVersion'])assert.equal(t[k],o[k]);assert.match(t.full,/get_context_detail section tradingCosts/);
+  o.markets.forEach((m,i)=>{const n=t.markets[i];
+    for(const k of ['market','currency','settings','krSaleTaxPct','heldSale','allUSHoldingsSale'])assert.deepEqual(n[k],m[k],`${m.market} ${k} unchanged`);
+    assert.deepEqual(n.tax.applicability,m.tax.applicability);assert.deepEqual(n.tax.annual,m.tax.annual,'annual tax uncertainty kept');assert.deepEqual(n.tax.assumptions,m.tax.assumptions);
+    m.oneShare.forEach((r,j)=>{const x=n.oneShare[j];assert.equal(x.symbol,r.symbol);
+      for(const side of ['buy','sell']){const {gross,commission,gainAfterFees,...kept}=r[side];assert.deepEqual(x[side],kept,`${r.symbol} ${side}: totals and taxes kept`);}});
+    const back=Object.fromEntries(n.tax.classification.flatMap(({symbols,...cls})=>symbols.map(sym=>[sym,cls])));assert.deepEqual(back,m.tax.classification,'every symbol keeps its tax class');
+    assert.ok(n.tax.classification.length<Object.keys(m.tax.classification).length,'listed once per class');});
+  assert.ok(t.markets[0].oneShare.some(r=>r.sell.incomeTax.status==='unsupported'),'unsupported stays unsupported');
+  assert.deepEqual(t.markets[1].oneShare[0].sell.incomeTax,{status:'incomplete',missingInputs:MISSING_US},'an unknown tax stays unknown, with what is missing');
+  assert.ok(s.context.detailAvailable.includes('tradingCosts'));assert.deepEqual(s.detail.tradingCosts,o,'the full section is kept');
+  assert.deepEqual(fetchAll(s.detail,'tradingCosts'),o,'and reads back whole through pagination');
+  assert.deepEqual(fetchAll(s.detail,'tradingCosts','markets/0/oneShare'),o.markets[0].oneShare,'a part reads back whole');
+});
+test('costs of a single-market review compact the same way; simulated costs (no rows) are left alone; Korean text in a tax note is kept',()=>{
+  const single={...tradingCosts().markets[1],taxModel:'세금은 앱 계산을 따릅니다 (kr-tax-2026-10-25)'};const c={...fixture(),tradingCosts:single};
+  const s=rc.shape(c,{limit:1000});const t=s.context.tradingCosts;assert.ok(s.steps.some(x=>x.kind==='compacted'));assert.equal(t.taxModel,single.taxModel);
+  assert.deepEqual(t.oneShare.map(r=>r.sell.netCash),single.oneShare.map(r=>r.sell.netCash));assert.ok(t.oneShare.every(r=>!('gross' in r.buy)));assert.deepEqual(t.heldSale,single.heldSale);
+  const sim={basis:'simulation',currency:'KRW',commissionPct:.1,slippagePct:.1,saleTaxPct:0,capitalGainsTax:'Not modeled'};const p=rc.shape({...fixture(),tradingCosts:sim},{limit:1000});
+  assert.ok(!p.steps.some(x=>x.section==='tradingCosts'),'nothing to compact');assert.deepEqual(p.context.tradingCosts,sim);
+});
+test('the mandatory size counts the compacted costs, and mandatory data over the limit still fails by that name',()=>{
+  const c=costContext();const full=rc.shape(c,{limit:1e9}),tight=rc.shape(c,{limit:1000});
+  assert.ok(tight.mandatoryBytes<full.mandatoryBytes,'the compact cost rows are what must always fit');
+  assert.equal(rc.sizeFailure(tight).message,'CONTEXT_MANDATORY_TOO_LARGE');
+  const between=rc.shape(c,{limit:Math.floor((tight.mandatoryBytes+full.mandatoryBytes)/2)});assert.notEqual(rc.sizeFailure(between).message,'CONTEXT_MANDATORY_TOO_LARGE','fits once costs are compact');
+});

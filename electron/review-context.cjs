@@ -1,6 +1,7 @@
 // Shapes a review's context to fit its size budget without losing what the decision rests on.
 // 1. A mandatory decision snapshot (holdings, cash, equity reliability, orders, execution restrictions, limits, prices,
-//    trigger evidence) is never shortened.
+//    trigger evidence) is never shortened. Trading costs are the one exception: past every background section, their
+//    one-share rows lose fee breakdowns but keep every total, tax figure and tax status (COST_ROWS).
 // 2. Long background sections start as summaries; the full section stays with the review and the agent reads it with
 //    get_context_detail. A summary keeps ids, dates and missing-data flags, so it never implies complete evidence.
 // 3. Only if the request is still over budget, background sections are compressed section by section (sizing keeps
@@ -52,6 +53,20 @@ const COMPRESS=[
   ['topStories',t=>Array.isArray(t)?t.map(r=>({title:clip(r.title,120),outlets:r.outlets,...(r.symbols?{symbols:r.symbols}:{})})):t],
   ['planGap',g=>g&&Array.isArray(g.targets)?{...g,targets:g.targets.map(({minimumPosition,...t})=>({...t,...(minimumPosition?{minimumPosition:{feasible:minimumPosition.feasible,weightPct:minimumPosition.weightPct}}:{})}))}:g],
 ];
+// Trading costs, only if the request is still over budget after every background section was compressed (before the
+// tighter step below): one-share rows lose their fee breakdowns (gross, commission, gain after fees) and keep their
+// totals (net cash, gain after estimated tax), every tax figure and the income-tax status with its missing inputs; the
+// tax classes are listed once per class with their symbols. Holding sales, settings, rates and the tax model are kept
+// as they are; the full section stays readable (get_context_detail, section tradingCosts).
+const FEE_BREAKDOWN=['gross','commission','gainAfterFees'];
+const withoutFees=side=>side&&typeof side==='object'?Object.fromEntries(Object.entries(side).filter(([k])=>!FEE_BREAKDOWN.includes(k))):side;
+const byClass=c=>{const out=[];for(const [symbol,cls] of Object.entries(c)){const key=JSON.stringify(cls);const same=out.find(g=>g.key===key);if(same)same.symbols.push(symbol);else out.push({key,cls,symbols:[symbol]});}
+  return out.map(g=>({...g.cls,symbols:g.symbols}));};
+const compactMarket=m=>m&&typeof m==='object'?{...m,...(Array.isArray(m.oneShare)?{oneShare:m.oneShare.map(r=>({...r,...(r.buy?{buy:withoutFees(r.buy)}:{}),...(r.sell?{sell:withoutFees(r.sell)}:{})}))}:{}),
+  ...(m.tax?.classification&&typeof m.tax.classification==='object'&&!Array.isArray(m.tax.classification)?{tax:{...m.tax,classification:byClass(m.tax.classification)}}:{})}:m;
+const COST_ROWS=[
+  ['tradingCosts',t=>t&&typeof t==='object'?{...compactMarket(t),...(Array.isArray(t.markets)?{markets:t.markets.map(compactMarket)}:{}),full:'fee breakdowns and per-symbol tax classes: get_context_detail section tradingCosts'}:t],
+];
 // A second step, used only if the request is still over budget after every section above was compressed: the sections
 // whose full versions stay readable keep only what flags them (stale parts, conflict, what blocks execution) and where
 // the rest is.
@@ -66,10 +81,12 @@ const setPath=(o,p,v)=>{const [k,...rest]=p.split('.');return rest.length?{...o,
 function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),target=0.92}={}){
   let out=context;const detail={},steps=[];
   for(const [path,fn] of Object.entries(SUMMARIES)){const value=getPath(out,path);if(value==null)continue;const next=fn(value);if(bytes(next)<bytes(value)){detail[path]=value;out=setPath(out,path,next);steps.push({section:path,kind:'summary',bytesSaved:bytes(value)-bytes(next)});}}
-  for(const [key,fn] of COMPRESS){if(wire(out)<=limit*target)break;if(MANDATORY.includes(key)||out[key]==null)continue;const value=out[key],next=fn(value);
-    if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind:'compressed',bytesSaved:bytes(value)-bytes(next)});}}
-  for(const [key,fn] of TIGHT){if(wire(out)<=limit*target)break;if(out[key]==null)continue;const value=out[key],next=fn(value);
-    if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind:'tightened',bytesSaved:bytes(value)-bytes(next)});}}
+  // Background sections, then trading-cost rows, then the tighter step; the size is measured before every section and
+  // shaping stops as soon as the request, with its list of readable sections, is within the target.
+  const measured=()=>wire(Object.keys(detail).length?{...out,detailAvailable:Object.keys(detail)}:out);
+  for(const [list,kind] of [[COMPRESS,'compressed'],[COST_ROWS,'compacted'],[TIGHT,'tightened']])for(const [key,fn] of list){if(measured()<=limit*target)break;
+    if(kind==='compressed'&&MANDATORY.includes(key)||out[key]==null)continue;const value=out[key],next=fn(value);
+    if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind,bytesSaved:bytes(value)-bytes(next)});}}
   const available=Object.keys(detail);if(available.length)out={...out,detailAvailable:available};
   const mandatory=Object.fromEntries(MANDATORY.filter(k=>out[k]!==undefined).map(k=>[k,out[k]]));
   return {context:out,detail,steps,fits:wire(out)<=limit,report:report(out,limit),mandatoryBytes:wire(mandatory)};
