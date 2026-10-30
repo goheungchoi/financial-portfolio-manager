@@ -12,6 +12,8 @@ const MANDATORY=['environment','market','currency','baseCurrency','equity','cash
 const bytes=value=>Buffer.byteLength(JSON.stringify(value??null));
 const wire=context=>Buffer.byteLength(JSON.stringify([{role:'user',content:JSON.stringify(context)}]));
 const clip=(text,n)=>{const s=String(text??'');return s.length>n?s.slice(0,n-1)+'…':s;};
+// Clipped to about n UTF-8 bytes (Korean text takes three bytes a character, so a character clip keeps three times more).
+const clipBytes=(text,n)=>{const s=String(text??'');if(Buffer.byteLength(s)<=n)return s;let out='',size=0;for(const ch of s){const b=Buffer.byteLength(ch);if(size+b>n-3)break;out+=ch;size+=b;}return out+'…';};
 const norm=t=>String(t??'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 
 // Summaries given from the start (the full section is available on request).
@@ -32,9 +34,12 @@ const SUMMARIES={
 const COMPRESS=[
   // Sections added 2026-10-29 had no compressor, so a review over budget could not shorten them and failed
   // (2026-10-30 09:00 KST: 71,236 of 70,000 bytes, assessments 5,428). The full sections stay readable as detail.
-  ['assessments',a=>Array.isArray(a)?a.map(x=>({symbol:x.symbol,updated:x.updated,strategy:x.strategy,horizon:x.horizon,thesis:clip(x.thesis,160),invalidation:clip(x.invalidation,120),stale:x.stale,...(x.staleBecause?{staleBecause:x.staleBecause}:{}),...(x.conflict?{conflict:x.conflict}:{}),held:x.held,sources:(x.evidence??[]).length})):a],
-  ['waits',w=>Array.isArray(w)?w.map(x=>({symbol:x.symbol,reason:x.reason,question:clip(x.question,100),earliestCheck:x.earliestCheck,expires:x.expires,holdsResearch:x.holdsResearch})):w],
-  ['pendingDecisions',p=>Array.isArray(p)?p.map(x=>({symbol:x.symbol,action:x.action,quantity:x.quantity,since:x.since,reviews:x.reviews,rationale:clip(x.rationale,160)})):p],
+  // An assessment keeps its stale parts, conflict and the ids of the sources it rests on; the claims, dates and
+  // assumptions are in the full section (get_context_detail, section assessments).
+  ['assessments',a=>Array.isArray(a)?a.map(x=>({symbol:x.symbol,updated:x.updated,strategy:x.strategy,horizon:x.horizon,thesis:clipBytes(x.thesis,240),invalidation:clipBytes(x.invalidation,160),stale:x.stale,...(x.staleBecause?{staleBecause:x.staleBecause}:{}),...(x.conflict?{conflict:x.conflict}:{}),held:x.held,sourceIds:(x.evidence??[]).map(e=>e.sourceId).filter(Boolean),full:'get_context_detail section assessments'})):a],
+  ['waits',w=>Array.isArray(w)?w.map(x=>({symbol:x.symbol,reason:x.reason,...(x.cause?{cause:x.cause}:{}),question:clipBytes(x.question,150),earliestCheck:x.earliestCheck,expires:x.expires,holdsResearch:x.holdsResearch})):w],
+  // A pending decision keeps what stops it executing: its market (closed until it opens), its invalidation and proposal.
+  ['pendingDecisions',p=>Array.isArray(p)?p.map(x=>({symbol:x.symbol,action:x.action,quantity:x.quantity,market:x.market,since:x.since,reviews:x.reviews,rationale:clipBytes(x.rationale,240),...(x.invalidation?{invalidation:x.invalidation}:{}),...(x.priceThen!=null?{priceThen:x.priceThen}:{}),...(x.proposalId?{proposalId:x.proposalId}:{})})):p],
   ['reviewScope',s=>s&&Array.isArray(s.changes)?{...s,changes:s.changes.map(c=>clip(c,100)).slice(0,6)}:s],
   ['marketNarrative',n=>n&&typeof n==='object'?{asOf:n.asOf,regime:n.regime,summary:clip(n.summary,400),drivers:(n.drivers??[]).map(d=>({kind:d.kind,title:d.title,...(d.sectors?{sectors:d.sectors}:{})}))}:n],
   ['scoutPlan',s=>s&&typeof s==='object'?{...s,summary:clip(s.summary,300),focus:clip(s.focus,200),targets:(s.targets??[]).map(t=>({...t,...(t.thesis?{thesis:clip(t.thesis,160)}:{}),...(t.watch?{watch:clip(t.watch,120)}:{})}))}:s],
@@ -47,6 +52,14 @@ const COMPRESS=[
   ['topStories',t=>Array.isArray(t)?t.map(r=>({title:clip(r.title,120),outlets:r.outlets,...(r.symbols?{symbols:r.symbols}:{})})):t],
   ['planGap',g=>g&&Array.isArray(g.targets)?{...g,targets:g.targets.map(({minimumPosition,...t})=>({...t,...(minimumPosition?{minimumPosition:{feasible:minimumPosition.feasible,weightPct:minimumPosition.weightPct}}:{})}))}:g],
 ];
+// A second step, used only if the request is still over budget after every section above was compressed: the sections
+// whose full versions stay readable keep only what flags them (stale parts, conflict, what blocks execution) and where
+// the rest is.
+const TIGHT=[
+  ['assessments',a=>Array.isArray(a)?a.map(x=>({symbol:x.symbol,updated:x.updated,stale:x.stale,...(x.conflict?{conflict:x.conflict}:{}),held:x.held,sourceIds:x.sourceIds??(x.evidence??[]).map(e=>e.sourceId).filter(Boolean),full:'get_context_detail section assessments'})):a],
+  ['waits',w=>Array.isArray(w)?w.map(x=>({symbol:x.symbol,reason:x.reason,...(x.cause?{cause:x.cause}:{}),earliestCheck:x.earliestCheck,holdsResearch:x.holdsResearch})):w],
+  ['pendingDecisions',p=>Array.isArray(p)?p.map(x=>({symbol:x.symbol,action:x.action,quantity:x.quantity,market:x.market,since:x.since,...(x.invalidation?{invalidation:clipBytes(x.invalidation,160)}:{}),...(x.proposalId?{proposalId:x.proposalId}:{})})):p],
+];
 const getPath=(o,p)=>p.split('.').reduce((v,k)=>v?.[k],o);
 const setPath=(o,p,v)=>{const [k,...rest]=p.split('.');return rest.length?{...o,[k]:setPath(o[k]??{},rest.join('.'),v)}:{...o,[k]:v};};
 // limit: the app's byte limit for the first request; target leaves room below it.
@@ -55,11 +68,18 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
   for(const [path,fn] of Object.entries(SUMMARIES)){const value=getPath(out,path);if(value==null)continue;const next=fn(value);if(bytes(next)<bytes(value)){detail[path]=value;out=setPath(out,path,next);steps.push({section:path,kind:'summary',bytesSaved:bytes(value)-bytes(next)});}}
   for(const [key,fn] of COMPRESS){if(wire(out)<=limit*target)break;if(MANDATORY.includes(key)||out[key]==null)continue;const value=out[key],next=fn(value);
     if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind:'compressed',bytesSaved:bytes(value)-bytes(next)});}}
+  for(const [key,fn] of TIGHT){if(wire(out)<=limit*target)break;if(out[key]==null)continue;const value=out[key],next=fn(value);
+    if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind:'tightened',bytesSaved:bytes(value)-bytes(next)});}}
   const available=Object.keys(detail);if(available.length)out={...out,detailAvailable:available};
   const mandatory=Object.fromEntries(MANDATORY.filter(k=>out[k]!==undefined).map(k=>[k,out[k]]));
   return {context:out,detail,steps,fits:wire(out)<=limit,report:report(out,limit),mandatoryBytes:wire(mandatory)};
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
+// The failure for a first request that does not fit: CONTEXT_MANDATORY_TOO_LARGE when the snapshot a decision must always
+// see is over the limit on its own, CONTEXT_OVER_BUDGET when everything that could be shortened was and the whole is still
+// over. Both are local: nothing was sent to the provider.
+function sizeFailure(shaped,{stage='first request'}={}){const r=shaped.report;const code=shaped.mandatoryBytes>r.limitBytes?'CONTEXT_MANDATORY_TOO_LARGE':'CONTEXT_OVER_BUDGET';
+  return Object.assign(new Error(code),{detail:{limit:'app bytes',stage,wireBytes:r.wireBytes,limitBytes:r.limitBytes,mandatoryBytes:shaped.mandatoryBytes,largest:r.largest,shortened:shaped.steps.map(s=>s.section)}});}
 function report(context,limit){return {wireBytes:wire(context),limitBytes:limit,largest:Object.entries(context).map(([k,v])=>[k,bytes(v)]).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([k,b])=>`${k}:${b}`)};}
 const DETAIL_TOOL={type:'function',name:'get_context_detail',description:'Read a context section that was given as a summary (listed in detailAvailable), or a tool result that was shortened or had parts left out (its fullResult.section, result-N), in bounded parts. A research section whose provenance says complete false has its original at the path in provenance.original, inside that result. part: empty for the whole section, or a path of names, list indexes and symbols separated by / (for example rows/3/thesis, or NASD:NVDA/0/notes where a symbol selects the rows about it), as given in an earlier reply. from: 0 to start; for a long list or text, a reply that does not reach the end gives next.from, and reading the same part from there continues exactly where it stopped. A reply with last true ends that list or text; complete false otherwise means omittedParts or rows given by path name what is still to read.',strict:true,
   parameters:{type:'object',properties:{section:{type:'string'},part:{type:'string'},from:{type:'integer'}},required:['section','part','from'],additionalProperties:false}};
@@ -215,4 +235,4 @@ function sameInputs(failed,next,tolerancePct){
 // Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
 // market and what set this review off (a new agent trigger, news event or price watch is material).
 const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
-module.exports={sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};
+module.exports={sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};

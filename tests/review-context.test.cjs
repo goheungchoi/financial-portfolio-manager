@@ -128,7 +128,7 @@ test('an over-limit request reports which limit rejected it and its largest sect
   const {AiClient}=require('../electron/ai-client.cjs');let sent=null;
   const client=new AiClient('sk-test-0123456789abcdefghij',async(url,init)=>{sent=init;return {ok:false,status:400,text:async()=>JSON.stringify({error:{code:'context_length_exceeded'}})};});
   const ctx={universe:[],quotes:[],positions:{},scoutPlan:{notes:'x'.repeat(80000)}};
-  const e=await client.decide(ctx,{openaiModel:'gpt-6-sol',reasoningEffort:'low'}).catch(x=>x);assert.equal(e.message,'CONTEXT_TOO_LARGE');assert.equal(e.detail.limit,'app bytes');assert.match(e.detail.largest[0],/^scoutPlan:/);assert.equal(sent,null,'nothing was sent');
+  const e=await client.decide(ctx,{openaiModel:'gpt-6-sol',reasoningEffort:'low'}).catch(x=>x);assert.equal(e.message,'CONTEXT_OVER_BUDGET','a first request over the app limit');assert.equal(e.detail.limit,'app bytes');assert.match(e.detail.stage,/first request/);assert.match(e.detail.largest[0],/^scoutPlan:/);assert.equal(sent,null,'nothing was sent');
   const m=await client.decide({universe:[],quotes:[],positions:{}},{openaiModel:'gpt-6-sol',reasoningEffort:'low'}).catch(x=>x);assert.equal(m.message,'AI_CONTEXT_LIMIT');assert.equal(m.detail.limit,'model context window');
   assert.ok(client.lastRequestSizes.instructionsBytes>1000&&client.lastRequestSizes.inputBytes>0,'instructions and input measured apart');
 });
@@ -161,7 +161,7 @@ test('wire 2: the complete request is checked before every call; results are red
   assert.ok(outs.some(o=>o.part0),'whole parts are kept where they fit');assert.ok(logs.some(l=>/rebound/.test(l)));
   // A first request that is already over the limit with the model's items: not sent.
   let calls=0;const tooBig=async({continuation})=>{calls++;if(!continuation)return {toolCalls:[{name:'get_company_research',callId:'z',args:{symbol:'005930',sections:['a']}}],continuation:[{role:'user',content:'"'.repeat(80000)},{type:'function_call',call_id:'z',name:'get_company_research',arguments:'{}'}],usage:{}};return {decision:{action:'Hold'},usage:{}};};
-  await assert.rejects(researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request:tooBig,log:()=>{},discovery:{get_company_research:async()=>({a:1})}}),/CONTEXT_OVER_BUDGET/);assert.equal(calls,1,'the follow-up was not sent');
+  await assert.rejects(researchReview({context:{universe:[{symbol:'005930'}],discovery:{enabled:true}},evidence:{get:async()=>({})},request:tooBig,log:()=>{},discovery:{get_company_research:async()=>({a:1})}}),/CONTINUATION_OVER_BUDGET/);assert.equal(calls,1,'the follow-up was not sent');
 });
 // Finding 2: a row larger than one reply became a placeholder marked complete, with no way to read it.
 test('detail reads continue from a stable position whatever room each read has: every row and character exactly once',()=>{
@@ -224,6 +224,6 @@ test('the sections added for waits, pending decisions, assessments and review sc
   const context={environment:'kis',userGuidelines:pad(42000),universe:[],quotes:[],assessments:Array.from({length:8},(_,i)=>assessment(i)),waits:Array.from({length:6},(_,i)=>({symbol:'S'+i,reason:'publication_pending',question:pad(240),resolvesOn:pad(160),earliestCheck:null,expires:'2026-11-01',since:'2026-10-30',reviews:3,holdsResearch:false})),pendingDecisions:[{symbol:'S1',action:'Sell',quantity:1,since:'x',reviews:4,rationale:pad(400)}]};
   assert.ok(wire(context)>70000,'over the limit to start');const shaped=shape(context,{limit:70000});
   assert.equal(shaped.fits,true);assert.ok(shaped.detailAvailable===undefined);assert.ok(shaped.context.detailAvailable.includes('assessments'),'readable in full on request');
-  assert.equal(shaped.detail.assessments[0].evidence.length,4,'the full section is kept as detail');assert.equal(shaped.context.assessments[0].sources,4);assert.ok(shaped.context.assessments[0].thesis.length<=160);
+  assert.equal(shaped.detail.assessments[0].evidence.length,4,'the full section is kept as detail');assert.deepEqual(shaped.context.assessments[0].sourceIds,['src0','src1','src2','src3']);assert.match(shaped.context.assessments[0].full,/get_context_detail section assessments/);assert.ok(Buffer.byteLength(shaped.context.assessments[0].thesis)<=240,'clipped by bytes');
   assert.deepEqual(Object.keys(shape({...context,assessments:context.assessments.slice(0,1),userGuidelines:'g'},{limit:70000}).context.assessments[0]).includes('evidence'),true,'under budget: left whole');
 });
