@@ -539,7 +539,7 @@ class Automation {
       const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null};
       this.db.prepare('INSERT INTO reviews VALUES(?,?)').run(id,JSON.stringify(recorded));
       if(this.config.scope!=='paper')try{const events=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.runId')=?").all(id).map(r=>JSON.parse(r.payload));this.researchGaps.record(watchScope,result.decision.planVerdicts,require('./research-gaps.cjs').researchFromEvents(events));}catch{}
-      try{this.waits.record(watchScope,result.decision,{reviewId:id,context});}catch{}
+      try{this.waits.record(watchScope,result.decision,{reviewId:id,context,research:this.researchSeen?.get(id)??[]});}catch{}
       if(this.config.scope!=='paper')try{const cost=this.db.prepare('SELECT payload FROM ai_calls').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===id&&!c.kind).reduce((a,c)=>a+(c.accountedMicro??c.estimatedMicro??0),0)/1e6;this.scheduleObserver.recordReview(recorded,cost);}catch{}
       let proposal=null,order=null,executionNote=null,pendingAlready=null,placement=null,bounds=null,checked=null,stopNow=null;
       if(result.decision.action!=='Hold') {
@@ -595,7 +595,7 @@ class Automation {
       if(!decided&&entryEvidence){this.restoreEvents(watchScope,entryEvidence);const keys=require('./size-retry.cjs').eventKeys(entryEvidence);
         if(!sizeFailed&&keys.length){const before=this.eventHold?.scope===watchScope&&Date.now()<this.eventHold.until?this.eventHold.keys:[];this.eventHold={scope:watchScope,keys:new Set([...before,...keys]),until:Date.now()+EVENT_RETRY_MS};if(!this.disposed)this.log(id,'System','Trigger kept for a later review',`No decision was made, so ${require('./size-retry.cjs').eventItems(entryEvidence).map(e=>e.label).join('; ')} ${keys.length>1?'are':'is'} kept and tried again from ${new Date(this.eventHold.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST.`);}}
       if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
-    finally{this.busy=false;this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
+    finally{this.busy=false;this.researchSeen?.delete(id);this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
   }
   // A momentary OpenAI failure (connection, server error or timeout) is retried once after a short pause.
   async decisionWithRetry(context,options,pauseMs=3000){
@@ -736,11 +736,17 @@ class Automation {
   // Company research for a live review, held back by an open wait on its symbol (electron/waits.cjs): answered with the
   // wait while the review gate is on, logged as what would be held while it observes. Your own requests, emergencies
   // and anything the gate saw change about the symbol read as usual.
-  researchFor({watchScope,trigger,emergency,gate,gateMode,id}){return args=>{
+  // Each reply's sections are noted for the review (waits.outcomes), so a wait can hold exactly what was unavailable. A
+  // request with some sections held reads the others and says which were skipped and why.
+  researchFor({watchScope,trigger,emergency,gate,gateMode,id}){const note=(args,r)=>{try{const seen=(this.researchSeen??=new Map());if(!seen.has(id))seen.set(id,[]);seen.get(id).push(...require('./waits.cjs').outcomes(args,r));}catch{}return r;};
+    return async args=>{
     // Without a gate result (it failed) nothing could override a wait, so nothing is held.
-    const held=gateMode!=='off'&&gate&&!emergency&&!['User request','Emergency loss response'].includes(trigger)?this.waits.guard(watchScope,args?.symbol,{overridden:new Set(gate?.changedSymbols??[]),isOpen:m=>this.sessionOpen(m)}):null;
-    if(held){if(gateMode==='on'){this.log(id,'System','Research waits',`${held.symbol}: ${held.reason.replace('_',' ')} until ${held.until}.`);return held;}this.log(id,'System','Research would wait',`${held.symbol}: ${held.reason.replace('_',' ')} until ${held.until}; the review gate is observing, so it is read.`);}
-    return this.discovery.research(args);};}
+    const held=gateMode!=='off'&&gate&&!emergency&&!['User request','Emergency loss response'].includes(trigger)?this.waits.guard(watchScope,args?.symbol,{sections:args?.sections,overridden:new Set(gate?.changedSymbols??[]),isOpen:m=>this.sessionOpen(m)}):null;
+    if(held){const what=held.reason==='market_closed'?`market closed until it opens`:held.held.map(h=>`${h.section} (${h.unavailable}) until ${h.until}`).join(', ');
+      if(gateMode==='on'){this.log(id,'System','Research waits',`${held.symbol}: ${what}${held.status==='partial'?`; reading ${held.read.join(', ')}`:''}.`);if(held.status!=='partial')return held;
+        const r=note(args,await this.discovery.research({...args,sections:held.read}));return r&&typeof r==='object'?{...r,skippedSections:held.held.map(({section,unavailable,until})=>({section,unavailable,until})),skippedNote:held.note}:r;}
+      this.log(id,'System','Research would wait',`${held.symbol}: ${what}; the review gate is observing, so it is read.`);}
+    return note(args,await this.discovery.research(args));};}
   // The review gate for the settings page: its mode and what it found over the last 7 days.
   reviewGateState(){let summary=null;try{summary=this.reviewGate.summary(Date.now()-7*86400000);}catch{}return {mode:this.config.reviewGate??'off',summary};}
   // The selective alert rules for the settings page: thresholds and what observation found over the last 7 days.
