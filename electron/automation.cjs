@@ -651,8 +651,9 @@ class Automation {
     catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
   }
   // Formula inputs: the latest quotes the app holds and cached daily closes; tools may warm the cache first.
+  liveQuotes(){return this.config.scope==='both'?[...(this.usQuotes??[]),...(this.marketQuotes?.()??[])]:this.config.scope==='us'?(this.usQuotes??[]):(this.marketQuotes?.()??[]);}
   formulaData(quotes=[]){
-    const live=this.config.scope==='both'?[...(this.usQuotes??[]),...(this.marketQuotes?.()??[])]:this.config.scope==='us'?(this.usQuotes??[]):(this.marketQuotes?.()??[]);
+    const live=this.liveQuotes();
     const all=[...quotes,...live];
     return {price:sym=>all.find(q=>q.symbol===sym&&Number.isFinite(q.price))?.price??null,previousClose:sym=>all.find(q=>q.symbol===sym)?.previousClose??null,closes:sym=>this.series?.closes(sym)??null};
   }
@@ -708,8 +709,12 @@ class Automation {
   // is proposed (after its price is read, which can take a minute) and by the tracker for open orders. quotes: the
   // review's own quotes, preferred to the live ones. strict (before placing): a condition that cannot be evaluated (no
   // price or history for it) stops the order too, since the app could not honour it.
+  // The review's quotes are only a fallback: they were read when it started, and a review can run for minutes, so a
+  // condition met since then is judged on the fresh live price.
   restrictionStop(t,now=Date.now(),{quotes=[],strict=false}={}){if(!t)return null;if(t.cancelAfter&&Date.parse(t.cancelAfter)<=now)return `its stop time ${t.cancelAfter} passed`;
-    if(t.cancelIf?.length){const c=require('./formula.cjs').checkConditions(t.cancelIf,'any',this.formulaData(quotes));if(c.met)return 'a cancel condition was met: '+c.results.filter(r=>r.met).map(r=>`${r.expr} ${r.op} ${r.value} (now ${r.actual})`).join(', ');
+    if(t.cancelIf?.length){const snap=this.formulaData(quotes),live=this.liveQuotes().filter(q=>!q.stale&&Number.isFinite(q.price));
+      const data={...snap,price:sym=>live.find(q=>q.symbol===sym)?.price??snap.price(sym),previousClose:sym=>live.find(q=>q.symbol===sym)?.previousClose??snap.previousClose(sym)};
+      const c=require('./formula.cjs').checkConditions(t.cancelIf,'any',data);if(c.met)return 'a cancel condition was met: '+c.results.filter(r=>r.met).map(r=>`${r.expr} ${r.op} ${r.value} (now ${r.actual})`).join(', ');
       const unknown=c.results.filter(r=>r.error);if(strict&&unknown.length)return 'a cancel condition cannot be checked now: '+unknown.map(r=>`${r.expr} (${r.error})`).join(', ');}return null;}
   // A review the app asks for itself (an order that could not be priced); it starts when nothing else runs.
   // At most one per symbol every 15 minutes, so a book that stays unreadable cannot start a review a minute.
@@ -738,7 +743,7 @@ class Automation {
   // and anything the gate saw change about the symbol read as usual.
   // Each reply's sections are noted for the review (waits.outcomes), so a wait can hold exactly what was unavailable. A
   // request with some sections held reads the others and says which were skipped and why.
-  researchFor({watchScope,trigger,emergency,gate,gateMode,id}){const note=(args,r)=>{try{const seen=(this.researchSeen??=new Map());if(!seen.has(id))seen.set(id,[]);seen.get(id).push(...require('./waits.cjs').outcomes(args,r));}catch{}return r;};
+  researchFor({watchScope,trigger,emergency,gate,gateMode,id}){const note=(args,r)=>{try{const found=require('./waits.cjs').outcomes(args,r,{ttl:require('./research-service.cjs').sourceTtl});const seen=(this.researchSeen??=new Map());if(!seen.has(id))seen.set(id,[]);seen.get(id).push(...found);this.waits.available(watchScope,found);}catch{}return r;};
     return async args=>{
     // Without a gate result (it failed) nothing could override a wait, so nothing is held.
     const held=gateMode!=='off'&&gate&&!emergency&&!['User request','Emergency loss response'].includes(trigger)?this.waits.guard(watchScope,args?.symbol,{sections:args?.sections,overridden:new Set(gate?.changedSymbols??[]),isOpen:m=>this.sessionOpen(m)}):null;

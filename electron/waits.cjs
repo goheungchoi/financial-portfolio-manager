@@ -21,12 +21,16 @@ const holds=w=>w.reason==='market_closed'||blocks(w);
 // requests in between are answered from that record without calling the source.
 const CONFIRMED=new Set(['NO_EARNINGS_RELEASE','NO_ANNUAL_REPORT','NOT_IN_SEC','NOT_IN_DART','KOREAN_LISTINGS_ONLY','UNKNOWN_SECTION','NO_PEERS','INSUFFICIENT_HISTORY','DOCUMENT_NOT_FOUND','NO_RELEASE_EXHIBIT','NO_EARNINGS_FIGURES_IN_RECENT_FILINGS','NO_BUSINESS_SECTION','NO_BUSINESS_OVERVIEW','NOT_FOR_FUNDS','NOT_ENOUGH_INPUTS','NOT_AN_ETF','FUNDS_ONLY']);
 const TRACE=Symbol.for('fpm.research-trace');
-// What a research reply showed, per section it answered: read, or unavailable with its reason, its sources and whether
-// the absence is confirmed. A reply without sections (an unknown symbol, a failure) shows nothing.
-function outcomes(args,result){if(!result||typeof result!=='object'||!result.provenance)return [];const symbol=String(result.symbol??args?.symbol??'').trim().toUpperCase();if(!symbol)return [];
+// What a research reply showed, per section it answered: read, or unavailable with its reason, its sources, whether the
+// absence is confirmed, and how long its sources keep that answer (ttl(source): reading again sooner returns the same
+// answer, so a block lasts at most that long before one re-read is allowed; RECHECK_MS when unknown). A reply without
+// sections (an unknown symbol, a failure) shows nothing.
+const RECHECK_MS=3600000;
+function outcomes(args,result,{ttl=()=>null}={}){if(!result||typeof result!=='object'||!result.provenance)return [];const symbol=String(result.symbol??args?.symbol??'').trim().toUpperCase();if(!symbol)return [];
   const reads=result[TRACE]?.reads??{};return Object.keys(result.provenance).map(section=>{const u=result[section]?.unavailable;
     const sources=[...new Set((reads[section]??[]).map(r=>r.origin).filter(Boolean))].join(' + ')||result.provenance[section]?.from||null;
-    return u?{symbol,section,reason:String(u),sources,confirmed:CONFIRMED.has(u)}:{symbol,section,read:true};});}
+    const lives=(reads[section]??[]).map(r=>ttl(r.source)).filter(Number.isFinite),recheckMs=lives.length?Math.min(...lives):RECHECK_MS;
+    return u?{symbol,section,reason:String(u),sources,confirmed:CONFIRMED.has(u),recheckMs}:{symbol,section,read:true};});}
 // The reason of a waiting verdict: the one the review gave, else from its condition kind and data-gap cause.
 function reasonOf(v){const c=v.condition??{};if(REASONS.includes(c.waitReason))return c.waitReason;
   if(c.kind==='event')return 'publication_pending';if(c.kind==='data')return v.dataGap?.cause==='not-yet-published'?'publication_pending':'missing_data';if(c.kind==='market')return 'entry_condition';return null;}
@@ -54,8 +58,9 @@ class Waits {
       for(const w of older)this.save({...w,status:'superseded',closedAt:now,closedBy:`superseded by ${reason}${reviewId?` in review ${reviewId}`:''}`});
       const history=prev?prev.history??[]:[...(inherit?.history??[]),...older.map(w=>({reason:w.reason,from:w.createdAt,to:now,reviews:w.reviews}))];
       const mineOut=research.filter(o=>o.symbol===v.symbol),read=new Set(mineOut.filter(o=>o.read).map(o=>o.section));
-      const kept=reason==='missing_data'||reason==='publication_pending'?[...(prev?.blocked??inherit?.blocked??[]),...mineOut.filter(o=>o.confirmed).map(o=>({section:o.section,sources:o.sources,reason:o.reason,since:now}))]:[];
-      const blocked=kept.filter((b,i)=>!read.has(b.section)&&kept.findIndex(x=>x.section===b.section&&x.sources===b.sources)===i);
+      // An absence confirmed again replaces the earlier entry (a new re-read time); one read since is dropped.
+      const kept=reason==='missing_data'||reason==='publication_pending'?[...(prev?.blocked??inherit?.blocked??[]),...mineOut.filter(o=>o.confirmed).map(o=>({section:o.section,sources:o.sources,reason:o.reason,since:now,recheckAt:now+(o.recheckMs??RECHECK_MS)}))]:[];
+      const blocked=kept.filter((b,i)=>!read.has(b.section)&&kept.findLastIndex(x=>x.section===b.section&&x.sources===b.sources)===i);
       const started=prev?.createdAt??inherit?.createdAt??now;
       const t=Date.parse(c.earliestCheck??''),given=Number.isFinite(t)&&t>now&&t<=now+MAX_MS?t:null;
       // A check still ahead can only move earlier; one that has passed (the review it called for ran) can be renewed,
@@ -77,11 +82,17 @@ class Waits {
     if(closed)return {status:'waiting',symbol,reason:'market_closed',question:closed.question,until:'when its market opens',since:new Date(closed.createdAt).toISOString(),reviews:closed.reviews,
       note:`Nothing about ${symbol} changed since this wait began, and its market is closed. Keep the verdict waiting, or decide on what is in context.`};
     const asked=[...new Set(Array.isArray(sections)?sections.map(String):[])],held=[];
-    for(const w of mine.filter(x=>blocks(x)&&(x.earliestCheckAt==null||now<x.earliestCheckAt)))for(const b of w.blocked)if(asked.includes(b.section)&&!held.some(h=>h.section===b.section))
-      held.push({section:b.section,unavailable:b.reason,sources:b.sources,reason:w.reason,until:new Date(w.earliestCheckAt??w.expiresAt).toISOString(),since:new Date(b.since).toISOString()});
+    // Each block lasts until the wait's check, and at most until its sources' answer can have changed (recheckAt).
+    for(const w of mine.filter(x=>blocks(x)&&(x.earliestCheckAt==null||now<x.earliestCheckAt)))for(const b of w.blocked){const end=Math.min(w.earliestCheckAt??w.expiresAt,b.recheckAt??Infinity);
+      if(now<end&&asked.includes(b.section)&&!held.some(h=>h.section===b.section))held.push({section:b.section,unavailable:b.reason,sources:b.sources,reason:w.reason,until:new Date(end).toISOString(),since:new Date(b.since).toISOString()});}
     if(!held.length)return null;const read=asked.filter(s=>!held.some(h=>h.section===s));
     return {status:read.length?'partial':'waiting',symbol,reason:held[0].reason,held,read,until:held.map(h=>h.until).sort()[0],
       note:'These sections came back unavailable for this symbol before and reading them again will not change that before the time given: decide under the uncertainty, use another section, tool or source, or say what the user could provide.'};}
+  // A section read successfully (outcomes(): read) is no longer held by any wait on its symbol, at once and whatever the
+  // review decides: the evidence became available.
+  available(scope,found){const read=(found??[]).filter(o=>o.read);if(!read.length)return;
+    for(const w of this.active(scope).filter(x=>x.blocked?.length)){const rest=w.blocked.filter(b=>!read.some(o=>o.symbol===w.symbol&&o.section===b.section));
+      if(rest.length<w.blocked.length)this.save({...w,blocked:rest,lastAvailableAt:this.clock()});}}
   // What the trading review sees. enforced: whether research is actually held (the review gate is on).
   context(scope,{enforced=false}={}){return this.active(scope).map(w=>({symbol:w.symbol,reason:w.reason,...(w.cause?{cause:w.cause}:{}),question:w.question,resolvesOn:w.resolvesOn,earliestCheck:w.earliestCheckAt==null?null:new Date(w.earliestCheckAt).toISOString(),expires:new Date(w.expiresAt).toISOString(),since:new Date(w.createdAt).toISOString(),reviews:w.reviews,holdsResearch:enforced&&holds(w)}));}
 }

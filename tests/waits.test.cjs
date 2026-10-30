@@ -4,7 +4,8 @@ const t0=Date.parse('2026-10-29T05:00:00Z'),h=n=>t0+n*3600000,iso=t=>new Date(t)
 const verdict=(symbol,condition,extra={})=>({symbol,verdict:'waiting',reason:'r',condition:{kind:'event',unresolved:'Q3 operating profit',evidence:'The results release',recheck:'After the release',...condition},dataGap:null,...extra});
 const setup=()=>{let now=t0;const db=new DatabaseSync(':memory:');const w=new Waits(db,()=>now);return {w,db,at:t=>{now=t;}};};
 // What a review's research showed: a section confirmed absent (or a temporary failure, or read).
-const gone=(symbol,section,reason='NO_EARNINGS_RELEASE',sources='dart')=>({symbol,section,reason,sources,confirmed:require('../electron/waits.cjs').CONFIRMED.has(reason)});
+// recheckMs: how long its sources keep the answer (a week here, so the wait's own timing is what these tests see).
+const gone=(symbol,section,reason='NO_EARNINGS_RELEASE',sources='dart',recheckMs=7*86400000)=>({symbol,section,reason,sources,confirmed:require('../electron/waits.cjs').CONFIRMED.has(reason),recheckMs});
 const readOk=(symbol,section)=>({symbol,section,read:true});
 const plan={scoutPlan:{asOf:'2026-10-29T00:11:42Z',targets:[{symbol:'000270',role:'hold'},{symbol:'064350',role:'candidate'},{symbol:'NASD:GOOGL',role:'trim'}]}};
 
@@ -130,6 +131,36 @@ test('only confirmed absences block; temporary failures and a section read later
 test('outcomes reads a research reply: unavailable sections with reason and sources, read sections, nothing for a failed reply',()=>{
   const TRACE=Symbol.for('fpm.research-trace');const reply={symbol:'000270',release:{unavailable:'NO_EARNINGS_RELEASE'},valuation:{per:5},provenance:{release:{from:null,cache:'unavailable'},valuation:{from:'kis',cache:'fetched'}}};
   reply[TRACE]={reads:{release:[{origin:'dart',cache:'fetched'}],valuation:[{origin:'kis',cache:'fetched'}]}};
-  assert.deepEqual(outcomes({symbol:'000270'},reply),[{symbol:'000270',section:'release',reason:'NO_EARNINGS_RELEASE',sources:'dart',confirmed:true},{symbol:'000270',section:'valuation',read:true}]);
+  assert.deepEqual(outcomes({symbol:'000270'},reply),[{symbol:'000270',section:'release',reason:'NO_EARNINGS_RELEASE',sources:'dart',confirmed:true,recheckMs:3600000},{symbol:'000270',section:'valuation',read:true}]);
   assert.deepEqual(outcomes({symbol:'X'},{status:'unavailable',reason:'UNKNOWN_SYMBOL'}),[],'no sections: nothing recorded, nothing held');assert.deepEqual(outcomes({},null),[]);
+});
+// Edge case: a block cleared only through a later waiting verdict for its symbol, so a section read successfully in a
+// review that decided something else stayed held until the wait's check.
+test('a block clears as soon as its section is read, whatever the review decides; it allows a re-read once its source can have changed',()=>{
+  const {w,at}=setup();const v=verdict('000270',{waitReason:'publication_pending',earliestCheck:'2026-10-31T09:00+09:00'});
+  w.record('s',{planVerdicts:[v]},{context:plan,research:[gone('000270','release','NO_EARNINGS_RELEASE','OpenDART',12*3600000),gone('000270','peers','NO_PEERS','KIS',7*86400000)]});
+  assert.equal(w.guard('s','000270',{sections:['release']})?.status,'waiting');
+  // Another review (its verdict is about another symbol) reads the release: available now, so the block goes at once.
+  at(h(1));w.available('s',[{symbol:'000270',section:'release',read:true},{symbol:'064350',section:'peers',read:true}]);
+  assert.equal(w.guard('s','000270',{sections:['release']}),null,'cleared by the successful read');assert.equal(w.guard('s','000270',{sections:['peers']})?.status,'waiting','another section stays held');
+  assert.ok(w.active('s')[0].lastAvailableAt,'when it became available is kept');
+  w.available('s',[{symbol:'000270',section:'release',reason:'NO_EARNINGS_RELEASE',confirmed:true}]);assert.equal(w.active('s')[0].blocked.length,1,'an absence alone changes nothing here');
+  // A block ends when its source's answer can have changed (OpenDART keeps it 12 hours), before the wait's own check.
+  const {w:x,at:t}=setup();x.record('s',{planVerdicts:[v]},{context:plan,research:[gone('000270','release','NO_EARNINGS_RELEASE','OpenDART',12*3600000)]});
+  t(h(11));assert.equal(x.guard('s','000270',{sections:['release']})?.until,iso(h(12)),'held until the source can answer differently');
+  t(h(12));assert.equal(x.guard('s','000270',{sections:['release']}),null,'one re-read allowed');
+  // Still absent on the re-read: confirmed again, held for another period from now (not listed twice).
+  x.record('s',{planVerdicts:[v]},{context:plan,research:[gone('000270','release','NO_EARNINGS_RELEASE','OpenDART',12*3600000)]});
+  assert.equal(x.active('s')[0].blocked.length,1);assert.equal(x.guard('s','000270',{sections:['release']})?.until,iso(h(24)));
+});
+test('through researchFor: a successful read in any review clears the block for the next request',async()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});a.sessionOpen=()=>true;let published=false;const asked=[];
+  a.discovery={research:async args=>{asked.push(args.sections.join(','));return {symbol:args.symbol,provenance:{release:{from:published?'OpenDART':null}},release:published?{revenue:1}:{unavailable:'NO_EARNINGS_RELEASE'}};}};
+  a.waits.record('s',{planVerdicts:[verdict('000270',{waitReason:'publication_pending',earliestCheck:new Date(Date.now()+86400000).toISOString()})]},{context:plan,research:[gone('000270','release')]});
+  const run=(opts={})=>a.researchFor({watchScope:'s',trigger:'Scheduled review',emergency:false,gate:{changedSymbols:[]},gateMode:'on',id:'R',...opts})({symbol:'000270',sections:['release']});
+  assert.equal((await run()).status,'waiting');assert.equal(asked.length,0);
+  // A filing lifts the hold for one review (the gate saw a change); the release is out and read.
+  published=true;await run({gate:{changedSymbols:['000270']},id:'R2'});assert.equal(asked.length,1);
+  const next=await run({id:'R3'});assert.deepEqual(next.release,{revenue:1},'the next review reads it: no longer held');assert.equal(asked.length,2);
 });

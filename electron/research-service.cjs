@@ -286,4 +286,6 @@ function digest(name,d){
     ...(rows.length>15?{moreHoldings:rows.slice(15).map(({symbol,name,weightPct})=>[symbol||name,weightPct]),moreHoldingsNote:`Holdings 16 to ${rows.length} of the ${rows.length} KIS lists, as [code, weight %].`}:{})};}
   return d;
 }
-module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,TRACE,prune,digest};
+// How long a source's answer is kept (reading again sooner returns the same answer), or null when unknown.
+const sourceTtl=source=>SOURCES[source]?.ttl??null;
+module.exports={ResearchService,SECTIONS,AGENT_DEFAULT,US_SECTIONS,TRACE,prune,digest,sourceTtl};
