@@ -18,8 +18,16 @@ const {seoulDate}=require('./kis-activity.cjs');
 const THRESHOLD_KRW=10000;
 // Settlement evidence lasts a day: KIS takes the payment at settlement, so an older record would only hide a withdrawal.
 const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=10;
-// Korean cash net of the KRW known to be committed to unsettled U.S. buys (electron/integrated-settlement.cjs).
-const BASIS='net-of-confirmed';
+// What each market's cash reading includes. Change a market's name here whenever what the caller passes as its cash
+// changes: a saved reading of another basis is not compared, so the change in definition is never taken for money moving.
+// KR: Korean cash net of the KRW known to be committed to unsettled U.S. buys (electron/integrated-settlement.cjs).
+// US: U.S. cash plus the proceeds of U.S. sales not yet settled (1.5.46).
+// 2026-10-30: 1.5.46 added the unsettled proceeds without a new basis; its first reading took the $279.85 already
+// counted as a withdrawal (cash alone) for a deposit.
+const BASIS={KR:'net-of-confirmed',US:'with-pending-sales'};
+// Readings saved under the single name were written up to 1.5.46, which already included the unsettled proceeds (the
+// reading is rewritten every minute, so a saved one is the last build's); readings without a name predate both.
+const basisOf=b=>typeof b==='string'?{KR:b,US:'with-pending-sales'}:b&&typeof b==='object'?b:{};
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 // An order's cash effect in its market currency: the broker's net cash when known, otherwise the gross amount.
 function cashEffect(order){
@@ -67,14 +75,18 @@ class FlowDetector {
   // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD); unsettledKRW: all unsettled U.S. buys.
   observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
-    const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const prev=row?JSON.parse(row.payload):null;
+    const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)}};
     // Provisional changes and settlement evidence carry over between readings.
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...now,...state}));
-    // Readings taken before KRW committed to unsettled U.S. buys was netted out are a different basis: start again.
-    if(!prev||prev.basis!==BASIS){save();return [];}
+    // A Korean reading of another basis (for example before KRW committed to unsettled U.S. buys was netted out): start
+    // again, dropping changes held on the old basis. A U.S. reading of another basis starts the U.S. comparison here,
+    // as when the U.S. balance first loads; the Korean change is still compared.
+    const was=basisOf(prev?.basis);
+    if(!prev||was.KR!==BASIS.KR){state.pending={};save();return [];}
+    if(was.US!==BASIS.US){prev={...prev,usCash:null};delete state.pending.US;}
     // The first reading with U.S. cash after one without it starts the U.S. comparison here (a U.S. fill since then could
     // not be judged without both readings, and waiting for one that will never come would stop detection), but the Korean
     // change is still compared. A U.S. order filled in between may have been funded from KRW, and a fall could be money

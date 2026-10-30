@@ -217,3 +217,36 @@ test('an unsettled U.S. sale is not a withdrawal: the U.S. reading counts its pe
   const now=run(0+279.01);assert.deepEqual(now.flows,[],'cash plus pending proceeds: nothing to record, through the sale and its settlement');assert.deepEqual(now.pending,[]);
   const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'\?usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\):null/);
 });
+// 2026-10-30: 1.5.46 added unsettled U.S. sale proceeds to U.S. cash without a new basis. The saved reading ($0.84, cash
+// alone) met the first new one ($279.85 with the $279.01 of Alphabet proceeds), and two hours later a $279.85 deposit was
+// recorded and sent as an alert.
+function saved(basis,payload){let now=at('2026-10-30T08:15:00+09:00');const db=new DatabaseSync(':memory:');const perf=new PerformanceHistory(db,()=>now);const d=new FlowDetector(db,perf,()=>now);
+  db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('acct',JSON.stringify({at:now,krCash:414148,usCash:0.84,provisionalKRW:0,unsettledKRW:0,fills:{},...(basis===undefined?{}:{basis}),...payload}));
+  return {d,perf,db,read:(s,r)=>{now=at(s);return d.observe('acct',{fx:1336.3,...r});}};}
+test('a change in what U.S. cash includes is not a deposit; detection carries on from the new reading',()=>{
+  const {d,perf,read}=saved({KR:'net-of-confirmed',US:'cash-only'});
+  assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(d.pending('acct'),[],'nothing held');
+  assert.deepEqual(read('2026-10-30T10:17:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(read('2026-10-30T12:00:00+09:00',{krCash:414148,usCash:279.85}),[]);
+  assert.equal(perf.flows('acct').length,0,'no $279.85 deposit');
+  // A real deposit afterwards is still found.
+  read('2026-10-30T12:30:00+09:00',{krCash:414148,usCash:379.85});const found=read('2026-10-30T14:31:00+09:00',{krCash:414148,usCash:379.85});
+  assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['US',100,true]]);
+});
+test('a U.S. basis change still compares Korean cash in the same interval, and drops a U.S. change held on the old basis',()=>{
+  const {perf,read}=saved({KR:'net-of-confirmed',US:'cash-only'},{pending:{US:{amount:-279.85,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+  assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:1414148,usCash:279.85}),[]);
+  const found=read('2026-10-30T10:30:00+09:00',{krCash:1414148,usCash:279.85});
+  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',1000000]],'the Korean deposit, not the old U.S. fall');assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0);
+});
+test('a Korean basis change starts again and drops every held change; no basis at all starts again too',()=>{
+  for(const basis of [{KR:'gross',US:'with-pending-sales'},'gross',undefined]){
+    const {d,perf,read}=saved(basis,{pending:{KR:{amount:-500000,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+    assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:914148,usCash:279.85}),[],'a ₩500k rise against the old basis is not compared');assert.deepEqual(d.pending('acct'),[],JSON.stringify(basis));
+    read('2026-10-30T12:00:00+09:00',{krCash:914148,usCash:279.85});assert.equal(perf.flows('acct').length,0,'the held fall is dropped, not recorded: '+JSON.stringify(basis));}
+});
+test('a reading saved by 1.5.46 (one name for both) is the current basis: compared, not restarted',()=>{
+  const {perf,db,read}=saved('net-of-confirmed',{usCash:279.85});
+  read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:379.85});const found=read('2026-10-30T10:20:00+09:00',{krCash:414148,usCash:379.85});
+  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['US',100]],'a $100 deposit across the upgrade is found');assert.equal(perf.flows('acct').length,1);
+  assert.deepEqual(JSON.parse(db.prepare('SELECT payload FROM flow_watch').get().payload).basis,{KR:'net-of-confirmed',US:'with-pending-sales'},'saved under the new names');
+});
