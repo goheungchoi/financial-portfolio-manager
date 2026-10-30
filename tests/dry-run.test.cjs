@@ -141,7 +141,7 @@ test('a pending order defers routine reviews until it fills or is cancelled, wit
 test('an order fill or cancellation starts a review at once with the order as evidence; first sightings do not',()=>{
   const s=scheduler();s.set([s.order('Accepted')]);s.a.lastRun=Date.now()-5*60000;s.tick();assert.deepEqual(s.reviews,[],'first seen: recorded only');
   s.set([s.order('Filled',1)]);s.tick();assert.deepEqual(s.reviews.map(r=>r.trigger),['Order update']);
-  assert.deepEqual(s.reviews[0].evidence,{kind:'order',orders:[{symbol:'NYSE:PNR',market:'US',side:'Buy',quantity:1,filled:1,status:'Filled',fillPrice:61.56,placedAt:s.reviews[0].evidence.orders[0].placedAt}]});
+  assert.deepEqual(s.reviews[0].evidence,{kind:'order',orders:[{id:'pnr',symbol:'NYSE:PNR',market:'US',side:'Buy',quantity:1,filled:1,status:'Filled',fillPrice:61.56,placedAt:s.reviews[0].evidence.orders[0].placedAt}]});
   s.a.lastRun=Date.now()-60000;s.tick();assert.equal(s.reviews.length,1,'once per change');
   const c=scheduler();c.a.lastRun=Date.now()-5*60000;c.set([c.order('Accepted')]);c.tick();c.a.busy=true;c.set([c.order('Canceled')]);c.tick();assert.equal(c.reviews.length,0,'waits while a review runs');c.a.busy=false;c.a.lastRun=Date.now()-60000;c.tick();assert.deepEqual(c.reviews.map(r=>r.trigger),['Order update'],'then runs');
   const closed=scheduler();closed.set([closed.order('Accepted')]);closed.setOpen(false);closed.a.config.closedMarketReviews='pre-open';closed.tick();closed.set([closed.order('Canceled')]);closed.tick();assert.equal(closed.reviews.length,0,'markets closed: noted, not reviewed');
@@ -161,7 +161,7 @@ test('an order-update review gives the model the order: status, filled quantity 
   a.lastDeskCheck=0;a.tick();orders=[order('Filled',2)];a.lastDeskCheck=0;a.tick();
   for(let i=0;i<200&&!supplied.some(([op])=>op==='decision');i++)await new Promise(r=>setTimeout(r,10));
   const call=supplied.find(([op])=>op==='decision');assert.ok(call,'a review reached the provider');
-  const context=call[1].context;assert.deepEqual(context.triggerEvidence.orders.map(o=>({...o,placedAt:undefined})),[{symbol:'005930',market:'KR',side:'Buy',quantity:2,filled:2,status:'Filled',fillPrice:217000,placedAt:undefined}]);assert.equal(context.triggerEvidence.kind,'order');
+  const context=call[1].context;assert.deepEqual(context.triggerEvidence.orders.map(o=>({...o,placedAt:undefined})),[{id:'kia',symbol:'005930',market:'KR',side:'Buy',quantity:2,filled:2,status:'Filled',fillPrice:217000,placedAt:undefined}]);assert.equal(context.triggerEvidence.kind,'order');
   for(let i=0;i<200&&a.busy;i++)await new Promise(r=>setTimeout(r,10));
 });
 test('only orders of the markets a review covers defer it, start it or appear in its follow-up (Korea-only and U.S.-only)',async()=>{

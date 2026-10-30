@@ -213,7 +213,7 @@ test('after a size failure, an entry level crossed by less than the percentage t
   const small={...base,environment:'local-paper'};const {a,events,calls}=harness([over(base),{...over(base),triggerEvidence:evidence},{...over(base),triggerEvidence:evidence},small]);
   const scope=a.watchScope();watchRow(a,scope,{symbol:cand,direction:'above',price:level,percent:null,reason:'entry',baseline:then,updatedAt:1,revision:'rev-1',priceFired:true});
   await assert.rejects(a.review('Scheduled review'));assert.equal(a.lastError,'CONTEXT_OVER_BUDGET');
-  await assert.rejects(a.review('Price movement trigger'));
+  a.triggerEvidence=evidence;await assert.rejects(a.review('Price movement trigger'));
   assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/crossed its entry level/.test(e.body)),'retried, saying it was the level');
   const watch=()=>a.watches.list(scope).find(w=>w.symbol===cand);
   assert.equal(watch().priceFired,false,'no decision completed: the level is put back');assert.deepEqual([...a.heldEvents(scope)],['level:rev-1'],'held while the failure stands');
@@ -237,7 +237,7 @@ test('after a size failure, a newly met agent trigger retries with unchanged acc
   const small={...base,environment:'local-paper'};const {a,events}=harness([over(base),{...over(base),triggerEvidence:evidence},{...over(base),triggerEvidence:evidence},small]);
   const scope=a.watchScope(),now=Date.now();
   a.desk.write('agent_triggers',{id:'T-ab12cd',scope,status:'fired',name:'MAX under 9.50',conditions:[{expr:'price(NYSE:MAX)',op:'<',value:9.5}],symbols:['NYSE:MAX'],combine:'all',reason:'entry',createdAt:now-3600000,expiresAt:now+3600000,firedAt:now,results:evidence.results});
-  await assert.rejects(a.review('Scheduled review'));await assert.rejects(a.review('Agent trigger'));
+  await assert.rejects(a.review('Scheduled review'));a.triggerEvidence=evidence;await assert.rejects(a.review('Agent trigger'));
   assert.ok(events.some(e=>e.title==='Retrying after a size failure'&&/agent trigger MAX under 9\.50 met/.test(e.body)));
   const active=()=>a.desk.triggers(scope).map(t=>t.id);assert.deepEqual(active(),['T-ab12cd'],'no decision completed: active again');assert.ok(a.heldEvents(scope).has('agent:T-ab12cd'));
   assert.ok(!('firedAt' in a.desk.triggers(scope)[0]),'its firing is not left on it');
@@ -259,7 +259,7 @@ test('selective alerts: a held level is skipped (its side unchanged), and a put-
 // Through the scheduler (tick): the trigger evidence reaches the review as in production (assembleReviewContext attaches
 // this.triggerEvidence for price, news, agent and order triggers).
 function scheduler(sequence,{alerts='observe'}={}){const h=harness([]);const a=h.a;let i=0;const started=[];
-  a.assembleReviewContext=async({trigger})=>{const c=structuredClone(sequence[Math.min(i++,sequence.length-1)]);if(['Price movement trigger','News event trigger','Agent trigger','Order update'].includes(trigger))c.triggerEvidence=a.triggerEvidence;else delete c.triggerEvidence;
+  a.assembleReviewContext=async({trigger,evidence})=>{const item=sequence[Math.min(i++,sequence.length-1)];if(item instanceof Error)throw item;const c=structuredClone(item);if(['Price movement trigger','News event trigger','Agent trigger','Order update'].includes(trigger))c.triggerEvidence=evidence;else delete c.triggerEvidence;
     return {context:c,emergency:{active:false},execution:null,usValue:null,lessonIds:[]};};
   a.configure({scope:'both',enabled:true,watchlistAlerts:alerts,newsTrigger:'off'});a.sessionArmed=true;a.schedulerStatus=()=>({label:'Monitoring'});a.marketHours=()=>({open:true,markets:[],preOpen:null,next:null});
   a.sessionOpen=()=>true;a.watchScope=()=>'both:acct';a.marketQuotes=()=>[];a.deferForPendingOrder=()=>null;
@@ -333,4 +333,45 @@ test('scheduler: a news review marks only the filings it shows, and a failed one
   assert.deepEqual([...a.heldEvents('both:acct')].sort(),['news:F0','news:F1','news:F2','news:F3','news:F4','news:F5','news:F6'],'a second failure adds to the hold, not replaces it');
   fail=false;a.eventHold.until=Date.now()-1;a.lastNewsTrigger=0;await tick();assert.equal(a.lastError,null);assert.deepEqual(a.triggerEvidence.events.map(e=>e.id).sort(),['F0','F1','F2','F3','F4']);
   assert.deepEqual(pending(),['F5','F6'],'the two from the failed review still wait');a.lastNewsTrigger=0;await tick();assert.equal(a.lastError,null);assert.deepEqual(pending(),[],'every filing reached a completed decision');
+});
+
+// Review of 8ef1be1, P1: the scheduler marks a trigger used before the account data is read; when that failed
+// (INCOMPLETE_BALANCE) the context was never built and the trigger was lost with no decision.
+test('scheduler: account data failing to load keeps agent, news and entry-level triggers pending, held for the retry delay, and through a restart',async()=>{
+  const base=fixture();const small={...base,environment:'local-paper'};const failure=new Error('INCOMPLETE_BALANCE');
+  const {a,tick,started}=scheduler([failure,failure,failure,small,small,small]);a.configure({newsTrigger:'disclosures',unlimitedCalls:true,unlimitedBudget:true});const scope='both:acct',now=Date.now();
+  const quote=(symbol,price)=>({symbol,price,timestamp:Date.now(),retrievedAt:Date.now()});const cand='NASD:T950';
+  a.usQuotes=[quote('NASD:GOOGL',280),quote(cand,100.2)];a.lastPrices=new Map([[cand,100],['NASD:GOOGL',280]]);
+  a.desk.setTrigger(scope,{action:'add',id:'',name:'GOOGL under 285',conditions:[{expr:'price("NASD:GOOGL")',op:'<=',value:285}],combine:'all',expiresInHours:4,reason:'re-entry'},{universe:['NASD:GOOGL']});const id=a.desk.triggers(scope)[0].id;
+  watchRow(a,scope,{symbol:cand,direction:'above',price:100.1,percent:null,reason:'entry',baseline:100,updatedAt:1,revision:'rev-e',priceFired:false});
+  a.newsEvents.save({id:'FX',source:'DART',kind:'disclosure',title:'Filing X',url:'FX',published:new Date(now).toISOString(),symbols:[Object.keys(base.positions)[0]],importance:'high',firstSeenAt:now,triggeredAt:null});
+  await tick();assert.equal(started.at(-1),'Agent trigger');assert.equal(a.lastError,'INCOMPLETE_BALANCE');
+  await tick();assert.equal(started.at(-1),'Price movement trigger');assert.equal(a.lastError,'INCOMPLETE_BALANCE');
+  a.lastNewsTrigger=0;await tick();assert.equal(started.at(-1),'News event trigger');assert.equal(a.lastError,'INCOMPLETE_BALANCE');
+  const pending=()=>({agent:a.desk.triggers(scope).map(t=>t.id),level:a.watches.list(scope).find(w=>w.symbol===cand).priceFired,news:a.newsEvents.pending('disclosures').map(e=>e.id)});
+  assert.deepEqual(pending(),{agent:[id],level:false,news:['FX']},'no decision: all three are pending again');
+  assert.deepEqual([...a.heldEvents(scope)].sort(),['agent:'+id,'level:rev-e','news:FX'].sort(),'and held');
+  const n=started.length;a.lastNewsTrigger=0;await tick();await tick();assert.equal(started.length,n,'the retry delay is respected');
+  // A restart loses what was held in memory; the database still has all three pending, and each gets its review.
+  a.eventHold=null;a.failedInput=null;a.orderTaken=null;
+  await tick();assert.equal(started.at(-1),'Agent trigger');assert.equal(a.lastError,null);
+  await tick();assert.equal(started.at(-1),'Price movement trigger');assert.equal(a.lastError,null);
+  a.lastNewsTrigger=0;await tick();assert.equal(started.at(-1),'News event trigger');assert.equal(a.lastError,null);
+  assert.deepEqual(pending(),{agent:[],level:true,news:[]},'each used up only by a completed decision');
+});
+test('a review refused because another is running puts its trigger back',async()=>{
+  const base=fixture();const {a}=scheduler([{...base,environment:'local-paper'}]);const scope='both:acct';
+  a.desk.setTrigger(scope,{action:'add',id:'',name:'GOOGL under 285',conditions:[{expr:'price("NASD:GOOGL")',op:'<=',value:285}],combine:'all',expiresInHours:4,reason:'re-entry'},{universe:['NASD:GOOGL']});
+  const t=a.desk.triggers(scope)[0];a.desk.write('agent_triggers',{...t,status:'fired',firedAt:Date.now()});a.triggerEvidence={kind:'agent-trigger',trigger:{id:t.id,name:t.name,reason:t.reason},results:[]};
+  a.busy=true;await assert.rejects(a.review('Agent trigger'),/REVIEW_BUSY/);a.busy=false;assert.deepEqual(a.desk.triggers(scope).map(x=>x.id),[t.id],'active again');
+});
+test('an order update whose review makes no decision goes back in the queue and is held, not retried every 30 seconds',async()=>{
+  const base=fixture();const {a,tick,started}=scheduler([new Error('INCOMPLETE_BALANCE'),{...base,environment:'local-paper'}]);const scope='both:acct';
+  const fill={id:'o1',symbol:'NASD:GOOGL',market:'US',side:'Sell',quantity:1,filled:1,status:'Filled',fillPrice:280,createdAt:Date.now()-60000};
+  a.orderEvents=()=>[];a.orderQueue={scope:'both',orders:new Map([['o1',fill]])};
+  a.lastRun=Date.now()-120000;a.lastDeskCheck=0;a.tick();await new Promise(r=>setTimeout(r,40));assert.equal(started.at(-1),'Order update');assert.equal(a.lastError,'INCOMPLETE_BALANCE');
+  assert.ok(a.orderQueue?.orders.has('o1'),'back in the queue');assert.ok(a.heldEvents(scope).has('order:o1|Filled|1'));
+  const n=started.length;await tick();assert.equal(started.length,n,'held');
+  // A later fill of the same order is a new event; once the hold ends the update is reviewed and decided.
+  a.eventHold.until=Date.now()-1;await tick();assert.equal(started.at(-1),'Order update');assert.equal(a.lastError,null);assert.ok(!a.orderQueue?.orders.size,'used up by the completed decision');
 });
