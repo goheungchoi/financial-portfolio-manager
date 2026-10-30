@@ -11,18 +11,24 @@ class ReviewWatches {
   }
   reset(scope){this.db.prepare('DELETE FROM review_watches WHERE scope=?').run(scope);}
   fired(scope,symbol){const watch=this.list(scope).find(row=>row.symbol===symbol);if(watch)this.db.prepare('UPDATE review_watches SET payload=? WHERE scope=? AND symbol=?').run(JSON.stringify({...watch,priceFired:true}),scope,symbol);}
+  // A fired level put back when its review made no decision (a size failure): only the same watch, not one set since.
+  unfire(scope,symbol,revision=null){const watch=this.list(scope).find(row=>row.symbol===symbol);if(watch?.priceFired&&(revision==null||watch.revision===revision))this.db.prepare('UPDATE review_watches SET payload=? WHERE scope=? AND symbol=?').run(JSON.stringify({...watch,priceFired:false}),scope,symbol);}
   rebase(scope,quotes){for(const watch of this.list(scope)){const quote=quotes.find(row=>row.symbol===watch.symbol);if(quote?.price>0)this.db.prepare('UPDATE review_watches SET payload=? WHERE scope=? AND symbol=?').run(JSON.stringify({...watch,baseline:quote.price}),scope,watch.symbol);}}
-  detect(scope,quotes,baselines,defaultPercent,now=Date.now()){
+  // skipLevels: level events (levelEvent keys) held while a size failure stands; their symbols are checked for moves only.
+  detect(scope,quotes,baselines,defaultPercent,now=Date.now(),skipLevels=new Set()){
     const watches=this.list(scope);
     for(const quote of quotes){
       const timestamp=quote.timestamp??quote.retrievedAt;
       if(quote.stale||!Number.isFinite(timestamp)||timestamp>now+1000||now-timestamp>90000||!Number.isFinite(quote.price)||quote.price<=0)continue;
       const watch=watches.find(row=>row.symbol===quote.symbol);
-      if(watch?.price!=null&&!watch.priceFired&&(watch.direction==='above'?quote.price>=watch.price:quote.price<=watch.price))return {kind:'price',symbol:quote.symbol,price:quote.price,threshold:watch.price,direction:watch.direction,timestamp};
+      if(watch?.price!=null&&!watch.priceFired&&!skipLevels.has(levelEvent(watch))&&(watch.direction==='above'?quote.price>=watch.price:quote.price<=watch.price))return {kind:'price',symbol:quote.symbol,price:quote.price,threshold:watch.price,direction:watch.direction,timestamp,...(watch.revision?{watchRevision:watch.revision}:{})};
       const baseline=watch?.baseline??baselines.get(quote.symbol),threshold=watch?.percent??defaultPercent;
       if(baseline>0&&Math.abs(quote.price/baseline-1)*100>=threshold)return {kind:'percent',symbol:quote.symbol,price:quote.price,baseline,changePct:(quote.price/baseline-1)*100,threshold,timestamp};
     }
     return null;
   }
 }
-module.exports={ReviewWatches,TOOL};
+// A price level as an event: the watch as the AI set it (its revision), or its symbol, direction and level. The same key
+// from a trigger that reports the level (electron/size-retry.cjs levelOf): watchRevision, or symbol, direction, threshold.
+const levelEvent=w=>'level:'+(w.revision??`${w.symbol}|${w.direction}|${w.price}`);
+module.exports={ReviewWatches,TOOL,levelEvent};

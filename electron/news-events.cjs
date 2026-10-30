@@ -56,5 +56,7 @@ class NewsEvents {
     return this.list(300).filter(event=>!event.triggeredAt&&event.symbols.length&&now-event.firstSeenAt<=TRIGGER_WINDOW_MS&&(mode==='all'||event.kind==='disclosure'&&event.importance==='high'));
   }
   markTriggered(ids,now=Date.now()){for(const event of this.list(300).filter(row=>ids.includes(row.id)))this.save({...event,triggeredAt:now});}
+  // A filing whose review made no decision is pending again (within its trigger window).
+  unmark(ids){for(const event of this.list(300).filter(row=>ids.includes(row.id)&&row.triggeredAt))this.save({...event,triggeredAt:null});}
 }
 module.exports={NewsEvents,matcher,importance,englishTerm,MODES};
