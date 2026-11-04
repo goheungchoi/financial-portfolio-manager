@@ -25,7 +25,7 @@ async function fitRequest(items,{keepFrom,compact,log,store=null}){
   if(cf.size(out)>target){const last=await cf.fit(out,{keepFrom:out.length,refs});out=last.items;steps.push(...last.steps);}
   if(steps.length)log('System','Research context condensed',JSON.stringify(steps));
   // Still over after condensing: the round is not sent (a local limit, not the provider's).
-  if(cf.size(out)>cf.LIMIT){const e=new Error('CONTINUATION_OVER_BUDGET');e.detail={limit:'app bytes',stage:'research continuation',wireBytes:cf.size(out),limitBytes:cf.LIMIT,largest:out.map((it,i)=>[`item ${i} ${it?.type??it?.role}`,cf.size(it)]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,b])=>`${k}:${b}`)};throw e;}
+  if(cf.size(out)>cf.LIMIT){const e=new Error('CONTINUATION_OVER_BUDGET');e.detail={limit:'app bytes',stage:'research continuation',wireBytes:cf.size(out),limitBytes:cf.LIMIT,largest:out.map((it,i)=>[`item ${i} ${it?.type??it?.role}`,cf.size(it)]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,b])=>`${k}:${b}`)};e.input=out;throw e;}
   return out;
 }
 // wrap, when given, sees every tool call (name, function) and returns the function to run: the shadow evaluation uses it
