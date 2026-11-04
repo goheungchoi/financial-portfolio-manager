@@ -336,3 +336,9 @@ test('a conditional stop sells only free cash shares: never margin-loan shares, 
   ({automation:a}=harness());engines(a,{kr:{riskBalance:{holdings:[{symbol:'005930',quantity:10,availableQuantity:10,loans:[{quantity:10,loanDate:'2026-09-01',availableQuantity:10}]}]}}});o=await fired(a,armOrder(a,{side:'Sell'}));
   assert.equal(o.status,'rejected');assert.match(o.outcome,/margin-loan lots/);
 });
+test('a review sale larger than the free cash shares is recorded as not proposed, not as a failed review',async()=>{
+  // The real live engine of the harness holds 10 shares of 005930; the review decides to sell 11.
+  const {automation:a,queue}=harness();a.live.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE MOCK');queue.push(()=>({decision:{action:'Sell',symbol:'005930',quantity:11,explanation:'Exit.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'}));
+  const r=await a.review('User request').catch(e=>{throw new Error(a.lastError+' '+a.lastErrorDetail);});
+  assert.match(r.executionNote??'',/Not proposed: Sell 11 005930 is more than the shares it can close: 10 free in its lot/);assert.equal(a.live.orders().length,0,'no proposal');
+});
