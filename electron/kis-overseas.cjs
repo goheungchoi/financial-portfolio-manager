@@ -47,7 +47,9 @@ class OverseasClient{
     // 2026-10-30: after the GOOGL sale the total dropped by its $279.01 proceeds until settlement.
     // Missing or blank (some accounts leave it out) means none; a value that is there but not a number is refused.
     const pendingSale=await stage('CASH',async()=>usd&&usd.frcr_sll_amt_smtl!=null&&String(usd.frcr_sll_amt_smtl).trim()!==''?Math.max(0,numeric(usd.frcr_sll_amt_smtl)):0);
-    return {...this.identity(),source:'kis-us',currency:'USD',...(brokerBuyingPower?{brokerBuyingPower}:{}),fx:usdRate(usd,present.body.output1),timestamp:new Date().toISOString(),cash,...(pendingSale>0?{pendingSaleProceeds:pendingSale}:{}),reportedTotal:Math.round((cash+pendingSale+holdings.reduce((sum,row)=>sum+row.marketValue,0))*100)/100,holdings,
+    // The broker's own figures as reported (electron/broker-raw.cjs): the USD row and the summary.
+    const raw={usd:require('./broker-raw.cjs').numericFields(usd),summary:require('./broker-raw.cjs').numericFields(present.body.output3)};
+    return {...this.identity(),source:'kis-us',currency:'USD',raw,...(brokerBuyingPower?{brokerBuyingPower}:{}),fx:usdRate(usd,present.body.output1),timestamp:new Date().toISOString(),cash,...(pendingSale>0?{pendingSaleProceeds:pendingSale}:{}),reportedTotal:Math.round((cash+pendingSale+holdings.reduce((sum,row)=>sum+row.marketValue,0))*100)/100,holdings,
       // Unsettled U.S. buys and sales in KRW (electron/integrated-settlement.cjs); absent when KIS does not report them.
       ...(present.body.output3&&typeof present.body.output3==='object'&&!Array.isArray(present.body.output3)?{unsettled:{buyKRW:numeric(present.body.output3.ustl_buy_amt_smtl)||0,sellKRW:numeric(present.body.output3.ustl_sll_amt_smtl)||0}}:{})};
   }
