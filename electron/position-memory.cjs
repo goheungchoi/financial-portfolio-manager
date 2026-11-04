@@ -45,4 +45,4 @@ function reversalGap(r,rev,{price=null}={}){if(!r)return 'no reversal explanatio
   if(r.basis==='new-evidence'){const since=Date.parse(prior.decidedAt??prior.filledAt??'');const ok=(r.newEvidence??[]).filter(e=>clip(e.claim,999)&&clip(e.source,999)&&Date.parse(e.date??'')>=(Number.isFinite(since)?since-DAY:0));if(!ok.length)return 'new-evidence without a sourced item dated after the earlier decision';}
   if(rev.kind==='reverses-exit'&&rev.prior.effect==='CLOSE_LONG'&&price>0&&prior.fillPrice>0&&price>prior.fillPrice&&clip(r.afterCost,999).length<20)return `afterCost: the price ${price} is above the exit fill ${prior.fillPrice}; say why the higher repurchase still pays after costs`;
   return null;}
-module.exports={build,reversalOf,reversalGap,REVERSAL_DAYS};
+module.exports={build,view,reversalOf,reversalGap,REVERSAL_DAYS};
