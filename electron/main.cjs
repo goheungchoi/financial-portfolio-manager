@@ -369,6 +369,16 @@ app.whenReady().then(async () => {
     if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
     for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0):null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
+  live.flowsSince=policy=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsSince(a,'KR',policy?.baselineAt):null;};
+  usLive.flowsSince=policy=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsSince(a,'US',policy?.baselineAt):null;};
+  // Net equity for the daily loss and new-exposure checks (electron/valuation.cjs), from the balance the engine holds.
+  const marketValue=(market,snapshot)=>{const k=kisState.snapshot;if(!k?.accountKey)return null;const kr=market==='KR'?snapshot:k,us=market==='US'?snapshot:(usSnapshot?.accountKey===k.accountKey+':US'?usSnapshot:null);
+    if(market==='KR'&&snapshot?.accountKey!==k.accountKey||market==='US'&&snapshot?.accountKey!==k.accountKey+':US')return null;
+    const v=require('./valuation.cjs').value({korea:kr,us,fx:automation.fx?.(),inFlight:inFlightOf(k.accountKey)}).markets[market];if(!v.available||v.equity.low==null)return null;
+    // KRW committed to U.S. buys moves money between the markets: the daily loss leaves it out (transfer flows settle
+    // it), while new exposure is measured with it deducted.
+    const f=v.components.find(c=>c.name==='usBuyFunding');return {low:v.equity.low,high:v.equity.high,version:require('./valuation.cjs').VERSION,loss:{low:v.equity.low-(f?.low??0),high:v.equity.high-(f?.high??0)}};};
+  live.netEquityOf=snapshot=>marketValue('KR',snapshot);usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
   setInterval(recordValue,60000).unref();

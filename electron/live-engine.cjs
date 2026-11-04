@@ -26,8 +26,9 @@ class LiveEngine {
   funded(snapshot){return (Number.isFinite(snapshot?.reportedTotal)&&snapshot.reportedTotal>0)||this.integratedFunding(snapshot)>0;}
   stop(){this.enabled=false;this.autoEnabled=false;return this.getState();}
   enableAuto(confirmation){const environment=this.getConnection().snapshot?.environment;if(!this.enabled||confirmation!==(environment==='live'?'ENABLE AUTO LIVE':'ENABLE AUTO MOCK'))throw new Error('ACTIVATION_REQUIRED');this.autoEnabled=true;return this.getState();}
-  getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;return {httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?lossStatus(policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW},this.adjustedBaseline(policy),snapshot.reportedTotal):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null};}
-  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day();const next={...policy,day:today,baseline:policy.day===today?policy.baseline:snapshot.reportedTotal,dayPeakEquity:policy.day===today?Math.max(policy.dayPeakEquity??policy.baseline,snapshot.reportedTotal):snapshot.reportedTotal};this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),this.identity());}
+  getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;return {httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null};}
+  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day();const v=policy.day===today?(policy.valuation&&policy.valuation!=='broker-total'?this.lossValue(snapshot):{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version:'broker-total'}):this.lossValue(snapshot);
+    const next=policy.day===today?{...policy,dayPeakEquity:Math.max(policy.dayPeakEquity??policy.baseline,v.version===(policy.valuation??'broker-total')?v.low:policy.baseline)}:{...policy,day:today,baseline:v.low,baselineHigh:v.high,valuation:v.version,baselineAt:Date.now(),dayPeakEquity:v.low};this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),this.identity());}
   async context(supplied=null) {
     const executionEnabled=this.enabled;const configured=this.policy();
     const extra=this.market==='KR'?[...new Set((await this.extraSymbols?.())??[])].filter(symbol=>/^\d{6}$/.test(symbol)&&!(configured?.symbols??[]).includes(symbol)).slice(0,20):[];
@@ -54,8 +55,8 @@ class LiveEngine {
     const notional=command.quantity*command.limitPrice;if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)throw new Error('ORDER_SIZE_LIMIT');
     const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(command.symbol)??null}):null;
     // Leveraged and inverse products need their own opt-in and cap; without automatic mode they wait for manual approval.
-    const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:balance.reportedTotal+this.integratedFunding(balance),holdings:balance.holdings}):null;
-    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:balance.reportedTotal,balance,loanDate:credit.loanDate??null});}
+    const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:this.exposureBase(balance)+this.integratedFunding(balance),holdings:balance.holdings}):null;
+    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null});}
     const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||Boolean(gate?.requiresApproval)}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
   async submit(id,confirmation) {
@@ -74,7 +75,7 @@ class LiveEngine {
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
       // Percentage limits use one base: the account value plus the KRW that funds U.S. buys through integrated margin (the
       // U.S. account alone may hold nothing, which would otherwise block every buy or skip the leveraged-product check).
-      const accountBase=prepared.balance.reportedTotal+this.integratedFunding(prepared.balance);
+      const accountBase=this.exposureBase(prepared.balance)+this.integratedFunding(prepared.balance);
       // Extended sessions: U.S. pre- and after-market orders always wait for your approval, and every extended-session order is
       // capped at a smaller share of equity. Nothing has been sent to KIS yet, so the order simply stays Ready.
       if(prepared.session&&!prepared.session.regular){
@@ -104,7 +105,32 @@ class LiveEngine {
   // order listed as open may already be filled, so its exposure is unknown rather than additional.
   // The day's starting value plus that day's deposits less withdrawals, so a deposit neither hides a loss nor a
   // withdrawal looks like one. flowsToday is supplied by the app (performance history) in this market's currency.
-  adjustedBaseline(policy){const flows=Number(this.flowsToday?.())||0;return policy.baseline+flows;}
+  adjustedBaseline(policy){return policy.baseline+this.flows(policy).confirmed;}
+  // Money moved since the day's baseline was taken (flowsSince, set by the app): confirmed (recorded or confirmed by
+  // you) and unresolved (detected, awaiting you). Only confirmed flows adjust the baseline; unresolved ones are a
+  // scenario in lossOf. Without flowsSince, flowsToday counts as confirmed.
+  flows(policy){try{const f=this.flowsSince?.(policy);if(f&&Number.isFinite(f.confirmed))return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0};}catch{}return {confirmed:Number(this.flowsToday?.())||0,unresolved:0};}
+  // The value the daily loss is measured on (audit 2026-11-04, Stage 2): the account valuation's net equity for this
+  // market (netEquityOf, set by the app: {low, high, version}), or KIS's total when that is unavailable. A day's baseline
+  // and its current value always use the same version: the baseline records its version when the day starts, and a
+  // day that started on KIS's total stays on it, so the switch comes at the next trading-day boundary (this.day: the
+  // Seoul date for Korea, the New York date for the U.S., which covers the overnight session).
+  lossValue(snapshot){let v=null;try{v=this.netEquityOf?.(snapshot)??null;}catch{}const l=v?.loss??v;return l&&Number.isFinite(l.low)&&Number.isFinite(l.high)?{low:l.low,high:l.high,version:v.version}:{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version:'broker-total'};}
+  // The day's loss under each defensible scenario: the low bounds, the high bounds, and with unresolved money changes
+  // counted. A breach under every scenario is a breach; under some only it is ambiguous: reported with the scenarios,
+  // and new buys are restricted as a breach would restrict them (automation.cjs), without claiming a loss. Deposits,
+  // withdrawals and the resolution of funding uncertainty move baseline and value alike, so they are not losses.
+  lossOf(policy,snapshot){
+    const limit=policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW};const version=policy.valuation??'broker-total';const f=this.flows(policy);
+    const v=version==='broker-total'?{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version}:this.lossValue(snapshot);
+    if(v.version!==version){const s=lossStatus(limit,policy.baseline+f.confirmed,v.low);return {...s,breached:false,ambiguous:s.breached,version,reasons:['the valuation this day started on is not available now']};}
+    const scenarios=[['low bounds',policy.baseline+f.confirmed,v.low],['high bounds',(policy.baselineHigh??policy.baseline)+f.confirmed,v.high],...(f.unresolved?[['unresolved money changes counted',policy.baseline+f.confirmed+f.unresolved,v.low]]:[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
+    const all=scenarios.every(x=>x.breached),any=scenarios.some(x=>x.breached);
+    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(any&&!all?{reasons:[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]}:{})};
+  }
+  // The equity new exposure is measured against: KIS's total, or the account valuation's low bound when lower (it nets
+  // liabilities KIS's total does not, such as KRW committed to U.S. buys). Not delayed to a day boundary.
+  exposureBase(balance){let v=null;try{v=this.netEquityOf?.(balance)??null;}catch{}return Number.isFinite(v?.low)?Math.min(balance.reportedTotal,v.low):balance.reportedTotal;}
   // An app order brought up to date from KIS history, following revisions and cancellations (electron/order-chain.cjs).
   // A revision or cancellation the app did not make means you took the order over: tracking stops (handsOff).
   applyHistory(order,rows){const {resolve}=require('./order-chain.cjs');let res=resolve(order,rows);if(!res)return order;

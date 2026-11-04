@@ -321,3 +321,10 @@ test('a combined review reasons from the account valuation: its low bound, and h
   assert.equal(exact.equity,1350000);assert.equal(exact.equityUncertainty,undefined);
   a.valuation=()=>({combined:{low:700000,high:700000,exact:false,complete:false,scope:['KR'],reasons:['U.S. balance not loaded']}});assert.equal((await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'})).context.equity,1350000,'Korea only: the engines figure stays');
 });
+test('while a daily loss breach is ambiguous, new conditional buys are restricted as a breach would be; sales are not',async()=>{
+  let {automation:a}=harness();a.configure({lossAction:'stop'});engines(a);a.emergencyState=()=>({active:false,activeMarkets:[],ambiguousMarkets:['KR']});
+  let o=await fired(a,armOrder(a,{symbol:'005930'}));assert.equal(o.status,'rejected');assert.match(o.outcome,/restricted.*No loss is claimed/);
+  o=await fired(a,armOrder(a,{symbol:'NASD:NVDA'}));assert.equal(o.status,'submitted','only the market whose limit is in doubt');
+  o=await fired(a,armOrder(a,{symbol:'005930',side:'Sell'}));assert.equal(o.status,'submitted','a protective sale goes ahead');
+  ({automation:a}=harness());a.configure({lossAction:'review'});engines(a);a.emergencyState=()=>({active:false,activeMarkets:[],ambiguousMarkets:['KR']});o=await fired(a,armOrder(a,{symbol:'005930'}));assert.equal(o.status,'submitted','"review more often, keep trading" does not restrict');
+});

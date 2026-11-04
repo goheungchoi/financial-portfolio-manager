@@ -53,6 +53,10 @@ class PerformanceHistory {
   // A detected flow the user confirmed keeps its amount and stops being flagged.
   confirmFlow(account,id){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)throw new Error('INVALID_FLOW');
     const {detected,...flow}=JSON.parse(row.payload);this.db.prepare('UPDATE cash_flows SET payload=? WHERE id=? AND account=?').run(JSON.stringify({...flow,confirmedAt:this.clock()}),id,account);}
+  // Money moved in one market since a time (the daily loss baseline's), split into confirmed (recorded or confirmed by
+  // you) and unresolved (detected, awaiting you); without a time, that Seoul day's.
+  flowsSince(account,market,since,day=seoulDate(this.clock())){const list=this.flows(account).filter(f=>f.market===market&&(Number.isFinite(since)?f.createdAt>=since:f.day===day));
+    return {confirmed:list.filter(f=>!f.detected).reduce((n,f)=>n+f.amount,0),unresolved:list.filter(f=>f.detected).reduce((n,f)=>n+f.amount,0)};}
   // Net deposits (positive) and withdrawals in one market's currency on one Seoul day.
   flowsOn(account,day,market){return this.flows(account).filter(f=>f.day===day&&f.market===market).reduce((sum,f)=>sum+f.amount,0);}
   saveCloses(index,rows){if(!INDEXES[index])throw new Error('INVALID_INDEX');const insert=this.db.prepare('INSERT INTO benchmark_closes VALUES(?,?,?) ON CONFLICT(idx,day) DO UPDATE SET close=excluded.close');for(const row of rows)if(isDay(row.day)&&Number.isFinite(row.close)&&row.close>0)insert.run(index,row.day,row.close);}
