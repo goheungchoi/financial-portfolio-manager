@@ -24,7 +24,11 @@ const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=1
 // US: U.S. cash plus the proceeds of U.S. sales not yet settled (1.5.46).
 // 2026-10-30: 1.5.46 added the unsettled proceeds without a new basis; its first reading took the $279.85 already
 // counted as a withdrawal (cash alone) for a deposit.
-const BASIS={KR:'net-of-confirmed',US:'with-pending-sales'};
+// 2026-11-04 (audit, Stage 2): U.S. cash is cash plus pending proceeds, less U.S. buys filled that KIS does not reflect
+// yet, plus sales filled that it does not reflect yet (electron/valuation.cjs InFlight). Before, a buy paid from
+// unsettled proceeds was counted as spent at the fill while KIS moved nothing until settlement, and the difference
+// (+$97.66 on 2026-10-31) was recorded as a deposit.
+const BASIS={KR:'net-of-confirmed',US:'with-pending-and-in-flight'};
 // Readings saved under the single name name only the Korean basis: builds before 1.5.46 wrote it for U.S. cash alone and
 // 1.5.46 for cash plus unsettled proceeds, and nothing saved tells them apart, so their U.S. basis is unknown (an upgrade
 // need not pass through 1.5.46). Readings without a name predate both.

@@ -215,7 +215,7 @@ test('an unsettled U.S. sale is not a withdrawal: the U.S. reading counts its pe
     return {flows:out,pending:d.pending('acct')};};
   const before=run(0);assert.equal(before.flows[0]?.amount,-279.85,'cash alone: the false withdrawal, reproduced');
   const now=run(0+279.01);assert.deepEqual(now.flows,[],'cash plus pending proceeds: nothing to record, through the sale and its settlement');assert.deepEqual(now.pending,[]);
-  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'\?usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\):null/);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-\(f\?\.buysUSD\?\?0\)\+\(f\?\.sellsUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);
 });
 // 2026-10-30: 1.5.46 added unsettled U.S. sale proceeds to U.S. cash without a new basis. The saved reading ($0.84, cash
 // alone) met the first new one ($279.85 with the $279.01 of Alphabet proceeds), and two hours later a $279.85 deposit was
@@ -251,7 +251,7 @@ test('a reading saved under the single name has an unknown U.S. basis: upgrading
   assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(d.pending('acct'),[],'the U.S. change held on the old basis is dropped');
   assert.deepEqual(read('2026-10-30T10:20:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(read('2026-10-30T13:00:00+09:00',{krCash:414148,usCash:279.85}),[]);
   assert.equal(perf.flows('acct').length,0,'no $279.01 or $279.85 deposit, no withdrawal');
-  assert.deepEqual(JSON.parse(db.prepare('SELECT payload FROM flow_watch').get().payload).basis,{KR:'net-of-confirmed',US:'with-pending-sales'},'saved under the new names');
+  assert.deepEqual(JSON.parse(db.prepare('SELECT payload FROM flow_watch').get().payload).basis,{KR:'net-of-confirmed',US:'with-pending-and-in-flight'},'saved under the new names');
   // A genuine U.S. deposit afterwards is found.
   read('2026-10-30T13:30:00+09:00',{krCash:414148,usCash:379.85});const found=read('2026-10-30T15:31:00+09:00',{krCash:414148,usCash:379.85});
   assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['US',100,true]]);
@@ -262,4 +262,15 @@ test('the single-name upgrade still compares Korean cash, marked as unchecked ag
   const found=read('2026-10-30T10:30:00+09:00',{krCash:1214148,usCash:279.85});
   assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',1000000]],'the ₩800k now plus the ₩200k held');assert.match(found[0].note,/could not be compared/);assert.ok(found[0].note.length<=200);
   assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0);
+});
+// Stage 2 (audit 2026-11-04): 2026-10-30 23:12 KST an RDDT buy ($97.66 net) was paid from unsettled sale proceeds;
+// KIS moved nothing until settlement, and the detector, counting the buy at its fill, recorded a +$97.66 deposit.
+test('a U.S. buy paid from unsettled proceeds is no deposit: in-flight fills are netted from U.S. cash until KIS reflects them',()=>{
+  const rddt={id:'r1',market:'US',side:'Buy',symbol:'NYSE:RDDT',status:'Filled',filled:1,fillPrice:97.42,resultCosts:{netCash:-97.66},createdAt:at('2026-10-30T23:12:00+09:00'),filledObservedAt:at('2026-10-30T23:12:24+09:00')};
+  const run=netted=>{const {d,tick}=setup();tick('2026-10-30T22:00:00+09:00');d.observe('acct',{krCash:414148,usCash:279.85,fx:1335.3,orders:[]});const out=[];
+    for(const [time,cash,pending,inFlight] of [['2026-10-30T23:20:00+09:00',0,279.85,97.66],['2026-10-31T01:30:00+09:00',0,279.85,97.66],['2026-10-31T09:00:00+09:00',0,279.85,97.66],['2026-11-03T09:00:00+09:00',182.19,0,0]]){
+      tick(time);out.push(...d.observe('acct',{krCash:414148,usCash:cash+pending-(netted?inFlight:0),fx:1335.3,orders:[rddt]}));}
+    return out;};
+  assert.equal(run(false)[0]?.amount,97.66,'reproduced: counted at the fill, nothing moved, recorded as a deposit');
+  assert.deepEqual(run(true),[],'netted: nothing to record at the fill or at settlement');
 });

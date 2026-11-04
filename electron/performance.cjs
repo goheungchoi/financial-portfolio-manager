@@ -61,11 +61,17 @@ class PerformanceHistory {
   flowsOn(account,day,market){return this.flows(account).filter(f=>f.day===day&&f.market===market).reduce((sum,f)=>sum+f.amount,0);}
   saveCloses(index,rows){if(!INDEXES[index])throw new Error('INVALID_INDEX');const insert=this.db.prepare('INSERT INTO benchmark_closes VALUES(?,?,?) ON CONFLICT(idx,day) DO UPDATE SET close=excluded.close');for(const row of rows)if(isDay(row.day)&&Number.isFinite(row.close)&&row.close>0)insert.run(index,row.day,row.close);}
   closes(index){return this.db.prepare('SELECT day,close FROM benchmark_closes WHERE idx=? ORDER BY day').all(index).map(row=>({day:row.day,close:row.close}));}
+  // Money movements by category (audit 2026-11-04, Stage 2): external (recorded or confirmed deposits and withdrawals),
+  // transfer (between the Korean and U.S. accounts, including integrated-margin funding) and unresolved (detected,
+  // awaiting you). Settlements and fees are explained from trades by the flow detector and are not recorded as flows.
+  movements(account){return this.flows(account).map(f=>({...f,category:f.detected?'unresolved':f.transfer?'transfer':'external'}));}
   // series: 'KRW' (Korea account), 'USD' (U.S. account) or 'COMBINED' (KRW, U.S. flows converted at that day's rate).
-  series(account,kind){
+  // unresolved: 'exclude' (the headline: a detected change awaiting you is not taken as a deposit or withdrawal, a
+  // provisional scenario, not proof that none happened) or 'include' (the other scenario).
+  series(account,kind,{unresolved='exclude'}={}){
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
-    const history=this.history(account),flows=this.flows(account);let previous=null,index=1,lastFx=null;const points=[];
+    const history=this.history(account),flows=this.flows(account).filter(f=>unresolved==='include'||!f.detected);let previous=null,index=1,lastFx=null;const points=[];
     for(const row of history){
       lastFx=row.fx??lastFx;const value=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(value))continue;
       const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
@@ -86,8 +92,10 @@ class PerformanceHistory {
     return points;
   }
   // Period returns, money gain after flows and the matching benchmark change, all from the same start and end days.
-  summary(account,kind,benchmark){
-    const points=this.series(account,kind);if(points.length<1)return {kind,points,periods:[],start:null,end:null,benchmark};
+  // With unresolved movements in the history the summary is provisional: the headline leaves them out, and
+  // provisional.included gives the period results with them counted (scenarios, not a guaranteed range).
+  summary(account,kind,benchmark,{unresolved='exclude'}={}){
+    const points=this.series(account,kind,{unresolved});if(points.length<1)return {kind,points,periods:[],start:null,end:null,benchmark};
     const end=points.at(-1),closes=benchmark?this.closes(benchmark):[];const closeOn=day=>closes.filter(c=>c.day<=day).at(-1)??null;
     const periods=PERIODS.map(([label,days])=>{
       const target=days==null?points[0].day:days==='ytd'?end.day.slice(0,4)+'-01-01':shift(end.day,days);
@@ -98,7 +106,10 @@ class PerformanceHistory {
       return {label,start:start.day,end:end.day,partial,twr:end.index/start.index-1,gain:end.value-start.value-flows,flows,benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
-    return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics};
+    const open=unresolved==='exclude'?this.movements(account).filter(f=>f.category==='unresolved'&&f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind)):[];
+    const provisional=open.length?{unresolved:open.map(f=>({day:f.day,market:f.market,currency:f.currency,amount:f.amount})),scenario:'headline leaves these out; included counts them as deposits or withdrawals',
+      included:this.summary(account,kind,benchmark,{unresolved:'include'}).periods.map(({label,twr,gain})=>({label,twr,gain}))}:null;
+    return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics,...(provisional?{provisional}:{})};
   }
 }
 // Risk and attribution for the points from a start day: peak, trough, drawdowns, volatility, best and worst days,

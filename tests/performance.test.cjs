@@ -91,3 +91,13 @@ test('history keeps both bounds; funding uncertainty resolving either way is nei
   now=at('2026-11-03');h.record('a',state(1130000,1130000));now+=60000;h.record('a',state(1140000,1140000));
   const p=h.series('a','COMBINED');assert.equal(h.history('a')[1].valuation.resolvedKRW,130000);assert.equal(p[1].pnl,10000,'the ₩10,000 market move is P/L');
 });
+test('an unresolved detected change is left out of the headline return; the summary is provisional and shows it counted',()=>{
+  let now=at('2026-10-29');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);const row=v=>({totals:{KRW:v,USD:0,equityKRW:v},cash:{KRW:v,USD:0},rows:[],fx:{usdKRW:1335}});
+  h.record('a',row(1000000));now=at('2026-10-31');h.record('a',row(1130000));
+  h.addFlow('a',{day:'2026-10-31',market:'US',amount:97.66,note:'U.S. cash rose with no matching trade',detected:true});h.addFlow('a',{day:'2026-10-31',market:'KR',amount:50000,note:'deposit'});
+  assert.deepEqual(h.movements('a').map(m=>m.category).sort(),['external','unresolved']);
+  const s=h.summary('a','COMBINED');const all=s.periods.find(p=>p.label==='All');assert.equal(all.gain,80000,'the ₩50,000 deposit is not gain; the unresolved +$97.66 is not taken as a deposit');
+  assert.ok(s.provisional);assert.deepEqual(s.provisional.unresolved,[{day:'2026-10-31',market:'US',currency:'USD',amount:97.66}]);
+  const inc=s.provisional.included.find(p=>p.label==='All');assert.ok(Math.abs(inc.gain-(80000-97.66*1335))<1,'the other scenario: counted as a deposit');
+  h.confirmFlow('a',h.movements('a').find(m=>m.category==='unresolved').id);assert.equal(h.summary('a','COMBINED').provisional,undefined,'confirmed: no longer provisional');
+});
