@@ -80,7 +80,9 @@ class AlertObservations {
   // Episodes since a time. assessed(symbol, from, to): the time of a completed review between two checks that assessed
   // the symbol (it was triggered by it, gave a verdict on it or held it), which ends the episode.
   episodes(since,{assessed=()=>null}={}){const rows=this.db.prepare('SELECT id,at,payload FROM alert_observations WHERE at>=? ORDER BY at').all(since).map(r=>({id:r.id,at:r.at,...JSON.parse(r.payload)}));
-    return require('./observation-episodes.cjs').group(rows,{parts,endedBy:(key,from,to)=>assessed(key.split('|')[3],from,to)});}
+    // An episode still running at the end belongs to a trading day that has ended unless its market's last check is on it.
+    const lastDay=m=>{const r=rows.at(-1);return r?sessionOf(m,r.at):null;};
+    return require('./observation-episodes.cjs').group(rows,{parts,endedBy:(key,from,to)=>assessed(key.split('|')[3],from,to),finalReason:ep=>{const [,m,d]=ep.key.split('|');return d<lastDay(m)?'session ended':'open';}});}
   // Since a time: price reviews under the current rule and under these rules, the reviews avoided, and for each symbol
   // not held that the current rule alerted on, when these rules first alerted on it the same day (delayed, earlier, or
   // not at all).
