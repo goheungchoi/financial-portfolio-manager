@@ -11,9 +11,9 @@ const ORDER_TOOL={type:'function',name:'set_conditional_order',description:'Arm 
 const cut=(text,n)=>String(text??'').trim().replace(/\s+/g,' ').slice(0,n);
 const isSymbol=s=>typeof s==='string'&&/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(s);
 const fail=reason=>({status:'rejected',reason});
-const TEMPORARY=/KIS_ORDER_BUSY|TIMEOUT|NETWORK|RATE_LIMIT/;
+const TEMPORARY=/KIS_ORDER_BUSY|TIMEOUT|NETWORK|RATE_LIMIT|SERVER_ERROR|SESSION_CLOSED|temporary/;
 // Broker order statuses of a sell that was sent: a stop whose sell got this far did its job.
-const SENT=new Set(['Accepted','Partially filled','Filled']);
+const SENT=new Set(['Accepted','Partially filled','Filled']),LAPSED=new Set(['Canceled','Rejected','Expired']);
 const describe=e=>e?.code?`${e.code}${e.detail?`: ${e.detail}`:''}`:'INVALID';
 class AgentDesk {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS agent_note_history(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,replacedAt INTEGER NOT NULL,reason TEXT NOT NULL);CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
@@ -85,15 +85,19 @@ class AgentDesk {
   // broker (sellStatus says Accepted, Partially filled or Filled); one that was cancelled, expired, is still waiting for
   // approval, or that the broker refused or cancelled does not, and is reported as replacement with that status.
   // temporary: refused for a passing reason (another order being sent, a timeout), so re-arming is expected to work.
+  // A submitted stop whose sell the broker later cancelled, refused or let expire (sellOrder) protects nothing from then
+  // on: its unfilled shares are listed as unprotected (lapsed), so a partial fill keeps the rest visible.
   unprotected(scope,positions){this.expire(scope);const all=this.rows('conditional_orders',scope),live=o=>o.status==='armed'||o.status==='firing';
-    const broker=o=>{try{return this.sellStatus?.(o)??null;}catch{return null;}};
-    // What a closed stop did: rejected, settled (its sell is at or through the broker), or nothing yet.
-    const result=o=>{if(o.status==='rejected')return 'rejected';if(o.status!=='submitted'&&o.status!=='proposed')return null;const s=broker(o);return (s?SENT.has(s):o.status==='submitted')?'settled':null;};
+    const broker=o=>{try{return this.sellStatus?.(o)??null;}catch{return null;}},filled=o=>{try{return Math.max(0,Number(this.sellOrder?.(o)?.filled)||0);}catch{return 0;}};
+    // What a closed stop did: rejected, lapsed (sent, then cancelled, refused or expired at the broker), settled (its sell
+    // is at or through the broker), or nothing yet.
+    const result=o=>{if(o.status==='rejected')return 'rejected';if(o.status!=='submitted'&&o.status!=='proposed')return null;const s=broker(o);if(o.status==='submitted'&&LAPSED.has(s))return 'lapsed';return (s?SENT.has(s):o.status==='submitted')?'settled':null;};
     return Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).flatMap(([symbol,p])=>{const stops=all.filter(o=>o.symbol===symbol&&o.side==='Sell'&&o.purpose==='stop_loss');const at=stops.findIndex(o=>!live(o)&&result(o)),last=stops[at];
-      if(!last||result(last)!=='rejected'||last.acknowledgedAt)return [];
-      const needed=Math.min(p.quantity,last.quantity),covered=stops.filter(live).reduce((n,o)=>n+o.quantity,0);if(covered>=needed)return [];
+      const how=last?result(last):null;if(!last||!['rejected','lapsed'].includes(how)||last.acknowledgedAt)return [];
+      const done=how==='lapsed'?filled(last):0,needed=Math.min(p.quantity,last.quantity-done),covered=stops.filter(live).reduce((n,o)=>n+o.quantity,0);if(needed<1||covered>=needed)return [];
       const later=stops.slice(0,at).find(o=>!live(o));
-      return [{symbol,orderId:last.id,quantity:needed,heldQuantity:p.quantity,coveredQuantity:covered,...(covered>0?{partial:true}:{}),rejectedAt:new Date(last.closedAt).toISOString(),outcome:last.outcome??null,temporary:TEMPORARY.test(last.outcome??''),
+      return [{symbol,orderId:last.id,quantity:needed,heldQuantity:p.quantity,coveredQuantity:covered,...(covered>0?{partial:true}:{}),rejectedAt:new Date(last.closedAt).toISOString(),
+        outcome:how==='lapsed'?`Its sell reached the broker and was then ${broker(last).toLowerCase()} there with ${done} of ${last.quantity} shares filled.`:last.outcome??null,...(how==='lapsed'?{lapsed:{brokerStatus:broker(last),filled:done}}:{}),temporary:how!=='lapsed'&&TEMPORARY.test(last.outcome??''),
         ...(later?{replacement:{orderId:later.id,status:later.status,...(broker(later)?{brokerStatus:broker(later)}:{})}}:{})}];});}
   // The user has seen an unprotected holding and accepts it; the rejected stop stops being listed.
   dismissUnprotected(scope,orderId){const o=this.rows('conditional_orders',scope,'rejected').find(x=>x.id===orderId);if(!o)throw new Error('NOT_FOUND');this.update(o,{acknowledgedAt:this.clock()});}

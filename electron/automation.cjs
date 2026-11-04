@@ -49,7 +49,7 @@ class Automation {
     this.scheduleObserver=new (require('./schedule-observer.cjs').ScheduleObserver)(db);
     this.researchGaps=new (require('./research-gaps.cjs').ResearchGaps)(db);
     {const W=require('./watch-alerts.cjs');this.watchAlerts=new W.WatchAlerts();this.alertObservations=new W.AlertObservations(db);}this.reviewGate=new (require('./review-gate.cjs').ReviewGate)(db);this.waits=new (require('./waits.cjs').Waits)(db);this.pending=new (require('./pending-decisions.cjs').PendingDecisions)(db);this.assessments=new (require('./assessments.cjs').Assessments)(db);
-    this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db,Date.now,()=>{try{return this.live?.identity()??null;}catch{return null;}});this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);this.desk=new (require('./agent-desk.cjs').AgentDesk)(db);this.desk.sellStatus=o=>{const id=o.orderId??o.proposalId;return id?this.engineOrders().find(r=>r.id===id)?.status??null:null;};this.narratives=new (require('./narrative.cjs').NarrativeStore)(db);this.replays=new (require('./replay.cjs').ReplayStore)(db);this.episodes=new (require('./episodes.cjs').EpisodeLibrary)(db);db.exec('CREATE TABLE IF NOT EXISTS narrative_slots(id INTEGER PRIMARY KEY CHECK(id=1),slot TEXT NOT NULL)');
+    this.scoreboard=new (require('./scoreboard.cjs').Scoreboard)(db,Date.now,()=>{try{return this.live?.identity()??null;}catch{return null;}});this.guardrails=new (require('./guardrails.cjs').Guardrails)(db);this.newsEvents=new (require('./news-events.cjs').NewsEvents)(db);this.digest=new (require('./daily-digest.cjs').DailyDigest)(db);this.scoutStore=new (require('./scout.cjs').ScoutStore)(db);const feedback=require('./scout-feedback.cjs');this.briefs=new feedback.BriefStore(db);this.scoutScorecard=new feedback.ScoutScorecard(db,this.scoreboard);this.desk=new (require('./agent-desk.cjs').AgentDesk)(db);this.desk.sellStatus=o=>{const id=o.orderId??o.proposalId;return id?this.engineOrders().find(r=>r.id===id)?.status??null:null;};this.desk.sellOrder=o=>{const id=o.orderId??o.proposalId;return id?this.engineOrders().find(r=>r.id===id)??null:null;};this.narratives=new (require('./narrative.cjs').NarrativeStore)(db);this.replays=new (require('./replay.cjs').ReplayStore)(db);this.episodes=new (require('./episodes.cjs').EpisodeLibrary)(db);db.exec('CREATE TABLE IF NOT EXISTS narrative_slots(id INTEGER PRIMARY KEY CHECK(id=1),slot TEXT NOT NULL)');
     const row=db.prepare('SELECT payload FROM automation_settings WHERE id=1').get();this.config={...DEFAULTS,...(row?JSON.parse(row.payload):{})};this.sessionArmed=false;this.lastError=null;this.lastSuccess=0;this.savedAt=null;if(!row)this.saveConfig();
   }
   // The account a review or console entry belongs to: the paper account, or the connected KIS account (its hashed identity).
@@ -813,15 +813,28 @@ class Automation {
   async fireConditional(order){
     const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);
       if(status==='rejected'&&order.side==='Sell'&&order.purpose==='stop_loss')try{this.notify?.('stop-rejected-'+order.id,`Stop loss for ${order.symbol} was rejected: ${outcome} The position is not protected until a new one is armed.`);}catch{}return saved;};
-    const us=/:/.test(order.symbol);const engine=us?this.usLive:this.live;if(!engine)return note('rejected','No account for this market.');
-    const BUSY='another order in progress';const busy=()=>{if(order.waiting!==BUSY)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): another order for this market is being sent; checking again in 10 seconds.`);this.desk.update(order,{status:'armed',waiting:BUSY,nextCheckAt:Date.now()+10000});};
+    // The market comes once from the instrument (a U.S. symbol carries its exchange, as NASD:NVDA) and must be the
+    // account's. Audit 2026-11-04: the Buy checks read an undeclared market, so every conditional Buy threw a
+    // ReferenceError that was reported as a broker refusal.
+    const market=/:/.test(order.symbol)?'US':'KR';const engine=market==='US'?this.usLive:this.live;if(!engine)return note('rejected','No account for this market.');
+    if(engine.market&&engine.market!==market)return note('rejected',`Internal error (MARKET_MISMATCH): ${order.symbol} is a ${market} listing but the account trades ${engine.market}. Nothing was sent.`);
+    // A proposal this order made that never reached KIS is retired before the order is retried, so a retry never leaves two
+    // proposals for one order. status: the engine's record of it (null before any proposal or when the engine has none).
+    let proposal=null;const status=id=>{try{return engine.orders?.().find(r=>r.id===id)?.status??null;}catch{return null;}};
+    const retire=()=>{if(proposal&&status(proposal.id)==='Ready')try{engine.annotate?.(proposal.id,{expiresAt:Date.now(),reason:'SUPERSEDED'});}catch{}};
+    const BUSY='another order in progress';const busy=()=>{retire();if(order.waiting!==BUSY)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): another order for this market is being sent; checking again in 10 seconds.`);this.desk.update(order,{status:'armed',waiting:BUSY,nextCheckAt:Date.now()+10000});};
+    // A passing refusal before anything reached KIS (rate limit, timeout, network, server): armed again for up to three
+    // attempts a minute apart, each logged as not executed, then closed as rejected (temporary).
+    const retry=code=>{retire();const retries=(order.retries??0)+1;if(retries>3)return note('rejected',`Not sent: ${code} on three attempts in a row (temporary). Nothing reached the broker.`,{retries});
+      this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not executed, ${code} before anything reached the broker; trying again in a minute (attempt ${retries} of 3).`);this.desk.update(order,{status:'armed',waiting:`temporary refusal (${code})`,retries,nextCheckAt:Date.now()+60000});};
+    const closed=()=>this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
-      const ctx=await engine.context(us?await this.refreshUS():null);
-      if(!ctx.marketSession?.open){this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});return;}
+      const ctx=await engine.context(market==='US'?await this.refreshUS():null);
+      if(!ctx.marketSession?.open)return closed();
       const quote=ctx.quotes.find(q=>q.symbol===order.symbol);if(!(quote?.price>0)){this.desk.update(order,{status:'armed',waiting:'no fresh quote',nextCheckAt:Date.now()+60000});return;}
       const formula=require('./formula.cjs');const base=this.formulaData(ctx.quotes);const check=formula.checkConditions(order.conditions,order.combine,{...base,price:sym=>ctx.quotes.find(q=>q.symbol===sym)?.price??base.price(sym)});
-      if(!check.met){this.desk.update(order,{status:'armed',waiting:null,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
+      if(!check.met){this.desk.update(order,{status:'armed',waiting:null,retries:0,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
       // Priced from a fresh order book with limitPrice as the bound (a sale's floor, a purchase's cap); without a book for a
       // minute the order stays armed and a review is asked for.
       const placement=await this.placementPrice({symbol:order.symbol,side:order.side,bound:order.limitPrice??null,id:order.id,still:()=>this.watchScope()===scope});
@@ -836,14 +849,33 @@ class Automation {
       if(order.side==='Buy'){
         const cap=ctx.equity*this.config.conditionalMaxOrderPct/100;if(!(notional<=cap))return note('rejected',`Order value ${Math.round(notional)} is above ${this.config.conditionalMaxOrderPct}% of equity (${Math.round(cap)}).`,{results:check.results});
         if(!(ctx.cash>=notional*1.005))return note('rejected','Not enough cash for the order and fees.',{results:check.results});
+        // The same rule as a review's Buy: blocked only in the market whose daily loss limit is reached.
         const emergency=this.emergencyState();if((emergency.activeMarkets??(emergency.active?[market]:[])).includes(market)&&this.config.lossAction!=='review')return note('rejected','New buys are blocked after the daily loss limit.',{results:check.results});
       }
-      const proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit});if(order.limitPrice>0)engine.annotate?.(proposal.id,{tracking:{bound:order.limitPrice}});
+      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit});if(order.limitPrice>0)engine.annotate?.(proposal.id,{tracking:{bound:order.limitPrice}});
       const cap=this.config.maxAutoOrdersPerDay;const capReached=cap>0&&this.guardrails.autoOrdersToday()>=cap;
       const auto=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval&&!capReached;
-      if(auto){const placed=await engine.autoSubmit(proposal.id);return note('submitted',`Submitted at ${limit} for ${quantity} shares.`,{proposalId:proposal.id,orderId:placed?.id??null,results:check.results});}
-      return note('proposed',capReached?`Daily automatic order limit reached; proposal ${proposal.id} awaits approval.`:`Proposal at ${limit} for ${quantity} shares awaits approval.`,{proposalId:proposal.id,results:check.results});
-    }catch(error){const code=/^[A-Z_]{3,40}$/.test(error?.code??error?.message??'')?(error.code??error.message):'ORDER_FAILED';if(code==='KIS_ORDER_BUSY')return busy();return note('rejected',`The broker or a risk check refused it (${code}).`);}
+      const waits=why=>note('proposed',`Not executed: proposal ${proposal.id} at ${limit} for ${quantity} shares ${why}. Nothing is at the broker until it is approved.`,{proposalId:proposal.id,results:check.results});
+      if(!auto)return waits(capReached?'awaits your approval (daily automatic order limit reached)':'awaits your approval');
+      // What KIS did with it, from the engine's record: accepted, refused, or unclear. An unclear reply is not accepted
+      // or filled and is never retried here: the account takes no new order until KIS order history settles it.
+      const placed=await engine.autoSubmit(proposal.id);const sent=placed?.status??'Accepted';
+      if(placed?.reason==='APPROVAL_REQUIRED')return waits('needs your approval (extended session or product rule)');
+      if(sent==='Rejected'&&placed.reason==='SESSION_CLOSED')return closed();
+      if(sent==='Rejected')return note('rejected',`The broker rejected it (${placed.reason??'BROKER_REJECTED'}${placed.brokerCode?`, KIS ${placed.brokerCode}`:''}). No order was placed.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,results:check.results});
+      if(sent==='Uncertain'||sent==='Submitting')return note('submitted',`Sent at ${limit} for ${quantity} shares, but the broker's reply was unclear (ORDER_UNCERTAIN): not confirmed as accepted or filled. New orders on this account wait until KIS order history confirms it; it is not retried.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,unconfirmed:true,results:check.results});
+      return note('submitted',`Submitted at ${limit} for ${quantity} shares.`,{proposalId:proposal.id,orderId:placed?.id??null,brokerStatus:sent,results:check.results});
+    }catch(error){
+      // unsent: nothing of it can be at KIS (no proposal, or the engine's record says it was never placed or was refused).
+      const f=require('./broker-errors.cjs').classify(error);const at=proposal?status(proposal.id):null;const unsent=!['Submitting','Uncertain','Accepted','Partially filled','Filled','Cancellation uncertain'].includes(at);
+      if(f.code==='KIS_ORDER_BUSY')return busy();
+      if(f.kind==='temporary'&&unsent)return f.code==='SESSION_CLOSED'?(retire(),closed()):retry(f.code);
+      const left=proposal?` Proposal ${proposal.id} was not sent${at==='Ready'?'':` (its status: ${at??'unknown'})`}.`:' Nothing was proposed.';
+      if(f.kind==='internal'){this.log(order.id,'System','Conditional order · internal error',`${order.side} ${order.quantity} ${order.symbol}: ${f.type}${f.where?` at ${f.where}`:''}. This is a fault in the app, not a broker or risk refusal.`);
+        return note('rejected',unsent?`Internal error in the app (INTERNAL_ERROR, ${f.type}${f.where?` at ${f.where}`:''}).${left} Nothing was sent to the broker.`:`Internal error in the app (INTERNAL_ERROR, ${f.type}${f.where?` at ${f.where}`:''}) after proposal ${proposal.id} reached status ${at}: it may be at the broker. Check the order list before arming another.`,{failure:f});}
+      if(f.kind==='uncertain'||!unsent)return note('submitted',`The broker's reply was unclear (${f.code}): not confirmed as accepted or filled. New orders on this account wait until KIS order history confirms it; it is not retried.`,{proposalId:proposal?.id??null,brokerStatus:at,unconfirmed:true,failure:f});
+      if(f.kind==='broker')return note('rejected',`The broker rejected it (${f.code}${f.brokerCode?`, KIS ${f.brokerCode}`:''}).${left}`,{failure:f});
+      return note('rejected',`An app order check refused it (${f.code}).${left}`,{failure:f});}
   }
   deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
