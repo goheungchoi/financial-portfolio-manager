@@ -82,9 +82,12 @@ test('a filled Korean order is reconciled from the live order history and stops 
   const e=new LiveEngine(new DatabaseSync(':memory:'),broker,()=>({status:'connected',snapshot}),{market:'KR'});e.day=()=>'2026-10-16';
   e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
   const buy=e.propose({symbol:'990020',side:'Buy',quantity:3,limitPrice:58700});await e.submit(buy.id,'PLACE LIVE ORDER');
+  // KIS's balance shows the shares once they fill (a sale can only take shares the balance holds: credit-paths.cjs).
+  snapshot.holdings=[{symbol:'990020',name:'노스윈드건설',quantity:3,availableQuantity:3,cost:58700,price:58700}];
   const stop=e.propose({symbol:'990020',side:'Sell',quantity:3,limitPrice:54000});await assert.rejects(e.submit(stop.id,'PLACE LIVE ORDER'),/RECONCILIATION_REQUIRED/,'blocked until the fill is recorded');
   await e.reconcile();const done=e.orders().find(o=>o.id===buy.id);assert.deepEqual([done.status,done.filled,done.fillPrice],['Filled',3,58700]);
-  const again=e.propose({symbol:'990050',side:'Sell',quantity:3,limitPrice:54000});assert.equal((await e.submit(again.id,'PLACE LIVE ORDER')).status,'Accepted','the stop-loss can be placed once the fill is recorded');
+  // The same proposal (a second one would compete for the same three shares: credit-paths.cjs reservations).
+  assert.equal((await e.submit(stop.id,'PLACE LIVE ORDER')).status,'Accepted','the stop-loss can be placed once the fill is recorded');
 });
 test('failed order checks are shown to reviews as unconfirmed, raise one alert, and clear on success',async()=>{
   const {LiveEngine}=require('../electron/live-engine.cjs');const {DatabaseSync}=require('node:sqlite');const {combinedContext}=require('../electron/combined-context.cjs');
@@ -96,6 +99,8 @@ test('failed order checks are shown to reviews as unconfirmed, raise one alert, 
   e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE LIVE');
   assert.equal(e.orderReconciliation(),null,'nothing open, nothing to confirm');
   const buy=e.propose({symbol:'990020',side:'Buy',quantity:3,limitPrice:58700});await e.submit(buy.id,'PLACE LIVE ORDER');
+  // KIS's balance shows the shares once they fill (a sale can only take shares the balance holds: credit-paths.cjs).
+  snapshot.holdings=[{symbol:'990020',name:'노스윈드건설',quantity:3,availableQuantity:3,cost:58700,price:58700}];
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const logs=[],alerts=[];const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:50000}],async()=>50000),{request:async()=>({})},(id,role,title,body)=>logs.push(title));a.notify=(id,m)=>alerts.push(id);
   for(let i=0;i<4;i++){await assert.rejects(e.reconcile(),/INVALID_RESPONSE/);a.observeReconcile('KR',e.reconcileHealth);}
