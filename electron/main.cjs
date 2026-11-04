@@ -381,7 +381,7 @@ app.whenReady().then(async () => {
     // KRW committed to U.S. buys moves money between the markets: the daily loss leaves it out (transfer flows settle
     // it), while new exposure is measured with it deducted.
     const f=v.components.find(c=>c.name==='usBuyFunding');return {low:v.equity.low,high:v.equity.high,version:require('./valuation.cjs').VERSION,loss:{low:v.equity.low-(f?.low??0),high:v.equity.high-(f?.high??0)}};};
-  live.netEquityOf=snapshot=>marketValue('KR',snapshot);usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
+  live.netEquityOf=snapshot=>marketValue('KR',snapshot);live.creditApproved=()=>automation.config.creditProtectionApproved===true;usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
   setInterval(recordValue,60000).unref();

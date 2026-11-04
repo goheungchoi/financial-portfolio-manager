@@ -56,14 +56,21 @@ class LiveEngine {
     const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(command.symbol)??null}):null;
     // Leveraged and inverse products need their own opt-in and cap; without automatic mode they wait for manual approval.
     const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:this.exposureBase(balance)+this.integratedFunding(balance),holdings:balance.holdings}):null;
+    // Stage 3 (audit 2026-11-04): a credit path whose broker fields are not confirmed cannot be proposed at all (the app
+    // records the idea as a draft instead), and a closing order is limited to what remains in its own lot after closing
+    // orders already waiting on it, so it can never flip the position (electron/credit-paths.cjs).
+    const CP=require('./credit-paths.cjs');const path=CP.pathStatus(credit?.kind,{approved:this.creditApproved?.()===true});if(!path.executable)throw Object.assign(new Error('CREDIT_PATH_UNVERIFIED'),{detail:path.reason});
+    CP.check(balance,{symbol:command.symbol,side:command.side,quantity:command.quantity,credit},this.orders());
     let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null});}
-    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||Boolean(gate?.requiresApproval)}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
+    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||Boolean(gate?.requiresApproval)||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
   async submit(id,confirmation) {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;
     try {
       let order=this.orders().find(row=>row.id===id);if(!order)throw new Error('UNKNOWN_ORDER');
       if(order.status!=='Ready')return order;
+      // The same contract checks again at submission: a path not confirmed now is never sent, approval or not.
+      if(order.credit&&!require('./credit-paths.cjs').pathStatus(order.credit.kind).executable)throw new Error('CREDIT_PATH_UNVERIFIED');
       const environment=this.getConnection().snapshot.environment;
       if(confirmation!==(environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER'))throw new Error('APPROVAL_REQUIRED');
       if(!this.enabled||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
@@ -72,6 +79,8 @@ class LiveEngine {
       const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
       const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})}});
+      // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
+      require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
       // Percentage limits use one base: the account value plus the KRW that funds U.S. buys through integrated margin (the
       // U.S. account alone may hold nothing, which would otherwise block every buy or skip the leveraged-product check).
@@ -96,8 +105,9 @@ class LiveEngine {
       if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
-      // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, so the order was not placed.
-      catch(error){if(error.message==='SESSION_CLOSED'){order={...order,status:'Rejected',reason:'SESSION_CLOSED'};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
+      // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
+      // credit-path check before the request: the order was not placed.
+      catch(error){if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
       this.save(order);return order;
     }finally{this.busy=false;}
   }

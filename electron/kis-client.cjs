@@ -278,6 +278,8 @@ class KisReadOnlyClient {
   }
   // Credit order (order-credit): margin buy/repay and short sale/cover. Live accounts only; KIS does not support it on mock.
   async placeCreditOrder(command) {
+    // Only a credit path whose fields are confirmed is ever sent (electron/credit-paths.cjs, audit 2026-11-04 Stage 3).
+    if(!require('./credit-paths.cjs').pathStatus(command.credit?.kind).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
     await this.authenticate();await this.wait(550);const {seoulDate}=require('./kis-activity.cjs');
     const loanDate=(['margin-buy','short'].includes(command.credit.kind)?seoulDate():command.credit.loanDate).replaceAll('-','');
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:loanDate,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};

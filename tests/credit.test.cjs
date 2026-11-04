@@ -31,16 +31,21 @@ function engine(environment){
   const l=new LiveEngine(d,{request:async(op,payload)=>{calls.push([op,payload]);if(op==='prepare-order')return {ticket:'t',balance:snapshot};if(op==='place-order')return {brokerOrderId:'9'};throw new Error(op);}},()=>({status:'connected',snapshot}));
   l.exposure=new Exposure(d);l.configure({symbols:[],lossLimit:{mode:'off',value:0}},environment==='live'?'ENABLE LIVE':'ENABLE MOCK');return {l,calls};
 }
-test('live engine credit orders: unavailable on mock, approval-gated margin buy passes its credit type to the broker',async()=>{
+// Stage 3 (audit 2026-11-04): only credit paths whose KIS fields are confirmed can be proposed or sent; a margin
+// repayment is limited to its own lot and needs approval until the user approves Stage 3.
+test('live engine credit orders: unavailable on mock; unconfirmed paths are never proposed; a repayment stays in its lot',async()=>{
   const mock=engine('mock');assert.throws(()=>mock.l.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:72000,credit:{kind:'margin-buy'}}),/FEATURE_UNAVAILABLE/);
   const {l,calls}=engine('live');assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:1,limitPrice:72000,credit:{kind:'margin-buy'}}),/INVALID_ORDER/,'side must match the credit kind');
-  assert.throws(()=>l.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:72000,credit:{kind:'margin-buy'}}),/MARGIN_NOT_ENABLED/);
-  l.exposure.savePolicy('acct',{margin:{enabled:true,maxLoanPctOfEquity:40}});l.enableAuto('ENABLE AUTO LIVE');
-  const order=l.propose({symbol:'005930',side:'Buy',quantity:30,limitPrice:72000,credit:{kind:'margin-buy'}});assert.deepEqual(order.credit,{kind:'margin-buy',type:'21',loanDate:null});assert.equal(order.requiresApproval,true);
-  assert.equal((await l.autoSubmit(order.id)).reason,'APPROVAL_REQUIRED');assert.equal(calls.length,0);
-  const placed=await l.submit(order.id,'PLACE LIVE ORDER');assert.equal(placed.status,'Accepted','a margin buy larger than cash is funded by the loan');
-  assert.deepEqual(calls[0][1].command.credit,{kind:'margin-buy',type:'21',loanDate:null});
-  const repay=l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}});assert.equal(repay.credit.type,'27');assert.equal(repay.requiresApproval,false);
+  l.exposure.savePolicy('acct',{margin:{enabled:true,maxLoanPctOfEquity:40},short:{enabled:true,auto:true,maxGrossPctOfEquity:50}});l.enableAuto('ENABLE AUTO LIVE');l.creditApproved=()=>true;
+  for(const [side,credit,symbol] of [['Buy',{kind:'margin-buy'},'005930'],['Sell',{kind:'short'},'005930'],['Buy',{kind:'cover',loanDate:'2026-10-01'},'000660']])
+    assert.throws(()=>l.propose({symbol,side,quantity:1,limitPrice:72000,credit}),/CREDIT_PATH_UNVERIFIED/,`${credit.kind}: not proposed, whatever the settings and approval`);
+  l.creditApproved=()=>false;const repay=l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}});
+  assert.equal(repay.credit.type,'27');assert.equal(repay.requiresApproval,true,'not automatic before Stage 3 is approved');assert.match(repay.restriction,/Requires approval—not automatic protection/);
+  assert.equal((await l.autoSubmit(repay.id)).reason,'APPROVAL_REQUIRED');assert.equal(calls.length,0);
+  assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:6,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}}),/EXCEEDS_LOT/,'5 of its 10 are already waiting');
+  assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:11,limitPrice:72000}),/EXCEEDS_LOT/,'a cash sale takes only the 10 cash shares');
+  l.creditApproved=()=>true;assert.equal(l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}}).requiresApproval,false,'approved: a verified reduction is automatic');
+  const placed=await l.submit(repay.id,'PLACE LIVE ORDER');assert.equal(placed.status,'Accepted');assert.deepEqual(calls.find(c=>c[0]==='prepare-order')[1].command.credit,{kind:'margin-sell',type:'27',loanDate:'2026-09-01'});
 });
 test('AI decisions: credit fields are optional for legacy decisions and must match the side and loan date',()=>{
   const {validateDecision}=require('../electron/ai-client.cjs');const s=['005930'];const base={symbol:'005930',quantity:1,explanation:'x'};
@@ -49,22 +54,15 @@ test('AI decisions: credit fields are optional for legacy decisions and must mat
   assert.equal(validateDecision({...base,action:'Buy',credit:'cover',loanDate:'2026-10-01'},s).loanDate,'2026-10-01');
   for(const bad of [{action:'Buy',credit:'short',loanDate:''},{action:'Sell',credit:'margin-sell',loanDate:''},{action:'Buy',credit:'leverage',loanDate:''},{action:'Hold',credit:'margin-buy',loanDate:''}])assert.throws(()=>validateDecision({...base,...bad,...(bad.action==='Hold'?{symbol:'',quantity:0}:{})},s),/INVALID_AI_RESPONSE/);
 });
-test('client: credit orders are refused on mock, validated, and sent to order-credit with the loan date',async()=>{
+test('client: only confirmed credit paths are sent; a margin repayment goes to order-credit with its loan date',async()=>{
   const mock=new KisReadOnlyClient({...live,environment:'mock'},async()=>{throw new Error('no network expected');});
   await assert.rejects(mock.prepareOrder({symbol:'005930',side:'Buy',quantity:1,limitPrice:100,credit:{kind:'margin-buy',type:'21'}}),/FEATURE_UNAVAILABLE/);
   await assert.rejects(mock.prepareOrder({symbol:'005930',side:'Buy',quantity:1,limitPrice:100,credit:{kind:'short',type:'22'}}),/INVALID_ORDER/,'short is a sale');
   await assert.rejects(mock.prepareOrder({symbol:'005930',side:'Sell',quantity:1,limitPrice:100,credit:{kind:'margin-sell',type:'25'}}),/INVALID_ORDER/,'repayment needs its loan date');
-  const calls=[];const client=new KisReadOnlyClient(live,async(url,options)=>{calls.push({url,options});if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'t',expires_in:3600});if(url.includes('inquire-price'))return reply({rt_cd:'0',output:{stck_prpr:'100',aspr_unit:'1',temp_stop_yn:'N'}});if(url.includes('inquire-credit-psamount'))return reply({rt_cd:'0',output:{max_buy_qty:'7'}});if(url.includes('order-credit'))return reply({rt_cd:'0',output:{ODNO:'0001234'}});throw new Error(url);},async()=>{});
-  client.checkSession=async()=>({open:true});client.getBalance=async()=>({accountKey:'fixture',reportedTotal:10000,holdings:[]});client.getActivity=async()=>({orders:[]});
-  const command={symbol:'005930',side:'Buy',quantity:7,limitPrice:100,credit:{kind:'margin-buy',type:'21'}};assert.equal((await client.prepareOrder(command)).availableQuantity,7);
-  await assert.rejects(client.prepareOrder({...command,quantity:8}),/INSUFFICIENT_CAPACITY/);
-  assert.equal(new URL(calls.find(c=>c.url.includes('inquire-credit-psamount')).url).searchParams.get('CRDT_TYPE'),'21');
-  assert.equal((await client.placeOrder(command)).brokerOrderId,'0001234');const post=calls.find(c=>c.url.includes('order-credit'));
-  assert.equal(post.options.headers.tr_id,'TTTC0052U');const body=JSON.parse(post.options.body);assert.equal(body.CRDT_TYPE,'21');assert.match(body.LOAN_DT,/^\d{8}$/);
+  const calls=[];const client=new KisReadOnlyClient(live,async(url,options)=>{calls.push({url,options});if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'t',expires_in:3600});if(url.includes('order-credit'))return reply({rt_cd:'0',output:{ODNO:'0001234'}});throw new Error(url);},async()=>{});
+  for(const credit of [{kind:'margin-buy',type:'21'},{kind:'short',type:'22'},{kind:'cover',type:'28',loanDate:'2026-10-01'}])
+    await assert.rejects(client.placeOrder({symbol:'005930',side:credit.kind==='short'?'Sell':'Buy',quantity:1,limitPrice:100,credit}),/CREDIT_PATH_UNVERIFIED/,credit.kind);
+  assert.equal(calls.filter(c=>c.url.includes('order-credit')).length,0,'nothing reached order-credit');
   await client.placeOrder({symbol:'005930',side:'Sell',quantity:2,limitPrice:100,credit:{kind:'margin-sell',type:'25',loanDate:'2026-09-01'}});const sell=calls.filter(c=>c.url.includes('order-credit')).at(-1);
-  assert.equal(sell.options.headers.tr_id,'TTTC0051U');assert.equal(JSON.parse(sell.options.body).LOAN_DT,'20260901');
-  // Observed on a live cash-only account: KIS answers APBK1617 to the credit capacity inquiry.
-  const cashOnly=new KisReadOnlyClient(live,async url=>url.endsWith('/oauth2/tokenP')?reply({access_token:'t',expires_in:3600}):url.includes('inquire-price')?reply({rt_cd:'0',output:{stck_prpr:'100',aspr_unit:'1',temp_stop_yn:'N'}}):reply({rt_cd:'4',msg_cd:'APBK1617',msg1:'신용계좌만 신용주문가능금액조회가 가능합니다.'}),async()=>{});
-  cashOnly.checkSession=async()=>({open:true});cashOnly.getBalance=async()=>({holdings:[]});
-  await assert.rejects(cashOnly.prepareOrder(command),/CREDIT_ACCOUNT_REQUIRED/);
+  assert.equal(sell.options.headers.tr_id,'TTTC0051U');const body=JSON.parse(sell.options.body);assert.equal(body.LOAN_DT,'20260901');assert.equal(body.CRDT_TYPE,'25');
 });

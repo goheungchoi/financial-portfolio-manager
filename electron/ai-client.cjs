@@ -92,7 +92,9 @@ function validateDecision(value,symbols,{requirePlan=false}={}) {
     const cancelIf=rawIf.slice(0,5).filter(okIf).map(c=>({expr:c.expr,op:c.op,value:c.value}));
     if(bound!=null||cancelAfter||cancelIf.length||invalid.length)execution={bound,cancelAfter:cancelAfter.slice(0,40),cancelIf,...(invalid.length?{invalid}:{})};}}
   let decision=checkDecision(value,symbols);
-  if(requirePlan&&decision.action==='Buy'&&planGap(plan,{cover:decision.credit==='cover'}))decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a Buy of ${decision.quantity} ${decision.symbol}: ${planGap(plan,{cover:decision.credit==='cover'})}. A Buy needs a thesis, an invalidation point, a stop price, a horizon, the before-and-after portfolio comparison and sourced evidence.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:planGap(plan,{cover:decision.credit==='cover'})}};
+  // Openings need the full plan: a Buy (cash or margin) and a short sale. Covers and repayments reduce exposure and need none.
+  const opening=decision.action==='Buy'&&decision.credit!=='cover'||decision.action==='Sell'&&decision.credit==='short';
+  if(requirePlan&&opening&&planGap(plan))decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a ${decision.action==='Sell'?'short sale':'Buy'} of ${decision.quantity} ${decision.symbol}: ${planGap(plan)}. A Buy or short sale needs a thesis, an invalidation point, a stop price, a horizon, the before-and-after portfolio comparison and sourced evidence.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:planGap(plan,{cover:decision.credit==='cover'})}};
   return {...decision,...(execution&&(decision.action==='Buy'||decision.action==='Sell')?{execution}:{}),...(plan?{plan}:{}),...(complexity?{complexity}:{}),...(strategyCheck?.length?{strategyCheck}:{}),...(verdicts?{planVerdicts:verdicts}:{}),...(brief?{scoutBrief:brief}:{})};
 }
 function checkDecision(value,symbols) {
