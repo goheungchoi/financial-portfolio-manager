@@ -7,7 +7,10 @@
 // 3. Only if the request is still over budget, background sections are compressed section by section (sizing keeps
 //    symbol, shares and binding constraint; order books keep bid, ask, sizes and freshness; and so on), each recorded
 //    as detail the agent can still read. Nothing is cut by row position.
-// 4. If the mandatory snapshot alone cannot fit, the review fails with that reason instead of calling the model.
+// 4. Still over budget: background sections become references, lowest first (REFERENCE_ORDER). A reference keeps
+//    timestamps, a short summary, stale and conflict flags, the rows about held, triggered, ordered or pending symbols,
+//    and, for protective sections, every protection and execution state (KEEP); the full section stays readable.
+// 5. If the snapshot that is never shortened cannot fit, the review fails with that reason instead of calling the model.
 const MANDATORY=['environment','market','currency','baseCurrency','equity','cash','positions','orders','orderReconciliation','equityReliability','equityUncertainty',
   'markets','risk','emergency','marketSession','executionEnabled','automaticExecutionEnabled','buyingPower','productRisk','quotes','universe','triggerEvidence','fx','tradingCosts','userGuidelines','objective'];
 const bytes=value=>Buffer.byteLength(JSON.stringify(value??null));
@@ -33,6 +36,11 @@ const SUMMARIES={
 };
 // Section-specific compression, used only while the request is over budget, in this order.
 const COMPRESS=[
+  // Added 2026-11-04 (audit): background that had no compressor. Sector leads keep each market's time, indices and its
+  // three strongest and weakest sectors; watchlist reasons and research-gap explanations are clipped (gap status and
+  // retry limits stay). Price-watch reasons and desk notes come last, in TIGHT.
+  ['sectorLeads',l=>l&&typeof l==='object'?Object.fromEntries(Object.entries(l).map(([m,v])=>[m,v&&Array.isArray(v.sectors)&&v.sectors.length>6?{...v,sectors:[...v.sectors.slice(0,3),...v.sectors.slice(-3)],sectorCount:v.sectors.length}:v])):l],
+  ['discovery',d=>d&&Array.isArray(d.watchlist)?{...d,watchlist:d.watchlist.map(w=>({...w,...(w.reason?{reason:clipBytes(w.reason,90)}:{})}))}:d],
   // Sections added 2026-10-29 had no compressor, so a review over budget could not shorten them and failed
   // (2026-10-30 09:00 KST: 71,236 of 70,000 bytes, assessments 5,428). The full sections stay readable as detail.
   // An assessment keeps its stale parts, conflict and the ids of the sources it rests on; the claims, dates and
@@ -51,6 +59,7 @@ const COMPRESS=[
   ['similarEpisodes',e=>Array.isArray(e)?e.map(({drivers,sharedThemes,...r})=>r):e],
   ['performance',p=>p?.history?{...p,history:Object.fromEntries(Object.entries(p.history).map(([m,h])=>[m,{since:h.since,currency:h.currency,benchmark:h.benchmark,...(h.returnReliability?{returnReliability:h.returnReliability}:{}),timeWeightedReturns:h.timeWeightedReturns,risk:h.risk?{maxDrawdownPct:h.risk.maxDrawdownPct,currentDrawdownPct:h.risk.currentDrawdownPct,volatilityPct:h.risk.volatilityPct}:undefined}]))}:p],
   ['topStories',t=>Array.isArray(t)?t.map(r=>({title:clip(r.title,120),outlets:r.outlets,...(r.symbols?{symbols:r.symbols}:{})})):t],
+  ['researchGaps',g=>Array.isArray(g)?g.map(({sourcesTried,document,unresolved,...x})=>({...x,...(unresolved?{unresolved:clipBytes(unresolved,120)}:{}),...(sourcesTried?{sourcesTried:sourcesTried.length}:{})})):g],
   ['planGap',g=>g&&Array.isArray(g.targets)?{...g,targets:g.targets.map(({minimumPosition,...t})=>({...t,...(minimumPosition?{minimumPosition:{feasible:minimumPosition.feasible,weightPct:minimumPosition.weightPct}}:{})}))}:g],
 ];
 // Trading costs, only if the request is still over budget after every background section was compressed (before the
@@ -74,22 +83,110 @@ const TIGHT=[
   ['assessments',a=>Array.isArray(a)?a.map(x=>({symbol:x.symbol,updated:x.updated,stale:x.stale,...(x.conflict?{conflict:x.conflict}:{}),held:x.held,sourceIds:x.sourceIds??(x.evidence??[]).map(e=>e.sourceId).filter(Boolean),full:'get_context_detail section assessments'})):a],
   ['waits',w=>Array.isArray(w)?w.map(x=>({symbol:x.symbol,reason:x.reason,...(x.cause?{cause:x.cause}:{}),earliestCheck:x.earliestCheck,holdsResearch:x.holdsResearch})):w],
   ['pendingDecisions',p=>Array.isArray(p)?p.map(x=>({symbol:x.symbol,action:x.action,quantity:x.quantity,market:x.market,since:x.since,...(x.invalidation?{invalidation:clipBytes(x.invalidation,160)}:{}),...(x.proposalId?{proposalId:x.proposalId}:{})})):p],
+  // Last (audit 2026-11-04): price-watch reasons and desk note text, after the assessments. The levels, stops and
+  // triggers themselves are never shortened.
+  ['reviewWatches',w=>Array.isArray(w)?w.map(x=>({...x,...(x.reason?{reason:clipBytes(x.reason,100)}:{})})):w],
+  ['agentDesk',d=>d&&Array.isArray(d.notes)?{...d,notes:d.notes.map(n=>({...n,note:clipBytes(n.note,200)}))}:d],
 ];
 const getPath=(o,p)=>p.split('.').reduce((v,k)=>v?.[k],o);
 const setPath=(o,p,v)=>{const [k,...rest]=p.split('.');return rest.length?{...o,[k]:setPath(o[k]??{},rest.join('.'),v)}:{...o,[k]:v};};
-// limit: the app's byte limit for the first request; target leaves room below it.
+// Every section a review context may hold, with its JSON type (null always allowed). Audit 2026-11-04: agentDesk,
+// reviewWatches, sectorLeads and discovery had no compressor, so a review whose mandatory part was 24.5 KB failed at
+// 70.2 KB. Each section is now one of:
+// - mandatory (MANDATORY): never shortened; trading-cost rows only by COST_ROWS.
+// - protective (PROTECTIVE): holds protection, execution or research-gating state. Shortened like background, but its
+//   reference keeps that state whole (KEEP): armed and rejected stops, triggers, price levels, waits, pending decisions,
+//   order follow-up, research-gap status and retry limits.
+// - background: shortened by the steps above, then replaced by a reference if the request is still over its target.
+// References are made in REFERENCE_ORDER, lowest first. The order is a default, not a claim that a section never matters:
+// every reference keeps the section's timestamps, short summary and stale or conflict flags, every row about a focus
+// symbol (held, in the trigger evidence, in an order, a pending decision or an armed conditional order) and where the
+// full section is (get_context_detail). A section not registered here is treated as background and, once over
+// UNREGISTERED_BYTES, given as a reference from the start and named in the size report (unregistered).
+const TYPES={environment:'string',market:'string',currency:'string',baseCurrency:'string',equity:'number',cash:'number|object',depositCash:'number',pendingSaleProceeds:'number',unsettledKRW:'number',
+  unsettledUncertainKRW:'number',unsettledUSBuysKRW:'number',positions:'object',orders:'array',orderReconciliation:'array|object',equityReliability:'object',equityUncertainty:'object',markets:'array',risk:'object',
+  emergency:'object',marketSession:'object',executionEnabled:'boolean',automaticExecutionEnabled:'boolean',buyingPower:'object',productRisk:'object',quotes:'array',universe:'array',triggerEvidence:'object',fx:'object',
+  tradingCosts:'object',userGuidelines:'string',objective:'string',confirmation:'object',paperVersion:'number|string',
+  agentDesk:'object',orderFollowUp:'object',pendingDecisions:'array',waits:'array',reviewWatches:'array',researchGaps:'array',
+  sectorLeads:'object',discovery:'object',topStories:'array',similarEpisodes:'array',eventCalendar:'array',macro:'object|array',marketRegime:'object',portfolioExposure:'object',marketNarrative:'object',
+  decisionScoreboard:'object',reviewInterval:'object',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
+  lessonConflicts:'array',assessments:'array',orderBooks:'object',reviewScope:'object'};
+const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','confirmation','paperVersion'];
+const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps'];
+const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes','eventCalendar','macro','marketRegime','portfolioExposure','marketNarrative','decisionScoreboard','reviewInterval','performance',
+  'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','orderBooks','reviewScope','waits','pendingDecisions',
+  'orderFollowUp','agentDesk'];
+const UNREGISTERED_BYTES=2000;
+const classOf=key=>MANDATORY.includes(key)||EXTRA_MANDATORY.includes(key)?'mandatory':PROTECTIVE.includes(key)?'protective':REFERENCE_ORDER.includes(key)?'background':null;
+const typeOf=v=>Array.isArray(v)?'array':typeof v;
+// Symbols the decision is about now: held, named by the trigger evidence, ordered, pending or under an armed conditional order.
+function focusSymbols(context){
+  const out=new Set(Object.entries(context.positions??{}).filter(([,p])=>!(p?.quantity<=0)).map(([s])=>s));const add=s=>{if(typeof s==='string'&&s)out.add(s);};
+  const t=context.triggerEvidence;add(t?.symbol);(t?.symbols??[]).forEach(add);(t?.events??[]).forEach(e=>{add(e?.symbol);(e?.symbols??[]).forEach(add);});(t?.results??[]).forEach(r=>String(r?.expr??'').replace(/"([^"]+)"/g,(m,s)=>{add(s);return m;}));
+  for(const o of [...(context.orders??[]),...(context.orderFollowUp?.orders??[]),...(context.pendingDecisions??[]),...(context.agentDesk?.conditionalOrders?.armed??[])])add(o?.symbol);add(context.confirmation?.decision?.symbol);
+  return out;
+}
+const about=(row,focus)=>Boolean(row&&typeof row==='object'&&(focus.has(row.symbol)||Array.isArray(row.symbols)&&row.symbols.some(s=>focus.has(s))));
+const symbolsIn=value=>{const out=new Set();const visit=(x,d)=>{if(!x||typeof x!=='object'||d>4)return;if(typeof x.symbol==='string')out.add(x.symbol);for(const y of Array.isArray(x)?x:Object.values(x))visit(y,d+1);};visit(value,0);return [...out];};
+const META=/^(asOf|updated|updatedAt|since|at|date|day|readAt|staleAfterSeconds|stale|staleBecause|conflict|incomplete|partial|complete|status|enabled|auto|regime|score|kind|minutes)$/;
+const flagged=rows=>rows.filter(r=>r&&typeof r==='object'&&(r.stale===true||Array.isArray(r.stale)&&r.stale.length||r.conflict)).map(r=>({symbol:r.symbol??null,...(r.stale?{stale:r.stale}:{}),...(r.conflict?{conflict:r.conflict}:{})}));
+// What protective and control parts a reference keeps, by section: the client also reads discovery.enabled,
+// reviewInterval.auto, scoutBrief and the scout plan's targets to decide the tools and the decision schema.
+const tightWait=TIGHT.find(([k])=>k==='waits')[1],tightPending=TIGHT.find(([k])=>k==='pendingDecisions')[1];
+const KEEP={
+  agentDesk:(d,focus,pick)=>({triggers:d.triggers,conditionalOrders:d.conditionalOrders,notes:{count:(d.notes??[]).length,index:(d.notes??[]).map(n=>({symbol:n.symbol??null,updated:n.updated??n.updatedAt??null})),...((d.notes??[]).some(n=>about(n,focus))?{focusNotes:pick(d.notes.filter(n=>about(n,focus)))}:{})}}),
+  orderFollowUp:f=>({orders:f.orders}),
+  pendingDecisions:p=>({rows:tightPending(p)}),waits:w=>({rows:tightWait(w)}),
+  reviewWatches:w=>({levels:w.map(x=>({symbol:x.symbol,direction:x.direction,price:x.price,percent:x.percent,...(x.priceFired?{priceFired:true}:{})}))}),
+  researchGaps:g=>({gaps:g.map(x=>({id:x.id,symbol:x.symbol,...(x.metric?{metric:x.metric,period:x.period}:{}),reviews:x.reviews,since:x.since,status:x.status,cause:x.cause,...(x.symbolWait?{symbolWait:{dataReviews:x.symbolWait.dataReviews,since:x.symbolWait.since}}:{})}))}),
+  sectorLeads:l=>Object.fromEntries(Object.entries(l).filter(([,v])=>v&&typeof v==='object'&&!Array.isArray(v)).map(([m,v])=>[m,{asOf:v.asOf,...(Array.isArray(v.sectors)?{strongest:v.sectors.slice(0,2),weakest:v.sectors.slice(-2)}:{})}])),
+  discovery:d=>({enabled:d.enabled}),reviewInterval:r=>({auto:r.auto,minutes:r.minutes}),
+  scoutBrief:b=>({runAllowed:b.runAllowed,remainingRunsToday:b.remainingRunsToday,openBriefs:(b.openBriefs??[]).map(x=>({id:x.id,asOf:x.asOf}))}),
+  scoutPlan:(s,focus,pick,n)=>({cashTargetPct:s.cashTargetPct,targets:(s.targets??[]).map(t=>({symbol:t.symbol,role:t.role,targetWeightPct:t.targetWeightPct,...(t.needsReassessment?{needsReassessment:t.needsReassessment}:{}),...(focus.has(t.symbol)&&t.thesis?{thesis:clipBytes(t.thesis,n)}:{})}))}),
+  performance:p=>Object.fromEntries(Object.entries(p).filter(([k])=>k!=='history')),
+  previousReview:(r,focus,pick,n)=>({action:r.action,...(r.symbol?{symbol:r.symbol,quantity:r.quantity}:{}),verdicts:r.verdicts,explanation:clipBytes(r.explanation,n)}),
+  news:(n,focus)=>({important:n.filter(x=>x?.importance==='high'&&!about(x,focus))}),
+  reviewedLessons:(l,focus,pick,n)=>({lessons:l.map(x=>clipBytes(x,n))}),lessonConflicts:c=>({conflicts:c}),reviewScope:s=>({kind:s.kind,changes:s.changes}),
+  positionSizing:s=>Object.fromEntries(Object.entries(s).filter(([,v])=>v==null||typeof v!=='object')),
+};
+// A row in brief: every text in it (two levels down) clipped to 120 bytes; numbers, dates, flags and ids stay.
+const brief=row=>{const cut=(v,d)=>typeof v==='string'?clipBytes(v,120):d<2&&Array.isArray(v)?v.map(x=>cut(x,d+1)):d<2&&v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,cut(x,d+1)])):v;return cut(row,0);};
+// A section given as a reference: where it is in full, what it held, its timestamps, summary and flags, the rows about
+// focus symbols, and what KEEP preserves for it. short, the last step: focus rows (and desk notes) in brief, and none
+// for a section whose KEEP already lists the state of every row (LISTS_ALL); their texts stay in the full section.
+const LISTS_ALL=new Set(['reviewWatches','researchGaps','waits','pendingDecisions']);
+function reference(key,value,focus,{short=false}={}){const pick=rows=>!short?rows:LISTS_ALL.has(key)?[]:rows.map(brief);
+  const head={reference:`Shortened to fit the request; the full section: get_context_detail section ${key}.`,incomplete:true};const keep=value&&typeof value==='object'&&KEEP[key]?KEEP[key](value,focus,pick,short?120:240):{};
+  if(Array.isArray(value)){const rows=pick(value.filter(r=>about(r,focus))),flags=flagged(value.filter(r=>!about(r,focus)));const others=symbolsIn(value.filter(r=>!about(r,focus)));
+    return {...head,items:value.length,...(rows.length?{focusRows:rows}:{}),...(others.length?{otherSymbols:others.slice(0,40),...(others.length>40?{moreSymbols:others.length-40}:{})}:{}),...(flags.length?{flagged:flags}:{}),...keep};}
+  if(value&&typeof value==='object'){const meta=Object.fromEntries(Object.entries(value).filter(([k,v])=>META.test(k)&&(v==null||typeof v!=='object'||Array.isArray(v)&&v.every(x=>typeof x!=='object'))));
+    const rows=Object.fromEntries(Object.entries(value).filter(([k,v])=>Array.isArray(v)&&!(k in keep)).map(([k,v])=>[k,pick(v.filter(r=>about(r,focus)))]).filter(([,v])=>v.length));
+    const flags=Object.values(value).filter(Array.isArray).flatMap(flagged);
+    return {...head,...meta,...(typeof value.summary==='string'?{summary:clipBytes(value.summary,240)}:{}),...(Object.keys(rows).length?{focusRows:rows}:{}),...(flags.length?{flagged:flags.slice(0,20)}:{}),...keep};}
+  return {...head,bytes:bytes(value),...(typeof value==='string'?{start:clipBytes(value,200)}:{})};
+}
+// limit: the app's byte limit for the first request; target leaves room below it (with the follow-up limit of twice the
+// first, the request stays well inside every research round).
 function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),target=0.92}={}){
-  let out=context;const detail={},steps=[];
+  let out=context;const detail={},steps=[];const focus=focusSymbols(context);
+  // The contract: unregistered sections and values of an unexpected type are reported; a large unregistered section is a
+  // reference from the start, so it cannot grow the request unchecked.
+  const unregistered=Object.keys(context).filter(k=>k!=='detailAvailable'&&!classOf(k)),issues=Object.entries(context).filter(([k,v])=>v!=null&&TYPES[k]&&!TYPES[k].split('|').includes(typeOf(v))).map(([k,v])=>`${k}: ${typeOf(v)}, not ${TYPES[k]}`);
+  for(const key of unregistered)if(bytes(context[key])>UNREGISTERED_BYTES){detail[key]=context[key];out={...out,[key]:reference(key,context[key],focus)};steps.push({section:key,kind:'unregistered',bytesSaved:bytes(context[key])-bytes(out[key])});}
   for(const [path,fn] of Object.entries(SUMMARIES)){const value=getPath(out,path);if(value==null)continue;const next=fn(value);if(bytes(next)<bytes(value)){detail[path]=value;out=setPath(out,path,next);steps.push({section:path,kind:'summary',bytesSaved:bytes(value)-bytes(next)});}}
-  // Background sections, then trading-cost rows, then the tighter step; the size is measured before every section and
-  // shaping stops as soon as the request, with its list of readable sections, is within the target.
+  // Background sections, then trading-cost rows, then the tighter step, then references; the size is measured before
+  // every section and shaping stops as soon as the request, with its list of readable sections, is within the target.
   const measured=()=>wire(Object.keys(detail).length?{...out,detailAvailable:Object.keys(detail)}:out);
-  for(const [list,kind] of [[COMPRESS,'compressed'],[COST_ROWS,'compacted'],[TIGHT,'tightened']])for(const [key,fn] of list){if(measured()<=limit*target)break;
-    if(kind==='compressed'&&MANDATORY.includes(key)||out[key]==null)continue;const value=out[key],next=fn(value);
+  // References, in order; then, only if still over, the same references with their focus rows in brief (built from the
+  // section as it was before its first reference).
+  const before={},order=[...unregistered.filter(k=>!(k in detail)),...REFERENCE_ORDER];
+  const REFERENCES=order.map(key=>[key,value=>{before[key]=value;return reference(key,value,focus);}]),BRIEF=order.map(key=>[key,value=>reference(key,before[key]??value,focus,{short:true})]);
+  for(const [list,kind] of [[COMPRESS,'compressed'],[COST_ROWS,'compacted'],[TIGHT,'tightened'],[REFERENCES,'referenced'],[BRIEF,'referenced in brief']])for(const [key,fn] of list){if(measured()<=limit*target)break;
+    if(kind!=='compacted'&&classOf(key)==='mandatory'||out[key]==null)continue;const value=out[key],next=fn(value);
     if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind,bytesSaved:bytes(value)-bytes(next)});}}
   const available=Object.keys(detail);if(available.length)out={...out,detailAvailable:available};
-  const mandatory=Object.fromEntries(MANDATORY.filter(k=>out[k]!==undefined).map(k=>[k,out[k]]));
-  return {context:out,detail,steps,fits:wire(out)<=limit,report:report(out,limit),mandatoryBytes:wire(mandatory)};
+  const mandatory=Object.fromEntries(Object.keys(out).filter(k=>classOf(k)==='mandatory').map(k=>[k,out[k]]));
+  return {context:out,detail,steps,fits:wire(out)<=limit,report:{...report(out,limit),...(unregistered.length?{unregistered}:{}),...(issues.length?{typeIssues:issues}:{})},mandatoryBytes:wire(mandatory),unregistered,issues};
 }
 // What a request consists of: total wire bytes against the limit and the largest sections.
 // The failure for a first request that does not fit: CONTEXT_MANDATORY_TOO_LARGE when the snapshot a decision must always
@@ -252,4 +349,4 @@ function sameInputs(failed,next,tolerancePct){
 // Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
 // market and what set this review off (a new agent trigger, news event or price watch is material).
 const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
-module.exports={sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};
+module.exports={TYPES,PROTECTIVE,REFERENCE_ORDER,EXTRA_MANDATORY,UNREGISTERED_BYTES,classOf,focusSymbols,reference,sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};

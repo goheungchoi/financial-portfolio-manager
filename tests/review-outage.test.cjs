@@ -10,6 +10,8 @@ const SIZES={objective:700,userGuidelines:4306,reviewedLessons:1077,discovery:21
   similarEpisodes:298,portfolioExposure:673,positionSizing:2111,marketRegime:619,eventCalendar:972,researchGaps:1163,previousReview:657};
 const ko='삼성E&A 수주 잔고와 해외 플랜트 마진 ';// About n UTF-8 bytes of repeated text, cut at a character boundary.
 const fill=(n,unit='x')=>{if(n<=0)return '';let s=unit.repeat(Math.ceil(n/Buffer.byteLength(unit)));while(Buffer.byteLength(s)>n)s=s.slice(0,-1);return s;};
+// Protection state over the limit on its own (never shortened), so a review cannot fit: the fixture for size failures.
+const OVERSIZED_DESK={notes:[],triggers:[],conditionalOrders:{allowed:false,unprotectedNote:'x'.repeat(80000)}};
 const sized=(base,target,unit)=>{const have=rc.bytes(base);return have>=target?base:{...base,_more:fill(target-have-12,unit)};};
 const symbols=n=>Array.from({length:n},(_,i)=>i%3===2?`NASD:T${String(i).padStart(3,'0')}`:String(100000+i));
 function fixture({holdings=4,quoted=19,assessments=2,waits=6,thesis=500,evidence=4,extraAssess=0}={}){
@@ -65,8 +67,11 @@ test('growth: more holdings, longer assessments and more waits still fit with ro
   // Mandatory data alone over the limit: nothing could make it fit.
   const huge={...fixture(),userGuidelines:fill(80000,ko)};const s=rc.shape(huge,{limit:LIMIT});assert.equal(s.fits,false);const e=rc.sizeFailure(s);
   assert.equal(e.message,'CONTEXT_MANDATORY_TOO_LARGE');assert.ok(e.detail.mandatoryBytes>LIMIT);assert.match(e.detail.largest[0],/^userGuidelines:/);
-  // Over after every compressor, mandatory part small: an unshortenable background section.
-  const big={...fixture(),agentDesk:{notes:[{note:fill(80000)}]}};const t=rc.shape(big,{limit:LIMIT});assert.equal(t.fits,false);const f=rc.sizeFailure(t);assert.equal(f.message,'CONTEXT_OVER_BUDGET');assert.ok(f.detail.mandatoryBytes<LIMIT);
+  // Background prose never makes a review fail when the mandatory part fits (Stage 1, 2026-11-04): an 80 KB desk note
+  // becomes a reference, readable in full.
+  const notes={...fixture(),agentDesk:{notes:[{note:fill(80000)}]}};const n=rc.shape(notes,{limit:LIMIT});assert.equal(n.fits,true);assert.equal(n.detail.agentDesk.notes[0].note.length,80000);
+  // Over after every step, mandatory part small: protection state, which is never shortened, is over the limit.
+  const big={...fixture(),agentDesk:OVERSIZED_DESK};const t=rc.shape(big,{limit:LIMIT});assert.equal(t.fits,false);const f=rc.sizeFailure(t);assert.equal(f.message,'CONTEXT_OVER_BUDGET');assert.ok(f.detail.mandatoryBytes<LIMIT);
 });
 test('every shortened section can be read back in full through pagination',()=>{
   for(const c of [failingShape(),fixture({holdings:10,quoted:26,assessments:10,waits:14,thesis:1200})]){const s=rc.shape(c,{limit:LIMIT});
@@ -121,7 +126,7 @@ test('after a size failure: routine quote changes and new trigger evidence do no
   // A price trigger is rebuilt only when its symbol moved past the gate's limit since the failure.
   const sym=Object.keys(base.positions)[0];assert.equal(priceTriggerMoved(failed,{kind:'percent',symbol:sym,price:62400*0.995}),false);assert.equal(priceTriggerMoved(failed,{kind:'percent',symbol:sym,price:62400*0.98}),true);
   // Through the review path: the over-budget review fails, two routine price triggers are skipped (logged once), a fill retries.
-  const over={...base,environment:'local-paper',agentDesk:{notes:[{note:fill(80000)}]}};const {a,events,calls}=harness([over,{...over,quotes:routine.quotes},{...over,quotes:routine.quotes},{...over,positions:filled.positions}]);
+  const over={...base,environment:'local-paper',agentDesk:OVERSIZED_DESK};const {a,events,calls}=harness([over,{...over,quotes:routine.quotes},{...over,quotes:routine.quotes},{...over,positions:filled.positions}]);
   await assert.rejects(a.review('Scheduled review'));assert.equal(a.lastError,'CONTEXT_OVER_BUDGET');
   assert.equal((await a.review('Price movement trigger')).skipped,true);assert.equal((await a.review('Price movement trigger')).skipped,true);
   assert.equal(events.filter(e=>e.title==='Review skipped · same inputs as a failed review').length,1,'logged once');
@@ -197,7 +202,7 @@ test('the mandatory size counts the compacted costs, and mandatory data over the
 // Review of 4bf7185..1dfddb9, P1: after a size failure, an entry level crossed by less than the percentage threshold
 // and a newly met agent trigger were dropped (the level was already marked fired; the trigger lost its identity in a
 // comparison as a scheduled review). Each is a one-off event: it retries, and stays pending if no decision completes.
-const over=base=>({...base,environment:'local-paper',agentDesk:{notes:[{note:fill(80000)}]}});
+const over=base=>({...base,environment:'local-paper',agentDesk:OVERSIZED_DESK});
 const watchRow=(a,scope,w)=>a.db.prepare('INSERT INTO review_watches VALUES(?,?,?) ON CONFLICT(scope,symbol) DO UPDATE SET payload=excluded.payload').run(scope,w.symbol,JSON.stringify(w));
 test('after a size failure, an entry level crossed by less than the percentage threshold retries, and stays pending while no decision completes',async()=>{
   const {retryAfterSizeFailure,priceTriggerMoved}=require('../electron/size-retry.cjs');const RG=require('../electron/review-gate.cjs');

@@ -227,3 +227,125 @@ test('the sections added for waits, pending decisions, assessments and review sc
   assert.equal(shaped.detail.assessments[0].evidence.length,4,'the full section is kept as detail');assert.deepEqual(shaped.context.assessments[0].sourceIds,['src0','src1','src2','src3']);assert.match(shaped.context.assessments[0].full,/get_context_detail section assessments/);assert.ok(Buffer.byteLength(shaped.context.assessments[0].thesis)<=240,'clipped by bytes');
   assert.deepEqual(Object.keys(shape({...context,assessments:context.assessments.slice(0,1),userGuidelines:'g'},{limit:70000}).context.assessments[0]).includes('evidence'),true,'under budget: left whole');
 });
+
+// Stage 1 of the 2026-11-04 audit: every section has a class and a type, and allowed background always fits once the
+// mandatory part does. maxContext: every section at the largest the app produces, in Korean (three bytes a character),
+// for 24 symbols (12 Korean, 12 U.S.), 8 of them held; the user guidelines at their 6,000-character limit.
+const ko=n=>'삼성전자 실적 발표 후 외국인 순매수 지속 여부 확인 '.repeat(Math.ceil(n/27)).slice(0,n);
+function maxContext(){
+  const kr=Array.from({length:12},(_,i)=>String(100100+i)),us=Array.from({length:12},(_,i)=>`NASD:U${i}`),all=[...kr,...us],held=[...kr.slice(0,4),...us.slice(0,4)];
+  const at='2026-11-04T04:00:00.000Z';const cond=(s,i)=>[{expr:`price("${s}")`,op:'<=',value:100+i},{expr:`sma("${s}",20)`,op:'<',value:100},{expr:`rsi("${s}")`,op:'<',value:30},{expr:`ret("${s}",5)`,op:'<',value:-5}];
+  const costs=market=>({market,settings:{krCommissionPct:0.015,usCommissionPct:0.25},tax:{applicability:{status:'estimated'},classification:Object.fromEntries((market==='US'?us:kr).map(s=>[s,{instrument:'stock',incomeTax:'taxable'}]))},
+    heldSale:held.filter(s=>(market==='US')===s.includes(':')).map(s=>({symbol:s,quantity:3,netCash:300,taxableGainKRW:-5000,incomeTax:{status:'incomplete',missingInputs:['gains at other brokers']}})),
+    oneShare:(market==='US'?us:kr).map(s=>({symbol:s,buy:{gross:100,commission:0.25,netCash:-100.25},sell:{gross:100,commission:0.25,transactionTax:0.2,netCash:99.55}}))});
+  return {environment:'kis-combined',currency:'MULTI',baseCurrency:'KRW',equity:1455637,cash:{KRW:407651,USD:182.19},fx:{usdKRW:1341.2},
+    positions:Object.fromEntries(held.map(s=>[s,{quantity:3,costTotal:300,market:s.includes(':')?'US':'KR'}])),orders:[{symbol:kr[5],side:'Buy',quantity:1,status:'Accepted',orderId:'1'}],
+    universe:all.map(s=>({symbol:s,name:ko(12),price:100})),quotes:all.map(s=>({symbol:s,price:100,previousClose:101,changePct:-1,timestamp:1,stale:false})),
+    markets:[{market:'KR',currency:'KRW',equity:705451,cash:407651,marketSession:{open:true},executionEnabled:true,automaticExecutionEnabled:true},{market:'US',currency:'USD',equity:559,cash:182,marketSession:{open:false},executionEnabled:true,automaticExecutionEnabled:true,buyingPower:{usd:466}}],
+    risk:{markets:{KR:{baseline:1},US:null}},emergency:{active:false,activeMarkets:[]},marketSession:{open:true,status:'mixed'},triggerEvidence:{kind:'price',symbol:kr[6],movePct:2.1},
+    userGuidelines:ko(6000),objective:ko(230),tradingCosts:{markets:[costs('KR'),costs('US')]},
+    agentDesk:{notes:all.slice(0,15).map(s=>({symbol:s,note:ko(500),updated:at})),triggers:all.slice(0,5).map((s,i)=>({id:'T-'+i,name:ko(20),conditions:cond(s,i),combine:'all',expires:at})),
+      conditionalOrders:{allowed:true,autoSubmit:true,maxActive:10,armed:held.map((s,i)=>({id:'C-'+i,symbol:s,side:'Sell',quantity:3,limitPrice:null,purpose:'stop_loss',conditions:cond(s,i).slice(0,1),combine:'all',expires:at})),
+        recent:all.slice(8,13).map((s,i)=>({id:'R-'+i,symbol:s,side:'Sell',quantity:1,purpose:'stop_loss',status:'rejected',outcome:ko(60),at})),unprotected:[{symbol:held[7],orderId:'C-x',quantity:3,heldQuantity:3,coveredQuantity:0}],unprotectedNote:ko(300)}},
+    reviewWatches:all.map(s=>({symbol:s,direction:'below',price:95,percent:null,reason:ko(500)})),
+    scoutPlan:{asOf:at,summary:ko(300),cashTargetPct:20,focus:ko(200),targets:all.slice(0,16).map(s=>({symbol:s,name:ko(10),role:'candidate',targetWeightPct:5,thesis:ko(220)})),briefAnswers:Array.from({length:8},(_,i)=>({briefId:'B-'+i,asked:ko(200),answer:ko(300)})),
+      substitutions:Array.from({length:4},(_,i)=>({forSymbol:all[i],alternatives:[{symbol:all[i+1],verdict:'rejected',why:ko(80)}]}))},
+    scoutBrief:{runAllowed:true,remainingRunsToday:3,openBriefs:[{id:'B-x',asOf:at,asked:ko(150)}]},
+    researchGaps:all.slice(0,10).map((s,i)=>({id:'G'+i,symbol:s,metric:ko(15),period:'fy2026 q3',document:ko(25),reviews:i,since:at,unresolved:ko(120),cause:null,sourcesTried:['get_company_research:events','get_market_evidence:order_book'],symbolWait:{dataReviews:i,since:at},status:i>2?'retry limit reached':'retrying'})),
+    waits:all.slice(0,10).map(s=>({symbol:s,reason:'publication_pending',question:ko(240),resolvesOn:ko(80),earliestCheck:at,expires:at,since:at,reviews:5,holdsResearch:true})),
+    pendingDecisions:[{symbol:us[5],action:'Buy',quantity:1,market:'US',since:at,reviews:2,rationale:ko(300),invalidation:ko(80)}],
+    assessments:all.map(s=>({symbol:s,updated:at,strategy:'long-term',horizon:'3y',thesis:ko(500),invalidation:ko(240),evidence:[{sourceId:'s1',claim:ko(100)}],stale:s===kr[9]?['price']:[],held:held.includes(s)})),
+    sectorLeads:{us:{asOf:at,indices:[{label:'S&P 500',changePct:0.3}],sectors:Array.from({length:11},(_,i)=>({sector:'S'+i,etf:'AMEX:X'+i,changePct:2-i/3}))},korea:{asOf:at,sectors:Array.from({length:30},(_,i)=>({sector:ko(6),changePct:3-i/5}))}},
+    discovery:{enabled:true,watchlist:all.map(s=>({symbol:s,name:ko(8),source:'ai',reason:ko(400)}))},
+    news:Array.from({length:40},(_,i)=>({title:ko(80),published:at,symbols:[all[i%24]],importance:i===23?'high':'normal'})),topStories:Array.from({length:20},(_,i)=>({title:ko(80),outlets:3,symbols:[all[i]]})),
+    eventCalendar:all.map((s,i)=>({date:'2026-11-1'+(i%9),kind:'earnings',title:ko(60),symbol:s})),
+    macro:{series:Array.from({length:10},(_,i)=>({id:'M'+i,value:1,date:at,history:Array.from({length:12},(_,j)=>({date:'d'+j,value:j}))}))},
+    marketNarrative:{asOf:at,regime:'risk_off',summary:ko(900),drivers:Array.from({length:6},()=>({kind:'background',title:ko(30),summary:ko(300)}))},marketRegime:{regime:'risk_off',score:-2,components:Array.from({length:8},(_,i)=>({name:'c'+i,value:i,reading:ko(30)}))},
+    portfolioExposure:{sectors:Array.from({length:10},()=>({sector:ko(6),weightPct:10})),beta:1.1,note:ko(150)},decisionScoreboard:{horizonTradingDays:5,scoredDecisions:5,note:ko(100)},
+    performance:{dailyBaseline:1455000,dayPeakEquity:1460000,history:{KR:{since:'2026-10-19',timeWeightedReturns:[],risk:{},daily:ko(1000)},US:{since:'2026-10-24',timeWeightedReturns:[],risk:{}}}},
+    positionSizing:{riskPerTradePct:1,rows:all.map(s=>({symbol:s,price:100,atr:4,stopDistance:8,suggestedStop:92,maxShares:4,limitedBy:'cash',maxValueKRW:400,maxWeightPct:28}))},
+    orderBooks:{readAt:at,staleAfterSeconds:300,books:all.map(s=>({symbol:s,bid:99,ask:100,bidSize:400,askSize:500,spreadPct:0.1,ageSeconds:3,stale:false}))},
+    planGap:{targets:all.slice(0,16).map(s=>({symbol:s,plannedWeightPct:5,heldWeightPct:0,minimumPosition:{feasible:true,weightPct:7,detail:ko(60)}}))},
+    similarEpisodes:Array.from({length:5},(_,i)=>({day:'2026-10-2'+i,title:ko(30),similarity:0.4,drivers:[ko(120),ko(120)]})),
+    reviewedLessons:Array.from({length:5},()=>ko(1000)),previousReview:{at,action:'Hold',verdicts:Object.fromEntries(all.slice(0,8).map(s=>[s,'waiting'])),explanation:ko(400)},
+    reviewInterval:{auto:true,minutes:30,reason:ko(200),updatedAt:1},reviewScope:{kind:'routine',changes:[ko(100)]}};
+}
+const PROTECTION=c=>({triggers:c.agentDesk.triggers,conditionalOrders:c.agentDesk.conditionalOrders});
+const rowsOf=(v,key)=>Array.isArray(v)?v:v[key];
+test('stage 1: every section at its maximum, Korean prose, 24 symbols: fits with headroom and keeps all protection',()=>{
+  const ctx=maxContext(),limit=reviewByteLimit({});assert.ok(rc.wire(ctx)>2*limit,`oversized to start: ${rc.wire(ctx)}`);
+  assert.deepEqual(Object.keys(ctx).filter(k=>!rc.classOf(k)),[],'every fixture section is registered');
+  const s=rc.shape(ctx);assert.equal(s.fits,true,JSON.stringify(s.report));assert.ok(s.report.wireBytes<=limit*0.92,`within the target: ${s.report.wireBytes}`);assert.deepEqual(s.unregistered,[]);assert.deepEqual(s.issues,[]);
+  for(const k of [...MANDATORY_SAME,'markets','objective'])assert.deepEqual(s.context[k],ctx[k],`${k} untouched`);
+  assert.deepEqual(s.context.tradingCosts.markets.map(m=>m.heldSale),ctx.tradingCosts.markets.map(m=>m.heldSale),'tax estimates and their completeness kept');
+  // Protection, levels, waits, pending decisions and research-gap status survive whatever step reached them.
+  assert.deepEqual(PROTECTION(s.context),PROTECTION(ctx),'armed and rejected stops, unprotected holdings and triggers are whole');
+  assert.deepEqual(rowsOf(s.context.reviewWatches,'levels').map(w=>[w.symbol,w.direction,w.price]),ctx.reviewWatches.map(w=>[w.symbol,w.direction,w.price]),'every price level');
+  assert.deepEqual(rowsOf(s.context.researchGaps,'gaps').map(g=>[g.id,g.symbol,g.reviews,g.status]),ctx.researchGaps.map(g=>[g.id,g.symbol,g.reviews,g.status]),'gap status and retry limits');
+  assert.deepEqual(rowsOf(s.context.waits,'rows').map(w=>[w.symbol,w.reason,w.earliestCheck,w.holdsResearch]),ctx.waits.map(w=>[w.symbol,w.reason,w.earliestCheck,w.holdsResearch]));
+  assert.deepEqual(rowsOf(s.context.pendingDecisions,'rows').map(p=>[p.symbol,p.action,p.quantity]),[[ctx.pendingDecisions[0].symbol,'Buy',1]]);
+  // What the client reads to choose the tools and the decision schema.
+  assert.equal(s.context.discovery.enabled,true);assert.equal(s.context.reviewInterval.auto,true);assert.ok(s.context.scoutBrief);assert.deepEqual(s.context.scoutPlan.targets.map(t=>t.symbol),ctx.scoutPlan.targets.map(t=>t.symbol));
+  // A held stock's earnings date stays even though the calendar is an early reference; every referenced section says so.
+  const held=Object.keys(ctx.positions);assert.ok(held.every(h=>rowsOf(s.context.eventCalendar,'focusRows').some(e=>e.symbol===h)),'held stocks keep their calendar entries');
+  for(const st of s.steps.filter(x=>x.kind.startsWith('referenced'))){const r=s.context[st.section];assert.equal(r.incomplete,true,st.section);assert.ok(r.reference.endsWith(`get_context_detail section ${st.section}.`));assert.ok(s.context.detailAvailable.includes(st.section));}
+  assert.ok(s.steps.some(x=>x.kind==='referenced'),'the fixture needed references');
+  // The full sections stay readable.
+  assert.deepEqual(readAll(s.detail,'agentDesk','notes').flatMap(r=>r.data),ctx.agentDesk.notes);assert.deepEqual(readAll(s.detail,'discovery','watchlist').flatMap(r=>r.data),ctx.discovery.watchlist);
+});
+test('stage 1: references follow the default order, lowest first, and stop as soon as the request fits',()=>{
+  const ctx=maxContext();const s=rc.shape(ctx);const order=s.steps.filter(x=>x.kind==='referenced').map(x=>x.section);
+  // A section is passed over only when its reference would not be smaller than what it already is.
+  assert.deepEqual(order,rc.REFERENCE_ORDER.filter(k=>order.includes(k)),'in REFERENCE_ORDER: '+order.join(','));
+  const last=rc.REFERENCE_ORDER.indexOf(order.at(-1));for(const k of rc.REFERENCE_ORDER.slice(0,last))if(ctx[k]!=null&&!order.includes(k))assert.ok(rc.bytes(rc.reference(k,s.detail[k]??ctx[k],rc.focusSymbols(ctx)))>=rc.bytes(s.context[k])||s.steps.some(x=>x.section===k&&x.kind==='referenced in brief'),k);
+  const lighter={...ctx,userGuidelines:'g',reviewedLessons:[],assessments:[]};const fewer=rc.shape(lighter).steps.filter(x=>x.kind.startsWith('referenced'));assert.ok(fewer.length<s.steps.filter(x=>x.kind.startsWith('referenced')).length,'less pressure, fewer references');
+  assert.ok(!fewer.some(x=>x.section==='agentDesk'),'the desk is the last to become a reference');
+});
+test('stage 1: a reference keeps timestamps, summary, flags, focus rows and protective state',()=>{
+  const ctx=maxContext();const focus=rc.focusSymbols(ctx);const held=Object.keys(ctx.positions);
+  assert.ok(held.every(h=>focus.has(h))&&focus.has(ctx.triggerEvidence.symbol)&&focus.has(ctx.orders[0].symbol)&&focus.has(ctx.pendingDecisions[0].symbol),'held, triggered, ordered and pending symbols');
+  assert.ok(!focus.has(ctx.universe.at(-1).symbol),'not every symbol');
+  const desk=rc.reference('agentDesk',ctx.agentDesk,focus);assert.deepEqual(desk.triggers,ctx.agentDesk.triggers);assert.deepEqual(desk.conditionalOrders,ctx.agentDesk.conditionalOrders);
+  assert.equal(desk.notes.count,15);assert.deepEqual(desk.notes.focusNotes.map(n=>n.symbol),ctx.agentDesk.notes.filter(n=>focus.has(n.symbol)).map(n=>n.symbol),'notes on focus symbols kept in full');
+  const narrative=rc.reference('marketNarrative',ctx.marketNarrative,focus);assert.equal(narrative.asOf,ctx.marketNarrative.asOf);assert.equal(narrative.regime,'risk_off');assert.ok(Buffer.byteLength(narrative.summary)<=240);assert.equal(narrative.drivers,undefined);
+  const assessments=rc.reference('assessments',ctx.assessments,focus);assert.deepEqual(assessments.flagged,[{symbol:ctx.assessments[9].symbol,stale:['price']}],'a stale assessment on another symbol stays flagged');assert.equal(assessments.items,24);
+  assert.ok(assessments.focusRows.every(r=>focus.has(r.symbol)));assert.equal(assessments.focusRows.length,[...focus].filter(s=>ctx.assessments.some(a=>a.symbol===s)).length);
+  const news=rc.reference('news',ctx.news,focus);assert.equal(news.important.length,1);assert.ok(news.important.every(n=>n.importance==='high'),'an important headline on another symbol is kept');
+  const gaps=rc.reference('researchGaps',ctx.researchGaps,focus);assert.deepEqual(gaps.gaps.map(g=>g.status),ctx.researchGaps.map(g=>g.status));assert.ok(gaps.gaps.every(g=>!('unresolved' in g)&&!('sourcesTried' in g)),'the explanation moves behind the reference');
+  const text=rc.reference('unknownText','x'.repeat(5000),focus);assert.equal(text.bytes,5002);assert.ok(text.start.length<=200);
+});
+test('stage 1: a section nobody registered is bounded and named; a known section of the wrong type is reported',()=>{
+  const ctx={...maxContext(),newExperiment:{rows:Array.from({length:50},(_,i)=>({symbol:'S'+i,text:ko(300)}))},tiny:{a:1},previousReview:'not an object'};
+  const s=rc.shape(ctx);assert.deepEqual(s.unregistered,['newExperiment','tiny']);assert.deepEqual(s.report.unregistered,['newExperiment','tiny']);
+  assert.equal(s.context.newExperiment.incomplete,true,'over 2,000 bytes: a reference from the start');assert.deepEqual(s.context.tiny,{a:1},'small: left as it is');assert.ok(s.steps.some(x=>x.section==='newExperiment'&&x.kind==='unregistered'));
+  assert.deepEqual(s.detail.newExperiment,ctx.newExperiment,'still readable in full');assert.deepEqual(s.issues,['previousReview: string, not object']);assert.equal(s.fits,true);
+  const under=rc.shape({environment:'kis',universe:[],quotes:[],later:{note:ko(3000)}});assert.equal(under.context.later.incomplete,true,'bounded even when the request is small');
+});
+test('stage 1: when the part that is never shortened alone is over the limit, the review fails with that reason',()=>{
+  const ctx={...maxContext(),quotes:Array.from({length:900},(_,i)=>({symbol:String(200000+i),price:100,previousClose:101,changePct:-1,timestamp:1,stale:false}))};
+  const s=rc.shape(ctx);assert.equal(s.fits,false);assert.ok(s.mandatoryBytes>reviewByteLimit({}));assert.equal(rc.sizeFailure(s).message,'CONTEXT_MANDATORY_TOO_LARGE');
+  assert.deepEqual(s.context.quotes,ctx.quotes);assert.deepEqual(PROTECTION(s.context),PROTECTION(ctx));
+});
+test('stage 1: on a maximum first request, three research rounds of four large Korean replies each stay within the follow-up limit',async()=>{
+  const {researchReview}=require('../electron/research-review.cjs');const cf=require('../electron/context-fit.cjs');const first=rc.shape(maxContext());assert.ok(first.fits);
+  const huge=k=>({overview:{price:216000+k},a:ko(5000),b:ko(5000),c:ko(5000)});const sent=[];let round=0,fetched=0;
+  const request=async({continuation})=>{if(continuation)sent.push(cf.size(continuation));round++;const prior=continuation??[{role:'user',content:JSON.stringify(first.context)}];
+    if(round<4){const calls=[0,1,2,3].map(k=>({name:'get_company_research',callId:`r${round}${k}`,args:{symbol:'100100',sections:['s'+round+k]}}));return {toolCalls:calls,continuation:[...prior,...calls.map(c=>({type:'function_call',call_id:c.callId,name:c.name,arguments:JSON.stringify(c.args)}))],usage:{}};}
+    return {decision:{action:'Hold'},usage:{}};};
+  const r=await researchReview({context:{universe:[{symbol:'100100'}],discovery:{enabled:true}},detail:first.detail,evidence:{get:async()=>({})},request,log:()=>{},discovery:{get_company_research:async()=>{fetched++;return huge(fetched);}}});
+  assert.equal(r.decision.action,'Hold');assert.equal(sent.length,3);assert.ok(sent.every(n=>n<=cf.LIMIT*cf.TARGET),'every follow-up within its fitting point: '+sent.join(','));
+});
+test('stage 1 contract: every section the review builders produce is registered with the size budget',async()=>{
+  // Sections assigned while a review context is assembled (automation.cjs), and those the account engines return.
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/automation.cjs'),'utf8');
+  const body=src.slice(src.indexOf('async assembleReviewContext('),src.indexOf('  deskState(){'));const assigned=[...new Set([...body.matchAll(/\bcontext\.([A-Za-z]+)\s*(?:\?\?)?=(?!=)/g)].map(m=>m[1]))];
+  assert.ok(assigned.includes('agentDesk')&&assigned.includes('reviewWatches')&&assigned.length>25,'the assignments are found: '+assigned.join(','));
+  const {DatabaseSync}=require('node:sqlite');const {LiveEngine}=require('../electron/live-engine.cjs');const {combinedContext}=require('../electron/combined-context.cjs');
+  const engine=market=>{const db=new DatabaseSync(':memory:');const symbol=market==='US'?'NASD:NVDA':'005930';
+    const snapshot={accountKey:'acct',environment:'mock',reportedTotal:10000000,cash:5000000,settledCash:5000000,pendingSaleProceeds:1000,holdings:[{symbol,name:'F',quantity:1,cost:100,price:100}]};
+    return new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[{symbol,price:100,retrievedAt:Date.now()}],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}),{market});};
+  const kr=await engine('KR').context(),us=await engine('US').context();const combined=combinedContext({...kr,tradingCosts:{}},{...us,tradingCosts:{},unsettledKRW:1000,unsettledUncertainKRW:500},{usdKRW:1300},{});
+  const produced=[...new Set([...assigned,...Object.keys(kr),...Object.keys(us),...Object.keys(combined)])];
+  assert.deepEqual(produced.filter(k=>!rc.classOf(k)),[],'unregistered: add each to review-context.cjs TYPES and a class');
+  for(const k of produced)assert.ok(rc.TYPES[k],`${k} has a type`);
+});
