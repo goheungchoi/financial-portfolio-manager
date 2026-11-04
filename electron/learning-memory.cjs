@@ -8,7 +8,9 @@ class LearningMemory {
   history(id,action,value){this.db.prepare('INSERT INTO lesson_history(id,payload) VALUES(?,?)').run(id,JSON.stringify({action,timestamp:Date.now(),...value}));}
   sync(){
     for(const row of this.db.prepare('SELECT payload FROM trade_outcomes').all()){
-      const outcome=JSON.parse(row.payload);if(outcome.side!=='Sell')continue;
+      const outcome=JSON.parse(row.payload);
+      // Lessons come from exits only: a short sale opens a position (audit 2026-11-04, Stage 3); an unknown credit identity is no evidence.
+      if(outcome.side!=='Sell'||evaluate(outcome).effect!=='CLOSE_LONG')continue;
       const id='outcome:'+outcome.id;const assessment=outcome.assessment??evaluate(outcome);
       const evidence={outcomeId:outcome.id,outcomeVersion:outcome.version??1,reviewId:outcome.reviewId,source:outcome.source,environment:outcome.environment,accountKey:outcome.accountKey??null,market:outcome.market,currency:outcome.currency,symbol:outcome.symbol,quantity:outcome.quantity,status:outcome.status,gross:outcome.gross??null,fees:outcome.fees??null,netCash:outcome.netCash??null,gainAfterFees:outcome.gainAfterFees,gainAfterEstimatedTax:outcome.gainAfterEstimatedTax,costBasis:outcome.costBasis,averagePrice:outcome.averagePrice,taxStatus:outcome.taxStatus,method:'Local outcome evaluation; no causal AI diagnosis',confidence:assessment.confidence,evaluation:outcome.evaluation,assessment,decisionContext:outcome.reviewEvidence?{guidelines:outcome.reviewEvidence.guidelines,environment:outcome.reviewEvidence.environment,marketSession:outcome.reviewEvidence.marketSession,quote:outcome.reviewEvidence.quote,position:outcome.reviewEvidence.position,emergency:outcome.reviewEvidence.emergency}:null,thesis:outcome.decision?.explanation??null};
       const signature=createHash('sha256').update(JSON.stringify({evidence,outcomeSignature:outcome.signature??null})).digest('hex');

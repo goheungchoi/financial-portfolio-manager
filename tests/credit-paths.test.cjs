@@ -55,3 +55,15 @@ test('reviews: a cover is not blocked by the loss limit and arms no Sell stop; u
   const armed=[];a.desk.setOrder=(...x)=>{armed.push(x);return {status:'armed'};};a.config.conditionalOrders=true;
   a.followPlan('kis:a',{action:'Buy',symbol:'005930',quantity:1,credit:'none',plan:{thesis:'t',invalidation:'i',stopPrice:90,horizonDays:5,confidence:'low'}},'R');assert.equal(armed.at(-1)[1].side,'Sell');
 });
+test('outcomes keep credit identity: a short opening is an entry, a cover needs its lot, an unknown lot is no evidence',()=>{
+  const {OutcomeLedger}=require('../electron/outcome-ledger.cjs');const {evaluate}=require('../electron/outcome-evaluation.cjs');const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL)');const put=(id,x)=>db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run(id,'acct',JSON.stringify({id,accountKey:'acct',environment:'live',market:'KR',currency:'KRW',symbol:'005930',status:'Filled',quantity:1,filled:1,fillPrice:60000,resultCosts:{gross:60000,commission:9,transactionTax:120,netCash:59871,gainAfterFees:500,basis:'broker'},...x}));
+  put('S1',{side:'Sell',credit:{kind:'short',type:'22',loanDate:'2026-10-01'}});put('C1',{side:'Buy',credit:{kind:'cover',type:'28',loanDate:'2026-10-01'}});put('M1',{side:'Sell',credit:{kind:'margin-sell',type:'27'}});put('P1',{side:'Sell'});
+  new OutcomeLedger(db).sync();const out=id=>JSON.parse(db.prepare('SELECT payload FROM trade_outcomes WHERE id=?').get('broker:'+id).payload);
+  const s=out('S1');assert.deepEqual(s.credit,{kind:'short',type:'22',loanDate:'2026-10-01'});assert.equal(s.effect,'OPEN_SHORT');assert.equal(s.assessment.category,'entry');assert.equal(s.assessment.eligible,false,'no opening-sale reflection');
+  const c=out('C1');assert.equal(c.assessment.effect,'CLOSE_SHORT');assert.equal(c.assessment.category,'data-gap');assert.match(c.assessment.gaps[0],/proceeds of the covered lot/);
+  assert.equal(out('M1').effect,'unknown','a repayment without its loan date is not guessed');assert.match(out('M1').assessment.gaps[0],/identity unknown/);
+  const p=out('P1');assert.equal(p.effect,'CLOSE_LONG');assert.equal(p.assessment.eligible,true);assert.equal(evaluate({side:'Sell',status:'Filled',quantity:1,netCash:100,gainAfterFees:10,fees:1,averagePrice:1,reviewId:'r'}).effect,'CLOSE_LONG','older cash records stay sales');
+  db.exec('CREATE TABLE lessons(id TEXT PRIMARY KEY,text TEXT,approved INTEGER)');const {LearningMemory}=require('../electron/learning-memory.cjs');const m=new LearningMemory(db);m.sync();const ids=db.prepare('SELECT id FROM lesson_evidence').all().map(r=>r.id);
+  assert.ok(ids.includes('outcome:broker:P1'));assert.ok(!ids.includes('outcome:broker:S1'),'a short opening never becomes lesson evidence');assert.ok(!ids.includes('outcome:broker:M1'));
+});

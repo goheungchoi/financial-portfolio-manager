@@ -44,7 +44,11 @@ function korea(k,{us,now}){
     if(brokerNet==null)reasons.push('margin or short positions are open and KIS net assets were not reported');
     // Net assets already deduct loans and short obligations; the U.S. funding adjustment still applies.
     const funding=components.filter(c=>c.name==='usBuyFunding');components.length=0;
-    components.push(part('netAssets',brokerNet??computed,brokerNet!=null?'observed':'derived',brokerNet!=null?'KIS net assets (nass_amt): loans and short obligations already deducted':'cash + holdings + short proceeds - loans - short liability (app sum)'),...funding);
+    // Stage 3 (U4 unresolved): KIS does not say whether net assets deduct short obligations and interest, nor whether
+    // short-sale proceeds are already in projected cash. The value is the range over those readings, the lowest the
+    // headline, so an unconfirmed field never becomes trusted equity or a risk input on its own.
+    const inCash=computed-(k.shortProceeds??0),readings=[brokerNet,computed,inCash].filter(finite);const lo=Math.min(...readings),hi=Math.max(...readings);
+    components.push(part('netAssets',lo,brokerNet!=null?'observed':'derived','KIS net assets (nass_amt), and the app sum with short proceeds counted apart from or inside projected cash',{low:lo,high:hi,note:'credit field meanings unconfirmed (U4)'}),...funding);
     reasons.push('credit field meanings are not yet verified against the KIS contract (Stage 3), and accrued financing is not reported');
     return finish('KRW',k,components,reasons,{credit:{loanTotal:k.loanTotal??null,shortProceeds:k.shortProceeds??null,shortLiability,computedNet:computed,brokerNet},unverified:true},now,{reportedTotal:k.reportedTotal,grossTotal:k.grossTotal??null});
   }
