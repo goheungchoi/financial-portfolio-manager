@@ -35,6 +35,11 @@ function dryRunSummary(c,{assembledAt=Date.now(),account=null,scope=null}={}){
     conditionalOrders:co?{allowed:Boolean(co.allowed),monitoring:co.monitoring??null,armed:(co.armed??[]).map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity,conditions:o.conditions,expires:o.expires}))}:null,
     performance:{KR:perf('KR'),US:perf('US')}};
 }
+// The symbols that started a review and the symbols it assessed: those, its verdicts and decision, and holdings
+// (audit 2026-11-04, Stage 5), so observation episodes can be linked to the reviews that actually looked at them.
+function reviewSymbols(context,decision){const t=context?.triggerEvidence;const trigger=[...new Set([t?.symbol,...(t?.symbols??[]),...(t?.alerts??[]).map(a=>a?.symbol),...(t?.alongside??[]).map(a=>a?.symbol),...(t?.events??[]).flatMap(e=>[e?.symbol,...(e?.symbols??[])])].filter(s=>typeof s==='string'&&s))];
+  const held=Object.entries(context?.positions??{}).filter(([,p])=>p?.quantity>0).map(([s])=>s);
+  return {triggerSymbols:trigger,assessed:[...new Set([...trigger,...(decision?.planVerdicts??[]).map(v=>v.symbol),decision?.symbol,...held].filter(s=>typeof s==='string'&&s))]};}
 class Automation {
   constructor(db,paper,provider,log) {
     this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
@@ -554,7 +559,7 @@ class Automation {
       {const PG=require('./plan-gap.cjs');const missing=PG.missingVerdicts(context,result.decision);const issues=PG.verdictIssues(context,result.decision);if(missing.length||issues.length)this.log(id,'System','Plan verdicts incomplete',[missing.length?`No verdict on ${missing.join(', ')}.`:'',...issues].filter(Boolean).join(' '));}
       if(result.decision.scoutBrief){const {scoutBrief,...decision}=result.decision;result={...result,decision};if(context.scoutBrief){const value=this.briefScout(watchScope,scoutBrief,id);this.log(id,'Tool','Scout brief',JSON.stringify({brief:scoutBrief,result:value}));}}
       const contextEvidence={guidelines:this.config.guidelines,environment:context.environment,marketSession:context.marketSession??null,quote:context.quotes.find(q=>q.symbol===result.decision.symbol)??null,position:context.positions?.[result.decision.symbol]??null,emergency:context.emergency.active,reviewedLessons:context.reviewedLessons,lessonIds};
-      const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,...(result.provider==='openai'?{instructions:require('./ai-client.cjs').instructions()}:{}),...(context.reviewScope?{reviewScope:context.reviewScope.kind}:{}),decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null};
+      const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,...(result.provider==='openai'?{instructions:require('./ai-client.cjs').instructions()}:{}),...(context.reviewScope?{reviewScope:context.reviewScope.kind}:{}),...reviewSymbols(context,result.decision),decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null};
       this.db.prepare('INSERT INTO reviews VALUES(?,?)').run(id,JSON.stringify(recorded));
       if(this.config.scope!=='paper')try{const events=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.runId')=?").all(id).map(r=>JSON.parse(r.payload));this.researchGaps.record(watchScope,result.decision.planVerdicts,require('./research-gaps.cjs').researchFromEvents(events));}catch{}
       try{const {nextOpen}=require('./market-hours.cjs');const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
@@ -612,7 +617,7 @@ class Automation {
         if(context.environment!=='local-paper'&&this.config.autoSubmit&&execution.autoEnabled===false){executionNote=(execution.market==='US'?'U.S.':'Korea')+' automatic execution is off. Proposal awaits manual approval.';this.log(id,'System','Approval required',executionNote);}}
 
       }
-      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,routing};
+      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,routing};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
       // Shadow evaluation: the cheaper model decides the same frozen inputs in the background; it changes nothing.
       if(shadowRun)this.shadowTask=shadowRun.then(shadow=>this.recordShadow(review,assessed,shadow,anchor)).catch(()=>null);
@@ -803,7 +808,12 @@ class Automation {
   // The review gate for the settings page: its mode and what it found over the last 7 days.
   reviewGateState(){let summary=null;try{summary=this.reviewGate.summary(Date.now()-7*86400000);}catch{}return {mode:this.config.reviewGate??'off',summary};}
   // The selective alert rules for the settings page: thresholds and what observation found over the last 7 days.
-  watchlistAlertsState(){const T=this.config.eventTolerancePct;let summary=null;try{summary=this.alertObservations.summary(Date.now()-7*86400000);}catch{}
+  // The completed reviews since a time and the symbols each assessed (triggered by, gave a verdict on or held); reviews
+  // saved before Stage 5 give their verdicts and decision symbol only. Returns assessed(symbol, from, to) for episodes.
+  assessedLookup(since){const list=this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.timestamp')>=? ORDER BY json_extract(payload,'$.timestamp')").all(since).map(r=>JSON.parse(r.payload))
+      .map(r=>({t:r.timestamp,symbols:new Set(r.assessed??[...(r.decision?.planVerdicts??[]).map(v=>v.symbol),r.decision?.symbol].filter(Boolean))}));
+    return (symbol,from,to)=>list.find(r=>r.t>from&&r.t<=to&&r.symbols.has(symbol))?.t??null;}
+  watchlistAlertsState(){const T=this.config.eventTolerancePct;let summary=null;try{const since=Date.now()-7*86400000;summary=this.alertObservations.summary(since,{assessed:this.assessedLookup(since)});}catch{}
     return {mode:this.config.watchlistAlerts,holdingPct:T,watchlistPct:this.config.watchlistMovePct??2*T,summary};}
   // How each watchlist symbol is monitored under the rule in force: a holding, an entry level the AI set, or watching.
   monitoring(){const scope=this.watchScope();if(!scope)return null;const held=new Set(heldSymbols(this.brokerPositions()));const watches=this.watches.list(scope);
@@ -822,7 +832,7 @@ class Automation {
     const fresh=quotes.filter(q=>{const t=q.timestamp??q.retrievedAt;return !q.stale&&q.price>0&&Number.isFinite(t)&&t<=now+1000&&now-t<=90000&&this.sessionOpen(/:/.test(q.symbol)?'US':'KR',now);}).map(q=>({...q,timestamp:q.timestamp??q.retrievedAt}));
     const held=new Set(heldSymbols(this.brokerPositions()));const tolerance=this.config.eventTolerancePct;
     const {trigger,deliver}=this.watchAlerts.check({quotes:fresh,held,baselines:this.lastPrices,watches,tolerance,wide:this.config.watchlistMovePct??2*tolerance,now,ownFired:mode==='observe',skipLevels:mode==='on'?skipLevels:new Set()});
-    if(mode==='observe'){deliver();try{this.alertObservations.record(now,{current,proposed:trigger,held});}catch{}return current;}
+    if(mode==='observe'){deliver();try{this.alertObservations.record(now,{current,proposed:trigger,held,scope});}catch{}return current;}
     for(const symbol of deliver())this.watches.fired(scope,symbol);return trigger;}
   // Today's change of each holding whose market has a session open and whose quote is fresh: [{symbol, changePct}].
   // Korean quotes carry it; U.S. ones are measured against the previous close, from the quote or the daily closes.
