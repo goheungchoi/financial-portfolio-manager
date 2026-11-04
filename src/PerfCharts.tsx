@@ -46,7 +46,9 @@ const End=({x,y,text,className=''}:{x:number;y:number;text:string;className?:str
 const Mark=({x,y,text,below,w,tone=''}:{x:number;y:number;text:string;below?:boolean;w:number;tone?:string})=><g className={`perf-mark ${tone}`}><circle cx={x} cy={y} r="3.5"/><text x={Math.min(Math.max(x,L+40),w-R-40)} y={below?y+16:y-10} textAnchor="middle">{text}</text></g>;
 const signedMoney=(v:number,fmt:(v:number)=>string)=>(v>0?'+':v<0?'−':'')+fmt(Math.abs(v));
 // Account value: a line with a soft area, the day's high-low band, the start level, and the period high and low.
-export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows:{day:string;value:number;high:number;low:number}[];fmt:(v:number)=>string;currency?:string;height?:number;marks?:boolean}){
+// Account value, not investment return: the hover gives the change in value since the first day and, when money moved
+// in or out, how much of it was deposits less withdrawals and how much investment P/L (audit 2026-11-04, Stage 2).
+export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows:{day:string;value:number;high:number;low:number;flow?:number}[];fmt:(v:number)=>string;currency?:string;height?:number;marks?:boolean}){
   const [ref,w]=useWidth();const grad=useId();const s=scale(w,rows.length,rows.flatMap(r=>[r.low,r.high,r.value]),{h:height});const H=s.h;const {hover,move,leave}=useHover(rows.length,s,false);
   const step=s.ticks.length>1?s.ticks[1]-s.ticks[0]:Math.abs(s.hi-s.lo);const start=rows[0].value,last=rows.at(-1)!;
   const line=rows.map((r,i)=>(i?'L':'M')+s.x(i).toFixed(1)+','+s.y(r.value).toFixed(1)).join('');
@@ -54,7 +56,7 @@ export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows
   const hiI=rows.reduce((b,r,i)=>r.value>rows[b].value?i:b,0),loI=rows.reduce((b,r,i)=>r.value<rows[b].value?i:b,0);const up=last.value>=start;
   const h=hover==null?null:rows[hover];
   return <Frame boxRef={ref} label={`Account value from ${rows[0].day} to ${last.day}: ${fmt(start)} to ${fmt(last.value)}`} days={rows.map(r=>r.day)} s={s} fmt={v=>axisMoney(v,step,currency)} hover={hover} move={move} leave={leave}
-    tip={h&&<><b>{shortDay(h.day,true)}</b><span>{fmt(h.value)}</span><span className={h.value>=start?'positive':'negative'}>{signedMoney(h.value-start,fmt)} ({((h.value/start-1)*100).toFixed(2)}%) since {shortDay(rows[0].day)}</span>{h.high>h.low&&<span className="muted">Day range {fmt(h.low)} – {fmt(h.high)}</span>}</>}>
+    tip={h&&<><b>{shortDay(h.day,true)}</b><span>{fmt(h.value)}</span><span className={h.value>=start?'positive':'negative'}>Account value change {signedMoney(h.value-start,fmt)} since {shortDay(rows[0].day)}</span>{(()=>{const moved=rows.slice(1,hover!+1).reduce((n,r)=>n+(r.flow??0),0);return Math.abs(moved)>0.005?<span className="muted">Net deposits {signedMoney(moved,fmt)} · investment P/L {signedMoney(h.value-start-moved,fmt)}</span>:null;})()}{h.high>h.low&&<span className="muted">Day range {fmt(h.low)} – {fmt(h.high)}</span>}</>}>
     <defs><linearGradient id={grad} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--perf-portfolio)" stopOpacity=".22"/><stop offset="100%" stopColor="var(--perf-portfolio)" stopOpacity="0"/></linearGradient></defs>
     <path d={`${line}L${s.x(rows.length-1)},${H-B}L${s.x(0)},${H-B}Z`} fill={`url(#${grad})`}/>
     {band&&<polygon className="perf-band" points={band}/>}
