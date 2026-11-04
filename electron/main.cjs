@@ -357,6 +357,9 @@ app.whenReady().then(async () => {
   if(masterFetch){void master.refresh().catch(()=>{});setInterval(()=>void master.refresh().catch(()=>{}),3600000).unref();}
   // Performance history: daily account values, recorded cash flows and benchmark closes.
   const {PerformanceHistory,benchmarkFor}=require('./performance.cjs');const performance=new PerformanceHistory(store.db);let benchmarkTask=null,benchmarkAt=0,benchmarkError=null;
+  // Versioned corrections to recorded values (electron/valuation-corrections.cjs): returns are computed with those in
+  // force. Corrections are only previewed here; applying one needs the user's approval.
+  const corrections=new (require('./valuation-corrections.cjs').ValuationCorrections)(store.db);performance.adjustments=account=>{try{return corrections.inForce(account);}catch{return [];}};
   // Test-only: UI tests seed earlier daily values because history cannot be backfilled from KIS.
   if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   // Deposits and withdrawals not recorded by the user, detected after each balance refresh (electron/flow-detector.cjs).

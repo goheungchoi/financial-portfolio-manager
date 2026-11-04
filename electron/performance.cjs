@@ -68,12 +68,15 @@ class PerformanceHistory {
   // series: 'KRW' (Korea account), 'USD' (U.S. account) or 'COMBINED' (KRW, U.S. flows converted at that day's rate).
   // unresolved: 'exclude' (the headline: a detected change awaiting you is not taken as a deposit or withdrawal, a
   // provisional scenario, not proof that none happened) or 'include' (the other scenario).
-  series(account,kind,{unresolved='exclude'}={}){
+  // adjustments: versioned valuation corrections (electron/valuation-corrections.cjs), each {day, market, amount} in
+  // its market's currency; the recorded values are never changed, the series is computed with them.
+  series(account,kind,{unresolved='exclude',adjustments=this.adjustments?.(account)??[]}={}){
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
     const history=this.history(account),flows=this.flows(account).filter(f=>unresolved==='include'||!f.detected);let previous=null,index=1,lastFx=null;const points=[];
     for(const row of history){
-      lastFx=row.fx??lastFx;const value=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(value))continue;
+      lastFx=row.fx??lastFx;const recorded=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(recorded))continue;
+      const adj=adjustments.filter(a=>a.day===row.day&&(kind==='COMBINED'||a.currency===kind)).reduce((n,a)=>n+(kind==='COMBINED'&&a.currency==='USD'?(lastFx==null?NaN:a.amount*lastFx):a.amount),0);const value=recorded+adj;
       const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
       // Flows recorded on days without a valuation are folded into the next valued day.
       const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
@@ -87,15 +90,15 @@ class PerformanceHistory {
       const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
       const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
       const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
-      points.push({day:row.day,value,flow:netFlow,dailyReturn,index,pnl:previous?value-previous.value-netFlow:null,high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
+      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),flow:netFlow,dailyReturn,index,pnl:previous?value-previous.value-netFlow:null,high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
     }
     return points;
   }
   // Period returns, money gain after flows and the matching benchmark change, all from the same start and end days.
   // With unresolved movements in the history the summary is provisional: the headline leaves them out, and
   // provisional.included gives the period results with them counted (scenarios, not a guaranteed range).
-  summary(account,kind,benchmark,{unresolved='exclude'}={}){
-    const points=this.series(account,kind,{unresolved});if(points.length<1)return {kind,points,periods:[],start:null,end:null,benchmark};
+  summary(account,kind,benchmark,{unresolved='exclude',adjustments}={}){
+    const points=this.series(account,kind,{unresolved,...(adjustments?{adjustments}:{})});if(points.length<1)return {kind,points,periods:[],start:null,end:null,benchmark};
     const end=points.at(-1),closes=benchmark?this.closes(benchmark):[];const closeOn=day=>closes.filter(c=>c.day<=day).at(-1)??null;
     const periods=PERIODS.map(([label,days])=>{
       const target=days==null?points[0].day:days==='ytd'?end.day.slice(0,4)+'-01-01':shift(end.day,days);
@@ -108,7 +111,7 @@ class PerformanceHistory {
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
     const open=unresolved==='exclude'?this.movements(account).filter(f=>f.category==='unresolved'&&f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind)):[];
     const provisional=open.length?{unresolved:open.map(f=>({day:f.day,market:f.market,currency:f.currency,amount:f.amount})),scenario:'headline leaves these out; included counts them as deposits or withdrawals',
-      included:this.summary(account,kind,benchmark,{unresolved:'include'}).periods.map(({label,twr,gain})=>({label,twr,gain}))}:null;
+      included:this.summary(account,kind,benchmark,{unresolved:'include',...(adjustments?{adjustments}:{})}).periods.map(({label,twr,gain})=>({label,twr,gain}))}:null;
     return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics,...(provisional?{provisional}:{})};
   }
 }
