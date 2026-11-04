@@ -3,7 +3,7 @@
 const test=require('node:test');const assert=require('node:assert/strict');const A=require('../electron/ai-client.cjs');
 // Every version ever used, with its fingerprint. A change to the instructions, the decision schema or a review tool
 // fails this test until INSTRUCTIONS_VERSION is given a new name and that name is added here. Never change a pinned entry.
-const PINNED={'review 2026-11-05':'5deb5c593c334259'};
+const PINNED={'review 2026-11-05':'5deb5c593c334259','review 2026-11-05.2':'ab0460495a0c45e1'};
 test('the instructions, decision schema and review tools match the fingerprint pinned to their version',()=>{
   const {version,fingerprint}=A.instructions();
   assert.ok(PINNED[version],`INSTRUCTIONS_VERSION '${version}' is not pinned: add it to PINNED with fingerprint ${fingerprint}`);
