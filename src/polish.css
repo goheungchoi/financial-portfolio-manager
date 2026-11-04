@@ -81,6 +81,8 @@ button.mini.sell:not(:disabled){border-color:var(--danger);color:var(--danger)}
 button.wide{width:100%;padding:12px}
 button.primary.sell{background:var(--danger);border-color:var(--danger);color:#fff}
 .notice.ok{border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
+/* Provisional figures (audit 2026-11-04, Stage 2): prominent, never alarming red. */
+.notice.warning{border-color:color-mix(in srgb,#e0b050 55%,var(--border));color:var(--body)}
 .empty{padding:22px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:10px;margin:12px 0 0}
 .tick-delta small{color:var(--muted);font-weight:400}
 
