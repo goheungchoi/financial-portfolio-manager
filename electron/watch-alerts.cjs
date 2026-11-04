@@ -11,6 +11,8 @@
 // 2026-10-29: of 16 price reviews since 2026-10-20, eight were 3-5% moves in symbols not held, five of them in two
 // leveraged ETFs on the watchlist.
 const COOLDOWN_MS=60*60000;const {levelEvent}=require('./review-watches.cjs');
+// The version of these rules, saved with each observation (audit 2026-11-04, Stage 5); earlier rows are 'unrecorded'.
+const RULES_VERSION='selective-alerts 2026-10-29';
 const met=(watch,price)=>watch.direction==='above'?price>=watch.price:price<=watch.price;
 // A price level as the AI set it: setting it again (even at the same price) makes a new one, and a review moving its
 // baseline does not. Watches saved before revisions existed are named by when they were set.
@@ -52,21 +54,47 @@ class WatchAlerts {
   // Anchors of symbols not held do not move with reviews, only with their own alerts; clear() is for an account change.
   clear(){this.anchors.clear();this.alertedAt.clear();this.sides.clear();this.fired.clear();}
 }
-// Observation log: each check where the current rule or these rules would start a price review.
+// Observation log: each check where the current rule or these rules would start a price review. Since Stage 5 a row also
+// keeps its account scope, the rules version and, per symbol, what each rule saw (kind, move and baseline), so checks
+// can be grouped into episodes per symbol.
+const items=t=>!t?[]:t.kind==='watchlist'?t.alerts:[t,...(t.alongside??[])];
+const marketOf=symbol=>/:/.test(symbol)?'US':'KR';
+// The trading day a check belongs to: Seoul's date for Korea, New York's for the U.S.
+const sessionOf=(market,at)=>new Intl.DateTimeFormat('en-CA',{timeZone:market==='US'?'America/New_York':'Asia/Seoul'}).format(new Date(at));
+const sideOf=a=>a?{kind:a.kind,...(a.changePct!=null?{changePct:Math.round(a.changePct*100)/100}:{}),...(a.baseline!=null?{baseline:a.baseline}:{}),...(a.threshold!=null?{threshold:a.threshold}:{})}:null;
+// A row as per-symbol checks: {symbol, held, old, new}. Rows from before Stage 5 name the symbols of each rule and the
+// move of the first one only.
+function symbolsOf(row){if(Array.isArray(row.symbols))return row.symbols;const out=new Map(),put=(s,side,v)=>{const x=out.get(s)??{symbol:s,held:null,old:null,new:null};x[side]=v;out.set(s,x);};
+  (row.current?.symbols??[]).forEach((s,i)=>put(s,'old',{kind:row.current.kind,...(i===0&&row.current.changePct!=null?{changePct:row.current.changePct}:{})}));
+  (row.proposed?.symbols??[]).forEach((s,i)=>put(s,'new',{kind:row.proposed.kind,...(i===0&&row.proposed.changePct!=null?{changePct:row.proposed.changePct}:{})}));
+  if(row.current&&row.currentHeld!=null){const x=out.get(row.current.symbols[0]);if(x)x.held=row.currentHeld;}return [...out.values()];}
+// Grouping (observation-episodes.cjs): per account, market, trading day, symbol and rules version; the outcome is which
+// rule fired and how; a new baseline or a move to the other side is a new crossing (reset).
+function parts(row){return symbolsOf(row).map(s=>{const m=marketOf(s.symbol),condition=s.old&&s.new?'both':s.old?'old-only':'new-only';
+  return {key:[row.scope??'unrecorded',m,sessionOf(m,row.at),s.symbol,row.rules??'unrecorded'].join('|'),signature:{outcome:`${condition}:${s.old?.kind??'-'}:${s.new?.kind??'-'}`,reset:JSON.stringify([s.old?.baseline??null,s.new?.baseline??null,Math.sign(s.old?.changePct??s.new?.changePct??0)])},detail:{symbol:s.symbol,market:m,condition,held:s.held,old:s.old?.kind??null,new:s.new?.kind??null}};});}
 class AlertObservations {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS alert_observations(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
-  record(at,{current,proposed,held}){if(!current&&!proposed)return;const brief=t=>t?{kind:t.kind,symbols:t.kind==='watchlist'?t.alerts.map(a=>a.symbol):[t.symbol,...(t.alongside??[]).map(a=>a.symbol)],...(t.changePct!=null?{changePct:Math.round(t.changePct*100)/100}:{})}:null;
-    this.db.prepare('INSERT INTO alert_observations(at,payload) VALUES(?,?)').run(at,JSON.stringify({current:brief(current),proposed:brief(proposed),currentHeld:current?held.has(current.symbol):null}));}
+  record(at,{current,proposed,held,scope=null}){if(!current&&!proposed)return;const brief=t=>t?{kind:t.kind,symbols:t.kind==='watchlist'?t.alerts.map(a=>a.symbol):[t.symbol,...(t.alongside??[]).map(a=>a.symbol)],...(t.changePct!=null?{changePct:Math.round(t.changePct*100)/100}:{})}:null;
+    const per=new Map();for(const [side,t] of [['old',current],['new',proposed]])for(const a of items(t)){const x=per.get(a.symbol)??{symbol:a.symbol,held:held.has(a.symbol),old:null,new:null};x[side]=sideOf(a);per.set(a.symbol,x);}
+    this.db.prepare('INSERT INTO alert_observations(at,payload) VALUES(?,?)').run(at,JSON.stringify({current:brief(current),proposed:brief(proposed),currentHeld:current?held.has(current.symbol):null,scope,rules:RULES_VERSION,symbols:[...per.values()]}));}
+  // Episodes since a time. assessed(symbol, from, to): the time of a completed review between two checks that assessed
+  // the symbol (it was triggered by it, gave a verdict on it or held it), which ends the episode.
+  episodes(since,{assessed=()=>null}={}){const rows=this.db.prepare('SELECT id,at,payload FROM alert_observations WHERE at>=? ORDER BY at').all(since).map(r=>({id:r.id,at:r.at,...JSON.parse(r.payload)}));
+    return require('./observation-episodes.cjs').group(rows,{parts,endedBy:(key,from,to)=>assessed(key.split('|')[3],from,to)});}
   // Since a time: price reviews under the current rule and under these rules, the reviews avoided, and for each symbol
   // not held that the current rule alerted on, when these rules first alerted on it the same day (delayed, earlier, or
   // not at all).
-  summary(since){const rows=this.db.prepare('SELECT at,payload FROM alert_observations WHERE at>=? ORDER BY at').all(since).map(r=>({at:r.at,...JSON.parse(r.payload)}));
+  summary(since,{assessed=()=>null}={}){const rows=this.db.prepare('SELECT at,payload FROM alert_observations WHERE at>=? ORDER BY at').all(since).map(r=>({at:r.at,...JSON.parse(r.payload)}));
     const day=t=>new Date(t+9*3600000).toISOString().slice(0,10),first=new Map(),key=(s,t)=>`${s}|${day(t)}`;
     for(const r of rows){if(r.current&&!r.currentHeld){const k=key(r.current.symbols[0],r.at);if(!first.has(k))first.set(k,{symbol:r.current.symbols[0],day:day(r.at),currentAt:r.at,proposedAt:null});}}
     for(const r of rows)for(const s of r.proposed?.symbols??[]){const f=first.get(key(s,r.at));if(f&&f.proposedAt==null)f.proposedAt=r.at;}
     const current=rows.filter(r=>r.current).length,proposed=rows.filter(r=>r.proposed).length;
     const candidates=[...first.values()].map(f=>({...f,currentAt:new Date(f.currentAt).toISOString(),proposedAt:f.proposedAt==null?null:new Date(f.proposedAt).toISOString(),delayMinutes:f.proposedAt==null?null:Math.round((f.proposedAt-f.currentAt)/60000)}));
-    return {since:new Date(since).toISOString(),currentReviews:current,proposedReviews:proposed,avoided:current-proposed,notHeldAlerts:candidates,
+    // Counts in the common terms (observation-episodes.cjs): checks are not reviews; reviewsStarted are the price reviews
+    // the app actually ran (Stage 5: the earlier labels called every check a price review).
+    const eps=this.episodes(since,{assessed}),by=c=>eps.filter(e=>e.detail.condition===c).length;
+    const started=(()=>{try{return this.db.prepare("SELECT count(*) AS n FROM reviews WHERE json_extract(payload,'$.trigger')='Price movement trigger' AND json_extract(payload,'$.timestamp')>=?").get(since).n;}catch{return null;}})();
+    return {since:new Date(since).toISOString(),checks:{current,proposed},episodes:{total:eps.length,oldOnly:by('old-only'),newOnly:by('new-only'),both:by('both')},reviewsStarted:started,notHeldAlerts:candidates,
       delayed:candidates.filter(c=>c.delayMinutes>0).length,notAlerted:candidates.filter(c=>c.proposedAt==null).length};}
 }
-module.exports={WatchAlerts,AlertObservations,COOLDOWN_MS};
+module.exports={WatchAlerts,AlertObservations,COOLDOWN_MS,RULES_VERSION,symbolsOf,parts};

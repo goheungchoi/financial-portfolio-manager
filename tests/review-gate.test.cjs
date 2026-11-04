@@ -178,3 +178,11 @@ test('through the scheduler: focused reviews work with the review gate off, and 
   const saved=db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(r=>JSON.parse(r.payload));assert.deepEqual(saved.map(r=>r.reviewScope),['broad','routine']);
   assert.deepEqual(saved.map(r=>r.instructions),saved.map(()=>require('../electron/ai-client.cjs').instructions()),'each model review keeps its instruction version');
 });
+// Audit 2026-11-04, Stage 5: a review records the symbols that started it and the symbols it assessed, so observation
+// episodes end only on a review that actually looked at their symbol.
+test('a saved review names the symbols it assessed; the lookup finds it for that symbol only',async()=>{
+  const {a,db}=harness();a.provider.request=async()=>({decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:'',planVerdicts:[{symbol:'005930',verdict:'waiting',reason:'Waiting for the level.',condition:{kind:'market',unresolved:'u',evidence:'e',recheck:'r'}}]},usage:{inputTokens:1,outputTokens:1},provider:'openai'});
+  a.configure({skipUnchanged:false});const before=Date.now()-1;await a.review('User request');const saved=JSON.parse(db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);
+  assert.deepEqual(saved.triggerSymbols,[]);assert.ok(saved.assessed.includes('005930'));
+  const look=a.assessedLookup(before);assert.ok(look('005930',before,Date.now()+1));assert.equal(look('000270',before,Date.now()+1),null);
+});

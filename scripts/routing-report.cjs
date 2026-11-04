@@ -50,11 +50,13 @@ function report({records,contextOf,adjudications=[],freeze=null,currentBinding=n
   const severityIn=(rows,sev)=>rows.some(r=>miss(adj.get(r.reviewId))&&adj.get(r.reviewId).severity===sev);
   const n=judged.length,high=judged.filter(([,rows])=>severityIn(rows,'high')).length,medium=judged.filter(([,rows])=>severityIn(rows,'medium')).length;
   const highUpper=upperBound(high,n),mediumUpper=upperBound(medium,n);const cov=sim.summary.coverage;
-  const auditCount=queue.filter(r=>['same','wording'].includes(r.triage)&&r.decided==='main').length;
+  // Audit 2026-11-04, Stage 5: a pair selected for the random audit is not an adjudicated one; only validly adjudicated
+  // audit pairs count toward the 20 (the report once called 27 selected pairs "audited").
+  const auditSelected=queue.filter(r=>['same','wording'].includes(r.triage)&&r.decided==='main'),auditCount=auditSelected.filter(r=>adj.has(r.reviewId)).length;
   const checks={
     bindingCurrent:{pass:JSON.stringify(currentBinding)===JSON.stringify(freeze.binding),detail:'the app runs the frozen models, settings, protocol and code'},
     evidenceComplete:{pass:sim.summary.missingContexts===0,detail:`${sim.summary.missingContexts} records without their saved context; ${offBinding.length} records made under another binding excluded`},
-    adjudicationComplete:{pass:pending.length===0&&auditCount>=20,detail:`${pending.length} of ${queue.length} queued reviews not yet validly adjudicated (${invalidAdjudications} incomplete records ignored); ${auditCount} audited same/wording pairs (at least 20)`},
+    adjudicationComplete:{pass:pending.length===0&&auditCount>=20,detail:`${pending.length} of ${queue.length} queued reviews not yet validly adjudicated (${invalidAdjudications} incomplete records ignored); ${auditSelected.length} same/wording pairs selected for the audit, ${auditCount} validly adjudicated (at least 20 adjudicated)`},
     highSeverity:{pass:high===0&&n>0,detail:`${high} observed in ${n} fully adjudicated cheaper-routed situations (95% upper bound ${highUpper==null?'n/a':(highUpper*100).toFixed(2)+'%'})`},
     mediumSeverity:{pass:mediumUpper!=null&&mediumUpper<=0.02,detail:`${medium} observed in ${n} situations; one-sided 95% Clopper-Pearson upper bound ${mediumUpper==null?'n/a':(mediumUpper*100).toFixed(2)+'%'} (at most 2%)`},
     coverage:{pass:['held','quiet','stress','event'].every(k=>cov[k]>=10),detail:JSON.stringify(cov)},

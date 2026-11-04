@@ -36,12 +36,13 @@ test('an entry level starts a review only when the price crosses it, once',()=>{
   const fresh=new WatchAlerts();assert.equal(fresh.check({quotes:[q('NASD:AMZN',254.9,min(1))],held:new Set(),baselines:new Map(),watches:[{symbol:'NASD:AMZN',price:255,direction:'below',baseline:258}],tolerance:3,wide:6,now:min(1)}).trigger.alerts[0].kind,'entry-level','set above the level: crossing below fires');
 });
 
-test('observation counts avoided reviews and when alerts on stocks not held came under the new rules',()=>{
+test('observation counts checks and episodes, and when alerts on stocks not held came under the new rules',()=>{
   const o=new AlertObservations(new DatabaseSync(':memory:'));const held=new Set(['NASD:GOOGL']);const pct=(symbol,changePct)=>({kind:'percent',symbol,changePct});
   o.record(min(5),{current:pct('488080',3.2),proposed:null,held});o.record(min(63),{current:pct('488080',-3.7),proposed:null,held});
   o.record(min(70),{current:pct('462330',-3.2),proposed:null,held});o.record(min(90),{current:null,proposed:{kind:'watchlist',alerts:[{symbol:'462330'}]},held});
   o.record(min(100),{current:pct('NASD:GOOGL',9.8),proposed:pct('NASD:GOOGL',9.8),held});o.record(min(101),{current:null,proposed:null,held});
-  const s=o.summary(t0);assert.equal(s.currentReviews,4);assert.equal(s.proposedReviews,2);assert.equal(s.avoided,2);
+  // Checks, not reviews (audit 2026-11-04, Stage 5): 488080's move to the other side and 462330's change of rule start new episodes.
+  const s=o.summary(t0);assert.deepEqual(s.checks,{current:4,proposed:2});assert.deepEqual(s.episodes,{total:5,oldOnly:3,newOnly:1,both:1});assert.equal(s.reviewsStarted,null,'no reviews table here');
   assert.deepEqual(s.notHeldAlerts.map(x=>[x.symbol,x.delayMinutes]),[['488080',null],['462330',20]]);assert.equal(s.delayed,1);assert.equal(s.notAlerted,1);
 });
 
@@ -82,11 +83,12 @@ test('observation: both rules read the level as it was before the check, with th
   const set=(symbol,price,direction,quote)=>a.watches.set('s',{symbol,percent:null,price,direction,reason:'r'},{universe:[{symbol}],quotes:[{symbol,price:quote}]});
   const at=(symbol,price,i)=>a.priceTrigger('s',[{symbol,price,timestamp:now+i*60000}],now+i*60000);
   set('360750',25500,'above',25400);assert.equal(at('360750',25520,0)?.kind,'price','the rule in force decides');
-  assert.deepEqual(rows()[0],{current:{kind:'price',symbols:['360750']},proposed:{kind:'watchlist',symbols:['360750']},currentHeld:false},'a crossing both rules see');
+  const {scope,rules,symbols,...brief}=rows()[0];assert.deepEqual(brief,{current:{kind:'price',symbols:['360750']},proposed:{kind:'watchlist',symbols:['360750']},currentHeld:false},'a crossing both rules see');
+  assert.equal(scope,'s');assert.equal(rules,require('../electron/watch-alerts.cjs').RULES_VERSION);assert.deepEqual(symbols.map(x=>[x.symbol,x.old.kind,x.new.kind,x.held]),[['360750','price','entry-level',false]],'what each rule saw, per symbol');
   assert.equal(at('360750',25400,1),null);assert.equal(at('360750',25600,2),null);assert.equal(rows().length,1,'fired once under each rule');
   set('360750',25500,'above',25655);assert.equal(at('360750',25655,3)?.kind,'price');assert.equal(rows()[1].proposed,null,'already above when set: no crossing');
   assert.equal(at('360750',25400,4),null);assert.equal(at('360750',25520,5),null,'the rule in force fired it already');
-  assert.deepEqual(rows()[2],{current:null,proposed:{kind:'watchlist',symbols:['360750']},currentHeld:null},'the selective rule still sees the crossing');
+  {const {scope,rules,symbols,...brief}=rows()[2];assert.deepEqual(brief,{current:null,proposed:{kind:'watchlist',symbols:['360750']},currentHeld:null},'the selective rule still sees the crossing');assert.equal(symbols[0].old,null);}
   set('NASD:GOOGL',280,'below',285);assert.equal(at('NASD:GOOGL',279,6)?.kind,'price');assert.equal(rows()[3].proposed.kind,'price','a holding level: the same under both');
   a.watchAlerts.clear();assert.equal(at('NASD:GOOGL',278,7),null);assert.equal(rows().length,4,'fired earlier by the rule in force: not again after a restart');
 });
