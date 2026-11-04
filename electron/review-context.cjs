@@ -117,6 +117,8 @@ const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes',
   'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','orderBooks','reviewScope','waits','pendingDecisions',
   'orderFollowUp','agentDesk'];
 const UNREGISTERED_BYTES=2000;
+// The version of these rules, saved with every size-failure record (electron/context-failures.cjs).
+const SCHEMA='review-context 2026-11-04';
 const classOf=key=>MANDATORY.includes(key)||EXTRA_MANDATORY.includes(key)?'mandatory':PROTECTIVE.includes(key)?'protective':REFERENCE_ORDER.includes(key)?'background':null;
 const typeOf=v=>Array.isArray(v)?'array':typeof v;
 // Symbols the decision is about now: held, named by the trigger evidence, ordered, pending or under an armed conditional order.
@@ -349,4 +351,4 @@ function sameInputs(failed,next,tolerancePct){
 // Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
 // market and what set this review off (a new agent trigger, news event or price watch is material).
 const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
-module.exports={TYPES,PROTECTIVE,REFERENCE_ORDER,EXTRA_MANDATORY,UNREGISTERED_BYTES,classOf,focusSymbols,reference,sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};
+module.exports={SCHEMA,TYPES,PROTECTIVE,REFERENCE_ORDER,EXTRA_MANDATORY,UNREGISTERED_BYTES,classOf,focusSymbols,reference,sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};
