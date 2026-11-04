@@ -104,13 +104,19 @@ function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},
   const changedSymbols=[...new Set(reasons.flatMap(r=>r.symbols))],requiredEvidence=[...new Set(reasons.flatMap(r=>r.evidence))];
   return {needsReview:reasons.length>0,reasons:reasons.map(({evidence,...r})=>r),changedSymbols,requiredEvidence,degraded:[...new Set(degraded)],nextBackstopAt};
 }
-// What kind of review this is, for the trading review (setting routineReviews 'focused'): broad when it starts trading,
-// is the pre-open review, your request or an emergency, or when the gate has nothing to compare with, reached its
-// backstop or saw guidelines change; routine otherwise, with what changed since the last successful decision.
-const BROAD_TRIGGERS=['Auto trading started','Pre-open review','User request','Emergency loss response'];
-function reviewScope(gate,trigger,base){
-  const broad=BROAD_TRIGGERS.includes(trigger)?trigger:(gate.reasons.find(r=>['baseline','backstop','instructions'].includes(r.kind))?.detail??null);
-  if(broad||!base)return {kind:'broad',why:broad??'No earlier decision'};
+// What kind of review this is, for the trading review (setting routineReviews 'focused'): broad when it is the pre-open
+// review, your request or an emergency; when the gate has nothing to compare with, reached its backstop or saw
+// guidelines change; when a filing or important news, a risk change or a lost protection arrived (audit 2026-11-04,
+// Stage 4: material events widen a review at once); and, while a market in scope is open, when no broad comparison ran
+// in the last BROAD_GAP_MS. Starting trading is broad only past that gap too, so restarts do not repeat broad scans.
+// Overlapping reasons make one broad review. Routine otherwise, with what changed since the last successful decision.
+// lastBroadAt: the last broad (or full) review on this account; marketOpen: whether a market in scope is open.
+const BROAD_TRIGGERS=['Pre-open review','User request','Emergency loss response'];const BROAD_GAP_MS=4*3600000;
+function reviewScope(gate,trigger,base,{lastBroadAt=null,marketOpen=false,now=Date.now()}={}){const stale=!(lastBroadAt>now-BROAD_GAP_MS),why=[];
+  if(BROAD_TRIGGERS.includes(trigger)||trigger==='Auto trading started'&&stale)why.push(trigger);
+  for(const r of gate.reasons)if(['baseline','backstop','instructions','news','risk','protection'].includes(r.kind))why.push(r.detail);
+  if(marketOpen&&stale)why.push(lastBroadAt?'No broad comparison in the last 4 hours':'No broad comparison yet');
+  if(why.length||!base)return {kind:'broad',why:[...new Set(why)].slice(0,4).join('; ')||'No earlier decision'};
   return {kind:'routine',since:new Date(base.at).toISOString(),changes:gate.reasons.filter(r=>r.kind!=='trigger').map(r=>r.detail).slice(0,12),changedSymbols:gate.changedSymbols,...(gate.degraded.length?{degraded:gate.degraded}:{})};}
 // How a decision differs from the one before it: the trade, its size, its plan's timing and invalidation, and the
 // verdicts on scout targets. Wording alone is not a change.
@@ -151,4 +157,4 @@ class ReviewGate {
       reviews:{ran:ran.length,completed:done.length,episodes:done.filter(r=>r.outcome.change?.changed).length,trades:done.filter(r=>r.outcome.orderId).length},
       ai:{...calls,usd:Math.round(calls.micro/1e4)/100},research:{fetched:research('fetched'),refreshed:research('refreshed'),reused:research('reused'),researchReads:research('researchReads'),detailReads:research('detailReads')}};}
 }
-module.exports={ReviewGate,decisionState,compare,reviewScope,decisionChange,newsKey,GATE_DEFAULTS,BROAD_TRIGGERS};
+module.exports={BROAD_GAP_MS,ReviewGate,decisionState,compare,reviewScope,decisionChange,newsKey,GATE_DEFAULTS,BROAD_TRIGGERS};
