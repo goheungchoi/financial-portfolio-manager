@@ -328,3 +328,11 @@ test('while a daily loss breach is ambiguous, new conditional buys are restricte
   o=await fired(a,armOrder(a,{symbol:'005930',side:'Sell'}));assert.equal(o.status,'submitted','a protective sale goes ahead');
   ({automation:a}=harness());a.configure({lossAction:'review'});engines(a);a.emergencyState=()=>({active:false,activeMarkets:[],ambiguousMarkets:['KR']});o=await fired(a,armOrder(a,{symbol:'005930'}));assert.equal(o.status,'submitted','"review more often, keep trading" does not restrict');
 });
+test('a conditional stop sells only free cash shares: never margin-loan shares, never shares a waiting sale takes',async()=>{
+  const bal=(extra={})=>({holdings:[{symbol:'005930',quantity:10,availableQuantity:10,loans:[{quantity:6,loanDate:'2026-09-01',availableQuantity:6}]}],...extra});
+  let {automation:a}=harness();engines(a,{kr:{riskBalance:bal()}});let o=await fired(a,armOrder(a,{side:'Sell',quantity:10}));assert.equal(o.status,'submitted');assert.equal(a.calls.propose[0].quantity,4,'the 4 cash shares, not the 6 on loan');
+  ({automation:a}=harness());engines(a,{kr:{riskBalance:bal(),orders:()=>[{symbol:'005930',side:'Sell',quantity:4,filled:0,status:'Accepted'}]}});o=await fired(a,armOrder(a,{side:'Sell',quantity:4}));
+  assert.equal(o.status,'cancelled');assert.match(o.outcome,/already waiting/);assert.equal(a.calls.propose.length,0,'no second order for the same shares');
+  ({automation:a}=harness());engines(a,{kr:{riskBalance:{holdings:[{symbol:'005930',quantity:10,availableQuantity:10,loans:[{quantity:10,loanDate:'2026-09-01',availableQuantity:10}]}]}}});o=await fired(a,armOrder(a,{side:'Sell'}));
+  assert.equal(o.status,'rejected');assert.match(o.outcome,/margin-loan lots/);
+});

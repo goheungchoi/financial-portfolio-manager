@@ -869,7 +869,12 @@ class Automation {
       // again shortly, with its conditions re-read. Checked before proposing, so no proposal is left behind.
       if(engine.busy)return busy();
       let quantity=order.quantity;
-      if(order.side==='Sell'){const held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return note('rejected','No shares held to sell.',{results:check.results});quantity=Math.min(quantity,held);}
+      if(order.side==='Sell'){const held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return note('rejected','No shares held to sell.',{results:check.results});
+        // Only cash shares not already in a waiting sale (credit-paths.cjs, Stage 3): margin-loan shares are never sold as
+        // cash, and two stops never sell the same shares. Shares a waiting sale already takes need no second order.
+        let free=held,reserved=0;try{const bal=engine.riskBalance??engine.getConnection?.()?.snapshot;if(bal?.holdings){const r=require('./credit-paths.cjs').remaining(bal,{symbol:order.symbol,side:'Sell'},engine.orders?.()??[]);free=r.available;reserved=r.reserved;}}catch{}
+        if(free<1)return reserved>0?note('cancelled',`Not needed: a sale already waiting takes these shares (${reserved}).`,{results:check.results}):note('rejected','No cash shares free to sell: the shares held are margin-loan lots, which only a margin repayment sale can close.',{results:check.results});
+        quantity=Math.min(quantity,held,free);}
       const notional=quantity*limit;
       if(order.side==='Buy'){
         const cap=ctx.equity*this.config.conditionalMaxOrderPct/100;if(!(notional<=cap))return note('rejected',`Order value ${Math.round(notional)} is above ${this.config.conditionalMaxOrderPct}% of equity (${Math.round(cap)}).`,{results:check.results});
@@ -906,6 +911,9 @@ class Automation {
   deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
   followPlan(scope,decision,reviewId){
+    // A cash long entry only (Stage 3): a cover or margin trade gets no ordinary Sell stop, and a short's protection
+    // would be a cover above the price on its own lot, a path not yet confirmed (electron/credit-paths.cjs).
+    if(decision.action!=='Buy'||(decision.credit??'none')!=='none')return;
     const p=decision.plan;const day=seoulDate();
     const text=`Plan from ${day}: ${p.thesis} Invalid if: ${p.invalidation}. Stop ${p.stopPrice}${p.targetPrice?`, target ${p.targetPrice}`:''}, horizon ${p.horizonDays} days, confidence ${p.confidence}.`;
     const note=this.desk.saveNote(scope,{action:'set',symbol:decision.symbol,note:text,expiresInDays:Math.min(90,Math.max(1,p.horizonDays))});this.log(reviewId,'Tool','Trade plan saved',JSON.stringify(note));

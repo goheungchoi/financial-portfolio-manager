@@ -39,7 +39,7 @@ test('2026-10-30: a U.S. buy paid from unsettled sale proceeds, in no KIS figure
 });
 test('a short with its proceeds in cash: the liability comes off, and the proceeds are not gain',()=>{
   const k={timestamp:ts,cash:150000,settledCash:150000,reportedTotal:95000,holdings:[],shorts:[{symbol:'005930',quantity:1,price:55000,proceeds:60000}],shortProceeds:60000,netAssets:95000,grossTotal:150000};
-  const v=value({korea:k,us:null,fx,now});close(v.markets.KR.equity.low,95000,'KIS net assets, not 150,000');assert.equal(v.markets.KR.exact,false,'unverified until Stage 3');assert.equal(v.markets.KR.complete,false);
+  const v=value({korea:k,us:null,fx,now});close(v.markets.KR.equity.low,95000,'KIS net assets, not 150,000');close(v.markets.KR.equity.high,155000,'or proceeds counted apart from cash: unconfirmed (U4)');assert.equal(v.markets.KR.exact,false,'unverified until Stage 3');assert.equal(v.markets.KR.complete,false);
   assert.equal(v.markets.KR.credit.shortLiability,55000);assert.match(v.markets.KR.reasons.join(' '),/Stage 3/);
   const none=value({korea:{...k,netAssets:null},us:null,fx,now}).markets.KR;assert.equal(none.complete,false);assert.match(none.reasons.join(' '),/net assets were not reported/);
 });
