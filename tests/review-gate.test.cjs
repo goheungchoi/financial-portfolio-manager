@@ -158,3 +158,23 @@ test('decision changes: the trade, its size, timing, invalidation and verdicts; 
   const rows=db.prepare('SELECT payload FROM review_gate_log ORDER BY id').all().map(r=>JSON.parse(r.payload));assert.deepEqual(rows.map(r=>r.outcome?.change?.changed),[true,false],'the second Hold repeats the first');
   assert.equal(rows[1].outcome.research.fetched,0);assert.equal(a.reviewGateState().summary.reviews.episodes,1);
 });
+// Audit 2026-11-04, Stage 4: material events widen a focused review at once; a broad comparison runs at least every
+// 4 hours while a market is open; restarts do not repeat broad scans; overlapping reasons make one broad review.
+test('review scope: material events widen at once, at most 4 hours between broad comparisons, restarts do not repeat them',()=>{
+  const {reviewScope,BROAD_GAP_MS}=require('../electron/review-gate.cjs');const now=Date.parse('2026-11-05T02:00:00Z'),base={at:now-3600000};
+  const g=(...reasons)=>({reasons:reasons.map(([kind,detail])=>({kind,detail})),changedSymbols:[],degraded:[]});const recent={lastBroadAt:now-3600000,marketOpen:true,now};
+  assert.equal(reviewScope(g(['price','028050 +2%']),'Scheduled review',base,recent).kind,'routine');
+  for(const [kind,detail] of [['news','Filing: 삼성E&A 단일판매ㆍ공급계약'],['risk','Daily loss limit reached'],['protection','000270 lost its stop loss']])assert.deepEqual(reviewScope(g([kind,detail]),'Scheduled review',base,recent),{kind:'broad',why:detail},kind);
+  const both=reviewScope(g(['news','Filing: x'],['risk','Daily loss limit reached'],['news','Filing: x']),'Pre-open review',base,recent);assert.equal(both.why,'Pre-open review; Filing: x; Daily loss limit reached','one broad review, reasons combined once');
+  assert.equal(BROAD_GAP_MS,4*3600000);const old={lastBroadAt:now-BROAD_GAP_MS-1,marketOpen:true,now};
+  assert.deepEqual(reviewScope(g(['price','p']),'Scheduled review',base,old),{kind:'broad',why:'No broad comparison in the last 4 hours'});
+  assert.equal(reviewScope(g(['price','p']),'Scheduled review',base,{...old,marketOpen:false}).kind,'routine','markets closed: no periodic broad scan');
+  assert.equal(reviewScope(g(),'Auto trading started',base,recent).kind,'routine','a restart within 4 hours of a broad comparison stays routine');assert.equal(reviewScope(g(),'Auto trading started',base,{...old,marketOpen:false}).kind,'broad');
+});
+test('through the scheduler: focused reviews work with the review gate off, and each review records its scope',async()=>{
+  const contexts=[];const {a,db}=harness();a.provider.request=async(op,payload)=>{contexts.push(payload.context);return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};};
+  a.configure({skipUnchanged:false,reviewGate:'off',routineReviews:'focused'});await a.review('User request');await a.review('Scheduled review');
+  assert.deepEqual(contexts.map(c=>c.reviewScope?.kind),['broad','routine'],'the gate is off, the scope is still computed');
+  const saved=db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(r=>JSON.parse(r.payload));assert.deepEqual(saved.map(r=>r.reviewScope),['broad','routine']);
+  assert.deepEqual(saved.map(r=>r.instructions),saved.map(()=>require('../electron/ai-client.cjs').instructions()),'each model review keeps its instruction version');
+});

@@ -3,7 +3,7 @@
 const test=require('node:test');const assert=require('node:assert/strict');const A=require('../electron/ai-client.cjs');
 // Every version ever used, with its fingerprint. A change to the instructions, the decision schema or a review tool
 // fails this test until INSTRUCTIONS_VERSION is given a new name and that name is added here. Never change a pinned entry.
-const PINNED={'review 2026-11-05':'5deb5c593c334259','review 2026-11-05.2':'ab0460495a0c45e1','review 2026-11-05.3':'115589f950e8d871','review 2026-11-05.4':'c85e09768ea1322a'};
+const PINNED={'review 2026-11-05':'5deb5c593c334259','review 2026-11-05.2':'ab0460495a0c45e1','review 2026-11-05.3':'115589f950e8d871','review 2026-11-05.4':'c85e09768ea1322a','review 2026-11-05.5':'e46a4049dc084937'};
 test('the instructions, decision schema and review tools match the fingerprint pinned to their version',()=>{
   const {version,fingerprint}=A.instructions();
   assert.ok(PINNED[version],`INSTRUCTIONS_VERSION '${version}' is not pinned: add it to PINNED with fingerprint ${fingerprint}`);
@@ -12,8 +12,7 @@ test('the instructions, decision schema and review tools match the fingerprint p
 });
 test('the version is saved on each model review and is part of every evaluation binding',()=>{
   assert.equal(require('../electron/routing-sim.cjs').binding({scope:'both'}).instructions,A.INSTRUCTIONS_VERSION);
-  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');
-  assert.match(src,/provider==='openai'\?\{instructions:require\('\.\/ai-client\.cjs'\)\.instructions\(\)\}/);
+  // The saved review keeps it: tests/review-gate.test.cjs, focused reviews with the gate off.
 });
 test('the review request uses the pinned instructions and tools',async()=>{let sent=null;
   const client=new A.AiClient('k'.repeat(20),async(url,init)=>{sent=JSON.parse(init.body);return {ok:false,status:400,text:async()=>'{}',json:async()=>({}),headers:new Map()};});
