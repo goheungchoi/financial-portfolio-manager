@@ -25,7 +25,7 @@ test('the regime gauge adds stress readings and needs at least three',()=>{
 test('a Buy needs a complete trade plan; otherwise it becomes a Hold with the reason',()=>{
   const {validateDecision}=require('../electron/ai-client.cjs');const base={action:'Buy',symbol:'005930',quantity:3,credit:'none',loanDate:'',explanation:'Buy on the dip.'};
   const plan={strategy:'swing',thesis:'Memory upcycle',invalidation:'Margins fall below 30%',stopPrice:200000,targetPrice:260000,horizonDays:60,confidence:'medium'};
-  assert.deepEqual(validateDecision({...base,plan},['005930'],{requirePlan:true}).plan,plan);
+  const {strategy,...rest}=plan;assert.deepEqual(validateDecision({...base,plan},['005930'],{requirePlan:true}).plan,{horizon:'swing',...rest},'a legacy strategy label that names a horizon is read as the horizon');
   const held=validateDecision({...base,plan:{...plan,stopPrice:null}},['005930'],{requirePlan:true});assert.equal(held.action,'Hold');assert.equal(held.withheld.reason,'no stop price');assert.match(held.explanation,/held back a Buy of 3 005930/);
   assert.equal(validateDecision({...base,plan:{...plan,thesis:' '}},['005930'],{requirePlan:true}).withheld.reason,'no thesis');
   assert.equal(validateDecision({...base},['005930']).action,'Buy','external and local decisions keep working without a plan');

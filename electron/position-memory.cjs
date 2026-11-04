@@ -16,7 +16,7 @@ function view(o,reviewAt){const d=o.decision??null,p=d?.plan??null,q=o.reviewEvi
   return {decisionId:o.reviewId??null,decidedAt:iso(reviewAt.get(o.reviewId)),filledAt:iso(o.timestamp),effect:o.effect,...(o.credit?{credit:o.credit.kind,...(o.credit.loanDate?{loanDate:o.credit.loanDate}:{})}:{}),
     filled:o.quantity,requested:o.requested??o.quantity,...(o.requested>o.quantity?{partial:true}:{}),fillPrice:o.averagePrice??null,orderId:o.orderId??null,
     ...(q?{quoteAtDecision:{price:q.price??null,...(q.bid!=null?{bid:q.bid}:{}),...(q.ask!=null?{ask:q.ask}:{})}}:{}),
-    rationale:d?.explanation?clip(d.explanation,500):'unavailable',...(p?{thesis:clip(p.thesis,240),invalidation:clip(p.invalidation,200),...(p.stopPrice!=null?{stopPrice:p.stopPrice}:{}),...(p.targetPrice!=null?{targetPrice:p.targetPrice}:{}),...(p.horizonDays!=null?{horizonDays:p.horizonDays}:{}),...(p.strategy?{strategy:p.strategy}:{})}:{})};}
+    rationale:d?.explanation?clip(d.explanation,500):'unavailable',...(p?{thesis:clip(p.thesis,240),invalidation:clip(p.invalidation,200),...(p.stopPrice!=null?{stopPrice:p.stopPrice}:{}),...(p.targetPrice!=null?{targetPrice:p.targetPrice}:{}),...(p.horizonDays!=null?{horizonDays:p.horizonDays}:{}),...(p.horizon?{horizon:p.horizon}:{}),...(p.strategy?{strategy:p.strategy}:{})}:{})};}
 // The memory rows. outcomes: trade_outcomes rows; accounts: the account keys of this review; positions: context
 // positions; reviewAt: review id -> time; reviewsSince(symbol, time): reviews run since then.
 function build(outcomes,{accounts=[],positions={},reviewAt=new Map(),reviewsSince=()=>null,now=Date.now()}={}){
