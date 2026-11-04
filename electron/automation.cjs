@@ -854,10 +854,23 @@ class Automation {
       set_review_trigger:async args=>{guard();const reply=this.desk.setTrigger(scope,args,{universe,reviewId});if(reply.status==='saved')void this.warmSeries(reply.symbols);if(reply.status==='saved'){const check=formula.checkConditions(this.desk.triggers(scope).find(t=>t.id===reply.id).conditions,args.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));}return reply;},
       save_assessment:async args=>{guard();return this.assessments.save(scope,args,{context,reviewId,symbols:[...new Set([...Object.keys(context.positions??{}),...(context.universe??[]).map(r=>r.symbol)])]});},
       save_note:async args=>{guard();return this.desk.saveNote(scope,args,{orderIds:this.engineOrders().filter(o=>o.symbol===String(args?.symbol??'').trim().toUpperCase()&&require('./note-staleness.cjs').OPEN.includes(o.status)).map(o=>o.id)});},
-      set_conditional_order:async args=>{guard();if(args?.action!=='cancel'&&context.environment==='local-paper')return {status:'rejected',reason:'Conditional orders need a KIS account.'};const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId});if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';}return reply;},
+      set_conditional_order:async args=>{guard();if(args?.action!=='cancel'&&context.environment==='local-paper')return {status:'rejected',reason:'Conditional orders need a KIS account.'};const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';}return reply;},
     };
   }
   // Conditional orders fire one at a time: fresh account read, conditions re-checked, then every guardrail before the normal proposal path.
+  // A conditional order's credit lot against the Korean account now (audit 2026-11-04, Stage 4): its path must be
+  // executable and automatic (credit-paths.cjs: confirmed broker fields and the user's Stage 3 approval), the lot must
+  // exist with that loan date and source, and quantity (when given) must fit what remains after waiting orders.
+  // Returns {ok, lot, available, reserved, account} or {ok:false, reason}.
+  creditLot(order,{quantity=null}={}){const CP=require('./credit-paths.cjs');const c=order.credit,what=c.kind==='cover'?'cover':'margin repayment';const engine=this.live;
+    if(/:/.test(order.symbol)||!engine)return {ok:false,reason:'Credit lots exist only on the Korean account.'};
+    const path=CP.pathStatus(c.kind,{approved:this.config.creditProtectionApproved===true});
+    if(!path.executable||!path.automatic)return {ok:false,reason:`A ${what} cannot run as a conditional order now: ${path.executable?path.label:path.reason}. The lot stays unprotected; close it in KIS if needed.`};
+    const bal=engine.riskBalance??engine.getConnection?.()?.snapshot;if(!bal?.holdings)return {ok:false,reason:'The account balance is not available to check the lot.'};
+    let r;try{r=CP.remaining(bal,{symbol:order.symbol,side:order.side,credit:{kind:c.kind,loanDate:c.loanDate}},engine.orders?.()??[]);}catch{return {ok:false,reason:`No ${what} lot of ${order.symbol} with loan date ${c.loanDate}.`};}
+    if(r.lot.source&&r.lot.source!==c.source)return {ok:false,reason:`The ${order.symbol} lot of ${c.loanDate} is a ${r.lot.source} loan, not ${c.source}.`};
+    if(quantity!=null&&quantity>r.available)return {ok:false,reason:`The ${order.symbol} lot of ${c.loanDate} has ${r.available} shares left after waiting orders (${r.reserved} reserved).`};
+    return {ok:true,lot:r.lot,available:r.available,reserved:r.reserved,account:(()=>{try{return engine.identity();}catch{return null;}})()};}
   async fireConditional(order){
     const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);
       if(status==='rejected'&&order.side==='Sell'&&order.purpose==='stop_loss')try{this.notify?.('stop-rejected-'+order.id,`Stop loss for ${order.symbol} was rejected: ${outcome} The position is not protected until a new one is armed.`);}catch{}return saved;};
@@ -892,7 +905,13 @@ class Automation {
       // again shortly, with its conditions re-read. Checked before proposing, so no proposal is left behind.
       if(engine.busy)return busy();
       let quantity=order.quantity;
-      if(order.side==='Sell'){const held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return note('rejected','No shares held to sell.',{results:check.results});
+      // A credit-lot order: the path, the account, the lot and what remains in it are checked again now; the order never
+      // takes more than remains, so a partial fill or a duplicate trigger cannot sell or buy past the lot.
+      if(order.credit){const lot=this.creditLot(order);if(!lot.ok)return note('rejected',`Not sent: ${lot.reason}`,{results:check.results});
+        if(order.credit.account&&lot.account&&order.credit.account!==lot.account)return note('rejected','Not sent: the account changed since this order was armed.',{results:check.results});
+        if(lot.available<1)return lot.reserved>0?note('cancelled',`Not needed: an order already waiting takes this lot (${lot.reserved}).`,{results:check.results}):note('rejected','The lot is already closed.',{results:check.results});
+        quantity=Math.min(quantity,lot.available);}
+      else if(order.side==='Sell'){const held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return note('rejected','No shares held to sell.',{results:check.results});
         // Only cash shares not already in a waiting sale (credit-paths.cjs, Stage 3): margin-loan shares are never sold as
         // cash, and two stops never sell the same shares. Shares a waiting sale already takes need no second order.
         let free=held,reserved=0;try{const bal=engine.riskBalance??engine.getConnection?.()?.snapshot;if(bal?.holdings){const r=require('./credit-paths.cjs').remaining(bal,{symbol:order.symbol,side:'Sell'},engine.orders?.()??[]);free=r.available;reserved=r.reserved;}}catch{}
@@ -903,10 +922,10 @@ class Automation {
         const cap=ctx.equity*this.config.conditionalMaxOrderPct/100;if(!(notional<=cap))return note('rejected',`Order value ${Math.round(notional)} is above ${this.config.conditionalMaxOrderPct}% of equity (${Math.round(cap)}).`,{results:check.results});
         if(!(ctx.cash>=notional*1.005))return note('rejected','Not enough cash for the order and fees.',{results:check.results});
         // The same rule as a review's Buy: blocked only in the market whose daily loss limit is reached.
-        const emergency=this.emergencyState();if((emergency.activeMarkets??(emergency.active?[market]:[])).includes(market)&&this.config.lossAction!=='review')return note('rejected','New buys are blocked after the daily loss limit.',{results:check.results});
+        const emergency=order.credit?{}:this.emergencyState();if((emergency.activeMarkets??(emergency.active?[market]:[])).includes(market)&&this.config.lossAction!=='review')return note('rejected','New buys are blocked after the daily loss limit.',{results:check.results});
         if((emergency.ambiguousMarkets??[]).includes(market)&&this.config.lossAction!=='review')return note('rejected','New buys are restricted: whether the daily loss limit is reached depends on values not yet confirmed. No loss is claimed.',{results:check.results});
       }
-      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit});if(order.limitPrice>0)engine.annotate?.(proposal.id,{tracking:{bound:order.limitPrice}});
+      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})});if(order.limitPrice>0)engine.annotate?.(proposal.id,{tracking:{bound:order.limitPrice}});
       const cap=this.config.maxAutoOrdersPerDay;const capReached=cap>0&&this.guardrails.autoOrdersToday()>=cap;
       const auto=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval&&!capReached;
       const waits=why=>note('proposed',`Not executed: proposal ${proposal.id} at ${limit} for ${quantity} shares ${why}. Nothing is at the broker until it is approved.`,{proposalId:proposal.id,results:check.results});

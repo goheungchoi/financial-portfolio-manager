@@ -36,11 +36,15 @@ function remaining(balance,{symbol,side,credit=null},orders=[]){
 }
 function check(balance,order,orders=[]){const r=remaining(balance,order,orders);if(r&&order.quantity>r.available)throw new Error('EXCEEDS_LOT');return r;}
 // The broker contract of each credit path. executable: every field the order sends has a confirmed meaning.
+// Stage 4 correction (2026-11-05): a margin repayment was marked executable in Stage 3, but which balance rows are margin
+// loans and whether a loan is the broker's own or a distribution loan (CRDT_TYPE 25 or 27) are read from trad_dvsn_name
+// text the app matches (융자, 자기), whose values are not confirmed (U5). Every credit path now waits on a field.
+// requires: the unresolved items (U1-U5) that block the path.
 const PATHS={
-  'margin-sell':{executable:true,evidence:'order_credit: CRDT_TYPE 25 own / 27 distribution margin repayment; LOAN_DT is the loan date of the stock sold (balance loan_dt)'},
-  'margin-buy':{executable:false,reason:'a margin position is valued from KIS net assets (nass_amt), and what that figure deducts is not confirmed (U4)'},
-  short:{executable:false,reason:'the loan date a new short sends (U1) and the borrowable quantity (U3, lendable_by_company fields) are not confirmed'},
-  cover:{executable:false,reason:'how a cover names the short lot it repays (LOAN_DT for CRDT_TYPE 26/28, U2) is not confirmed'},
+  'margin-sell':{executable:false,requires:['U5'],evidence:'order_credit: CRDT_TYPE 25 own / 27 distribution margin repayment; LOAN_DT is the loan date of the stock sold (balance loan_dt)',reason:'which balance rows are margin loans and whether a loan is own or distribution (CRDT_TYPE 25 or 27) come from trad_dvsn_name text whose values are not confirmed (U5)'},
+  'margin-buy':{executable:false,requires:['U4','U5'],reason:'a margin position is valued from KIS net assets (nass_amt), and what that figure deducts is not confirmed (U4); the loan rows it creates are recognized by unconfirmed trad_dvsn_name text (U5)'},
+  short:{executable:false,requires:['U1','U3','U5'],reason:'the loan date a new short sends (U1), the borrowable quantity (U3, lendable_by_company fields) and how a short row appears in the balance (U5) are not confirmed'},
+  cover:{executable:false,requires:['U2','U5'],reason:'how a cover names the short lot it repays (LOAN_DT for CRDT_TYPE 26/28, U2) and how the short row appears in the balance (U5) are not confirmed'},
 };
 const OPENINGS_LABEL='Automatic credit openings temporarily disabled pending validation.';
 const PROTECTION_LABEL='Requires approval—not automatic protection.';
@@ -50,7 +54,7 @@ function pathStatus(kind,{approved=false}={}){
   const opening=kind==='margin-buy'||kind==='short';
   if(!p.executable)return {executable:false,automatic:false,reason:p.reason,label:opening?OPENINGS_LABEL:PROTECTION_LABEL};
   if(opening)return {executable:true,automatic:false,label:OPENINGS_LABEL};
-  return {executable:true,automatic:Boolean(approved),...(approved?{}:{label:PROTECTION_LABEL}),evidence:p.evidence};
+  return {executable:true,automatic:Boolean(approved),...(approved?{}:{label:PROTECTION_LABEL}),...(p.evidence?{evidence:p.evidence}:{})};
 }
 // The stop a plan needs for its effect: below the price for a long, above it for a short.
 function stopSide(effect){return effect==='OPEN_SHORT'?'above':'below';}
