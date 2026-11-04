@@ -102,11 +102,12 @@ test('real EDGAR documents: the document label is not the headline and bullets a
 });
 // The user found the agents' strategies too monotonous: every review now names the best idea of each strategy type it
 // considered, and a Buy names its strategy; leveraged-tactical trades follow their own evidence and size rules.
-test('strategy variety: a Buy names its strategy and each review records the ideas it considered by type',()=>{
-  assert.equal(buy({evidence:[read],strategy:'none'}).withheld?.reason,'no strategy (long-term, swing, short-term or leveraged-tactical)');
+// Audit 2026-11-04, Stage 4: a plan names its horizon; instrument, direction and funding are the app's (strategy-axes.cjs).
+test('strategy variety: a Buy names its horizon and each review records the alternatives it considered',()=>{
+  assert.equal(buy({evidence:[read],strategy:'none'}).withheld?.reason,'no horizon type (long-term, swing or short-term)');
   const d=validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'x',credit:'none',loanDate:'',plan:{strategy:'none',thesis:'',invalidation:'i',stopPrice:null,targetPrice:null,horizonDays:null,confidence:'low',portfolioImpact:null,evidence:[],valuation:null,uncertainty:null},
-    strategyCheck:[{strategy:'long-term',idea:'Pentair add',verdict:'watching',reason:'After the guidance is verified.'},{strategy:'leveraged-tactical',idea:'KODEX 반도체레버리지 on a +4% SOX night',verdict:'rejected',reason:'No confirmation at the open.'},{strategy:'scalping',idea:'x',verdict:'acted',reason:'unknown type'}]},['NYSE:PNR'],{requirePlan:true});
-  assert.deepEqual(d.strategyCheck.map(c=>[c.strategy,c.verdict]),[['long-term','watching'],['leveraged-tactical','rejected']]);
+    strategyCheck:[{horizon:'long-term',instrument:'unleveraged',direction:'long',funding:'cash',idea:'Pentair add',verdict:'watching',reason:'After the guidance is verified.'},{horizon:'short-term',instrument:'leveraged',direction:'long',funding:'cash',idea:'KODEX 반도체레버리지 on a +4% SOX night',verdict:'rejected',reason:'No confirmation at the open.'},{horizon:'scalping',instrument:'unleveraged',direction:'long',funding:'cash',idea:'x',verdict:'acted',reason:'unknown horizon'},{strategy:'long-term',idea:'legacy',verdict:'watching',reason:'old shape'}]},['NYSE:PNR'],{requirePlan:true});
+  assert.deepEqual(d.strategyCheck.map(c=>[c.horizon,c.instrument,c.verdict]),[['long-term','unleveraged','watching'],['short-term','leveraged','rejected']]);
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
   assert.match(src,/Compare relevant permitted strategies\. Strategy variety is not a goal\. Report when no suitable candidate exists; do not manufacture a candidate to fill a category\./);assert.match(src,/neither variety nor diversification is required for its own sake/);assert.doesNotMatch(src,/Vary your strategies/);assert.match(src,/a likely move is a claim to support, not a feeling/);assert.match(src,/horizonDays within maxHoldingDays/);assert.match(src,/stage a tactical setup ahead/);
   const scoutRules=require('../electron/scout.cjs').INSTRUCTIONS;assert.match(scoutRules,/include a tactical candidate for it when one meets your standards/);

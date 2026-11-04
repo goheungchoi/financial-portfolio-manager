@@ -146,7 +146,7 @@ test('through the scheduler: focused routine reviews carry reviewScope; full one
   a.configure({routineReviews:'focused'});await a.review('Scheduled review');assert.deepEqual(contexts.at(-1).reviewScope.kind,'routine');
   await a.review('User request');assert.equal(contexts.at(-1).reviewScope.kind,'broad');assert.throws(()=>a.configure({routineReviews:'narrow'}),/INVALID_SETTINGS/);
   const {decisionSchema,validateDecision}=require('../electron/ai-client.cjs');assert.match(JSON.stringify(decisionSchema(['005930'])),/"carried"/);
-  assert.equal(validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:'',strategyCheck:[{strategy:'long-term',idea:'',verdict:'carried',reason:'Routine review'}]},['005930']).strategyCheck[0].verdict,'carried');
+  assert.equal(validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:'',strategyCheck:[{horizon:'long-term',instrument:'unleveraged',direction:'long',funding:'cash',idea:'',verdict:'carried',reason:'Routine review'}]},['005930']).strategyCheck[0].verdict,'carried');
 });
 test('decision changes: the trade, its size, timing, invalidation and verdicts; wording is not a change',async()=>{
   const {decisionChange}=require('../electron/review-gate.cjs');const hold={action:'Hold',symbol:'',quantity:0,explanation:'Hold.',plan:{invalidation:'x'},planVerdicts:[{symbol:'028050',verdict:'waiting'}]};
