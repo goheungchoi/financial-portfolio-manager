@@ -43,7 +43,7 @@ class Automation {
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
     this.reviewInterval=new (require('./review-interval.cjs').ReviewInterval)(db);
     this.watches=new (require('./review-watches.cjs').ReviewWatches)(db);
-    this.outcomes=new (require('./outcome-ledger.cjs').OutcomeLedger)(db);this.memory=new (require('./learning-memory.cjs').LearningMemory)(db);
+    this.outcomes=new (require('./outcome-ledger.cjs').OutcomeLedger)(db);this.memory=new (require('./learning-memory.cjs').LearningMemory)(db);try{this.memory.proposeProcedural();}catch{}
     this.trials=new (require('./lesson-trials.cjs').LessonTrials)(db,this.memory);
     this.reflections=new (require('./reflection.cjs').ReflectionQueue)(db,this.memory);
     // Observation only: records when event-driven scheduling would run beside the current schedule; changes nothing.
@@ -252,7 +252,7 @@ class Automation {
   }
   context() {
     const state=this.paper.getState();
-    return {environment:'local-paper',paperVersion:state.account.version,equity:state.account.equity,cash:state.account.availableCash,positions:state.account.positions,universe:state.universe,quotes:state.quotes,orders:state.orders.filter(order=>['Pending','Partially filled'].includes(order.status)).map(({symbol,side,quantity,filled,status})=>({symbol,side,quantity,filled,status})),risk:state.policy,news:this.newsContext(),reviewedLessons:this.db.prepare('SELECT text FROM lessons WHERE approved=1 ORDER BY rowid DESC LIMIT 5').all().map(row=>row.text)};
+    return {environment:'local-paper',paperVersion:state.account.version,equity:state.account.equity,cash:state.account.availableCash,positions:state.account.positions,universe:state.universe,quotes:state.quotes,orders:state.orders.filter(order=>['Pending','Partially filled'].includes(order.status)).map(({symbol,side,quantity,filled,status})=>({symbol,side,quantity,filled,status})),risk:state.policy,news:this.newsContext(),reviewedLessons:this.db.prepare("SELECT text FROM lessons WHERE approved=1 AND id NOT LIKE 'procedural:%' ORDER BY rowid DESC LIMIT 5").all().map(row=>row.text)};
   }
   // A review's inputs, built through the normal path: fresh market data, reconciled orders, account context, lessons,
   // costs, performance, plan and order books. Shared by reviews and dry runs.
