@@ -39,6 +39,9 @@ test('live engine credit orders: unavailable on mock; unconfirmed paths are neve
   l.exposure.savePolicy('acct',{margin:{enabled:true,maxLoanPctOfEquity:40},short:{enabled:true,auto:true,maxGrossPctOfEquity:50}});l.enableAuto('ENABLE AUTO LIVE');l.creditApproved=()=>true;
   for(const [side,credit,symbol] of [['Buy',{kind:'margin-buy'},'005930'],['Sell',{kind:'short'},'005930'],['Buy',{kind:'cover',loanDate:'2026-10-01'},'000660']])
     assert.throws(()=>l.propose({symbol,side,quantity:1,limitPrice:72000,credit}),/CREDIT_PATH_UNVERIFIED/,`${credit.kind}: not proposed, whatever the settings and approval`);
+  assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}}),/CREDIT_PATH_UNVERIFIED/,'a repayment waits on U5 (Stage 4 correction)');
+  // As it will work once U5 is confirmed:
+  const P=require('../electron/credit-paths.cjs').PATHS['margin-sell'];P.executable=true;try{
   l.creditApproved=()=>false;const repay=l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}});
   assert.equal(repay.credit.type,'27');assert.equal(repay.requiresApproval,true,'not automatic before Stage 3 is approved');assert.match(repay.restriction,/Requires approval—not automatic protection/);
   assert.equal((await l.autoSubmit(repay.id)).reason,'APPROVAL_REQUIRED');assert.equal(calls.length,0);
@@ -46,6 +49,7 @@ test('live engine credit orders: unavailable on mock; unconfirmed paths are neve
   assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:11,limitPrice:72000}),/EXCEEDS_LOT/,'a cash sale takes only the 10 cash shares');
   l.creditApproved=()=>true;assert.equal(l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-09-01'}}).requiresApproval,false,'approved: a verified reduction is automatic');
   const placed=await l.submit(repay.id,'PLACE LIVE ORDER');assert.equal(placed.status,'Accepted');assert.deepEqual(calls.find(c=>c[0]==='prepare-order')[1].command.credit,{kind:'margin-sell',type:'27',loanDate:'2026-09-01'});
+  }finally{P.executable=false;}
 });
 test('AI decisions: credit fields are optional for legacy decisions and must match the side and loan date',()=>{
   const {validateDecision}=require('../electron/ai-client.cjs');const s=['005930'];const base={symbol:'005930',quantity:1,explanation:'x'};
@@ -63,6 +67,8 @@ test('client: only confirmed credit paths are sent; a margin repayment goes to o
   for(const credit of [{kind:'margin-buy',type:'21'},{kind:'short',type:'22'},{kind:'cover',type:'28',loanDate:'2026-10-01'}])
     await assert.rejects(client.placeOrder({symbol:'005930',side:credit.kind==='short'?'Sell':'Buy',quantity:1,limitPrice:100,credit}),/CREDIT_PATH_UNVERIFIED/,credit.kind);
   assert.equal(calls.filter(c=>c.url.includes('order-credit')).length,0,'nothing reached order-credit');
+  await assert.rejects(client.placeOrder({symbol:'005930',side:'Sell',quantity:2,limitPrice:100,credit:{kind:'margin-sell',type:'25',loanDate:'2026-09-01'}}),/CREDIT_PATH_UNVERIFIED/,'a repayment waits on U5');
+  const P=require('../electron/credit-paths.cjs').PATHS['margin-sell'];P.executable=true;try{
   await client.placeOrder({symbol:'005930',side:'Sell',quantity:2,limitPrice:100,credit:{kind:'margin-sell',type:'25',loanDate:'2026-09-01'}});const sell=calls.filter(c=>c.url.includes('order-credit')).at(-1);
-  assert.equal(sell.options.headers.tr_id,'TTTC0051U');const body=JSON.parse(sell.options.body);assert.equal(body.LOAN_DT,'20260901');assert.equal(body.CRDT_TYPE,'25');
+  assert.equal(sell.options.headers.tr_id,'TTTC0051U');const body=JSON.parse(sell.options.body);assert.equal(body.LOAN_DT,'20260901');assert.equal(body.CRDT_TYPE,'25');}finally{P.executable=false;}
 });

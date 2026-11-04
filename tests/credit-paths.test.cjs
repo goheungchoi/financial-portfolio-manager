@@ -28,8 +28,13 @@ test('a closing order takes only what remains in its own lot after orders alread
 });
 test('credit paths: unconfirmed execution fields block submission even with approval; openings are never automatic',()=>{
   assert.deepEqual(C.pathStatus('none'),{executable:true,automatic:true});
-  const repay=C.pathStatus('margin-sell');assert.equal(repay.executable,true);assert.equal(repay.automatic,false,'before the user approves Stage 3');assert.equal(repay.label,C.PROTECTION_LABEL);
-  assert.equal(C.pathStatus('margin-sell',{approved:true}).automatic,true);assert.equal(C.pathStatus('margin-sell',{approved:true}).label,undefined);
+  // Stage 4 correction: a margin repayment waits on U5 too (its rows and loan source come from unconfirmed text).
+  const repay=C.pathStatus('margin-sell',{approved:true});assert.equal(repay.executable,false);assert.match(repay.reason,/U5/);assert.deepEqual(C.PATHS['margin-sell'].requires,['U5']);
+  // Once its fields are confirmed it is executable, automatic only after the user approves Stage 3.
+  const was=C.PATHS['margin-sell'].executable;C.PATHS['margin-sell'].executable=true;try{
+    assert.equal(C.pathStatus('margin-sell').automatic,false,'before the user approves Stage 3');assert.equal(C.pathStatus('margin-sell').label,C.PROTECTION_LABEL);
+    assert.equal(C.pathStatus('margin-sell',{approved:true}).automatic,true);assert.equal(C.pathStatus('margin-sell',{approved:true}).label,undefined);}finally{C.PATHS['margin-sell'].executable=was;}
+  assert.deepEqual(Object.fromEntries(Object.entries(C.PATHS).map(([k,p])=>[k,p.requires])),{'margin-sell':['U5'],'margin-buy':['U4','U5'],short:['U1','U3','U5'],cover:['U2','U5']},'what blocks each path');
   for(const kind of ['short','cover','margin-buy']){const s=C.pathStatus(kind,{approved:true});assert.equal(s.executable,false,kind);assert.equal(s.automatic,false);assert.ok(s.reason,kind);}
   assert.equal(C.pathStatus('short').label,C.OPENINGS_LABEL);assert.equal(C.pathStatus('cover').label,C.PROTECTION_LABEL);assert.match(C.pathStatus('cover').reason,/U2/);assert.match(C.pathStatus('short').reason,/U1.*U3/);
   assert.equal(C.stopSide('OPEN_SHORT'),'above');assert.equal(C.stopSide('OPEN_LONG'),'below');
