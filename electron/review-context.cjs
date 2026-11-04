@@ -47,6 +47,8 @@ const COMPRESS=[
   // assumptions are in the full section (get_context_detail, section assessments).
   ['assessments',a=>Array.isArray(a)?a.map(x=>({symbol:x.symbol,updated:x.updated,strategy:x.strategy,horizon:x.horizon,thesis:clipBytes(x.thesis,240),invalidation:clipBytes(x.invalidation,160),stale:x.stale,...(x.staleBecause?{staleBecause:x.staleBecause}:{}),...(x.conflict?{conflict:x.conflict}:{}),held:x.held,sourceIds:(x.evidence??[]).map(e=>e.sourceId).filter(Boolean),full:'get_context_detail section assessments'})):a],
   ['waits',w=>Array.isArray(w)?w.map(x=>({symbol:x.symbol,reason:x.reason,...(x.cause?{cause:x.cause}:{}),question:clipBytes(x.question,150),earliestCheck:x.earliestCheck,expires:x.expires,holdsResearch:x.holdsResearch})):w],
+  // Position memory keeps every id, fill, stop and invalidation; rationales and theses are clipped (audit 2026-11-04, Stage 4).
+  ['positionMemory',m=>Array.isArray(m)?m.map(r=>({...r,...Object.fromEntries(['lastEntry','lastExit'].filter(k=>r[k]).map(k=>[k,{...r[k],rationale:clipBytes(r[k].rationale,200),...(r[k].thesis?{thesis:clipBytes(r[k].thesis,120)}:{})}]))})):m],
   // A pending decision keeps what stops it executing: its market (closed until it opens), its invalidation and proposal.
   ['pendingDecisions',p=>Array.isArray(p)?p.map(x=>({symbol:x.symbol,action:x.action,quantity:x.quantity,market:x.market,since:x.since,reviews:x.reviews,rationale:clipBytes(x.rationale,240),...(x.invalidation?{invalidation:x.invalidation}:{}),...(x.priceThen!=null?{priceThen:x.priceThen}:{}),...(x.proposalId?{proposalId:x.proposalId}:{})})):p],
   ['reviewScope',s=>s&&Array.isArray(s.changes)?{...s,changes:s.changes.map(c=>clip(c,100)).slice(0,6)}:s],
@@ -110,11 +112,11 @@ const TYPES={environment:'string',market:'string',currency:'string',baseCurrency
   agentDesk:'object',orderFollowUp:'object',pendingDecisions:'array',waits:'array',reviewWatches:'array',researchGaps:'array',
   sectorLeads:'object',discovery:'object',topStories:'array',similarEpisodes:'array',eventCalendar:'array',macro:'object|array',marketRegime:'object',portfolioExposure:'object',marketNarrative:'object',
   decisionScoreboard:'object',reviewInterval:'object',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
-  lessonConflicts:'array',assessments:'array',orderBooks:'object',reviewScope:'object'};
+  lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object'};
 const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','confirmation','paperVersion'];
 const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps'];
 const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes','eventCalendar','macro','marketRegime','portfolioExposure','marketNarrative','decisionScoreboard','reviewInterval','performance',
-  'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','orderBooks','reviewScope','waits','pendingDecisions',
+  'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','positionMemory','orderBooks','reviewScope','waits','pendingDecisions',
   'orderFollowUp','agentDesk'];
 const UNREGISTERED_BYTES=2000;
 // The version of these rules, saved with every size-failure record (electron/context-failures.cjs).
