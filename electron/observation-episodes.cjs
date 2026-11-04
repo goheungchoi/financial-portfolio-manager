@@ -9,11 +9,12 @@ const TERMS={check:'one evaluation the feature logged',episode:'a run of checks 
 const GAP_MS=60*60000;
 // rows: checks sorted by time ({id, at, ...}); parts(row): the [{key, signature, ...detail}] the row contributes, one per
 // symbol or subject (an unrelated subject never splits another's episode); endedBy(key, from, to): the time of an event
-// between two checks that ends the episode (a review that assessed the subject), or null.
+// between two checks that ends the episode (a review that assessed the subject), or null; finalReason(episode): why an
+// episode still running at the end of the data ended ('open' unless the feature knows better, as a session that closed).
 // An episode ends on a gap longer than gapMs ('gap'), a changed signature ('outcome-changed', or 'reset' when only the
-// reset part changed: signature returns {outcome, reset}), an ending event ('reviewed'), or the end of the data ('open').
+// reset part changed: signature returns {outcome, reset}), an ending event ('reviewed'), or the end of the data.
 // Every episode keeps its checks' ids, first and last times and the reason it ended.
-function group(rows,{parts,endedBy=()=>null,gapMs=GAP_MS}={}){const open=new Map(),done=[];
+function group(rows,{parts,endedBy=()=>null,gapMs=GAP_MS,finalReason=()=>'open'}={}){const open=new Map(),done=[];
   const close=(ep,reason,at=null)=>{open.delete(ep.key);done.push({...ep,endReason:reason,...(at!=null?{endedAt:at}:{})});};
   for(const row of rows)for(const p of parts(row)){const ep=open.get(p.key),sig=p.signature??{};
     if(ep){const ended=endedBy(p.key,ep.last,row.at);
@@ -21,6 +22,6 @@ function group(rows,{parts,endedBy=()=>null,gapMs=GAP_MS}={}){const open=new Map
       else if(ep.signature.outcome!==sig.outcome)close(ep,'outcome-changed');else if(ep.signature.reset!==sig.reset)close(ep,'reset');
       else{ep.last=row.at;ep.count++;ep.ids.push(row.id);continue;}}
     open.set(p.key,{key:p.key,signature:sig,first:row.at,last:row.at,count:1,ids:[row.id],detail:p.detail??null});}
-  for(const ep of [...open.values()])close(ep,'open');
+  for(const ep of [...open.values()])close(ep,finalReason(ep));
   return done.sort((a,b)=>a.first-b.first);}
 module.exports={group,TERMS,GAP_MS};

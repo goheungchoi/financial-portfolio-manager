@@ -8,7 +8,7 @@ test('100 identical poll checks are one episode, with every check kept',()=>{
   const o=new AlertObservations(new DatabaseSync(':memory:'));const held=new Set();
   for(let i=0;i<100;i++)o.record(min(i/2),{current:pct('396500',4.3),proposed:null,held,scope:'acct'});
   const [ep,...rest]=o.episodes(t0);assert.equal(rest.length,0);assert.equal(ep.count,100);assert.equal(ep.ids.length,100);assert.equal(ep.first,t0);assert.equal(ep.last,min(49.5));assert.equal(ep.endReason,'open');
-  assert.equal(ep.detail.condition,'old-only');assert.equal(ep.key,`acct|KR|2026-11-04|396500|${RULES_VERSION}`);
+  assert.equal(ep.detail.condition,'old-only');o.record(Date.parse('2026-11-05T01:00:00Z'),{current:pct('005930',3.1),proposed:null,held,scope:'acct'});assert.equal(o.episodes(t0)[0].endReason,'session ended','its trading day is over');assert.equal(ep.key,`acct|KR|2026-11-04|396500|${RULES_VERSION}`);
 });
 test('an episode ends on a gap, a changed outcome, a new crossing or a review that assessed the symbol; other symbols never split it',()=>{
   const o=new AlertObservations(new DatabaseSync(':memory:'));const held=new Set();const r=(m,cur,pro=null)=>o.record(min(m),{current:cur,proposed:pro,held,scope:'acct'});
