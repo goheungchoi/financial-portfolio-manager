@@ -101,4 +101,50 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
   return {version:VERSION,at:now,fx:rate?{usdKRW:rate,source:fx.source??null,at:at(fx)}:null,markets:{KR,US},
     combined:{low,high,headline:low,exact:complete&&KR.exact&&US.exact&&high-low<0.5,complete,scope,stale:[KR,US].some(v=>v.available&&v.stale),reasons}};
 }
-module.exports={value,VERSION,STALE_MS};
+// U.S. fills KIS may not reflect yet (value's inFlight), decided by evidence at each U.S. balance reading:
+// - a new fill (or a larger partial fill) is compared with the previous reading: if U.S. cash plus pending proceeds
+//   already moved by at least 95% of its amount, KIS reflects it; otherwise it is in flight;
+// - a buy in flight stops being in flight once KIS reports buys awaiting settlement (ustl_buy_amt_smtl) covering the
+//   buys in flight, or cash plus proceeds fall by its amount; a sale once proceeds rise by its amount or KIS reports
+//   sales awaiting settlement;
+// - after MAX_DAYS it is dropped as settled, with a note, so a missed signal cannot hold a value down for good.
+// The state survives restarts (inflight_settlement). orders: the U.S. engine's orders.
+const MAX_DAYS=7,TOLERANCE=0.95;
+class InFlight {
+  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
+  state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[]};}
+  // us: the U.S. balance just read (cash, pendingSaleProceeds, unsettled); fx: USD/KRW. Returns {buysUSD, sellsUSD, open, notes}.
+  observe(account,{us,orders=[],fx=null}){
+    if(typeof account!=='string'||!account||!us)return {buysUSD:0,sellsUSD:0,open:[],notes:[]};
+    const now=this.clock(),st=this.state(account),notes=[];const basis=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0);
+    // The first reading starts tracking: fills already listed are taken as reflected (there is no earlier reading to
+    // compare them with), so an upgrade never holds the value down for fills long settled.
+    if(st.basis==null){for(const o of orders)if(o.filled>0)st.seen[String(o.id)]=o.filled;st.basis=basis;
+      this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));
+      return {buysUSD:0,sellsUSD:0,open:[],notes:['tracking of U.S. fills awaiting settlement starts with this reading']};}
+    const moved=basis-st.basis;
+    // New fill amounts since the last reading: an order's filled quantity growing.
+    const fresh=[];for(const o of orders){if(!(o.filled>0)||!(o.fillPrice>0)||!['Buy','Sell'].includes(o.side))continue;const id=String(o.id);const before=st.seen[id]??0;if(o.filled<=before)continue;
+      const share=(o.filled-before)/o.filled;const net=Number.isFinite(o.resultCosts?.netCash)?Math.abs(o.resultCosts.netCash):o.filled*o.fillPrice;fresh.push({id,side:o.side,usd:Math.round(net*share*100)/100,at:now});st.seen[id]=o.filled;}
+    // Reflected at once when the reading already moved by them (buys down, sales up), all together.
+    const want=fresh.reduce((n,f)=>n+(f.side==='Buy'?-f.usd:f.usd),0);
+    if(fresh.length&&!(moved!=null&&Math.abs(want)>0&&Math.sign(moved)===Math.sign(want)&&Math.abs(moved)>=TOLERANCE*Math.abs(want)))st.open.push(...fresh);
+    // Evidence for what is open.
+    const reportedBuys=fx>0?Math.max(0,Number(us.unsettled?.buyKRW)||0)/fx:0,reportedSells=fx>0?Math.max(0,Number(us.unsettled?.sellKRW)||0)/fx:0;
+    const openBuys=st.open.filter(f=>f.side==='Buy').reduce((n,f)=>n+f.usd,0),openSells=st.open.filter(f=>f.side==='Sell').reduce((n,f)=>n+f.usd,0);
+    st.open=st.open.filter(f=>{
+      if(now-f.at>MAX_DAYS*86400000){notes.push(`${f.side} ${f.id} ($${f.usd}) treated as settled after ${MAX_DAYS} days without a signal`);return false;}
+      if(f.side==='Buy'&&openBuys>0&&reportedBuys>=TOLERANCE*openBuys)return false;
+      if(f.side==='Sell'&&openSells>0&&reportedSells>=TOLERANCE*openSells)return false;
+      if(!fresh.includes(f)&&moved!=null&&(f.side==='Buy'?moved<=-TOLERANCE*f.usd:moved>=TOLERANCE*f.usd))return false;
+      return true;});
+    st.basis=basis;
+    // Orders no longer listed are forgotten, so the record stays bounded.
+    const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
+    this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));
+    const sumOf=side=>Math.round(st.open.filter(f=>f.side===side).reduce((n,f)=>n+f.usd,0)*100)/100;
+    return {buysUSD:sumOf('Buy'),sellsUSD:sumOf('Sell'),open:st.open,notes};
+  }
+  current(account){const st=this.state(account);const sumOf=side=>Math.round(st.open.filter(f=>f.side===side).reduce((n,f)=>n+f.usd,0)*100)/100;return {buysUSD:sumOf('Buy'),sellsUSD:sumOf('Sell'),open:st.open};}
+}
+module.exports={value,VERSION,STALE_MS,InFlight,MAX_DAYS};

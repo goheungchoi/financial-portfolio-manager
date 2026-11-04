@@ -18,13 +18,14 @@ const clip=(s,n)=>{s=String(s??'').replace(/[ \t]+/g,' ').trim();return s.length
 const seoulTime=t=>new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(t);
 // Account figures shared by review and scout posts. daily: performance series points; intraday: today's samples.
 function portfolioFigures({portfolio,daily=[],intraday=[],previousClose=()=>null,amounts=true,today=seoulDate()}){
-  const equity=portfolio?.totals?.equityKRW??portfolio?.totals?.KRW??null;
+  // A value covering one market only is labelled so, never shown as the portfolio.
+  const partial=portfolio?.totals?.equityKRW==null&&portfolio?.totals?.KRW!=null&&(portfolio?.valuation?.combined?.reasons??[]).some(r=>/U\.S\. balance not loaded|no USD\/KRW rate/.test(r));const equity=portfolio?.totals?.equityKRW??portfolio?.totals?.KRW??null;const estimate=portfolio?.valuation?.combined&&!portfolio.valuation.combined.exact;
   const prior=daily.filter(p=>p.day<today).at(-1)?.value??null;const open=intraday[0]?.equity??null;const base=prior??open;
   const todayPct=equity!=null&&base>0?(equity/base-1)*100:null;
   const cash=(portfolio?.cash?.KRW??0)+(portfolio?.cash?.USD??0)*(portfolio?.fx?.usdKRW??0);
   const movers=(portfolio?.rows??[]).map(r=>{const prev=previousClose(r.symbol);const day=prev>0&&r.price>0?(r.price/prev-1)*100:null;const total=r.cost>0?(r.price/r.cost-1)*100:null;return {symbol:r.symbol,name:r.name||r.symbol,day,total,weight:equity>0&&r.valueKRW!=null?r.valueKRW/equity*100:null};})
     .filter(m=>m.day!=null||m.total!=null).sort((a,b)=>Math.abs(b.day??b.total)-Math.abs(a.day??a.total)).slice(0,4);
-  const fields=[{name:'Portfolio',value:equity==null?'n/a':(amounts?won(equity)+' · ':'')+pct(todayPct)+' today',inline:true},
+  const fields=[{name:partial?'Portfolio (Korea only)':estimate?'Portfolio (estimate)':'Portfolio',value:equity==null?'n/a':(amounts?won(equity)+' · ':'')+pct(todayPct)+' today',inline:true},
     {name:'Cash',value:equity>0?(amounts?won(cash)+' · ':'')+(cash/equity*100).toFixed(1)+'%':'n/a',inline:true}];
   if(movers.length)fields.push({name:'Holdings',value:movers.map(m=>`${clip(m.name,22)} ${m.day!=null?pct(m.day)+' today':pct(m.total)+' total'}${m.weight!=null?` · ${m.weight.toFixed(0)}%`:''}`).join('\n'),inline:false});
   // Chart lines: won values, or percent from the first point when amounts are hidden.

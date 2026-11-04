@@ -20,18 +20,24 @@ export function usePortfolio(active=true){
 }
 // The three numbers that matter most: total value, cash and unrealized gain.
 export function HomeMetrics({state}:{state:PortfolioState}){
-  // Korea alone counts until the U.S. account and an exchange rate are both loaded.
+  // Equity is the account valuation's (electron/valuation.cjs), never recomputed here: its low bound, called an estimate
+  // whenever the bounds differ. Korea alone shows until the U.S. account and an exchange rate are both loaded, said so.
   const fx=state.fx?.usdKRW??null;const krLoaded=state.timestamps.KR!=null;const withUS=state.timestamps.US!=null&&fx!=null;
   const cash=(state.cash.KRW??0)+(withUS?(state.cash.USD??0)*fx!:0);
-  const equity=krLoaded?state.rows.filter(r=>r.market==='KR'||withUS).reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash+(withUS?pendingKRW(state):0):null;
+  const v=state.valuation?.combined;const both=v?v.scope.length===2:withUS;
+  const equity=v&&v.low!=null?(both?v.low:state.totals.KRW):krLoaded?state.rows.filter(r=>r.market==='KR'||withUS).reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash+(withUS?pendingKRW(state):0):null;
+  const estimate=Boolean(v&&both&&!v.exact);const title=!both?'Korea only':estimate?'Estimated net equity':'Net equity';
   const sample=state.valuationSample??Math.max(Date.parse(state.timestamps.KR??'')||0,Date.parse(state.timestamps.US??'')||0);
   const us=state.rows.filter(r=>r.market==='US');
   // Where the totals come from: a change here (a market loading, a holding moving from its balance price to a live quote)
   // settles the value without showing it as a move.
   const basis=priceBasis(state.rows.filter(r=>r.market==='KR'||withUS),{krLoaded,withUS});
   return <div className="home-metrics">
-    <section className="metric-card" aria-label="Combined equity"><small>Total equity</small><strong>{equity==null?'—':<LiveValue value={equity} format={krw} basis={basis}/>}</strong>
-      <div className="metric-foot">{equity!=null&&<TickDelta value={equity} sample={sample} basis={basis}/>}<span title="Korea and U.S. account totals in their own currencies">{withUS?`${state.totals.KRW!=null?compact(state.totals.KRW):'—'} · ${state.totals.USD!=null?native(state.totals.USD,'USD'):'—'}`:'Korea only'}</span></div></section>
+    <section className="metric-card" aria-label="Combined equity"><small className={!both?'negative':undefined}>{title}</small><strong>{equity==null?'—':<LiveValue value={equity} format={krw} basis={basis}/>}</strong>
+      <div className="metric-foot">{equity!=null&&<TickDelta value={equity} sample={sample} basis={basis}/>}<span title="Korea and U.S. account totals in their own currencies">{both?`${state.totals.KRW!=null?compact(state.totals.KRW):'—'} · ${state.totals.USD!=null?native(state.totals.USD,'USD'):'—'}`:'U.S. not loaded'}</span></div>
+      {estimate&&v&&v.high!=null&&<div className="metric-foot" title={v.reasons.join('; ')}><span>Range {krw(v.low!)} – {krw(v.high)}</span><span>{v.reasons[0]??''}</span></div>}
+      {!both&&state.lastComplete&&<div className="metric-foot"><span>Last full value {krw(state.lastComplete.value)} at {new Date(state.lastComplete.at).toLocaleString('en-GB',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div>}
+      {v?.stale&&<div className="metric-foot"><span className="negative">A balance is out of date</span></div>}</section>
     <section className="metric-card" aria-label="Cash"><small>Cash</small><strong>{state.cash.KRW==null&&state.cash.USD==null?'—':krw(cash)}</strong>
       <div className="metric-foot"><span>{equity?`${(cash/equity*100).toFixed(0)}% of equity`:'—'}</span>{state.committedKRW?<span title="KRW committed to U.S. buys through integrated margin; KIS deducts it at settlement">{krw(state.committedKRW)} for U.S. buys settling{state.settlementUncertainKRW?` (funding of ${krw(state.settlementUncertainKRW)} not yet known)`:''}</span>:null}{withUS&&state.cash.USD?<span>incl. {native(state.cash.USD,'USD')}</span>:null}{withUS&&state.pendingSettlement?.USD?<span title="Money from U.S. sales that has not settled yet: counted in total equity, spendable once it settles">{native(state.pendingSettlement.USD,'USD')} pending settlement</span>:null}</div></section>
     <section className="metric-card" aria-label="Unrealized"><small>Unrealized</small><PortfolioProfit rows={state.rows} loaded={equity!=null}/>
