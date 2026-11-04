@@ -1,5 +1,7 @@
 const COLORS=['#66d9c0','#b8a4ed','#efb76b','#e18da9','#94bf7c','#7bb8d6'];
-function combinePortfolio(korea,us,fx,metadata={}){
+// inFlight: U.S. fills KIS may not reflect yet (electron/valuation.cjs InFlight). Totals are the valuation's low bound
+// (electron/valuation.cjs); state.valuation carries both bounds, every component, the scope and the reasons.
+function combinePortfolio(korea,us,fx,metadata={},{inFlight=null,now=Date.now()}={}){
   const rate=fx?.usdKRW>0&&Number.isFinite(fx.usdKRW)?fx.usdKRW:null;const rows=[];
   for(const [market,snapshot,currency] of [['KR',korea,'KRW'],['US',us,'USD']])for(const row of snapshot?.holdings??[]){const info=metadata[row.symbol]??{},factor=market==='KR'?1:rate;rows.push({...row,market,currency,sector:info.sector||'Unclassified',region:info.region||(market==='KR'?'South Korea (listing)':'United States (listing)'),color:COLORS[rows.length%COLORS.length],nativeValue:row.quantity*row.price,valueKRW:factor==null?null:row.quantity*row.price*factor,costKRW:factor==null?null:row.quantity*row.cost*factor});}
   // Korean equity uses settled (D+2) cash so unsettled purchases are not counted as both cash and shares, less the KRW
@@ -10,8 +12,9 @@ function combinePortfolio(korea,us,fx,metadata={}){
   const krEquity=korea?krCash+rows.filter(row=>row.market==='KR').reduce((sum,row)=>sum+row.nativeValue,0):null;
   // U.S. sale proceeds KIS has not settled yet count in U.S. equity (not in cash): electron/kis-overseas.cjs readBalance.
   const pendingUSD=us?.pendingSaleProceeds>0?us.pendingSaleProceeds:0;const usEquity=us?us.cash+pendingUSD+rows.filter(row=>row.market==='US').reduce((sum,row)=>sum+row.nativeValue,0):null;
-  const complete=krEquity!=null&&usEquity!=null;const equityKRW=complete&&(rate!=null||usEquity===0)?krEquity+usEquity*(rate??0):null;
-  return {rows,depositCash:{KRW:korea?.cash??null},...(committed?{committedKRW:committed}:{}),...(uncertainKRW?{settlementUncertainKRW:uncertainKRW}:{}),cash:{KRW:krCash,USD:us?.cash??null},...(pendingUSD?{pendingSettlement:{USD:pendingUSD}}:{}),totals:{KRW:krEquity,USD:usEquity,equityKRW},fx:rate?fx:null,complete,timestamps:{KR:korea?.timestamp??null,US:us?.timestamp??null}};
+  const valuation=require('./valuation.cjs').value({korea,us,fx,inFlight,now});const V=valuation.markets,C=valuation.combined;
+  const complete=krEquity!=null&&usEquity!=null;const equityKRW=C.scope.length===2&&C.low!=null?C.low:null;
+  return {valuation,rows,depositCash:{KRW:korea?.cash??null},...(committed?{committedKRW:committed}:{}),...(uncertainKRW?{settlementUncertainKRW:uncertainKRW}:{}),cash:{KRW:krCash,USD:us?.cash??null},...(pendingUSD?{pendingSettlement:{USD:pendingUSD}}:{}),totals:{KRW:V.KR.available?V.KR.equity.low:krEquity,USD:V.US.available?V.US.equity.low:usEquity,equityKRW},fx:rate?fx:null,complete,timestamps:{KR:korea?.timestamp??null,US:us?.timestamp??null}};
 }
 class PortfolioView{
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS instrument_metadata(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');}

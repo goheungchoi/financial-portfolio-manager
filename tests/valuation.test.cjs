@@ -73,3 +73,29 @@ test('the Korean value is bridged to the KIS total part by part, and a cash basi
   const odd=value({korea:kr({raw:{...raw,tot_evlu_amt:raw.tot_evlu_amt+5000}}),us:us(),fx,now}).markets.KR.broker.bridge;assert.equal(odd.explained,false);assert.equal(odd.items.find(i=>i.name==='cashBasis').amount,-5000);
   assert.equal(value({korea:kr(),us:us(),fx,now}).markets.KR.broker.bridge,null,'no broker figures, no bridge');
 });
+test('U.S. fills in flight are decided by evidence: the RDDT gap, cash already moved, partial fills, KIS reports',()=>{
+  const {InFlight,MAX_DAYS}=require('../electron/valuation.cjs');const {DatabaseSync}=require('node:sqlite');let t=Date.parse('2026-10-30T14:00:00Z');
+  const fresh=()=>new InFlight(new DatabaseSync(':memory:'),()=>t);const buy=(filled=1,id='R1')=>({id,side:'Buy',filled,fillPrice:97.42,resultCosts:{netCash:-97.66*filled}});
+  // 2026-10-30: proceeds pending at $279.85, the buy fills, nothing moves until settlement.
+  let f=fresh();assert.match(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335}).notes[0],/starts/);
+  t+=3600000;assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).buysUSD,97.66,'in flight');
+  t+=3600000;assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).buysUSD,97.66,'still nothing in any KIS figure');
+  t+=86400000;assert.equal(f.observe('a',{us:{cash:182.19,pendingSaleProceeds:0},orders:[buy()],fx:1335}).buysUSD,0,'settled: cash plus proceeds fell by it');
+  // KIS reports it awaiting settlement: no longer in flight, and not again when that report clears.
+  f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});
+  assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85,unsettled:{buyKRW:97.66*1335,sellKRW:0}},orders:[buy()],fx:1335}).buysUSD,0);
+  assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).buysUSD,0,'the same fill is not opened again');
+  // USD paid at once: cash already fell by the fill at the first reading after it.
+  f=fresh();f.observe('a',{us:{cash:300},orders:[],fx:1335});assert.equal(f.observe('a',{us:{cash:202.34},orders:[buy()],fx:1335}).buysUSD,0);
+  // A partial fill opens its part, and the rest when it fills.
+  f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:500},orders:[],fx:1335});const two=n=>({id:'P',side:'Buy',filled:n,fillPrice:100});
+  assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:500},orders:[{...two(1),filled:1}],fx:1335}).buysUSD,100);assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:500},orders:[two(2)],fx:1335}).buysUSD,200);
+  // A sale filled but not yet in pending proceeds; then KIS shows the proceeds.
+  f=fresh();f.observe('a',{us:{cash:10},orders:[],fx:1335});assert.equal(f.observe('a',{us:{cash:10},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:279.01}}],fx:1335}).sellsUSD,279.01);
+  assert.equal(f.observe('a',{us:{cash:10,pendingSaleProceeds:279.01},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:279.01}}],fx:1335}).sellsUSD,0);
+  // Fills already listed at the first reading are not taken as new; a fill with no signal is dropped after MAX_DAYS, said so.
+  f=fresh();assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).buysUSD,0,'tracking starts with this reading');
+  f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});
+  t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});assert.equal(late.buysUSD,0);assert.match(late.notes[0],/treated as settled after 7 days/);
+  assert.deepEqual(f.current('a'),{buysUSD:0,sellsUSD:0,open:[]});
+});

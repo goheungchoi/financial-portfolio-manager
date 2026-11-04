@@ -77,3 +77,17 @@ test('index readings are stored as closes only after their session ends, and a c
   assert.equal(closedSince(k('2026-10-22T15:50:00+09:00'),k('2026-10-22T16:30:00+09:00')),false);
   assert.equal(closedSince(k('2026-10-22T15:50:00+09:00'),k('2026-10-23T05:30:00+09:00')),true,'the U.S. close passed');
 });
+// Stage 2 (audit 2026-11-04): history keeps both bounds, and funding uncertainty resolving is not investment gain or loss.
+test('history keeps both bounds; funding uncertainty resolving either way is neither gain nor loss',()=>{
+  const state=(low,high)=>({totals:{KRW:low,USD:0,equityKRW:low},cash:{KRW:low,USD:0},rows:[],fx:{usdKRW:1340},valuation:{version:'net-equity 2026-11-04',fx:{at:1},markets:{KR:{at:1},US:{at:2}},combined:{low,high,exact:low===high,complete:true,scope:['KR','US'],reasons:low===high?[]:['Korea: 130000 of it may have been paid in USD']}}});
+  for(const [label,day2,expected] of [['paid in USD: the low bound rises',[1130000,1130000],130000],['paid in KRW: the high bound falls',[1000000,1000000],0]]){
+    let now=at('2026-11-02');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);h.record('a',state(1000000,1130000));
+    const [d1]=h.history('a');assert.equal(d1.valuation.low,1000000);assert.equal(d1.valuation.high,1130000);assert.deepEqual(d1.valuation.scope,['KR','US']);assert.match(d1.valuation.reasons[0],/paid in USD/);assert.deepEqual(d1.valuation.at,{KR:1,US:2,fx:1});
+    now=at('2026-11-03');h.record('a',state(...day2));const pts=h.series('a','COMBINED');
+    assert.equal(h.history('a')[1].valuation.resolvedKRW,expected,label);assert.equal(pts[1].dailyReturn,0,label+': no return');assert.equal(pts[1].pnl,0,label+': no P/L');
+  }
+  // Within one day: the adjustment accumulates across readings and a later market move still counts.
+  let now=at('2026-11-02');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);h.record('a',state(1000000,1130000));now+=60000;h.record('a',state(1000000,1130000));
+  now=at('2026-11-03');h.record('a',state(1130000,1130000));now+=60000;h.record('a',state(1140000,1140000));
+  const p=h.series('a','COMBINED');assert.equal(h.history('a')[1].valuation.resolvedKRW,130000);assert.equal(p[1].pnl,10000,'the ₩10,000 market move is P/L');
+});

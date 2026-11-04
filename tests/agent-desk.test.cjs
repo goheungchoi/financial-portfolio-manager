@@ -309,3 +309,15 @@ test('a fired conditional order goes in at the best bid and gives the tracker it
   b.desk.setOrder(b.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:b.config,universe:['005930']});
   await b.fireConditional(b.desk.orders(b.watchScope())[0]);assert.deepEqual(none,[],'no limitPrice: no bound, it fills at any price');
 });
+test('a combined review reasons from the account valuation: its low bound, and how much it may understate and why',async()=>{
+  const {automation:a}=harness();a.configure({scope:'both'});
+  const ctx=(market,equity)=>({environment:'kis',market,currency:market==='US'?'USD':'KRW',equity,cash:market==='US'?100:500000,universe:[],positions:{},quotes:[],orders:[],marketSession:{open:true},risk:{},executionEnabled:true,automaticExecutionEnabled:true});
+  a.live={...a.live,market:'KR',identity:()=>'acct',context:async()=>ctx('KR',700000),orders:()=>[],getState:()=>({})};a.usLive={market:'US',identity:()=>'acct:US',context:async()=>ctx('US',500),orders:()=>[],getState:()=>({})};a.refreshUS=async()=>null;a.fx=()=>({usdKRW:1300});
+  a.valuation=()=>({combined:{low:1250000,high:1380000,exact:false,complete:true,scope:['KR','US'],reasons:['Korea: 130000 of it may have been paid in USD']}});
+  const {context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'});
+  assert.equal(context.equity,1250000,'the low bound, not 700,000 + 500 × 1,300');assert.equal(context.equityUncertainty.understatedUpToKRW,130000);assert.match(context.equityUncertainty.reasons.join(' '),/paid in USD/);
+  assert.equal(context.equityReliability.reliable,false);
+  a.valuation=()=>({combined:{low:1350000,high:1350000,exact:true,complete:true,scope:['KR','US'],reasons:[]}});const exact=(await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'})).context;
+  assert.equal(exact.equity,1350000);assert.equal(exact.equityUncertainty,undefined);
+  a.valuation=()=>({combined:{low:700000,high:700000,exact:false,complete:false,scope:['KR'],reasons:['U.S. balance not loaded']}});assert.equal((await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'})).context.equity,1350000,'Korea only: the engines figure stays');
+});

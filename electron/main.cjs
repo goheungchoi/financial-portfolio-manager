@@ -55,7 +55,7 @@ let running = false;
 let domain;
 let store;
 let paper;
-let automation;let notifier;let agentBridge;let live;let remembered;let detectFlows=()=>{};let newsBusy=false;let lastNews=0;let closing=false;let lastReconcile=0;
+let automation;let notifier;let agentBridge;let live;let remembered;let detectFlows=()=>{};let inFlightOf=()=>null;let lastInFlightReading=null;let newsBusy=false;let lastNews=0;let closing=false;let lastReconcile=0;
 async function connectProviderFile(file,selectProvider=true){
   remembered.progress.providers='connecting';remembered.errors.providers=null;
   try{providerService.disconnect();const flags=await providerService.request('import',file);if(closing)return;automation.providerStatus=flags;if(flags.aiConnected&&selectProvider)automation.configure({provider:'openai'});remembered.remember('providers',file);remembered.progress.providers='connected';}
@@ -215,7 +215,7 @@ app.whenReady().then(async () => {
       // Session switches go along so an enabled U.S. extended session counts as open for the review.
       const value=await kisService.request('us-context',{symbols,sessions:automation.sessionOptions()});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');if(!value.balance||value.balance.accountKey!==kisState.snapshot?.accountKey+':US')throw new Error('ACCOUNT_CHANGED');usSnapshot=value.balance;usLive.refreshWarnings=value.warnings??[];usLive.refreshError=null;usLive.brokerCode=null;usLive.httpStatus=null;automation.acceptUSQuotes(value);usLive.observeBalance(value.balance);detectFlows();return value;})().catch(error=>{if(generation===kisGeneration){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;usLive.httpStatus=Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null;}throw error;}).finally(()=>{if(usRefreshTask===task)usRefreshTask=null;});usRefreshTask=task;return task;};
   const portfolioView=new PortfolioView(store.db);automation.metadata=()=>portfolioView.metadata();automation.fx=()=>usSnapshot?.fx??(costs.get().usdKRW?{usdKRW:costs.get().usdKRW,source:'User indicative rate',timestamp:null}:null);
-  const portfolioState=()=>{const kr=kisState.snapshot?{...kisState.snapshot,holdings:buildKisMarket(kisState,kisQuotes).snapshot.holdings}:null;return {...combinePortfolio(kr,usSnapshot,automation.fx(),portfolioView.metadata()),valuationSample:Math.floor(Date.now()/1000),sessions:{KR:live.enabled,US:usLive.enabled},usError:usLive.refreshError??null,brokerCode:usLive.brokerCode??null,httpStatus:usLive.httpStatus??null,warnings:usLive.refreshWarnings??[]};};
+  const portfolioState=()=>{const kr=kisState.snapshot?{...kisState.snapshot,holdings:buildKisMarket(kisState,kisQuotes).snapshot.holdings}:null;return {...combinePortfolio(kr,usSnapshot,automation.fx(),portfolioView.metadata(),{inFlight:kisState.snapshot?.accountKey?inFlightOf(kisState.snapshot.accountKey):null}),valuationSample:Math.floor(Date.now()/1000),lastComplete:(()=>{try{const a=kisState.snapshot?.accountKey;const r=a?performance.history(a).filter(x=>Number.isFinite(x.equityKRW)&&(!x.valuation||x.valuation.scope?.length===2)).at(-1):null;return r?{value:r.equityKRW,at:r.at,day:r.day}:null;}catch{return null;}})(),sessions:{KR:live.enabled,US:usLive.enabled},usError:usLive.refreshError??null,brokerCode:usLive.brokerCode??null,httpStatus:usLive.httpStatus??null,warnings:usLive.refreshWarnings??[]};};
   const companyCache=new Map();let companyBusy=false;
   ipcMain.handle('chart:pop-out',(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))throw new Error('INVALID_REQUEST');openChartWindow(symbol);return true;});
   // Bars for the Charts technical summary, kept for a minute per symbol; the daily bars come with the company view.
@@ -310,6 +310,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('narrative:refresh',async event=>{authorize(event);try{await automation.buildNarrative();return {ok:true,state:automation.narrativeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED',state:automation.narrativeState()};}});
   ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
   // Holdings for exposure and sizing; sector names come from cached quotes.
+  automation.valuation=()=>portfolioState().valuation;
   automation.portfolioHoldings=()=>{try{const st=portfolioState();const fx=st.fx?.usdKRW??null;return {holdings:st.rows.filter(r=>r.valueKRW>0).map(r=>({symbol:r.symbol,name:r.name,market:r.market,valueKRW:r.valueKRW})),cashKRW:(st.cash.KRW??0)+(fx?(st.cash.USD??0)*fx:0),equityKRW:st.totals.equityKRW??st.totals.KRW};}catch{return null;}};
   automation.loggedEvents=()=>events;
   ipcMain.handle('replay:list',event=>{authorize(event);return {runs:automation.replays.runs(),busy:Boolean(automation.replaying)};});
@@ -362,7 +363,10 @@ app.whenReady().then(async () => {
   const flowDetector=new (require('./flow-detector.cjs').FlowDetector)(store.db,performance);flowDetector.onNote=(title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message);
   // The broker's own balance figures, kept when they change (electron/broker-raw.cjs), for reconciliation.
   const brokerBalances=new (require('./broker-raw.cjs').BrokerBalances)(store.db);
-  detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
+  // U.S. fills KIS does not reflect yet (electron/valuation.cjs InFlight), decided at each U.S. balance reading.
+  const inFlight=new (require('./valuation.cjs').InFlight)(store.db);inFlightOf=account=>{try{return inFlight.current(account);}catch{return null;}};
+  detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
+    if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
     for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0):null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
@@ -374,7 +378,8 @@ app.whenReady().then(async () => {
   automation.accountValues=day=>{const account=kisState.snapshot?.accountKey;if(!account)return [];return [['KR','KRW','Korea'],['US','USD','U.S.']].flatMap(([market,currency,label])=>{const points=performance.series(account,currency);const today=points.find(p=>p.day===day),prior=points.filter(p=>p.day<day).at(-1);return today&&prior?[{market,currency,label,equity:today.value,baseline:prior.value+(today.flow??0)}]:[];});};
   // Phone snapshots when a buy or sell fills (only when phone alerts and snapshots are on).
   const phone=require('./phone-snapshot.cjs');const intraday=new phone.IntradayValues(store.db);
-  setInterval(()=>{try{const s=portfolioState();if(kisState.snapshot?.accountKey)intraday.record(kisState.snapshot.accountKey,s.totals.equityKRW??s.totals.KRW);}catch{}},60000).unref();
+  // Only a value covering the account's markets: a Korea-only value of a two-market account would show as a fall.
+  setInterval(()=>{try{const s=portfolioState();const v=s.totals.equityKRW??(automation.config.scope==='kis'?s.totals.KRW:null);if(kisState.snapshot?.accountKey&&v!=null)intraday.record(kisState.snapshot.accountKey,v);}catch{}},60000).unref();
   notifier.render=spec=>require('./chart-image.cjs').renderChart(spec);
   const figures=()=>{const account=kisState.snapshot?.accountKey;const combined=account?performance.series(account,'COMBINED'):[];const daily=combined.length?combined:account?performance.series(account,'KRW'):[];
     return phone.portfolioFigures({portfolio:portfolioState(),daily,intraday:account?intraday.day(account):[],previousClose:symbol=>kisQuotes.get(symbol)?.previousClose??null,amounts:automation.config.phoneAmounts});};

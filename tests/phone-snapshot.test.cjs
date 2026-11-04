@@ -70,3 +70,10 @@ test('the digest falls back to recorded account values when no trading session i
   const d=buildDigest(a);assert.equal(d.markets.length,1,'U.S. is outside the Korea scope');assert.match(d.text,/Korea ₩10,288,754 \(-₩3,046, -0\.03% today\)/);
   assert.match(buildDigest({...a,accountValues:()=>[]}).text,/No account valuation/);
 });
+test('a phone snapshot labels a one-market value of a two-market account, and an estimate, so neither reads as the portfolio',()=>{
+  const P=require('../electron/phone-snapshot.cjs');const base={totals:{KRW:705451,USD:null,equityKRW:null},cash:{KRW:407651,USD:null},fx:null,rows:[]};
+  const name=p=>P.portfolioFigures({portfolio:p,daily:[],intraday:[],amounts:true,today:'2026-11-04'}).fields[0].name;
+  assert.equal(name({...base,valuation:{combined:{exact:false,scope:['KR'],reasons:['U.S. balance not loaded']}}}),'Portfolio (Korea only)');
+  assert.equal(name({...base,totals:{KRW:705451,USD:559,equityKRW:1455637},valuation:{combined:{exact:false,scope:['KR','US'],reasons:['Korea: 130000 of it may have been paid in USD']}}}),'Portfolio (estimate)');
+  assert.equal(name({...base,totals:{KRW:705451,USD:559,equityKRW:1455637},valuation:{combined:{exact:true,scope:['KR','US'],reasons:[]}}}),'Portfolio');
+});

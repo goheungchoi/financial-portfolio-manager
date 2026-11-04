@@ -5,6 +5,17 @@ const INDEXES={KOSPI:{market:'KR',label:'KOSPI'},KOSDAQ:{market:'KR',label:'KOSD
 const PERIODS=[['1W',7],['1M',30],['3M',91],['YTD','ytd'],['1Y',365],['All',null]];
 const isDay=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(value+'T00:00:00Z'));
 const shift=(day,days)=>new Date(Date.parse(day+'T00:00:00Z')-days*86400000).toISOString().slice(0,10);
+// The valuation behind a day's value (electron/valuation.cjs): both bounds, whether exact or complete, its scope,
+// reasons, version and source times, and resolvedKRW, the part of the day's change in the headline (low bound) that
+// came from funding uncertainty resolving: when the uncertain amount shrinks and the low bound rises with it (KIS took
+// the payment from USD, so the KRW the low bound held back was never owed), that rise is not investment gain. Returns
+// treat it like a flow (series). Measured between consecutive readings (about a minute apart), so a market move in the
+// same minute can be counted with it: an approximation, documented in the row's note.
+function bounds(valuation,prev){const c=valuation.combined;if(!c||c.low==null)return prev??null;
+  const uncertain=c.high-c.low;let resolved=prev&&!prev.previousDay?prev.resolvedKRW??0:0;
+  if(prev&&Number.isFinite(prev.lastUncertainKRW)&&Number.isFinite(prev.lastLow)&&uncertain<prev.lastUncertainKRW-1){const shrink=prev.lastUncertainKRW-uncertain;if(c.low-prev.lastLow>=shrink/2)resolved+=shrink;}
+  return {version:valuation.version,low:c.low,high:c.high,exact:c.exact,complete:c.complete,scope:c.scope,reasons:c.reasons.slice(0,6),at:{KR:valuation.markets.KR.at??null,US:valuation.markets.US.at??null,fx:valuation.fx?.at??null},
+    lastLow:c.low,lastUncertainKRW:uncertain,resolvedKRW:resolved,...(resolved?{note:'resolvedKRW: funding uncertainty resolved toward the high bound, measured between readings a minute apart'}:{})};}
 class PerformanceHistory {
   constructor(db,clock=Date.now){
     this.db=db;this.clock=clock;
@@ -20,10 +31,12 @@ class PerformanceHistory {
     const holdings=market=>(state.rows??[]).filter(r=>r.market===market&&Number.isFinite(r.quantity)&&Number.isFinite(r.price)).slice(0,80).map(r=>({symbol:r.symbol,name:r.name??r.symbol,quantity:r.quantity,value:r.quantity*r.price,cost:Number.isFinite(r.cost)?r.quantity*r.cost:null}));
     const band=(old,equity,cash,market)=>({equity,cash,open:old?.open??equity,high:Math.max(old?.high??equity,equity),low:Math.min(old?.low??equity,equity),positions:holdings(market)});
     const combined=equityKRW??prior.equityKRW??null;
-    const row={day,at:this.clock(),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
+    const row={day,at:this.clock(),...(state.valuation?{valuation:bounds(state.valuation,prior.valuation??this.lastValuation(account,day))}:{}),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
       equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined)};
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
   }
+  // The last valuation recorded before day (yesterday's last reading): where today's resolution is measured from.
+  lastValuation(account,day){const r=this.db.prepare('SELECT payload FROM nav_history WHERE account=? AND day<? ORDER BY day DESC LIMIT 1').get(account,day);const v=r?JSON.parse(r.payload).valuation:null;return v?{lastLow:v.lastLow,lastUncertainKRW:v.lastUncertainKRW,previousDay:true}:null;}
   history(account){return this.db.prepare('SELECT payload FROM nav_history WHERE account=? ORDER BY day').all(account).map(row=>JSON.parse(row.payload));}
   flows(account){return this.db.prepare('SELECT payload FROM cash_flows WHERE account=?').all(account).map(row=>JSON.parse(row.payload)).sort((a,b)=>a.day.localeCompare(b.day)||a.createdAt-b.createdAt);}
   addFlow(account,value){
@@ -54,7 +67,9 @@ class PerformanceHistory {
       const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
       // Flows recorded on days without a valuation are folded into the next valued day.
       const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
-      const netFlow=flow+skipped,base=previous?previous.value+netFlow:null;const dailyReturn=base>0&&Number.isFinite(base)?value/base-1:null;
+      // Funding uncertainty resolving (bounds above) is not investment gain: it is netted like a flow.
+      const resolved=kind==='USD'?0:Number(row.valuation?.resolvedKRW)||0;
+      const netFlow=flow+skipped+resolved,base=previous?previous.value+netFlow:null;const dailyReturn=base>0&&Number.isFinite(base)?value/base-1:null;
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
       const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
