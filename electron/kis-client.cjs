@@ -46,7 +46,7 @@ function normalizeBalance(rows,summary,environment) {
   const settled=summary.prvs_rcdl_excc_amt,optional=v=>v==null||String(v).trim()===''?null:amount(v);
   const loanTotal=optional(summary.tot_loan_amt),shortProceeds=optional(summary.tot_stln_slng_chgs),netAssets=optional(summary.nass_amt),credit=Boolean(loanTotal||shortProceeds||shorts.length);
   // With loans or shorts outstanding, the account value for risk is net assets (total value minus loans and short obligations).
-  return {source:'kis',environment,timestamp:new Date().toISOString(),cash:amount(summary.dnca_tot_amt),settledCash:settled==null||String(settled).trim()===''?null:amount(settled),reportedTotal:credit&&netAssets!=null?netAssets:amount(summary.tot_evlu_amt),holdings,...(credit?{shorts,loanTotal,shortProceeds,netAssets,grossTotal:amount(summary.tot_evlu_amt)}:{})};
+  return {source:'kis',environment,timestamp:new Date().toISOString(),raw:require('./broker-raw.cjs').numericFields(summary),cash:amount(summary.dnca_tot_amt),settledCash:settled==null||String(settled).trim()===''?null:amount(settled),reportedTotal:credit&&netAssets!=null?netAssets:amount(summary.tot_evlu_amt),holdings,...(credit?{shorts,loanTotal,shortProceeds,netAssets,grossTotal:amount(summary.tot_evlu_amt)}:{})};
 }
 class KisReadOnlyClient {
   #credentials; #token; #expires=0; #streamConfig; #streamConfigUntil=0;
