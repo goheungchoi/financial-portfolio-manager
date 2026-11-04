@@ -22,7 +22,7 @@ test('partial fills and the remaining holding are kept; a missing rationale is u
   const [row]=build([outcome('R1','Buy','OPEN_LONG',T-2*DAY,95100,{quantity:1,requested:3,decision:null})],{positions:{'000270':{quantity:1}}});
   assert.equal(row.holding,1);assert.equal(row.lastEntry.partial,true);assert.equal(row.lastEntry.filled,1);assert.equal(row.lastEntry.requested,3);assert.equal(row.lastEntry.rationale,'unavailable');
   // Unknown credit identities are not material decisions; old closed positions drop out after 30 days, held ones stay.
-  assert.deepEqual(build([{...entry,effect:'unknown'}]),[]);assert.deepEqual(build([{...entry,timestamp:T-40*DAY}]),[]);assert.equal(build([{...entry,timestamp:T-40*DAY}],{positions:{'000270':{quantity:1}}}).length,1);
+  assert.deepEqual(build([{...entry,effect:'unknown'}]),[]);const {effect:_,...older}=entry;assert.equal(build([older])[0].lastEntry.effect,'OPEN_LONG','a row from before effects were recorded');assert.deepEqual(build([{...entry,timestamp:T-40*DAY}]),[]);assert.equal(build([{...entry,timestamp:T-40*DAY}],{positions:{'000270':{quantity:1}}}).length,1);
 });
 const memory=build([entry,exit]);
 test('an opening within 30 days of a filled exit in the same direction is a reversal that must be explained; a reduction is only asked',()=>{
