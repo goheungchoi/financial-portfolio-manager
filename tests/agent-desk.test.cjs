@@ -184,6 +184,86 @@ test('a conditional order that meets another order being sent stays armed and fi
   a.live.autoSubmit=submit;await a.fireConditional(armed());assert.equal(a.desk.recentOrders(scope)[0].status,'submitted');assert.deepEqual(a.calls.submit,['P1']);
   assert.ok(!events.some(e=>e.title==='Conditional order · rejected'));
 });
+// Audit 2026-11-04 (Stage 1): every conditional Buy threw a ReferenceError (an undeclared market) that was recorded as
+// "the broker or a risk check refused it", and an automatic submission was recorded as submitted whatever KIS replied.
+// engine(market): a broker engine double whose propose, autoSubmit and order list a test can replace.
+function engines(a,{lossMarkets=[],kr={},us={}}={}){
+  const ctx=symbol=>({marketSession:{open:true},quotes:[{symbol,price:symbol.includes(':')?200:217000}],positions:{'005930':{quantity:10},'NASD:NVDA':{quantity:10}},equity:100000000,cash:50000000});
+  const calls={propose:[],submit:[],annotate:[]};const book=[];
+  const engine=(market,over)=>({market,identity:()=>'acct'+(market==='US'?':US':''),autoEnabled:true,enabled:true,context:async()=>ctx(market==='US'?'NASD:NVDA':'005930'),
+    propose:cmd=>{calls.propose.push({market,...cmd});const p={id:'P'+calls.propose.length,status:'Ready'};book.push(p);return p;},autoSubmit:async id=>{calls.submit.push(id);const p=book.find(r=>r.id===id);p.status='Accepted';return {...p};},
+    orders:()=>book,annotate:(id,patch)=>{calls.annotate.push([id,patch]);Object.assign(book.find(r=>r.id===id)??{},patch);},getState:()=>({}),...over});
+  a.live=engine('KR',kr);a.usLive=engine('US',us);a.refreshUS=async()=>null;a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()},{symbol:'NASD:NVDA',price:200,timestamp:Date.now(),retrievedAt:Date.now()}];a.calls=calls;a.book=book;
+  a.emergencyState=()=>({active:lossMarkets.length>0,activeMarkets:lossMarkets});return a;
+}
+const armOrder=(a,{symbol='005930',side='Buy',quantity=1,purpose=side==='Buy'?'entry':'stop_loss',price=symbol.includes(':')?200:217000}={})=>{a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol,side,quantity,limitPrice:null,conditions:[{expr:`price("${symbol}")`,op:side==='Buy'?'>=':'<=',value:side==='Buy'?price-1:price+1}],combine:'all',purpose,expiresInHours:24,reason:'Fixture'},{config:a.config,universe:[symbol]});return a.desk.orders(a.watchScope()).find(o=>o.symbol===symbol&&o.side===side);};
+const fired=async(a,order)=>{await a.fireConditional(order);return a.desk.rows('conditional_orders',a.watchScope()).find(o=>o.id===order.id);};
+test('a conditional Buy reaches the proposal and submission in Korea and the U.S. (no ReferenceError)',async()=>{
+  for(const symbol of ['005930','NASD:NVDA']){const {automation,events}=harness();const a=engines(automation);const o=await fired(a,armOrder(a,{symbol}));
+    assert.equal(o.status,'submitted',symbol);assert.equal(a.calls.propose.length,1);assert.equal(a.calls.propose[0].market,symbol.includes(':')?'US':'KR','the account for its market');assert.deepEqual(a.calls.submit,['P1']);
+    assert.equal(o.brokerStatus,'Accepted');assert.ok(!events.some(e=>/internal error/.test(e.title)));}
+});
+test('a daily loss halt blocks conditional Buys only in the market that reached it, and only when set to block',async()=>{
+  let {automation:a}=harness();a.configure({lossAction:'stop'});engines(a,{lossMarkets:['US']});
+  let o=await fired(a,armOrder(a,{symbol:'NASD:NVDA'}));assert.equal(o.status,'rejected');assert.match(o.outcome,/blocked after the daily loss limit/);
+  o=await fired(a,armOrder(a,{symbol:'005930'}));assert.equal(o.status,'submitted','Korea has not reached its limit');
+  ({automation:a}=harness());a.configure({lossAction:'review'});engines(a,{lossMarkets:['US','KR']});o=await fired(a,armOrder(a,{symbol:'NASD:NVDA'}));assert.equal(o.status,'submitted','"review more often, keep trading" does not block');
+  ({automation:a}=harness());a.configure({lossAction:'stop'});engines(a,{lossMarkets:['US']});o=await fired(a,armOrder(a,{symbol:'NASD:NVDA',side:'Sell'}));assert.equal(o.status,'submitted','a protective sale is never blocked by the halt');
+});
+test('a conditional order states what stopped it: an app fault, the broker, an app check, or a mismatched account',async()=>{
+  const sent=[];let {automation:a,events}=harness();engines(a,{kr:{propose:()=>{throw new TypeError("Cannot read properties of undefined (reading 'x')");}}});a.notify=(id,text)=>sent.push(text);
+  let o=await fired(a,armOrder(a,{side:'Sell'}));assert.equal(o.status,'rejected');assert.match(o.outcome,/^Internal error in the app \(INTERNAL_ERROR, TypeError at agent-desk\.test\.cjs:\d+\)\. Nothing was proposed\. Nothing was sent to the broker\.$/);
+  assert.doesNotMatch(o.outcome,/broker or a risk check|refused/);assert.equal(o.failure.kind,'internal');assert.ok(events.some(e=>e.title==='Conditional order · internal error'));assert.equal(sent.length,1,'a stop loss that failed still tells the phone');
+  ({automation:a}=harness());engines(a,{kr:{autoSubmit:async()=>{throw Object.assign(new Error('BROKER_REJECTED'),{brokerCode:'APBK0919'});}}});o=await fired(a,armOrder(a));assert.equal(o.status,'rejected');assert.equal(o.outcome,'The broker rejected it (BROKER_REJECTED, KIS APBK0919). Proposal P1 was not sent.');
+  ({automation:a}=harness());engines(a,{kr:{autoSubmit:async()=>{throw new Error('CONCENTRATION_LIMIT');}}});o=await fired(a,armOrder(a));assert.equal(o.outcome,'An app order check refused it (CONCENTRATION_LIMIT). Proposal P1 was not sent.');
+  ({automation:a}=harness());engines(a,{us:{market:'KR'}});o=await fired(a,armOrder(a,{symbol:'NASD:NVDA'}));assert.equal(o.status,'rejected');assert.match(o.outcome,/MARKET_MISMATCH/);assert.equal(a.calls.propose.length,0);
+});
+test('an automatic submission follows what KIS replied: rejected, unclear, needs approval, or a closed session',async()=>{
+  const reply=r=>({kr:{autoSubmit:async function(id){(this.submitted??=[]).push(id);return {id,...r};}}});const sent=[];
+  let {automation:a}=harness();engines(a,reply({status:'Rejected',reason:'BROKER_REJECTED',brokerCode:'40580000'}));a.notify=(id,text)=>sent.push(text);
+  let o=await fired(a,armOrder(a,{side:'Sell',quantity:10}));assert.equal(o.status,'rejected','not recorded as submitted');assert.equal(o.outcome,'The broker rejected it (BROKER_REJECTED, KIS 40580000). No order was placed.');assert.equal(o.brokerStatus,'Rejected');
+  assert.equal(sent.length,1);const [u]=a.desk.unprotected(a.watchScope(),{'005930':{quantity:10}});assert.equal(u?.orderId,o.id,'the holding shows as not protected');
+  ({automation:a}=harness());engines(a,reply({status:'Uncertain',reason:'ORDER_UNCERTAIN'}));o=await fired(a,armOrder(a,{side:'Sell'}));
+  assert.equal(o.status,'submitted');assert.equal(o.unconfirmed,true);assert.match(o.outcome,/not confirmed as accepted or filled.*not retried/);assert.deepEqual(a.live.submitted,['P1']);assert.equal(a.desk.orders(a.watchScope()).length,0,'closed: nothing fires it again');
+  assert.deepEqual(a.desk.unprotected(a.watchScope(),{'005930':{quantity:10}}),[],'an unclear stop is not reported as rejected (re-arming could sell twice)');
+  ({automation:a}=harness());engines(a,reply({status:'Ready',reason:'APPROVAL_REQUIRED'}));o=await fired(a,armOrder(a));assert.equal(o.status,'proposed');assert.match(o.outcome,/^Not executed: proposal P1 .* needs your approval .*Nothing is at the broker until it is approved\.$/);
+  ({automation:a}=harness());engines(a,reply({status:'Rejected',reason:'SESSION_CLOSED'}));o=await fired(a,armOrder(a));assert.equal(o.status,'armed');assert.equal(o.waiting,'market closed');
+  ({automation:a}=harness());a.configure({conditionalAutoSubmit:false});engines(a);o=await fired(a,armOrder(a));assert.equal(o.status,'proposed');assert.match(o.outcome,/^Not executed: proposal P1 .* awaits your approval\. Nothing is at the broker/);
+});
+test('a temporary refusal before anything reached KIS is retried three times without leaving a second proposal',async()=>{
+  const {automation,events}=harness();const a=engines(automation,{kr:{autoSubmit:async()=>{throw new Error('RATE_LIMITED');}}});const order=armOrder(a,{side:'Sell'});const scope=a.watchScope();
+  for(let i=1;i<=3;i++){const o=await fired(a,a.desk.orders(scope)[0]);assert.equal(o.status,'armed',`attempt ${i}`);assert.equal(o.waiting,'temporary refusal (RATE_LIMITED)');assert.equal(o.retries,i);}
+  assert.equal(a.calls.propose.length,3);assert.ok(a.book.every(p=>p.expiresAt<=Date.now()&&p.reason==='SUPERSEDED'),'each unsent proposal was retired before the next');
+  assert.equal(events.filter(e=>e.title==='Conditional order · waiting'&&/not executed/.test(e.body)).length,3);
+  const o=await fired(a,a.desk.orders(scope)[0]);assert.equal(o.status,'rejected');assert.match(o.outcome,/RATE_LIMITED on three attempts.*temporary/);
+  assert.equal(a.desk.unprotected(scope,{'005930':{quantity:10}})[0].temporary,true);assert.equal(order.id,o.id);
+  // Attempts count in a row: a check where the conditions are no longer met starts the count again.
+  const {automation:c}=harness();engines(c,{kr:{autoSubmit:async()=>{throw new Error('SERVER_ERROR');}}});const cs=c.watchScope();armOrder(c,{side:'Sell'});
+  await fired(c,c.desk.orders(cs)[0]);await fired(c,c.desk.orders(cs)[0]);assert.equal(c.desk.orders(cs)[0].retries,2);
+  const ctx=c.live.context;c.live.context=async()=>({...(await ctx()),quotes:[{symbol:'005930',price:300000}]});assert.equal((await fired(c,c.desk.orders(cs)[0])).retries,0,'not met: the count restarts');
+  // The proposal reached Submitting before the error: it may be at KIS, so it is unconfirmed and never retried.
+  const {automation:b}=harness();engines(b,{kr:{autoSubmit:async id=>{b.book.find(p=>p.id===id).status='Submitting';throw new Error('REQUEST_TIMEOUT');}}});
+  const u=await fired(b,armOrder(b,{side:'Sell'}));assert.equal(u.status,'submitted');assert.equal(u.unconfirmed,true);assert.equal(b.calls.annotate.length,0,'a proposal that may be at KIS is left alone');
+});
+test('a stop that reached the broker and then lapsed leaves its unfilled shares unprotected',()=>{
+  let now=Date.parse('2026-11-04T01:00:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:5};
+  const engine={P1:{status:'Partially filled',filled:4}};desk.sellStatus=o=>engine[o.orderId]?.status??null;desk.sellOrder=o=>engine[o.orderId]??null;
+  desk.setOrder('kis:a',{action:'add',id:'',symbol:'005930',side:'Sell',quantity:10,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:200000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'r'},{config:on,universe:['005930']});
+  const s=desk.orders('kis:a')[0];now+=60000;desk.update(s,{status:'submitted',orderId:'P1',outcome:'Submitted.',closedAt:now});
+  assert.deepEqual(desk.unprotected('kis:a',{'005930':{quantity:6}}),[],'still working at the broker');
+  engine.P1={status:'Canceled',filled:4};const [u]=desk.unprotected('kis:a',{'005930':{quantity:6}});
+  assert.equal(u.quantity,6,'the six unfilled shares');assert.deepEqual(u.lapsed,{brokerStatus:'Canceled',filled:4});assert.match(u.outcome,/canceled there with 4 of 10 shares filled/);assert.equal(u.temporary,false);
+  engine.P1={status:'Filled',filled:10};assert.deepEqual(desk.unprotected('kis:a',{'005930':{quantity:0}}),[]);
+  engine.P1={status:'Expired',filled:0};assert.equal(desk.unprotected('kis:a',{'005930':{quantity:3}})[0].quantity,3,'never more than the shares held');
+});
+test('order failures are classified from their code, never from their wording',()=>{
+  const {classify}=require('../electron/broker-errors.cjs');let ref;try{
+    // @ts-ignore: a deliberate undefined name (the undefined-name check skips this line)
+    undefinedName;}catch(e){ref=e;}
+  const internal=classify(ref);assert.equal(internal.kind,'internal');assert.equal(internal.type,'ReferenceError');assert.match(internal.where,/^agent-desk\.test\.cjs:\d+$/);
+  assert.equal(classify(Object.assign(new Error('x'),{code:'ERR_INVALID_ARG_TYPE'})).kind,'internal');assert.equal(classify('text').kind,'internal');assert.equal(classify(null).kind,'internal');
+  assert.deepEqual([classify(new Error('BROKER_REJECTED')),classify(new Error('RATE_LIMITED')),classify(new Error('ORDER_UNCERTAIN')),classify(new Error('INSUFFICIENT_CAPACITY')),classify(Object.assign(new Error('x'),{code:'SESSION_CLOSED'}))].map(f=>f.kind),['broker','temporary','uncertain','check','temporary']);
+});
 test('the tick fires conditional orders only while auto trading is on, one at a time',async()=>{
   const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
   const {automation:a}=harness({engineCtx:()=>open});a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['005930']});
@@ -213,7 +293,8 @@ test('a replacement stop protects only once its sell reaches the broker',()=>{
   delete broker.P2;assert.equal(list()[0]?.orderId,first.id,'a proposal the engine no longer lists does not count either');
   broker.P2='Accepted';assert.deepEqual(list(),[],'approved and sent');broker.P2='Filled';assert.deepEqual(list(),[]);
   broker.P2='Canceled';[u]=list();assert.equal(u?.orderId,first.id,'cancelled at the broker: unprotected again');assert.equal(u.replacement.brokerStatus,'Canceled');
-  const third=stop();close(third.id,'submitted',{proposalId:'P3'});broker.P3='Rejected';assert.equal(list()[0]?.replacement.orderId,third.id,'submitted but refused by the broker');
+  // A submitted stop the broker then refused protects nothing: it is listed itself, as lapsed (Stage 1, 2026-11-04).
+  const third=stop();close(third.id,'submitted',{proposalId:'P3'});broker.P3='Rejected';[u]=list();assert.equal(u?.orderId,third.id,'submitted but refused by the broker');assert.deepEqual(u.lapsed,{brokerStatus:'Rejected',filled:0});
   broker.P3='Partially filled';assert.deepEqual(list(),[]);
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
