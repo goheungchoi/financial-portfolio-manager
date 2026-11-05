@@ -31,7 +31,7 @@ process.parentPort.on('message',async ({data})=>{
       if(operation==='us-context')snapshot=await us.context(data.symbols??[],sess);
       else if(operation==='us-quote')snapshot={...await us.quote(data.symbol,sess?.id==='us-daytime'?'daytime':'regular'),session:sess?.id??null};
       else if(operation==='us-orders')snapshot=await us.orders(data.startDate);
-      else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end);
+      else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end,{maxPages:data.maxPages});
       else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
       else if(operation==='us-revise-order')snapshot=await us.revise(data.command??{});
       else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
