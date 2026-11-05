@@ -46,4 +46,12 @@ function reversalGap(r,rev,{price=null}={}){if(!r)return 'no reversal explanatio
   if(r.basis==='new-evidence'){const since=Date.parse(prior.decidedAt??prior.filledAt??'');const ok=(r.newEvidence??[]).filter(e=>clip(e.claim,999)&&clip(e.source,999)&&Date.parse(e.date??'')>=(Number.isFinite(since)?since-DAY:0));if(!ok.length)return 'new-evidence without a sourced item dated after the earlier decision';}
   if(rev.kind==='reverses-exit'&&rev.prior.effect==='CLOSE_LONG'&&price>0&&prior.fillPrice>0&&price>prior.fillPrice&&clip(r.afterCost,999).length<20)return `afterCost: the price ${price} is above the exit fill ${prior.fillPrice}; say why the higher repurchase still pays after costs`;
   return null;}
-module.exports={build,view,reversalOf,reversalGap,REVERSAL_DAYS};
+// The rule at the execution boundary: an opening that reverses a recent filled exit without a complete explanation
+// becomes a Hold with the reason, checked against the full memory whatever the prompt showed. Reductions pass.
+function enforce(decision,memory,{price=null,now=Date.now()}={}){if(!decision||decision.action==='Hold'||decision.withheld)return decision;
+  if(!Array.isArray(memory))throw Object.assign(new Error('VALIDATION_STATE_INVALID'),{detail:'position memory for validation is not the full list'});
+  const rev=reversalOf(decision,memory,{now});if(!rev?.required)return decision;const gap=reversalGap(decision.reversal??null,rev,{price});if(!gap)return decision;
+  const what=rev.prior.effect==='CLOSE_SHORT'?'cover':'sale',reason=`it reverses the filled ${what} of ${String(rev.prior.filledAt??'').slice(0,10)} (review ${rev.prior.decisionId??'unavailable'}): ${gap}`;
+  const text=`${decision.explanation} [The app held back a ${decision.action==='Sell'?'short sale':'Buy'} of ${decision.quantity} ${decision.symbol}: ${reason}.]`;
+  return {action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',...(decision.plan?{plan:decision.plan}:{}),explanation:text.length>1500?text.slice(0,1499)+'…':text,withheld:{symbol:decision.symbol,quantity:decision.quantity,reason,kind:'reversal',atBoundary:true}};}
+module.exports={build,view,reversalOf,reversalGap,enforce,REVERSAL_DAYS};

@@ -106,41 +106,51 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
     combined:{low,high,headline:low,exact:complete&&KR.exact&&US.exact&&high-low<0.5,complete,scope,stale:[KR,US].some(v=>v.available&&v.stale),reasons}};
 }
 // U.S. fills KIS may not reflect yet (value's inFlight), decided by evidence at each U.S. balance reading:
-// - a new fill (or a larger partial fill) is compared with the previous reading: if U.S. cash plus pending proceeds
-//   already moved by at least 95% of its amount, KIS reflects it; otherwise it is in flight;
-// - a buy in flight stops being in flight once KIS reports buys awaiting settlement (ustl_buy_amt_smtl) covering the
-//   buys in flight, or cash plus proceeds fall by its amount; a sale once proceeds rise by its amount or KIS reports
-//   sales awaiting settlement;
-// - after MAX_DAYS it is dropped as settled, with a note, so a missed signal cannot hold a value down for good.
-// The state survives restarts (inflight_settlement). orders: the U.S. engine's orders.
+// - new fills (or a larger partial fill) are compared with the previous reading: if U.S. cash plus pending proceeds
+//   already moved by their amount, KIS reflects them; otherwise they are in flight;
+// - fills in flight leave on evidence matched to them once (release review 2026-11-05, P1: one $100 movement cleared two
+//   $100 buys): a cash movement, or a rise in what KIS reports awaiting settlement (ustl_buy_amt_smtl / sales) since the
+//   last match, settles the oldest open fills of that side whose total it matches within the tolerance either way; what
+//   it does not match stays open. A movement that matches no run of open fills (an unrelated deposit or withdrawal), or
+//   one while buys and sales are both open (they net), settles nothing. A reported total from before the fills is the
+//   baseline, not evidence;
+// - after MAX_DAYS a fill is dropped as settled, with a note, so a missed signal cannot hold a value down for good.
+// The state (open fills, the reported baselines) survives restarts (inflight_settlement). orders: the U.S. engine's.
 const MAX_DAYS=7,TOLERANCE=0.95;
 class InFlight {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[]};}
+  // The oldest open fills of a side whose total matches an amount within the tolerance either way, or none.
+  static match(open,amount){if(!(amount>0))return [];let total=0;const run=[];for(const f of open){total+=f.usd;run.push(f);if(amount>=TOLERANCE*total&&amount<=total/TOLERANCE)return [...run];if(total>amount/TOLERANCE)break;}return [];}
   // us: the U.S. balance just read (cash, pendingSaleProceeds, unsettled); fx: USD/KRW. Returns {buysUSD, sellsUSD, open, notes}.
   observe(account,{us,orders=[],fx=null}){
     if(typeof account!=='string'||!account||!us)return {buysUSD:0,sellsUSD:0,open:[],notes:[]};
     const now=this.clock(),st=this.state(account),notes=[];const basis=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0);
     // The first reading starts tracking: fills already listed are taken as reflected (there is no earlier reading to
     // compare them with), so an upgrade never holds the value down for fills long settled.
-    if(st.basis==null){for(const o of orders)if(o.filled>0)st.seen[String(o.id)]=o.filled;st.basis=basis;
+    const reportedBuys=fx>0?Math.max(0,Number(us.unsettled?.buyKRW)||0)/fx:0,reportedSells=fx>0?Math.max(0,Number(us.unsettled?.sellKRW)||0)/fx:0;
+    if(st.basis==null){for(const o of orders)if(o.filled>0)st.seen[String(o.id)]=o.filled;st.basis=basis;st.reported={buys:reportedBuys,sells:reportedSells};
       this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));
       return {buysUSD:0,sellsUSD:0,open:[],notes:['tracking of U.S. fills awaiting settlement starts with this reading']};}
     const moved=basis-st.basis;
     // New fill amounts since the last reading: an order's filled quantity growing.
     const fresh=[];for(const o of orders){if(!(o.filled>0)||!(o.fillPrice>0)||!['Buy','Sell'].includes(o.side))continue;const id=String(o.id);const before=st.seen[id]??0;if(o.filled<=before)continue;
       const share=(o.filled-before)/o.filled;const net=Number.isFinite(o.resultCosts?.netCash)?Math.abs(o.resultCosts.netCash):o.filled*o.fillPrice;fresh.push({id,side:o.side,usd:Math.round(net*share*100)/100,at:now});st.seen[id]=o.filled;}
-    // Reflected at once when the reading already moved by them (buys down, sales up), all together.
-    const want=fresh.reduce((n,f)=>n+(f.side==='Buy'?-f.usd:f.usd),0);
-    if(fresh.length&&!(moved!=null&&Math.abs(want)>0&&Math.sign(moved)===Math.sign(want)&&Math.abs(moved)>=TOLERANCE*Math.abs(want)))st.open.push(...fresh);
-    // Evidence for what is open.
-    const reportedBuys=fx>0?Math.max(0,Number(us.unsettled?.buyKRW)||0)/fx:0,reportedSells=fx>0?Math.max(0,Number(us.unsettled?.sellKRW)||0)/fx:0;
-    const openBuys=st.open.filter(f=>f.side==='Buy').reduce((n,f)=>n+f.usd,0),openSells=st.open.filter(f=>f.side==='Sell').reduce((n,f)=>n+f.usd,0);
-    st.open=st.open.filter(f=>{
+    // Reflected at once when the reading already moved by them (buys down, sales up), all together, within the tolerance
+    // either way: a movement much larger than the fills is not evidence they are reflected.
+    const want=fresh.reduce((n,f)=>n+(f.side==='Buy'?-f.usd:f.usd),0);let movement=moved;
+    const reflected=fresh.length&&moved!=null&&Math.abs(want)>0&&Math.sign(moved)===Math.sign(want)&&Math.abs(moved)>=TOLERANCE*Math.abs(want)&&Math.abs(moved)<=Math.abs(want)/TOLERANCE;
+    if(fresh.length&&!reflected)st.open.push(...fresh);if(reflected)movement=0;
+    // Evidence, each piece used once.
+    st.reported??={buys:reportedBuys,sells:reportedSells};const settled=new Set();
+    const consume=(side,amount,why)=>{const run=InFlight.match(st.open.filter(f=>f.side===side&&!settled.has(f)),amount);for(const f of run)settled.add(f);return run.reduce((n,f)=>n+f.usd,0);};
+    // Reported awaiting settlement: only the rise since the last match is evidence; a fall lowers the baseline.
+    for(const [side,key,now] of [['Buy','buys',reportedBuys],['Sell','sells',reportedSells]]){if(now<st.reported[key])st.reported[key]=now;const used=consume(side,now-st.reported[key]);st.reported[key]+=used;}
+    // The cash movement, when only one side is open (buys and sales together net, so the movement cannot be divided).
+    const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f)&&!fresh.includes(f));
+    if(movement!=null&&movement!==0&&!(openSide('Buy')&&openSide('Sell'))){if(movement<0)consume('Buy',-movement);else consume('Sell',movement);}
+    st.open=st.open.filter(f=>{if(settled.has(f))return false;
       if(now-f.at>MAX_DAYS*86400000){notes.push(`${f.side} ${f.id} ($${f.usd}) treated as settled after ${MAX_DAYS} days without a signal`);return false;}
-      if(f.side==='Buy'&&openBuys>0&&reportedBuys>=TOLERANCE*openBuys)return false;
-      if(f.side==='Sell'&&openSells>0&&reportedSells>=TOLERANCE*openSells)return false;
-      if(!fresh.includes(f)&&moved!=null&&(f.side==='Buy'?moved<=-TOLERANCE*f.usd:moved>=TOLERANCE*f.usd))return false;
       return true;});
     st.basis=basis;
     // Orders no longer listed are forgotten, so the record stays bounded.

@@ -78,18 +78,28 @@ test('index readings are stored as closes only after their session ends, and a c
   assert.equal(closedSince(k('2026-10-22T15:50:00+09:00'),k('2026-10-23T05:30:00+09:00')),true,'the U.S. close passed');
 });
 // Stage 2 (audit 2026-11-04): history keeps both bounds, and funding uncertainty resolving is not investment gain or loss.
-test('history keeps both bounds; funding uncertainty resolving either way is neither gain nor loss',()=>{
-  const state=(low,high)=>({totals:{KRW:low,USD:0,equityKRW:low},cash:{KRW:low,USD:0},rows:[],fx:{usdKRW:1340},valuation:{version:'net-equity 2026-11-04',fx:{at:1},markets:{KR:{at:1},US:{at:2}},combined:{low,high,exact:low===high,complete:true,scope:['KR','US'],reasons:low===high?[]:['Korea: 130000 of it may have been paid in USD']}}});
-  for(const [label,day2,expected] of [['paid in USD: the low bound rises',[1130000,1130000],130000],['paid in KRW: the high bound falls',[1000000,1000000],0]]){
+// Release review 2026-11-05, P1: the end points cannot tell funding resolving from a market move, so nothing is
+// inferred; a day whose range changed has a provisional P/L range that covers both outcomes.
+test('history keeps both bounds; a day whose valuation range changed has a provisional P/L range, never an inferred flow',()=>{
+  const state=(low,high,mk={})=>({totals:{KRW:low,USD:0,equityKRW:low},cash:{KRW:low,USD:0},rows:[],fx:{usdKRW:1340},valuation:{version:'net-equity 2026-11-04',fx:{at:1},markets:{KR:{at:1,equity:mk.KR??{low,high}},US:{at:2,equity:mk.US??{low:0,high:0}}},combined:{low,high,exact:low===high,complete:true,scope:['KR','US'],reasons:low===high?[]:['Korea: 130000 of it may have been paid in USD']}}});
+  for(const [label,day2,pnl,range] of [['the low bound rises',[1130000,1130000],130000,{low:0,high:130000}],['the high bound falls',[1000000,1000000],0,{low:-130000,high:0}]]){
     let now=at('2026-11-02');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);h.record('a',state(1000000,1130000));
     const [d1]=h.history('a');assert.equal(d1.valuation.low,1000000);assert.equal(d1.valuation.high,1130000);assert.deepEqual(d1.valuation.scope,['KR','US']);assert.match(d1.valuation.reasons[0],/paid in USD/);assert.deepEqual(d1.valuation.at,{KR:1,US:2,fx:1});
     now=at('2026-11-03');h.record('a',state(...day2));const pts=h.series('a','COMBINED');
-    assert.equal(h.history('a')[1].valuation.resolvedKRW,expected,label);assert.equal(pts[1].dailyReturn,0,label+': no return');assert.equal(pts[1].pnl,0,label+': no P/L');
+    assert.equal(pts[1].flow,0,label+': no inferred flow');assert.equal(pts[1].pnl,pnl,label);assert.deepEqual(pts[1].pnlRange,range,label+': covers both funding outcomes');assert.ok(pts[1].provisional);
+    assert.ok(h.summary('a','COMBINED').provisional.rangeChanges.length===1,label+': the summary is provisional');assert.equal(h.history('a')[1].valuation.resolvedKRW,undefined);
   }
-  // Within one day: the adjustment accumulates across readings and a later market move still counts.
-  let now=at('2026-11-02');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);h.record('a',state(1000000,1130000));now+=60000;h.record('a',state(1000000,1130000));
+  // The reviewer's case: ₩900,000-1,000,000, then exactly ₩950,000. Funding at the low end with a ₩50,000 gain and at the
+  // high end with a ₩50,000 loss are both possible: the range shows both, nothing picks one.
+  let now=at('2026-11-02');const r=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);r.record('a',state(900000,1000000));now=at('2026-11-03');r.record('a',state(950000,950000));
+  const q=r.series('a','COMBINED')[1];assert.equal(q.pnl,50000);assert.deepEqual(q.pnlRange,{low:-50000,high:50000});
+  // A pure narrowing with no economic movement, and uncertainty in the U.S. only: the Korean series is untouched.
+  now=at('2026-11-02');const u=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);u.record('a',state(1000000,1130000,{KR:{low:1000000,high:1000000},US:{low:0,high:100}}));now=at('2026-11-03');u.record('a',state(1000000,1000000,{KR:{low:1000000,high:1000000},US:{low:0,high:0}}));
+  assert.equal(u.series('a','KRW')[1].pnlRange,undefined,'the U.S. range does not touch the Korean series');assert.deepEqual(u.series('a','COMBINED')[1].pnlRange,{low:-130000,high:0});
+  // Within one day the narrowing accumulates across readings; a later market move is P/L inside the range.
+  now=at('2026-11-02');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);h.record('a',state(1000000,1130000));now+=60000;h.record('a',state(1000000,1130000));
   now=at('2026-11-03');h.record('a',state(1130000,1130000));now+=60000;h.record('a',state(1140000,1140000));
-  const p=h.series('a','COMBINED');assert.equal(h.history('a')[1].valuation.resolvedKRW,130000);assert.equal(p[1].pnl,10000,'the ₩10,000 market move is P/L');
+  const p=h.series('a','COMBINED');assert.equal(p[1].pnl,140000);assert.deepEqual(p[1].pnlRange,{low:10000,high:140000},'at least the ₩10,000 market move');
 });
 test('an unresolved detected change is left out of the headline return; the summary is provisional and shows it counted',()=>{
   let now=at('2026-10-29');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);const row=v=>({totals:{KRW:v,USD:0,equityKRW:v},cash:{KRW:v,USD:0},rows:[],fx:{usdKRW:1335}});

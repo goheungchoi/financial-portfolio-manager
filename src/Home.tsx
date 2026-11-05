@@ -49,7 +49,7 @@ const TREND_PERIODS=['1W','1M','3M','YTD','1Y','All'];
 export function HomeTrend({onOpen}:{onOpen():void}){
   const [summary,setSummary]=useState<any>(null);const [period,setPeriod]=useDraftState('home:trendPeriod','1M');
   useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();const s=reply?.state?.summaries;if(alive&&s)setSummary(s.COMBINED?.points?.length?s.COMBINED:s.KRW);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
-  const points=(summary?.points??[]) as {day:string;value:number;high?:number;low?:number;pnl?:number|null;dailyReturn:number|null}[];
+  const points=(summary?.points??[]) as {day:string;value:number;high?:number;low?:number;pnl?:number|null;pnlRange?:{low:number;high:number};dailyReturn:number|null}[];
   if(points.length<2)return <section className="metric-card home-trend" aria-label="Account trend"><div className="home-trend-head"><small>Account value</small><button className="link-button" onClick={onOpen}>Performance →</button></div><p className="muted">The chart starts after values are recorded on two days.</p></section>;
   // Only periods the recorded history covers; "All" always.
   const periods=(summary.periods??[]).filter((p:any)=>TREND_PERIODS.includes(p.label)&&(!p.partial||p.label==='All')).filter((p:any,_:number,list:any[])=>p.label==='All'||!list.some(q=>q.label==='All'&&q.start===p.start));
@@ -62,7 +62,7 @@ export function HomeTrend({onOpen}:{onOpen():void}){
     <div className="home-trend-figures"><strong>{krw(last.value)}</strong>{change!=null&&<span className={tone(change)} title="Investment P/L and time-weighted return: deposits and withdrawals are not counted">Investment P/L {sign(change)}{ret!=null?` (${pct(ret)})`:''}</span>}{summary.provisional&&<b className="negative" title="Money changes awaiting you are left out of this figure; see Performance">Provisional</b>}<small className="muted">{active==='All'?`since ${shortDay(rows[0].day,true)}`:`over ${active}`}{vs!=null?` · ${bench} ${pct(vs)}`:''}</small></div>
     {rows.length>=2?<ValueChart rows={rows.map(p=>({day:p.day,value:p.value,high:p.high??p.value,low:p.low??p.value,flow:(p as any).flow??0}))} fmt={krw} height={170} marks={false}/>:<p className="muted">One recorded day in this period.</p>}
     <div className="home-trend-stats">
-      <span><small>Latest day</small><b className={tone(last.pnl??null)}>{last.pnl==null?'—':sign(last.pnl)}</b>{last.dailyReturn!=null&&<em>{pct(last.dailyReturn*100)}</em>}</span>
+      <span><small>Latest day</small><b className={tone(last.pnl??null)}>{last.pnl==null?'—':sign(last.pnl)}</b>{last.pnlRange?<em title="The valuation range changed this day: the change may be funding settling, not only investment gain or loss.">Provisional: {sign(last.pnlRange.low)} to {sign(last.pnlRange.high)}</em>:last.dailyReturn!=null&&<em>{pct(last.dailyReturn*100)}</em>}</span>
       {a&&<span><small>Period high</small><b>{krw(a.peak.value)}</b><em>{shortDay(a.peak.day)}</em></span>}
       {a&&<span><small>From return peak</small><b className={a.currentDrawdownPct<-0.05?'negative':''}>{a.currentDrawdownPct<-0.05?`${a.currentDrawdownPct.toFixed(1)}%`:'At peak'}</b>{a.maxDrawdownPct<-0.05&&<em>worst {a.maxDrawdownPct.toFixed(1)}%</em>}</span>}
       {a?.bestDay&&<span><small>Best / worst day</small><b><span className="positive">{pct(a.bestDay.returnPct)}</span> / <span className="negative">{pct(a.worstDay.returnPct)}</span></b></span>}
