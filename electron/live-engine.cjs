@@ -212,8 +212,10 @@ class LiveEngine {
     const due=this.orders().filter(o=>o.filled>0&&o.fillPrice>0&&o.brokerOrderId&&o.costSettings&&['Filled','Canceled','Rejected'].includes(o.status)&&(!['reported','unavailable','ambiguous'].includes(o.reportedCosts?.status)||provisional(o))&&(o.reportedCosts?.attempts??0)<12&&now-(o.reportedCosts?.lastAttempt??0)>=15*60000&&now-(o.createdAt??now)<10*86400000);
     if(!due.length)return 0;let updated=0;
     if(this.market==='US'){
-      const {readTradeHistory,addDay}=require('./trade-history.cjs');const start=due.map(o=>o.day).sort()[0];let ranges;
-      try{ranges=await readTradeHistory((a,b)=>this.broker.request('charges',{start:a,end:b}),start,this.day(now));}catch(error){for(const o of due)attempt(o,error.message==='FEATURE_UNAVAILABLE'?'unavailable':'pending',error.message);return 0;}
+      const {readTradeHistory,addDay}=require('./trade-history.cjs');const start=due.map(o=>o.day).sort()[0];
+      const ranges=await readTradeHistory((a,b,o)=>this.broker.request('charges',{start:a,end:b,...o}),start,this.day(now));
+      // Nothing read at all: the failure is the answer for every order (unavailable on mock accounts).
+      const failed=ranges.find(r=>r.reason==='READ_FAILED');if(!ranges.some(r=>r.complete)&&failed){const code=failed.code;for(const o of due)attempt(o,code==='FEATURE_UNAVAILABLE'?'unavailable':'pending',code);return 0;}
       const trades=ranges.flatMap(r=>r.rows),near=(a,b)=>Math.abs(Date.parse(a)-Date.parse(b))<=86400000;
       // Dates the history could not be read whole: an absent row is not "not settled", a quantity difference is not
       // final, and even a matching row may have peers on the unread pages, so the order waits (stage 2a).

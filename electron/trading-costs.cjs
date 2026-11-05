@@ -88,7 +88,7 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
 class TradingCosts{
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);
     // Rows imported by 1.5.35 took the KRW unit price as USD; they are dropped and imported again (parser 2).
-    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);this.gaps=new (require('./trade-history.cjs').HistoryGaps)(db);
+    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);this.gaps=new (require('./trade-history.cjs').HistoryGaps)(db);this.jobs=new (require('./trade-history.cjs').HistoryJobs)(db);
     // Injected by the app: the connected account, Korean non-trading days and the broker's U.S. holdings.
     this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;this.marketRate=()=>null;}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
@@ -186,8 +186,30 @@ class TradingCosts{
     for(const r of ranges){if(r.complete)added+=this.importTrades(account,r.rows,now,{start:r.start,end:r.end});else incomplete.push({start:r.start,end:r.end,reason:r.reason});this.gaps.record(owner,r,now);}
     return {added,incomplete};
   }
-  // Gaps in the trade history of this taxpayer's accounts.
-  historyGaps(){const {taxpayerAccounts}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());return this.gaps.all().filter(g=>accounts.has(g.account));}
+  // Reads and imports an account's trade history as a job (electron/trade-history.cjs readRanges): plan() gives the
+  // ranges of a new job; an unfinished job is resumed from its stored queue instead, and a failed one waits out its
+  // backoff. Dates of gaps not yet due for a retry are left out of a new job; due gaps are added to it. Each read's
+  // import, gap and remaining queue are stored together, so a later failure or a restart loses nothing already read.
+  // Returns {planned,done,stopped,code,remaining} or {skipped:'BACKOFF',nextAt}.
+  async syncHistory(account,fetch,{plan,clock=Date.now,...limits}){
+    const th=require('./trade-history.cjs'),{ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);let job=this.jobs.get(owner),planned=false;
+    if(job?.nextAt>clock())return {skipped:'BACKOFF',nextAt:job.nextAt};
+    if(!job){const now=clock(),gaps=this.gaps.list(owner);let queue=plan();for(const g of gaps.filter(g=>g.nextAt>now))queue=th.subtract(queue,g);
+      for(const g of gaps.filter(g=>!(g.nextAt>now)))queue=[...th.subtract(queue,g),{start:g.start,end:g.end}];
+      job={queue:queue.sort((a,b)=>a.start.localeCompare(b.start)),createdAt:now,attempts:0};planned=true;}
+    job={...job,state:'running'};this.jobs.put(owner,job);
+    const step=({result,queue})=>{this.db.exec('SAVEPOINT trade_history');try{if(result)this.importHistory(account,[result],clock());this.jobs.put(owner,{...job,queue});this.db.exec('RELEASE trade_history');}catch(error){this.db.exec('ROLLBACK TO trade_history');this.db.exec('RELEASE trade_history');throw error;}};
+    const out=await th.readRanges(fetch,job.queue,{clock,...limits,step});
+    if(!out.remaining.length){this.jobs.clear(owner);return {planned,done:true,stopped:null,code:null,remaining:[]};}
+    const failed=out.stopped==='FAILED',attempts=failed?(job.attempts??0)+1:job.attempts??0;
+    this.jobs.put(owner,{...job,queue:out.remaining,state:'paused',stopped:out.stopped,code:out.code,attempts,nextAt:failed?clock()+th.backoff(attempts):0});
+    return {planned,done:false,stopped:out.stopped,code:out.code,remaining:out.remaining};
+  }
+  // Gaps in the trade history of this taxpayer's accounts, with the ranges a stopped job has not read yet (NOT_READ).
+  historyGaps(){const {taxpayerAccounts}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());
+    const gaps=this.gaps.all(),{subtract}=require('./trade-history.cjs');
+    const unread=this.jobs.all().filter(j=>j.state!=='running').flatMap(j=>gaps.filter(g=>g.account===j.account).reduce(subtract,j.queue.map(r=>({start:r.start,end:r.end,reason:'NOT_READ',account:j.account,since:j.createdAt}))));
+    return [...gaps,...unread].filter(g=>accounts.has(g.account)).sort((a,b)=>a.start.localeCompare(b.start));}
   // A gap up to the end of the tax year leaves the year's figures incomplete: its dates may hold the year's sales or the
   // purchases they are measured against.
   historyIssues(year){const {describe}=require('./trade-history.cjs');return this.historyGaps().filter(g=>g.start<=`${year}-12-31`).map(describe);}

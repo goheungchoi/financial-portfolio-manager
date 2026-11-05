@@ -484,12 +484,13 @@ app.whenReady().then(async () => {
   // Broker-reported fees and taxes for executed orders, and reference exchange rates for the overseas tax ledger, every 15 minutes.
   let chargesTask=null,chargesAt=0,chargesError=null;const taxImportDay=new Map();
   // The broker's U.S. trade history (live accounts, read-only) is the tax record: from January of last year once a day,
-  // in 90-day windows, and the last two weeks at every charges check. A window is imported only when read whole; one
-  // that is not stays a gap the tax report names, and the daily full read is retried at the next check.
-  const importTaxTrades=async()=>{const s=kisState.snapshot;if(s?.environment!=='live'||!usLive)return;const {seoulDate}=require('./kis-activity.cjs'),{readTradeHistory}=require('./trade-history.cjs');const today=seoulDate();let complete=true;
-    const from=taxImportDay.get(s.accountKey)===today?seoulDate(Date.now()-14*86400000):`${Number(today.slice(0,4))-1}-01-01`;
-    for(let start=from;start<=today;){const end=[seoulDate(Date.parse(start+'T00:00:00Z')+89*86400000),today].sort()[0];const read=costs.importHistory(s.accountKey,await readTradeHistory((a,b)=>usBroker.request('charges',{start:a,end:b}),start,end),Date.now());if(read.incomplete.length)complete=false;start=seoulDate(Date.parse(end+'T00:00:00Z')+86400000+9*3600000);}
-    if(complete||taxImportDay.get(s.accountKey)===today)taxImportDay.set(s.accountKey,today);};
+  // in 90-day windows, and the last two weeks at every charges check. It runs as a job with a page and time budget
+  // (TradingCosts.syncHistory): a window is imported only when read whole, one that is not stays a gap the tax report
+  // names and is retried with backoff, and a job that stops resumes from its unread ranges at the next check.
+  const importTaxTrades=async()=>{const s=kisState.snapshot;if(s?.environment!=='live'||!usLive)return;const {seoulDate}=require('./kis-activity.cjs'),{windows}=require('./trade-history.cjs');const today=seoulDate();
+    const full=taxImportDay.get(s.accountKey)!==today,from=full?`${Number(today.slice(0,4))-1}-01-01`:seoulDate(Date.now()-14*86400000);
+    const r=await costs.syncHistory(s.accountKey,(a,b,o)=>usBroker.request('charges',{start:a,end:b,...o}),{plan:()=>windows(from,today)});
+    if(r.planned&&full)taxImportDay.set(s.accountKey,today);if(r.code)throw new Error(r.code);};
   const refreshCharges=()=>{if(chargesTask)return chargesTask;chargesTask=(async()=>{
       if(kisState.snapshot){for(const engine of [live,usLive]){try{await engine.refreshCharges();}catch(error){chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'CHARGES_FAILED';}}try{await importTaxTrades();}catch(error){chargesError=/^[A-Z_]{3,40}$/.test(error.message)?error.message:'TAX_IMPORT_FAILED';}}
       const days=costs.missingRateDays();if(days.length&&!process.env.PORTFOLIO_SMOKE_DATA)costs.saveRates(await providerService.request('fx-rates',{days}),'ECOS USD/KRW reference rate');

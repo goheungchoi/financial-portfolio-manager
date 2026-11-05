@@ -90,20 +90,27 @@ class OverseasClient{
   // Returns {rows,complete,reason,pages}: complete only when KIS reported the last page (stage 2a: it used to stop after
   // 10 pages and return what it had as the whole range). Otherwise reason says why and the rows are only part of the
   // range: PAGE_LIMIT (more than maxPages pages; electron/trade-history.cjs reads the range in halves), DUPLICATE_PAGE
-  // (a continuation key, or a page's rows, repeated; the repeat is not added) or MISSING_CURSOR.
+  // (a continuation key, or a page's rows, repeated; the repeat is not added), MISSING_CURSOR, or INVALID_RESPONSE (no
+  // output1 at all, or a buy or sale row that cannot be read: an empty history is an empty output1, never a missing
+  // one; stage 2a review, P1). Transport failures still throw.
   async trades(start,end,{maxPages=TRADE_PAGES}={}){
+    if(!Number.isInteger(maxPages)||maxPages<1||maxPages>TRADE_PAGES)maxPages=TRADE_PAGES;
     if(![start,end].every(d=>/^\d{4}-\d{2}-\d{2}$/.test(d))||start>end)throw new Error('INVALID_DATE_RANGE');if(this.identity().environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
     const rows=[],seen=new Set();let fk='',nk='',continuation='',last=null,pages=0,reason=null;
     for(;;){
       if(pages>=maxPages){reason='PAGE_LIMIT';break;}
       const result=await this.query('inquire-period-trans','CTOS4001R',{ERLM_STRT_DT:start.replaceAll('-',''),ERLM_END_DT:end.replaceAll('-',''),OVRS_EXCG_CD:'',PDNO:'',SLL_BUY_DVSN_CD:'00',LOAN_DVSN_CD:'',CTX_AREA_FK100:fk,CTX_AREA_NK100:nk},{continuation});pages++;
-      const list=records(result.body.output1),content=JSON.stringify(list);if(list.length&&content===last){reason='DUPLICATE_PAGE';break;}last=content;
+      let list;try{if(!result?.body||typeof result.body!=='object'||!Object.hasOwn(result.body,'output1'))throw new Error('INVALID_RESPONSE');list=records(result.body.output1);}catch{reason='INVALID_RESPONSE';break;}
+      const content=JSON.stringify(list);if(list.length&&content===last){reason='DUPLICATE_PAGE';break;}last=content;
       rows.push(...list);if(!['M','F'].includes(result.continuation))break;
       fk=result.body.ctx_area_fk100;nk=result.body.ctx_area_nk100;if(typeof fk!=='string'||typeof nk!=='string'||!fk&&!nk){reason='MISSING_CURSOR';break;}
       const key=fk+'|'+nk;if(seen.has(key)){reason='DUPLICATE_PAGE';break;}seen.add(key);continuation='N';
     }
-    return {rows:this.tradeRows(rows),complete:reason==null,reason,pages};
+    try{return {rows:this.tradeRows(rows),complete:reason==null,reason,pages};}catch{return {rows:[],complete:false,reason:'INVALID_RESPONSE',pages};}
   }
+  // The buy and sale rows in USD. One that cannot be read (no trade date, a quantity or price that is not a number, a
+  // filled quantity without a price) throws: it is not dropped, so a read never looks whole without it. A zero quantity
+  // is no trade.
   tradeRows(rows){
     const day=v=>/^\d{8}$/.test(String(v??''))?`${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}`:null;const optional=v=>v==null||String(v).trim()===''?null:numeric(v);
     // Before KIS finalizes a trade it reports zero for the rate and settlement amounts: zero means not yet known.
@@ -111,7 +118,7 @@ class OverseasClient{
     // ft_ccld_unpr2 is the USD unit price; ovrs_stck_ccld_unpr is the same price in KRW (verified 2026-10-25: 323.64 vs
     // 428,693.544 at 1,324.6). Without the USD price, the USD amount over the quantity stands in.
     const usdPrice=row=>positive(row.ft_ccld_unpr2)??(positive(row.tr_frcr_amt2)&&numeric(row.ccld_qty)>0?positive(row.tr_frcr_amt2)/numeric(row.ccld_qty):null);
-    return rows.filter(row=>['01','02'].includes(row.sll_buy_dvsn_cd)&&String(row.crcy_cd??'USD').trim()==='USD').map(row=>({tradeDate:day(row.trad_dt),settlementDate:day(row.sttl_dt),ticker:String(row.pdno).trim(),side:row.sll_buy_dvsn_cd==='01'?'Sell':'Buy',quantity:numeric(row.ccld_qty),price:usdPrice(row),grossUSD:positive(row.tr_frcr_amt2),settlementUSD:positive(row.frcr_excc_amt_1),settlementKRW:positive(row.wcrc_excc_amt),feesUSD:(optional(row.frcr_fee1)??0)+(optional(row.dmst_frcr_fee1)??0),exchangeRate:positive(row.erlm_exrt)})).filter(row=>row.tradeDate&&row.quantity>0&&row.price>0);
+    return rows.filter(row=>['01','02'].includes(row.sll_buy_dvsn_cd)&&String(row.crcy_cd??'USD').trim()==='USD').map(row=>({tradeDate:day(row.trad_dt),settlementDate:day(row.sttl_dt),ticker:String(row.pdno).trim(),side:row.sll_buy_dvsn_cd==='01'?'Sell':'Buy',quantity:numeric(row.ccld_qty),price:usdPrice(row),grossUSD:positive(row.tr_frcr_amt2),settlementUSD:positive(row.frcr_excc_amt_1),settlementKRW:positive(row.wcrc_excc_amt),feesUSD:(optional(row.frcr_fee1)??0)+(optional(row.dmst_frcr_fee1)??0),exchangeRate:positive(row.erlm_exrt)})).filter(row=>{if(!row.tradeDate||row.quantity<0||row.quantity>0&&!(row.price>0)||!/^[A-Z][A-Z0-9./-]{0,14}$/.test(row.ticker))throw new Error('INVALID_RESPONSE');return row.quantity>0;});
   }
   async context(symbols=[],session=null){if(!Array.isArray(symbols)||symbols.length>20)throw new Error('INVALID_ORDER');symbols.forEach(instrument);const balance=await this.balance();const quotes=[],warnings=[];for(const symbol of symbols.length?symbols:balance.holdings.map(row=>row.symbol).slice(0,20)){try{quotes.push(await stage('QUOTES',()=>this.quote(symbol,session?.id==='us-daytime'?'daytime':'regular')));}catch(error){warnings.push({symbol,code:error.message});}}return {balance,quotes,warnings,marketSession:session&&!session.regular?{open:true,status:'open',session:{id:session.id,label:session.label,regular:false,endsAt:session.endAt},timeZone:'America/New_York'}:{...usSession(this.clock()),...(session?{session:{id:session.id,label:session.label,regular:true,endsAt:session.endAt}}:{})}};}
   async prepare(command,session=null){instrument(command?.symbol);if(!['Buy','Sell'].includes(command.side)||!Number.isInteger(command.quantity)||command.quantity<1||command.quantity>10000||!Number.isFinite(command.limitPrice)||command.limitPrice<1||Math.abs(command.limitPrice*100-Math.round(command.limitPrice*100))>1e-7)throw new Error('INVALID_ORDER');if(!(session&&!session.regular)&&!usSession(this.clock()).open)throw new Error('SESSION_CLOSED');const {exchange,ticker}=instrument(command.symbol),quote=await this.quote(command.symbol,session?.id==='us-daytime'?'daytime':'regular');if(Math.abs(command.limitPrice/quote.price-1)>.02)throw new Error('PRICE_MOVED');const balance=await this.balance();if(command.side==='Sell'){if(command.quantity>(balance.holdings.find(row=>row.symbol===command.symbol)?.availableQuantity??0))throw new Error('INSUFFICIENT_CAPACITY');}else{const {body}=await this.query('inquire-psamount',this.tr('TTTS3007R','VTTS3007R'),{OVRS_EXCG_CD:exchange,OVRS_ORD_UNPR:command.limitPrice.toFixed(2),ITEM_CD:ticker});const figures=require('./buying-power.cjs').brokerFigures(body.output);const integrated=require('./buying-power.cjs').integratedOn(figures);if(!figures||command.quantity>(integrated?figures.integratedQty??figures.foreignQty:figures.foreignQty)||command.quantity*command.limitPrice*1.02>(integrated?figures.integratedUSD:figures.foreignUSD))throw new Error('INSUFFICIENT_CAPACITY');}if((await this.orders()).orders.some(row=>row.remaining>0&&['Pending','Partially filled'].includes(row.status)))throw new Error('OPEN_BROKER_ORDERS');return {balance,price:quote.price,checkedAt:Date.now()};}
