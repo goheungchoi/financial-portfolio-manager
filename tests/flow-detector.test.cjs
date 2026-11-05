@@ -260,7 +260,8 @@ test('the single-name upgrade still compares Korean cash, marked as unchecked ag
   const {perf,read}=saved('net-of-confirmed',{pending:{KR:{amount:200000,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
   assert.deepEqual(read('2026-10-23T08:16:00+09:00',{krCash:1226730,usCash:268.47}),[]);
   const found=read('2026-10-23T10:30:00+09:00',{krCash:1226730,usCash:268.47});
-  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',1000000]],'the ₩800k now plus the ₩200k held');assert.match(found[0].note,/could not be compared/);assert.ok(found[0].note.length<=200);
+  // Fix review 2026-11-05, P1: the ₩200k held and the ₩800k now stay two flows, each with its own window.
+  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',200000],['KR',800000]],'the ₩200k held and the ₩800k now');for(const f of found){assert.match(f.note,/could not be compared/);assert.ok(f.note.length<=200);}
   assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0);
 });
 // Stage 2 (audit 2026-11-04): a U.S. buy paid from unsettled sale proceeds moved nothing at KIS until

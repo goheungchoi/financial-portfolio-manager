@@ -143,6 +143,14 @@ async function refreshKisBalance() {
 app.setName('Financial Portfolio Manager');
 const verificationDirectory=process.argv.includes('--verify-build')?process.env.PORTFOLIO_VERIFY_DIR:null;
 if(verificationDirectory){if(!path.isAbsolute(verificationDirectory))throw new Error('Absolute verification directory required');app.setPath('userData',verificationDirectory);}
+// --verify-profile (with --verify-build): the directory holds a copied profile (fix review 2026-11-05). Its saved
+// preferences are kept as they are, so instead of a saved setting that is off, the check asserts the runtime pause: auto
+// trading not armed after the restart, broker execution off, the saved preference unchanged, and no order recorded or
+// submitted during startup.
+const verifyProfile=Boolean(verificationDirectory)&&process.argv.includes('--verify-profile');let verifyStart=null;
+const profileRecord=()=>{const count=t=>{try{return store.db.prepare(`SELECT count(*) AS n FROM ${t}`).get().n;}catch{return null;}};let enabled=null;
+  try{const row=store.db.prepare('SELECT payload FROM automation_settings WHERE id=1').get();enabled=row?JSON.parse(row.payload).enabled===true:false;}catch{enabled=false;}
+  return {intents:count('live_intents'),orders:count('broker_orders'),enabled};};
 const page = path.join(__dirname, '../dist/index.html');
 const allowedURL = pathToFileURL(page).href;
 function authorize(event) {
@@ -152,9 +160,14 @@ function createWindow() {
   const win = new BrowserWindow({ show:!verificationDirectory, width: 1360, height: 880, minWidth: 760, minHeight: 600, backgroundColor: store?.getTheme() === 'light' ? '#f3f6fa' : '#181818', title: 'Financial Portfolio Manager', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Home'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[4].config.enabled)throw 0;
+  if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Home'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[3].state.autoEnabled)throw 0;
+    // A fresh profile has auto trading off; a copied one keeps its preference, and only the runtime pause is asserted.
+    const runtime=result[4],end=verifyProfile?profileRecord():null;
+    if(!verifyProfile&&runtime.config.enabled)throw 0;
+    if(verifyProfile&&(runtime.sessionArmed!==false||runtime.config.enabled!==verifyStart.enabled||runtime.config.enabled&&runtime.scheduler?.label!=='Paused after restart'||end.intents!==verifyStart.intents||end.orders!==verifyStart.orders))throw 0;
     // The provider worker is forked from inside the app archive; an empty rate request proves it starts without network use.
     const rates=await providerService.request('fx-rates',{days:[]});if(!Array.isArray(rates))throw 0;
+    if(verifyProfile)console.log(`Copied profile verified: saved auto trading preference kept (${verifyStart.enabled?'on':'off'}), paused after restart, broker execution off, no orders recorded or submitted (${end.intents} intents, ${end.orders} broker orders, as before).`);
     console.log('Portable build verified: renderer, private IPC, SQLite, paused paper engine, disabled broker automation and private worker process.');app.quit();}catch{console.error('Portable build verification failed.');app.exit(1);}});
   win.loadFile(page, { hash: 'overview' });
   // Pop-out chart windows belong to the main window and close with it.
@@ -171,7 +184,7 @@ function openChartWindow(symbol){
 }
 app.whenReady().then(async () => {
   domain = await import('../src/domain.mjs');
-  store = new PortfolioStore(path.join(app.getPath('userData'), 'portfolio.sqlite'));
+  store = new PortfolioStore(path.join(app.getPath('userData'), 'portfolio.sqlite'));if(verifyProfile)verifyStart=profileRecord();
   remembered=new (require('./remembered-files.cjs').RememberedFiles)(store.db);
   events = store.getEvents();
   if (!store.latestSnapshot()) store.saveSnapshot({timestamp:new Date().toISOString(), cash:domain.cash, holdings:domain.holdings});
