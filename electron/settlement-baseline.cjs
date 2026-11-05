@@ -34,7 +34,7 @@ class SettlementBaseline{
   // B1: the tracker as the baseline saw it. The first snapshot of a day stands.
   take(account,day,at){if(typeof account!=='string'||!account||typeof day!=='string'||!Number.isFinite(at))return null;const was=this.get(account,day);if(was)return was;
     const st=this.inFlight.state(account),t=this.inFlight.current(account);
-    const pieces=Object.fromEntries((st.open??[]).filter(f=>f.pid).map(f=>[f.pid,{side:f.side,cents:cents(f.usd),orderId:f.id}]));
+    const pieces=Object.fromEntries((st.open??[]).filter(f=>f.pid).map(f=>[f.pid,{side:f.side,cents:cents(f.usd),orderId:f.id,...(f.conflict?{conflict:true}:{})}]));
     // The last ledger event and the records existing now: what comes after is after the baseline, whatever its time.
     const lastEventId=this.ledger.events(account).reduce((n,e)=>Math.max(n,e.seq),0),recordIds=this.records(account).map(r=>r.id);
     const payload={pieces,orders:Object.keys(st.seen??{}),review:{buysUSD:t.review?.buysUSD??0,sellsUSD:t.review?.sellsUSD??0},lastEventId,recordIds};
@@ -51,7 +51,9 @@ class SettlementBaseline{
     const items=[],certain={low:0,high:0},unsure={low:0,high:0},basis=new Map(Object.entries(snap?.pieces??{}).map(([pid,p])=>[pid,p.cents])),known=new Set(snap?.orders??[]);
     // dir +1: an obligation removed (a resolution); -1: an obligation added. Buys move the low bound, sales the high.
     const move=(b,side,c,dir)=>{if(side==='Sell')b.high-=dir*c;else b.low+=dir*c;};
-    const side=new Map(),conflict=new Map();const recs=this.records(account),byId=new Map(recs.map(r=>[r.id,r])),reversed=new Set(recs.filter(r=>r.kind==='reversal').map(r=>r.target));
+    // Conflict pieces the baseline already counted, at what was left of them then (review of 06a0b95, P1: reducing one
+    // raised the value and moved no baseline).
+    const side=new Map(),conflict=new Map(Object.entries(snap?.pieces??{}).filter(([,p])=>p.conflict).map(([pid,p])=>[pid,p.cents]));const recs=this.records(account),byId=new Map(recs.map(r=>[r.id,r])),reversed=new Set(recs.filter(r=>r.kind==='reversal').map(r=>r.target));
     // After the baseline: by ledger event id and record ids when the snapshot kept them, by time otherwise.
     const before=new Set(snap?.recordIds??[]),eventAfter=e=>Number.isFinite(snap?.lastEventId)?e.seq>snap.lastEventId:e.at>at,recordAfter=r=>snap?.recordIds?!before.has(r.id):r.confirmedAt>at;
     for(const e of this.ledger.events(account)){if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(!eventAfter(e))continue;const s=side.get(e.pieceId);
