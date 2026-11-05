@@ -239,3 +239,24 @@ test('F10 (review of 94ea856, P1): each reconciliation keeps its own timing: opp
   const x=world();const [C,E]=x.open(order('A'),order('E',{ticker:'OTHER',fillPrice:50,limitPrice:50,costEstimate:{netCash:-50},resultCosts:{netCash:-50}}));x.detect([C,E]);x.later(MIN);
   x.reconcile({pieceId:x.pid('A')});x.reconcile({pieceId:x.pid('E'),cents:5000});x.later(MIN);x.detect([C,E]);const [g]=x.fd.timing('a');assert.equal(g.candidates.length,2);assert.deepEqual([g.observed,g.low,g.high],[150,0,150]);
 });
+test('P10 (review of 78706e6, P1): a preview\'s daily-loss "after" is the committed state\'s, baseline adjustment included, for a reconciliation and its reversal',()=>{
+  // A genuine $35 U.S. loss on a $30 limit; the $100 buy was paid before the baseline.
+  const w=world();w.open(order('A'));w.baseline(D);w.us.holdings=[{symbol:'X',quantity:1,price:-35}];
+  const rec=new Reconciliation(w.db,{inFlight:w.f,funding:w.funding,performance:w.perf,clock:w.clock,who:{user:'t',session:'s'},loss:()=>({KR:null,US:w.loss()})});
+  const now=()=>Reconciliation.lossSummary(w.loss());const start=now();
+  const q={requestId:'P1',account:'a',pieceId:w.pid(),cents:10000,explanation:'settled',route:'USD',settledOn:'2026-11-04',kisReference:'KIS',note:'paid before the baseline'};
+  const p=rec.preview(q);assert.deepEqual(p.before.loss.US,start);assert.deepEqual(now(),start,'a preview changes nothing');
+  assert.deepEqual(p.after.loss.US.adjustment,{low:100,high:0},'the adjustment the confirmed record makes');assert.equal(p.after.loss.US.loss,35);assert.equal(p.after.loss.US.breached,true);
+  const done=rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding});assert.deepEqual(now(),p.after.loss.US,'shown after = committed');assert.deepEqual(done.preview.after.loss.US,p.after.loss.US,'and recorded');
+  // The reversal: the adjustment goes; its preview shows that, and the committed state agrees.
+  const v={requestId:'V1',account:'a',reconciliationId:done.id,note:'wrong'};const pv=rec.previewReversal(v);assert.deepEqual(pv.before.loss.US,p.after.loss.US);assert.deepEqual(now(),p.after.loss.US);
+  assert.deepEqual(pv.after.loss.US.adjustment,null);assert.equal(pv.after.loss.US.loss,35);
+  rec.reverse({...v,stateVersion:pv.stateVersion,binding:pv.binding});assert.deepEqual(now(),pv.after.loss.US,'shown after = committed');
+  // A record of unknown payment timing: both scenarios, as committed.
+  const x=world();x.open(order('A'));x.baseline(D);const rx=new Reconciliation(x.db,{inFlight:x.f,funding:x.funding,performance:x.perf,clock:x.clock,who:{user:'t',session:'s'},loss:()=>({KR:null,US:x.loss()})});
+  const qx={...q,requestId:'P2',pieceId:x.pid(),settledOn:undefined};const px=rx.preview(qx);assert.deepEqual(px.after.loss.US.ifPaidBeforeBaseline,{low:100,high:0});
+  rx.confirm({...qx,stateVersion:px.stateVersion,binding:px.binding});assert.deepEqual(Reconciliation.lossSummary(x.loss()),px.after.loss.US);
+  // The provisional record is gone: one record, one reconciliation event, and the record carries the final hash.
+  const recs=x.db.prepare('SELECT contentHash FROM settlement_reconciliations').all();assert.equal(recs.length,1);assert.notEqual(recs[0].contentHash,'provisional');
+  assert.equal(x.f.evidence.events('a').filter(e=>e.kind==='reconciliation').length,1);
+});
