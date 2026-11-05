@@ -393,7 +393,9 @@ app.whenReady().then(async () => {
   // Audited manual reconciliation (electron/settlement-reconciliation.cjs, stage 2b.3) and its panel (electron/
   // settlement-panel.cjs, stage 2b.5): U.S. stocks › Settlements, with the Home summary and Check again (one bounded
   // trade-history job per order, no AI). A1 stays off (U6): KIS settled records are supporting evidence only.
-  const reconciliation=new (require('./settlement-reconciliation.cjs').Reconciliation)(store.db,{inFlight,funding:fundingLedger,performance});
+  // A preview shows each market's daily-loss check before and after (LiveEngine.currentLoss, with the settlement
+  // baseline adjustments of stage 2b.4).
+  const reconciliation=new (require('./settlement-reconciliation.cjs').Reconciliation)(store.db,{inFlight,funding:fundingLedger,performance,loss:()=>{const out={};for(const [m,e] of [['KR',live],['US',usLive]]){try{out[m]=e?.currentLoss()??null;}catch{out[m]=null;}}return out;}});
   const settlementPanel=new (require('./settlement-panel.cjs').SettlementPanel)({inFlight,reconciliation,flowDetector,costs});
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
     if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;

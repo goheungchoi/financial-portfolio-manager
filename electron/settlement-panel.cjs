@@ -15,7 +15,12 @@
 // - P3 Each open timing entry: the interval, its observed change (every open candidate paid in it), each candidate by its
 //   reconciliation id with its signed payment and the reading if it was paid earlier, and the entry's range.
 // - P4 Home summary: shown only when unresolved amounts affect equity or buying capacity (buys lower both; sales only
-//   leave proceeds out of the high bound), or settlement timing is open; hidden otherwise.
+//   leave proceeds out of the high bound), funding stays committed for a reconciled buy, or settlement timing is open;
+//   hidden otherwise.
+// - P8 Funding still committed (stage 2b.5 review, P2: a buy reconciled with the route unknown closed its piece, kept
+//   its $100 commitment, and Home said nothing): for each U.S. buy with a reconciliation in effect, the commitment as it
+//   counts now beyond what its open pieces still owe, with why: the route unknown, the funding estimate above the
+//   reconciled amount (the retained difference), or a release suspended while its KIS row is under review.
 // - P5 Check again: one bounded trade-history job for the order's dates (its U.S. trade date ±1 day, to today), through
 //   TradingCosts.syncHistory (stage 2a): its own job key, so it resumes from its stored queue after a stop or a restart
 //   and backs off after a failed read; at most CHECK_PAGES pages and CHECK_MS per run; one at a time per order. Live only
@@ -58,7 +63,10 @@ class SettlementPanel{
     const t=this.inFlight.current(account),ledger=this.ledger,byId=new Map(orders.map(o=>[String(o.id),o]));
     const links=ledger.links(account,orders),gaps=this.costs?.gaps?.list(ownerAccount(account))??[];
     const records=this.reconciliation?this.reconciliation.records(account):[],reversals=new Map(records.filter(r=>r.kind==='reversal').map(r=>[r.target,r]));
+    const funding=this.fundingRetained(account,t,records,reversals,byId);
     const timing=this.flowDetector?this.flowDetector.timing(account):[];
+    // The daily KIS history read covers January of last year to today (Seoul); older dates only by Check again.
+    const dailyFrom=`${new Date(this.clock()+9*3600000).getUTCFullYear()-1}-01-01`;
     const pieces=t.open.map(p=>{const o=byId.get(String(p.id))??null,review=String(p.pid??'').startsWith('review:'),why=p.unresolved?.why??null;
       const k=links.get(String(p.id))??{state:o?'none':'unknown'},date=o?usTradeDate(o):null,gap=date?gaps.find(g=>g.start<=addDay(date,1)&&g.end>=addDay(date,-1))??null:null;
       const own=records.filter(r=>r.kind==='reconciliation'&&r.pieceId===p.pid);
@@ -66,13 +74,14 @@ class SettlementPanel{
       if(p.overdueAt&&why!=='overdue')unknown.push(WHY.overdue);
       if(k.state==='none')unknown.push('No KIS settled record found for it yet.');else if(k.state==='uncertain')unknown.push(`A KIS settled record may be it, but not with certainty: ${k.reason}.`);
       if(gap)unknown.push(`KIS trade history around ${date} could not be read completely (${REASONS[gap.reason]??'incomplete'}).`);
+      const daily=date?date>=dailyFrom:null;if(daily===false)unknown.push(`Its date is before ${dailyFrom}, which the daily KIS history read does not cover; only Check again reads it.`);
       if(p.side==='Buy'&&why)unknown.push('Whether it was paid in USD or KRW is unknown.');
       return {pieceId:p.pid,orderId:String(p.id),side:p.side,symbol:o?.symbol??null,shares:o?.filled??null,orderNumber:o?.brokerOrderId??null,filledAt:p.filledAt??null,
         usd:p.usd,signedUSD:signed(p.side,p.usd),basis:p.basis??null,state:review?'under review':why?'unresolved':'in flight',why,since:p.unresolved?.at??p.at??null,overdue:Boolean(p.overdueAt),overdueAt:p.overdueAt??null,
         pretracking:Boolean(p.pretracking),conflict:Boolean(p.conflict),
         evidence:{k:k.state==='linked'?{state:'linked',groupId:k.groupId,version:k.version,settlementDate:k.fields?.settlementDate??null,settlementUSD:k.fields?.settlementUSD??k.fields?.grossUSD??null,supportingOnly:true}:k.state==='uncertain'?{state:'uncertain',groupId:k.groupId,reason:k.reason}:{state:k.state},
           allocatedUSD:review?null:usd(ledger.allocatedToPiece(p.pid)),standby:review?[]:ledger.standbyFor(p.pid).map(s=>({id:s.id,evidenceId:s.evidenceId,usd:usd(s.cents),promotedUSD:usd(s.promotedCents)})),
-          reconciledUSD:usd(own.filter(r=>!reversals.has(r.id)).reduce((n,r)=>n+r.cents,0)),historyGap:gap?{start:gap.start,end:gap.end,reason:gap.reason}:null},
+          reconciledUSD:usd(own.filter(r=>!reversals.has(r.id)).reduce((n,r)=>n+r.cents,0)),historyGap:gap?{start:gap.start,end:gap.end,reason:gap.reason}:null,inDailyRead:daily},
         unknown,reconcilable:!review,check:this.check(account,String(p.id))};});
     const timingOf=id=>timing.filter(e=>e.candidates.some(c=>c.id===id)).map(e=>{const c=e.candidates.find(x=>x.id===id);return {entryId:e.id,ifPaidEarlierUSD:Math.round((e.observed-c.usd)*100)/100,ifPaidHereUSD:e.observed,low:e.low,high:e.high};});
     const sideOf=new Map(records.filter(r=>r.kind==='reconciliation').map(r=>[r.id,r]));
@@ -83,16 +92,30 @@ class SettlementPanel{
     const entries=timing.map(e=>({id:e.id,after:e.after??null,by:e.by??null,observedUSD:e.observed,low:e.low,high:e.high,
       candidates:e.candidates.map(c=>{const r=sideOf.get(c.id);return {reconciliationId:c.id,side:r?.side??null,symbol:r?byId.get(String(r.orderId))?.symbol??null:null,paymentUSD:r?signed(r.side,usd(r.cents)):null,ifPaidEarlierUSD:Math.round((e.observed-c.usd)*100)/100};})}));
     const range={low:Math.round(timing.reduce((n,e)=>n+Math.min(0,e.low),0)*100)/100,high:Math.round(timing.reduce((n,e)=>n+Math.max(0,e.high),0)*100)/100};
-    const summary={unresolved:t.unresolved,overdue:t.overdue,review:t.review,pretracking:t.pretracking.count,inFlight:{buysUSD:t.buysUSD,sellsUSD:t.sellsUSD},timingOpen:timing.length,timingRange:range};
+    const summary={unresolved:t.unresolved,overdue:t.overdue,review:t.review,pretracking:t.pretracking.count,inFlight:{buysUSD:t.buysUSD,sellsUSD:t.sellsUSD},timingOpen:timing.length,timingRange:range,
+      fundingRetainedUSD:usd(funding.reduce((n,f)=>n+cents(f.retainedUSD),0))};
     // Detected U.S. flows a reconciliation may name as its payment (R8).
     const detectedFlows=(this.reconciliation?.performance?.flows(account)??[]).filter(f=>f.market==='US'&&f.detected&&!f.transfer).map(f=>({id:f.id,day:f.day,amountUSD:f.amount}));
-    return {account,environment,pieces,reconciliations,timing:entries,detectedFlows,summary,home:SettlementPanel.home(summary)};}
+    return {account,environment,pieces,reconciliations,timing:entries,funding,detectedFlows,summary,home:SettlementPanel.home(summary)};}
+  // P8: U.S. buy funding still committed after a reconciliation.
+  fundingRetained(account,t,records,reversals,byId){const f=this.reconciliation?.funding;if(!f)return [];
+    const active=records.filter(r=>r.kind==='reconciliation'&&r.side==='Buy'&&!reversals.has(r.id)),orders=[...new Set(active.map(r=>String(r.orderId)))];if(!orders.length)return [];
+    const rows=new Map(f.commitments(account).rows.filter(c=>c.market==='US').map(c=>[String(c.orderId),c])),out=[];
+    for(const id of orders){const c=rows.get(id);if(!c||!(c.amount>0.005))continue;const owed=t.open.filter(p=>String(p.id)===id&&p.side==='Buy').reduce((n,p)=>n+cents(p.usd),0),left=cents(c.amount)-owed;if(left<=0)continue;
+      const recs=active.filter(r=>String(r.orderId)===id),unknown=recs.filter(r=>r.route==='unknown'||r.explanation==='settled'&&!r.route);
+      const reason=c.underReviewUSD?'under review':unknown.length?'route unknown':'estimate above reconciled';
+      out.push({orderId:id,symbol:byId.get(id)?.symbol??c.symbol??null,retainedUSD:usd(left),reason,reconciliationIds:recs.map(r=>r.id),
+        detail:reason==='route unknown'?'Reconciled with the funding route unknown: whether it was paid from USD or KRW is not known, so its funding stays committed and keeps lowering buying capacity.'
+          :reason==='under review'?'The KIS record its release relied on is under review: the released funding counts as committed again.'
+          :'The funding estimate is above what was reconciled; the difference stays committed (only a rounding difference of up to 1 cent is released).'});}
+    return out;}
   // P4: the Home row, or null. Buys unresolved lower equity's low bound and buying capacity; sales unresolved leave
   // their proceeds out of the high bound only.
-  static home(s){const buys=s.unresolved.buysUSD,sells=s.unresolved.sellsUSD,over=s.overdue.buysUSD+s.overdue.sellsUSD;const parts=[];
+  static home(s){const buys=s.unresolved.buysUSD,sells=s.unresolved.sellsUSD,over=s.overdue.buysUSD+s.overdue.sellsUSD,kept=s.fundingRetainedUSD??0;const parts=[];
     if(buys>0.005)parts.push(`${money(buys)} lowers equity and buying capacity`);if(sells>0.005)parts.push(`${money(sells)} of sale proceeds not counted`);
+    if(kept>0.005)parts.push(`${money(kept)} of buy funding still committed after reconciliation`);
     if(s.timingOpen)parts.push(`${s.timingOpen} payment timing${s.timingOpen===1?'':'s'} to confirm (${signedMoney(s.timingRange.low)} to ${signedMoney(s.timingRange.high)})`);
-    if(!parts.length)return null;return {title:'U.S. settlements to reconcile',detail:parts.join(' · ')+(over>0.005?` · ${money(over)} overdue`:''),tone:over>0.005||buys>0.005?'warning':'info'};}
+    if(!parts.length)return null;return {title:'U.S. settlements to reconcile',detail:parts.join(' · ')+(over>0.005?` · ${money(over)} overdue`:''),tone:over>0.005||buys>0.005||kept>0.005?'warning':'info'};}
   // P5: Check again for the order of a piece. fetch(start,end,{maxPages}) is one KIS trade-history read (live,
   // read-only). Returns the job's outcome and the check's state; {busy:true} while a run for that order is under way.
   async checkAgain(account,pieceId,{orders=[],fetch,environment,today}){
