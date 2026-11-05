@@ -144,19 +144,33 @@ test('B1/B8: after the baseline is decided by the ledger event, not the clock; w
   const x=world();x.open(order('A'));x.e.baselineTaken=null;x.baseline(D);x.see([order('A'),B()]);const a=x.sb.adjustments('a',x.e.policy());
   assert.equal(a.certain.low,0);assert.equal(a.withUnknown.low,-50);
 });
-test('F5 (review of 06a0b95, P1): a payment and its reconciliation in one interval make no withdrawal; with no timing evidence and a change neither reading explains, the doubt is kept, not resolved',()=>{
-  // Cash falls $100 and the $100 obligation is reconciled (dated today) before the detector compares: no flow.
+test('F5 (reviews of 06a0b95 and b88178d, P1): with no evidence of when a reconciled payment was made, the interval keeps both readings; neither a zero nor a matching residual settles it',()=>{
+  const timing=w=>w.fd.timing('a').map(x=>[x.ifPaidHere,x.ifPaidEarlier,x.usd]);
+  // Cash -$100 with the reconciliation dated today: no certain withdrawal; kept as 0 (paid here) or -$100 (paid earlier).
   const w=world();const notes=[];w.fd.onNote=(t,m)=>notes.push(m);const [A]=w.open(order('A'));w.detect([A]);w.later(MIN);w.reconcile({settledOn:D});w.us.cash-=100;w.later(MIN);w.detect([A]);w.later(3*HOUR);
-  assert.deepEqual(w.detect([A]),[]);assert.deepEqual(w.perf.flows('a'),[]);assert.ok(notes.some(m=>/\$100\.00: paid in this interval/.test(m)),'the decision is logged');
-  // No cash movement and no date: the reconciliation moved no cash here (the false deposit stays cleared).
-  const x=world();const [B]=x.open(order('A'));x.detect([B]);x.later(MIN);x.reconcile();x.later(MIN);x.detect([B]);x.later(3*HOUR);assert.deepEqual(x.detect([B]),[]);
-  // Cash +$150 with an undated $100 reconciliation in the same interval: a +$150 flow if the payment was earlier, +$250 if
-  // in it. Neither reading explains the change, so neither is assumed: it is held unexplained (+$250), its note naming
-  // the $100 of unknown timing (a detected flow: unresolved, a loss scenario, for you to confirm).
-  const y=world();const [C]=y.open(order('A'));y.detect([C]);y.later(MIN);y.reconcile();y.us.cash+=150;y.later(MIN);y.detect([C]);y.later(3*HOUR);
-  const f=y.detect([C]);assert.equal(f.length,1);assert.equal(f[0].amount,250);assert.match(f[0].note,/reconciled payment of unknown timing: \$100\.00 is no flow if paid earlier/);assert.ok(f[0].note.length<=200);
-  // A settlement date before the interval settles it: cash-free here, so only the real change is a flow.
-  const z=world();const [E]=z.open(order('A'));z.detect([E]);z.later(MIN);z.reconcile({settledOn:'2026-11-01'});z.us.cash+=150;z.later(MIN);z.detect([E]);z.later(3*HOUR);assert.deepEqual(z.detect([E]).map(x=>x.amount),[150]);
+  assert.deepEqual(w.detect([A]),[]);assert.deepEqual(w.perf.flows('a'),[]);assert.deepEqual(timing(w),[[0,-100,100]]);assert.ok(notes.some(m=>/Both are kept until resolved/.test(m)));
+  assert.ok(!notes.some(m=>/no payment in this interval|paid in this interval/.test(m)),'nothing concluded');
+  // No cash movement and no date (a payment with an offsetting deposit, or neither): +$100 or 0, both kept.
+  const x=world();const [B]=x.open(order('A'));x.detect([B]);x.later(MIN);x.reconcile();x.later(MIN);x.detect([B]);x.later(3*HOUR);assert.deepEqual(x.detect([B]),[]);assert.deepEqual(timing(x),[[100,0,100]]);
+  // Cash +$150 with an undated $100 reconciliation: +$250 if paid here, +$150 if earlier.
+  const y=world();const [C]=y.open(order('A'));y.detect([C]);y.later(MIN);y.reconcile();y.us.cash+=150;y.later(MIN);y.detect([C]);y.later(3*HOUR);assert.deepEqual(y.detect([C]),[]);assert.deepEqual(timing(y),[[250,150,100]]);
+  // A settlement date before the interval is independent evidence: cash-free here, only the real change is a flow.
+  const z=world();const [E]=z.open(order('A'));z.detect([E]);z.later(MIN);z.reconcile({settledOn:'2026-11-01'});z.us.cash+=150;z.later(MIN);z.detect([E]);z.later(3*HOUR);assert.deepEqual(z.detect([E]).map(x=>x.amount),[150]);assert.deepEqual(timing(z),[]);
+});
+test('F7: timing entries persist, enter the loss check at their lowest and highest readings, and are resolved later',()=>{
+  const w=world({limit:30});const [A]=w.open(order('A'));w.baseline(D);w.e.flowsSince=p=>w.fd.flowsSince('a','US',p.baselineAt);w.detect([A]);w.later(MIN);
+  w.reconcile();w.us.cash-=100;w.later(MIN);w.detect([A]);
+  // An undated reconciliation: its baseline adjustment and the interval's change (0 or -$100) are both of unknown timing.
+  const restart=new FlowDetector(w.db,w.perf,w.clock);assert.equal(restart.timing('a').length,1,'kept across a restart');
+  let l=w.loss();const names=l.scenarios.map(s=>[s.name,s.loss]);
+  assert.ok(names.some(([n])=>/settlement timing at the lowest reading/.test(n))&&names.some(([n])=>/settlement timing at the highest reading/.test(n)));
+  // A genuine $40 loss: a breach unless the $100 left as a withdrawal (lowest reading): ambiguous, not hidden, not claimed.
+  w.us.holdings=[{symbol:'X',quantity:1,price:-40}];l=w.loss();assert.equal(l.breached,false);assert.equal(l.ambiguous,true);
+  // Resolved: it was paid in that interval (0: no flow); the entry closes and the loss is plain again.
+  const id=w.fd.timing('a')[0].id;const r=w.fd.resolveTiming('a',id,{paidHere:true});assert.equal(r.flow,null);assert.deepEqual(w.fd.timing('a'),[]);l=w.loss();assert.equal(l.breached,true);
+  // Resolved the other way: the reading becomes a detected flow for you to confirm or remove.
+  const x=world();const [B]=x.open(order('A'));x.detect([B]);x.later(MIN);x.reconcile();x.us.cash+=150;x.later(MIN);x.detect([B]);const r2=x.fd.resolveTiming('a',x.fd.timing('a')[0].id,{paidHere:false});
+  assert.equal(r2.flow.amount,150);assert.equal(r2.flow.detected,true);assert.throws(()=>x.fd.resolveTiming('a','nope',{paidHere:true}),/TIMING_UNKNOWN/);
 });
 test('B6 (review of 06a0b95, P1): a conflict already in the baseline moves it when reduced, up to what it held',()=>{
   const w=world();const [A]=w.open(order('A'));w.reconcile({settledOn:'2026-11-02'});w.ledger.importK(SCOPE,W,[k({settlementUSD:150,grossUSD:150,price:150})]);w.see([A]);assert.equal(w.f.current('a').buysUSD,50);
