@@ -96,9 +96,9 @@ test('U.S. fills in flight are decided by evidence: the paid-from-proceeds gap, 
   // A sale filled but not yet in pending proceeds; then KIS shows the proceeds.
   f=fresh();f.observe('a',{us:{cash:10},orders:[],fx:1335});assert.equal(f.observe('a',{us:{cash:10},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:267.63}}],fx:1335}).sellsUSD,267.63);
   assert.equal(f.observe('a',{us:{cash:10,pendingSaleProceeds:267.63},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:267.63}}],fx:1335}).sellsUSD,0);
-  // At the first reading a fill past its settlement date is history; a recent one stays in flight, unresolved (independent
-  // accounting review of 162d7c9). A fill with no signal for MAX_DAYS is overdue, not dropped.
-  const old={...buy(),createdAt:t-10*86400000};f=fresh();assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:268.47},orders:[old],fx:1335}).buysUSD,0,'settled long ago');
+  // At the first reading every fill stays in flight, awaiting verification, however old (bootstrap B1, stage 2b S1; the
+  // five-day history rule of a7d075a is gone). A fill with no signal for MAX_DAYS is overdue, not dropped.
+  const old={...buy(),createdAt:t-10*86400000};f=fresh();const o1=f.observe('a',{us:{cash:0,pendingSaleProceeds:268.47},orders:[old],fx:1335});assert.equal(o1.buysUSD,94.38,'ten days old: still awaiting verification');assert.equal(o1.open[0].unresolved.why,'awaiting verification');assert.equal(o1.pretracking.count,1);
   f=fresh();const first=f.observe('a',{us:{cash:0,pendingSaleProceeds:268.47},orders:[{...buy(),createdAt:t-3600000}],fx:1335});assert.equal(first.buysUSD,94.38);assert.equal(first.unresolved.buysUSD,94.38);
   f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:268.47},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:268.47},orders:[buy()],fx:1335});
   t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:268.47},orders:[buy()],fx:1335});assert.equal(late.buysUSD,94.38,'still owed');assert.equal(late.overdue.buysUSD,94.38);assert.match(late.notes[0],/no settlement evidence after 7 days/);

@@ -21,10 +21,11 @@ test('first launch: a recent unreflected buy stays an obligation; the value is a
   // Restart during the bootstrap: the obligation is kept.
   a.restart();a.later(60000);assert.equal(a.read({cash:500,holdings:[share(100)]},[recent]).v.combined.low,650000);
 });
-test('first launch: settled history is not tracked; a reported buy of unknown funding and a sale without proceeds stay open',()=>{
-  // A buy filled ten days ago is past settlement: history, and the value is exact.
+test('first launch: no age makes history (B1); a reported buy of unknown funding and a sale without proceeds stay open',()=>{
+  // A buy filled ten days ago: still awaiting verification (stage 2b S1), in the low bound, and the value is provisional.
   let a=account();let {r,v}=a.read({cash:400,holdings:[share(100)]},[{id:'H',side:'Buy',filled:1,fillPrice:100,createdAt:a.now()-10*DAY}]);
-  assert.equal(r.buysUSD,0);assert.equal(v.combined.low,650000);assert.equal(v.combined.exact,true);assert.deepEqual(a.state().evidence.find(e=>e.kind==='history').settledBySchedule,['H']);
+  assert.equal(r.buysUSD,100);assert.equal(r.open[0].unresolved.why,'awaiting verification');assert.equal(v.combined.low,520000);assert.equal(v.combined.high,650000);assert.equal(v.combined.exact,false);
+  assert.ok(v.combined.reasons.some(x=>/1 pre-tracking U.S. fill awaiting verification: the value is provisional/.test(x)));assert.equal(a.state().evidence.find(e=>e.kind==='history'),undefined,'nothing is history by schedule');
   // KIS reports $100 awaiting settlement, funding unknown: possibly this buy, unproven; both obligations in the low bound.
   a=account();const korea={cash:1300000,settledCash:1300000,holdings:[],timestamp:new Date(a.now()).toISOString()};
   const us={cash:500,pendingSaleProceeds:0,holdings:[share(100)],unsettled:{buyKRW:130000,sellKRW:0,krwFundedKRW:0},timestamp:new Date(a.now()).toISOString()};
@@ -39,8 +40,8 @@ test('first launch: order history arriving after the balance is held to the same
   const a=account();a.read({cash:500,holdings:[share(100),share(50,'NYSE:Y')]},[]);a.later(60000);
   const late=[{id:'B',side:'Buy',filled:1,fillPrice:100,createdAt:a.now()-2*HOUR},{id:'H',side:'Buy',filled:1,fillPrice:50,createdAt:a.now()-10*DAY}];
   const {r,v}=a.read({cash:500,holdings:[share(100),share(50,'NYSE:Y')]},late);
-  assert.deepEqual(r.open.map(f=>[f.id,f.unresolved.why]),[['B','present before tracking started']],'the recent one stays in flight; the old one is history');
-  assert.equal(v.combined.low,(500+150-100)*1300);assert.equal(v.combined.exact,false);
+  assert.deepEqual(r.open.map(f=>[f.id,f.unresolved.why]),[['B','awaiting verification'],['H','awaiting verification']],'both stay in flight, the old one too (stage 2b S1)');
+  assert.equal(v.combined.low,(500+150-100-50)*1300);assert.equal(v.combined.exact,false);
 });
 
 // 2. Time is not settlement evidence.
