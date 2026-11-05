@@ -335,8 +335,12 @@ class InFlight {
       let base=ledger.allocatedToOrder(account,id);const c0=st.conflicts[id],k=cents(l.fields.settlementUSD);if(!c0&&(!base||Math.abs(k-base)<=1))continue;
       const c=st.conflicts[id]??={released:[]};const was={kCents:c.kCents,version:c.version};Object.assign(c,{groupId:l.groupId,version:l.version,kCents:k});
       const pieces=()=>st.open.filter(f=>f.id===id&&f.conflict),held=()=>pieces().reduce((n,f)=>n+cents(f.usd),0);
-      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const take=Math.min(r.cents,k-base);
-          try{ledger.allocate({account,evidenceId:r.evidenceId,version:r.version,pieceId:r.pieceId,orderId:id,cents:take,rule:'restored: KIS record raised'});r.cents-=take;base+=take;ledger.event(account,'coverage-restored',{orderId:id,evidenceId:r.evidenceId,cents:take});}catch{}}
+      // Restoration is exact (review of 790c852, P2): each released part restores at most what the order still lacks and
+      // what is still unused in its evidence version; a part another piece has since used is no longer released (it is
+      // that piece's now). Allocation errors are not swallowed.
+      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const ev=ledger.version(r.evidenceId,r.version),free=ev?Math.max(0,ev.amountCents-ledger.allocated(r.evidenceId,r.version)):0,take=Math.min(r.cents,k-base,free);
+          if(take>0){ledger.allocate({account,evidenceId:r.evidenceId,version:r.version,pieceId:r.pieceId,orderId:id,cents:take,rule:'restored: KIS record raised'});r.cents-=take;base+=take;ledger.event(account,'coverage-restored',{orderId:id,evidenceId:r.evidenceId,cents:take});}
+          const gone=Math.max(0,r.cents-(free-take));if(gone>0&&base<k){r.cents-=gone;ledger.event(account,'release-used-elsewhere',{orderId:id,evidenceId:r.evidenceId,cents:gone});}}
         c.released=c.released.filter(r=>r.cents>0);}
       const target=k>base+1?k-base:0,have=held();
       if(target>have){st.open.push(opened({id,side:o.side,usd:(target-have)/100,basis:'net',at:now,filledAt:now,conflict:true,unresolved:{why:'conflict',evidence:l.groupId,version:l.version,kUSD:k/100,allocatedUSD:base/100}}));

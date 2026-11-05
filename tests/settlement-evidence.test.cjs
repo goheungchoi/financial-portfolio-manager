@@ -146,6 +146,16 @@ test('review 2b.2: successive K versions are reconciled against the open conflic
   const x=world();x.see({cash:500});x.see({cash:500},[A]);x.see({cash:400},[A]);x.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);x.see({cash:400},[A]);
   const ev=x.db.prepare("SELECT evidenceId FROM settlement_allocations WHERE orderId='A' LIMIT 1").get().evidenceId;x.ledger.allocate({account:'a',evidenceId:ev,pieceId:'other#1',cents:300});
   x.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:100,grossUSD:100,price:100})]);assert.equal(x.see({cash:400},[A]).buysUSD,3,'the $3 went to another piece: owed again');
+  // Review of 790c852 (P2): only $1 of the $3 used elsewhere: the other $2 is restored exactly, and only $1 is owed.
+  const z=world();z.see({cash:500});z.see({cash:500},[A]);z.see({cash:400},[A]);z.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);z.see({cash:400},[A]);
+  const zev=z.db.prepare("SELECT evidenceId FROM settlement_allocations WHERE orderId='A' LIMIT 1").get().evidenceId;z.ledger.allocate({account:'a',evidenceId:zev,pieceId:'other#1',orderId:'B',cents:100});
+  z.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:100,grossUSD:100,price:100})]);const zr=z.see({cash:400},[A]);
+  assert.equal(zr.buysUSD,1,'$2 restored, $1 owed');assert.equal(z.ledger.allocatedToOrder('a','A'),9900);assert.equal(z.ledger.allocated(zev,1),10000,'no evidence used twice');
+  assert.deepEqual(zr.reducedCoverage,[],'the $1 now used by B is no longer reported as released');assert.equal(z.see({cash:400},[A]).buysUSD,1,'stable');
+  // An unexpected allocation error is not swallowed: the reading fails and writes nothing.
+  const q=world();q.see({cash:500});q.see({cash:500},[A]);q.see({cash:400},[A]);q.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);q.see({cash:400},[A]);q.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:100,grossUSD:100,price:100})]);
+  const real=SettlementEvidence.prototype.allocate;SettlementEvidence.prototype.allocate=()=>{throw new Error('DISK_FULL');};const before=count(q.db,'settlement_events');
+  try{assert.throws(()=>q.see({cash:400},[A]),/DISK_FULL/);}finally{SettlementEvidence.prototype.allocate=real;}assert.equal(count(q.db,'settlement_events'),before);assert.equal(q.see({cash:400},[A]).buysUSD,0,'then restored normally');
   // A sale corrected upward is possible extra proceeds (the high bound), never a buy obligation.
   const y=world();const S=order('S',{side:'Sell',resultCosts:{netCash:100}});y.see({cash:500});y.see({cash:500},[S]);assert.equal(y.see({cash:600},[S]).sellsUSD,0);
   y.ledger.importK(SCOPE,W,[k('TEST',{side:'Sell',settlementUSD:105,grossUSD:105,price:105})]);const s=y.see({cash:600},[S]);assert.deepEqual([s.buysUSD,s.sellsUSD],[0,5]);
