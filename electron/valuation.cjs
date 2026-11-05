@@ -401,4 +401,11 @@ class InFlight {
     return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100])),candidates:{usd:Math.round(cand.reduce((n,x)=>n+x.usd,0)*100)/100,ids:cand.map(x=>x.id),items:cand.map(x=>({id:x.id,usd:x.usd}))}};}
   explainedSince(account,since){return this.explained(account,{since}).usd;}
 }
-module.exports={value,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND};
+// One market's net equity for the daily loss and new-exposure checks (the engines' netEquityOf), from the same value()
+// every other consumer reads (stage 2b.6: one function for main and the composition harness). KRW committed to U.S. buys
+// moves money between the markets: the daily loss leaves it out (transfer flows settle it), while new exposure is
+// measured with it deducted. Null when the market's value is not available.
+function marketValue(market,{korea=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
+  const v=value({korea,us,fx,inFlight,now}).markets[market];if(!v.available||v.equity.low==null)return null;
+  const f=v.components.find(c=>c.name==='usBuyFunding');return {low:v.equity.low,high:v.equity.high,version:VERSION,loss:{low:v.equity.low-(f?.low??0),high:v.equity.high-(f?.high??0)}};}
+module.exports={value,marketValue,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND};

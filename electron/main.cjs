@@ -409,10 +409,7 @@ app.whenReady().then(async () => {
   // Net equity for the daily loss and new-exposure checks (electron/valuation.cjs), from the balance the engine holds.
   const marketValue=(market,snapshot)=>{const k=kisState.snapshot;if(!k?.accountKey)return null;const kr=market==='KR'?snapshot:k,us=market==='US'?snapshot:(usSnapshot?.accountKey===k.accountKey+':US'?usSnapshot:null);
     if(market==='KR'&&snapshot?.accountKey!==k.accountKey||market==='US'&&snapshot?.accountKey!==k.accountKey+':US')return null;
-    const v=require('./valuation.cjs').value({korea:kr,us,fx:automation.fx?.(),inFlight:inFlightOf(k.accountKey)}).markets[market];if(!v.available||v.equity.low==null)return null;
-    // KRW committed to U.S. buys moves money between the markets: the daily loss leaves it out (transfer flows settle
-    // it), while new exposure is measured with it deducted.
-    const f=v.components.find(c=>c.name==='usBuyFunding');return {low:v.equity.low,high:v.equity.high,version:require('./valuation.cjs').VERSION,loss:{low:v.equity.low-(f?.low??0),high:v.equity.high-(f?.high??0)}};};
+    return require('./valuation.cjs').marketValue(market,{korea:kr,us,fx:automation.fx?.(),inFlight:inFlightOf(k.accountKey)});};
   live.netEquityOf=snapshot=>marketValue('KR',snapshot);live.creditApproved=()=>automation.config.creditProtectionApproved===true;usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
