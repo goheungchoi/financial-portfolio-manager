@@ -24,7 +24,7 @@ test('T1: four pre-tracking buys and one sale, none verified: buys in the low bo
 test('T11: a $95 cash fall against a $100 obligation allocates $95; $5 stays until the order\'s own amount is corrected to $95',()=>{
   const x=tracker();x.see({cash:500});const a=buy('A',100,{resultCosts:{netCash:-100}});x.see({cash:500},[a]);
   const r=x.see({cash:405},[a]);assert.equal(r.buysUSD,5);assert.deepEqual([r.open[0].unresolved.why,r.open[0].unresolved.shortUSD],['evidence short',5]);
-  const e=x.evidence().at(-1);assert.deepEqual(e.allocated,[{id:'A',usd:95}]);assert.equal(e.kind,'settled');
+  const e=x.evidence().at(-1);assert.deepEqual(e.allocated,[{id:'A',pid:'A#1',usd:95}]);assert.equal(e.kind,'settled');
   // KIS finalises the fees: the order's amount becomes $95, and the remainder closes by that correction, not by write-off.
   assert.equal(x.see({cash:405},[{...a,resultCosts:{netCash:-95}}]).buysUSD,0);
 });
@@ -36,7 +36,7 @@ test('T12: a $0.40 remainder is not written off, however long it waits',()=>{
 test('T14: KRW evidence is converted at the reading\'s rate, the KRW and rate recorded; the $0.20 difference is explicit',()=>{
   const x=tracker(1306.5);x.see({cash:500});const a=buy('A',100.2);x.see({cash:500},[a]);
   const r=x.see({cash:500,unsettled:{buyKRW:130650,sellKRW:0}},[a]);assert.equal(r.buysUSD,0.2);assert.equal(r.open[0].unresolved.why,'evidence short');
-  const e=x.evidence().at(-1);assert.deepEqual([e.channel,e.amount,e.krw,e.rate,e.allocated],['reported',100,130650,1306.5,[{id:'A',usd:100}]]);
+  const e=x.evidence().at(-1);assert.deepEqual([e.channel,e.amount,e.krw,e.rate,e.allocated],['reported',100,130650,1306.5,[{id:'A',pid:'A#1',usd:100}]]);
 });
 test('T15: two $100 fills and one $100 movement: nothing applied, both unresolved, the candidates recorded; a $100 and a $150 fill: unique',()=>{
   let x=tracker();x.see({cash:500});const A=buy('A',100),B=buy('B',100);x.see({cash:500},[A,B]);
