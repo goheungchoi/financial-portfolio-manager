@@ -69,10 +69,13 @@ class PerformanceHistory {
   // date, after when the date is later than the baseline's Seoul date, before when earlier, uncertain on that date.
   // uncertain: the flows whose side of the baseline cannot be told, for the loss scenarios; ids: which flows were counted.
   flowsSince(account,market,since,day=seoulDate(this.clock())){const mine=this.flows(account).filter(f=>f.market===market);
-    if(!Number.isFinite(since)){const list=mine.filter(f=>f.day===day);return {confirmed:list.filter(f=>!f.detected).reduce((n,f)=>n+f.amount,0),unresolved:list.filter(f=>f.detected).reduce((n,f)=>n+f.amount,0),uncertain:{confirmed:0,unresolved:0},ids:list.map(f=>f.id)};}
+    // range: the lowest and highest total of the uncertain items (each real or not), item by item so that changes in
+    // both directions are not netted (stage 2b.4 review of f26d33f).
+    const range=list=>({low:list.reduce((n,f)=>n+Math.min(0,f.amount),0),high:list.reduce((n,f)=>n+Math.max(0,f.amount),0)});
+    if(!Number.isFinite(since)){const list=mine.filter(f=>f.day===day);return {confirmed:list.filter(f=>!f.detected).reduce((n,f)=>n+f.amount,0),unresolved:list.filter(f=>f.detected).reduce((n,f)=>n+f.amount,0),uncertain:{confirmed:0,unresolved:0},ids:list.map(f=>f.id),range:range(list.filter(f=>f.detected))};}
     const baseDay=seoulDate(since);const side=f=>Number.isFinite(f.occurredBy)?(f.occurredBy<=since?'before':Number.isFinite(f.occurredAfter)&&f.occurredAfter>=since?'after':'uncertain'):f.day<baseDay?'before':f.day>baseDay?'after':'uncertain';
     const sum=(list,detected)=>list.filter(f=>Boolean(f.detected)===detected).reduce((n,f)=>n+f.amount,0);const after=mine.filter(f=>side(f)==='after'),unsure=mine.filter(f=>side(f)==='uncertain');
-    return {confirmed:sum(after,false),unresolved:sum(after,true),uncertain:{confirmed:sum(unsure,false),unresolved:sum(unsure,true)},ids:after.map(f=>f.id),uncertainIds:unsure.map(f=>f.id)};}
+    return {confirmed:sum(after,false),unresolved:sum(after,true),uncertain:{confirmed:sum(unsure,false),unresolved:sum(unsure,true)},ids:after.map(f=>f.id),uncertainIds:unsure.map(f=>f.id),range:range([...after.filter(f=>f.detected),...unsure])};}
   // Net deposits (positive) and withdrawals in one market's currency on one Seoul day.
   flowsOn(account,day,market){return this.flows(account).filter(f=>f.day===day&&f.market===market).reduce((sum,f)=>sum+f.amount,0);}
   saveCloses(index,rows){if(!INDEXES[index])throw new Error('INVALID_INDEX');const insert=this.db.prepare('INSERT INTO benchmark_closes VALUES(?,?,?) ON CONFLICT(idx,day) DO UPDATE SET close=excluded.close');for(const row of rows)if(isDay(row.day)&&Number.isFinite(row.close)&&row.close>0)insert.run(index,row.day,row.close);}
