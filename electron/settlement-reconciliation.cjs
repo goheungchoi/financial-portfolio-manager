@@ -9,19 +9,23 @@
 // - R3 A preview is the reconciliation applied in a transaction that is then rolled back, so its before and after are
 //   computed by the same code every consumer uses and equal the effect a confirmation applies. It carries the state
 //   version (the ledger's last event, the tracker state, funding, flows, the flow detector's last reading and the
-//   records). Confirming re-reads it inside the transaction: if anything changed, nothing is applied (STATE_CHANGED,
-//   with the refreshed preview attached).
+//   records) and a binding: a hash of the normalized request, that state version, the inputs it was computed with
+//   (balances, FX, capacity inputs) and the values and effects it shows. Confirming re-reads the state (STATE_CHANGED,
+//   with the refreshed preview attached) and recomputes the binding in the transaction; any difference in the request,
+//   the inputs or the result applies nothing (PREVIEW_MISMATCH). Reversals are bound the same way.
 // - R4 Applying is one transaction: the record, its evidence (one manual version for the amount), the allocation to
 //   the piece (checked against what is left of both), the piece change, the citation, the funding release, any flow
 //   reclassification and the events. Records are append-only (triggers refuse updates and deletes).
-// - R5 Repeats: the same request id, or the same content (the request with the state version it was previewed on),
-//   returns the existing record and changes nothing. A request id reused for other content is refused.
+// - R5 Repeats: the same request id, or the same binding with the same request, returns the existing record and
+//   changes nothing. A request id reused for other content is refused.
 // - R6 Partial: each record allocates its own amount; the piece closes when nothing is left.
 // - R7 Reversal is a new record that undoes that record's effect only: its allocations are reversed and its evidence
 //   voided; standby coverage of the piece is promoted first (re-checked as existing, unconsumed and, for a K row,
 //   independent, current and usable: U6, A1); the piece reopens only for what no promoted evidence covers; its funding
-//   release is reinstated, its flow reclassification undone and its citation withdrawn. Later records and evidence
-//   keep their effect. A reversal of a reversal, or a second reversal, is refused.
+//   release is reinstated, its citation withdrawn, and its flow reclassification undone for what is still its own: the
+//   reversed settlement entry and the entries it added that are still flows; an added entry a later record reconciled
+//   (or that was removed since) keeps that later transformation. Later records and evidence keep their effect. A
+//   reversal of a reversal, or a second reversal, is refused.
 // - R8 Flow reclassification: a detected U.S. flow selected as the payment is removed from flows in the same
 //   transaction. Its split must sum to the flow exactly, to the cent, with exactly one settlement entry equal to the
 //   reconciled amount (signed: a buy's payment negative, a sale's proceeds positive); other entries become a deposit or
@@ -29,8 +33,10 @@
 //   still a loss scenario). Without a split the flow must equal the settlement exactly.
 // - R9 Funding: only a buy settled with a named route (USD or KRW) releases its funding commitment's filled part, up to
 //   the amount (FundingLedger.releaseFor); "route unknown" releases nothing and the commitment stays for capacity.
-//   When every part of the order is reconciled with named routes (or a closing rounding record), the rest of the filled
-//   part is released and the difference from the funding estimate recorded as an alignment.
+//   When every part of the order is reconciled with named routes (or a closing rounding record), a rounding difference
+//   of the funding estimate (at most 1 cent) is released with it as an alignment, shown in the preview; a larger excess
+//   stays committed and is reported. A release relying on a cited KIS row is suspended for the citation's shortfall
+//   while that row is under review (FundingLedger.suspendedCents), so the uncertain amount is not spendable.
 // - R10 The accounting effect E is recorded (obligation change less the settlement cash reclassified from a tracked
 //   flow) for step 2b.4 and stage 3; nothing here changes the loss baseline or returns.
 // K rows stay supporting evidence (A1 off): corroborate() records standby coverage from them only when U6 is verified
@@ -109,20 +115,34 @@ class Reconciliation{
       else{const s=r.split.filter(e=>e.kind==='settlement');if(s.length!==1||s[0].cents!==signed)throw fail('FLOW_SETTLEMENT_MISMATCH',{settlementCents:signed});
         const sum=r.split.reduce((n,e)=>n+e.cents,0);if(sum!==total)throw fail('FLOW_SPLIT_MISMATCH',{flowCents:total,splitCents:sum,differenceCents:total-sum});split=r.split;}}
     return {st,piece,flow,split};}
-  // A preview (R3): the reconciliation applied and rolled back.
-  preview(req,ctx={}){const r=this.fields(req);const sv=this.stateVersion(r.account);const rec=this.dry(()=>this.apply(r,sv,ctx));return {kind:'preview',request:Reconciliation.content(r),stateVersion:sv.id,before:rec.preview.before,after:rec.preview.after,effects:rec.effects};}
-  // Confirms a previewed request (R3-R5). req.stateVersion: the preview's.
-  confirm(req,ctx={}){const r=this.fields(req);if(typeof req.stateVersion!=='string')throw fail('STATE_VERSION_REQUIRED');const contentHash=hash({...Reconciliation.content(r),stateVersion:req.stateVersion});
-    try{return this.ledger.tx(()=>{const prior=this.repeat(r,contentHash);if(prior)return prior;const sv=this.stateVersion(r.account);if(sv.id!==req.stateVersion)throw fail('STATE_CHANGED');return this.apply(r,sv,ctx,contentHash);});}
+  // A preview (R3): the reconciliation applied and rolled back. Its binding is a hash of the normalized request, the
+  // state version, the inputs it was computed with (balances, FX, capacity inputs) and the values and effects it shows,
+  // the funding alignment included. A confirmation carries it back; the confirming transaction computes it again and
+  // applies only if it is the same (review of 8b929ea, P1: a $40 preview confirmed $100, and changed capacity inputs
+  // were accepted).
+  preview(req,ctx={}){const r=this.fields(req);const sv=this.stateVersion(r.account);const rec=this.dry(()=>this.apply(r,sv,ctx));return Reconciliation.shown(r,sv,rec);}
+  static shown(r,sv,rec){const f=rec.effects.funding;return {kind:'preview',request:Reconciliation.content(r),stateVersion:sv.id,binding:rec.contentHash,before:rec.preview.before,after:rec.preview.after,effects:rec.effects,
+    ...(f?{funding:{releasedCents:f.cents,alignmentCents:f.alignmentCents??0,unreleasedEstimateCents:f.unreleasedCents??0,reason:f.reason??null}}:{})};}
+  // Confirms a previewed request (R3-R5): req.stateVersion and req.binding are the preview's; ctx must be the inputs the
+  // preview was computed with.
+  confirm(req,ctx={}){const r=this.fields(req);const b=Reconciliation.bound(req);
+    try{return this.ledger.tx(()=>{const prior=this.repeat(r,b.binding);if(prior)return prior;const sv=this.stateVersion(r.account);if(sv.id!==b.stateVersion)throw fail('STATE_CHANGED');return this.apply(r,sv,ctx,b.binding);});}
     catch(e){if(e.code==='STATE_CHANGED')try{e.preview=this.preview(req,ctx);}catch(p){e.previewError=p.code??p.message;}throw e;}}
+  static bound(req){if(typeof req.stateVersion!=='string')throw fail('STATE_VERSION_REQUIRED');if(typeof req.binding!=='string')throw fail('PREVIEW_REQUIRED');return {stateVersion:req.stateVersion,binding:req.binding};}
   static content(r){const {requestId,...rest}=r;return rest;}
-  repeat(r,contentHash){const byId=this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE requestId=?').get(r.requestId);
-    if(byId){const p=JSON.parse(byId.payload);if(p.contentHash!==contentHash||p.account!==r.account)throw fail('REQUEST_ID_REUSED');return {...p,repeat:true};}
-    const same=this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE account=? AND contentHash=?').get(r.account,contentHash);return same?{...JSON.parse(same.payload),repeat:true}:null;}
+  // The binding (R3): everything the preview showed and was computed from; generated ids and times are left out.
+  static binding(r,sv,ctx,{before,after,effects}){return hash({request:Reconciliation.content(r),stateVersion:sv.id,context:{balances:ctx.balances??null,inputs:ctx.inputs??null},before,after,effects:Reconciliation.boundEffects(effects)});}
+  static boundEffects(e){const fl=e.flows;return e.reversedCents!=null?{reversedCents:e.reversedCents,promoted:e.promoted.map(p=>[p.evidenceId,p.cents]),reopenedCents:e.reopenedCents,fundingReinstatedCents:e.fundingReinstatedCents,flows:fl?{restoredCents:fl.restoredCents,removed:fl.removed.length,kept:fl.kept.map(k=>[k.cents,k.by])}:null,citation:Boolean(e.citationWithdrawn),effect:e.effect}
+    :{leftCents:e.leftCents,closed:e.closed,citation:Boolean(e.citationId),funding:{cents:e.funding.cents,alignmentCents:e.funding.alignmentCents??0,unreleasedCents:e.funding.unreleasedCents??0},flows:fl?{settlementCents:fl.settlementCents,added:fl.added.map(a=>[a.kind,a.cents])}:null,effect:e.effect};}
+  // Repeats (R5): the same request id, or the same binding, with the same request returns the record.
+  repeat(r,binding){const requestHash=hash(Reconciliation.content(r));const byId=this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE requestId=?').get(r.requestId);
+    if(byId){const p=JSON.parse(byId.payload);if(p.contentHash!==binding||p.requestHash!==requestHash||p.account!==r.account)throw fail('REQUEST_ID_REUSED');return {...p,repeat:true};}
+    const same=this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE account=? AND contentHash=?').get(r.account,binding);if(!same)return null;
+    const p=JSON.parse(same.payload);if(p.requestHash!==requestHash)throw fail('PREVIEW_MISMATCH');return {...p,repeat:true};}
   dry(fn){const own=!this.db.isTransaction;this.db.exec(own?'BEGIN IMMEDIATE':'SAVEPOINT reconciliation_preview');
     try{return fn();}finally{if(own)this.db.exec('ROLLBACK');else{this.db.exec('ROLLBACK TO reconciliation_preview');this.db.exec('RELEASE reconciliation_preview');}}}
   // R4: inside the caller's transaction.
-  apply(r,sv,ctx={},contentHash=hash({...Reconciliation.content(r),stateVersion:sv.id})){
+  apply(r,sv,ctx={},expected=null){
     const {st,piece:f,flow,split}=this.against(r),{account}=r,ledger=this.ledger,now=this.clock(),id='M'+hash([account,r.requestId]);
     const before=this.values(account,ctx);
     const snapshot=JSON.parse(JSON.stringify(f)),seen=st.seen?.[f.id]??null,related=(st.evidence??[]).filter(e=>JSON.stringify(e).includes(JSON.stringify(f.id))).slice(-10);
@@ -138,7 +158,7 @@ class Reconciliation{
     if(f.side!=='Buy')funding={cents:0,reason:'a sale commits no funding'};
     else if(!named&&r.explanation==='settled')funding={cents:0,reason:'route unknown: nothing is released; the commitment stays for capacity until the route is established'};
     else{const whole=left<=0&&!st.open.some(p=>p.id===f.id)&&this.wholeByNamedRoutes(account,f.id,st,r);
-      funding=named||whole?this.funding.releaseFor({orderId:f.id,cents:named?r.cents:0,route:named?r.route:'rounding',reconciliationId:id,whole}):{cents:0,reason:'rounding: no payment, nothing released'};}
+      funding=named||whole?this.funding.releaseFor({orderId:f.id,cents:r.cents,route:named?r.route:'rounding',reconciliationId:id,whole,citationId}):{cents:0,reason:'rounding: no payment, nothing released'};}
     // R8: the flow reclassified, exactly.
     let flows=null;
     if(flow){this.performance.removeFlow(account,flow.id);const added=[];
@@ -150,9 +170,10 @@ class Reconciliation{
     const reclassified=flows?Math.abs(flows.settlementCents):0;
     const effect={side:f.side,obligationCents:r.cents,reclassifiedCashCents:reclassified,correctionCents:r.cents-reclassified,basis:r.explanation==='rounding'?'rounding':reclassified?'settlement in a tracked pair':f.pretracking?'basis change':'correction'};
     const after=this.values(account,ctx);
-    const payload={id,kind:'reconciliation',account,requestId:r.requestId,contentHash,pieceId:f.pid,orderId:f.id,side:f.side,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,note:r.note,settledOn:r.settledOn,
-      confirmedAt:now,confirmedBy:this.who,stateVersion:sv,evidence:{piece:snapshot,seen,related,standby:ledger.standbyFor(f.pid),citation:r.citation,flow:flow??null},
-      effects:{evidenceId:id,allocationId,leftCents:Math.max(0,left),closed:left<=0,citationId,funding,flows,effect},preview:{before,after}};
+    const effects={evidenceId:id,allocationId,leftCents:Math.max(0,left),closed:left<=0,citationId,funding,flows,effect},contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
+    if(expected!=null&&contentHash!==expected)throw fail('PREVIEW_MISMATCH');
+    const payload={id,kind:'reconciliation',account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:f.pid,orderId:f.id,side:f.side,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,note:r.note,settledOn:r.settledOn,flowId:r.flowId,
+      confirmedAt:now,confirmedBy:this.who,stateVersion:sv,context:{balances:ctx.balances??null,inputs:ctx.inputs??null},evidence:{piece:snapshot,seen,related,standby:ledger.standbyFor(f.pid),citation:r.citation,flow:flow??null},effects,preview:{before,after}};
     this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,contentHash,'reconciliation',null,now,JSON.stringify(payload));
     ledger.event(account,'reconciliation',{id,pieceId:f.pid,orderId:f.id,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference});
     return payload;}
@@ -166,11 +187,12 @@ class Reconciliation{
     const reconciliationId=text(req.reconciliationId,100);if(!reconciliationId)throw fail('RECONCILIATION_REQUIRED');const note=text(req.note,500);if(!note)throw fail('NOTE_REQUIRED');const kisReference=req.kisReference==null?null:text(req.kisReference,120);
     return {requestId,account,reconciliationId,note,kisReference};}
   target(r){const t=this.record(r.reconciliationId);if(!t||t.account!==r.account)throw fail('RECONCILIATION_UNKNOWN');if(t.kind==='reversal')throw fail('REVERSAL_OF_REVERSAL');const done=this.reversalOf(t.id);if(done)throw fail('ALREADY_REVERSED',{reversalId:done.id});return t;}
-  previewReversal(req,ctx={}){const r=this.reversalFields(req);const sv=this.stateVersion(r.account);const rec=this.dry(()=>this.applyReversal(r,sv,ctx));return {kind:'preview',request:Reconciliation.content(r),stateVersion:sv.id,before:rec.preview.before,after:rec.preview.after,effects:rec.effects};}
-  reverse(req,ctx={}){const r=this.reversalFields(req);if(typeof req.stateVersion!=='string')throw fail('STATE_VERSION_REQUIRED');const contentHash=hash({...Reconciliation.content(r),stateVersion:req.stateVersion});
-    try{return this.ledger.tx(()=>{const prior=this.repeat(r,contentHash);if(prior)return prior;const sv=this.stateVersion(r.account);if(sv.id!==req.stateVersion)throw fail('STATE_CHANGED');return this.applyReversal(r,sv,ctx,contentHash);});}
+  previewReversal(req,ctx={}){const r=this.reversalFields(req);const sv=this.stateVersion(r.account);const rec=this.dry(()=>this.applyReversal(r,sv,ctx));return Reconciliation.shown(r,sv,rec);}
+  // Bound like a confirmation (R3, R7).
+  reverse(req,ctx={}){const r=this.reversalFields(req);const b=Reconciliation.bound(req);
+    try{return this.ledger.tx(()=>{const prior=this.repeat(r,b.binding);if(prior)return prior;const sv=this.stateVersion(r.account);if(sv.id!==b.stateVersion)throw fail('STATE_CHANGED');return this.applyReversal(r,sv,ctx,b.binding);});}
     catch(e){if(e.code==='STATE_CHANGED')try{e.preview=this.previewReversal(req,ctx);}catch(p){e.previewError=p.code??p.message;}throw e;}}
-  applyReversal(r,sv,ctx={},contentHash=hash({...Reconciliation.content(r),stateVersion:sv.id})){
+  applyReversal(r,sv,ctx={},expected=null){
     const t=this.target(r),{account}=r,ledger=this.ledger,now=this.clock(),id='V'+hash([account,r.requestId]);
     const before=this.values(account,ctx);
     // Its allocations reversed (a part a KIS record already reduced is not reversed twice) and its evidence voided.
@@ -186,14 +208,24 @@ class Reconciliation{
       if(f)f.usd=(cents(f.usd)+reopen)/100;else{st.open.push({...t.evidence.piece,usd:reopen/100,reopened:{by:id,at:now}});if(t.evidence.seen&&!st.seen?.[t.orderId]){st.seen??={};st.seen[t.orderId]=t.evidence.seen;}}
       this.inFlight.save(account,st);ledger.event(account,'piece-reopened',{pieceId:t.pieceId,orderId:t.orderId,cents:reopen,by:id});}
     const reinstated=this.funding.reinstate({reconciliationId:t.id,by:id});
-    let flows=null;if(t.effects.flows){const fl=t.effects.flows,present=new Set(this.performance.flows(account).map(x=>x.id)),removed=[],gone=[];
-      for(const a of fl.added)if(present.has(a.id)){this.performance.removeFlow(account,a.id);removed.push(a.id);}else gone.push(a.id);
-      if(!present.has(fl.original.id))this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(fl.original.id,account,JSON.stringify(fl.original));
-      flows={restored:fl.original.id,removed,alreadyGone:gone};ledger.event(account,'flow-restored',{reversalId:id,flowId:fl.original.id,removed,alreadyGone:gone});}
+    // The flow it reclassified comes back only for what is still this record's (review of 8b929ea, P1: reversing a split
+    // restored all of the original although a later record had reconciled its unexplained part): the reversed settlement
+    // entry, plus each entry it added that is still a flow (removed again). An added entry a later record reconciled, or
+    // that was removed since, keeps that later transformation and is not restored.
+    let flows=null;if(t.effects.flows){const fl=t.effects.flows,present=new Map(this.performance.flows(account).map(x=>[x.id,x])),removed=[],kept=[];let restore=fl.settlementCents;
+      const later=this.active(account).filter(x=>x.id!==t.id);
+      for(const a of fl.added){const x=present.get(a.id);if(x){this.performance.removeFlow(account,a.id);removed.push(a.id);restore+=cents(x.amount);continue;}
+        const by=later.find(x=>x.flowId===a.id);kept.push({id:a.id,cents:a.cents,by:by?.id??null,reason:by?'reconciled by a later record':'removed since'});}
+      const whole=restore===cents(fl.original.amount)&&!kept.length;
+      if(restore!==0&&!present.has(fl.original.id)){const back=whole?fl.original:{...fl.original,amount:restore/100,note:`${fl.original.note} (restored in part by reversal ${id}: ${kept.map(k=>`${(k.cents/100).toFixed(2)} ${k.reason}`).join('; ')})`.slice(0,200)};
+        this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(fl.original.id,account,JSON.stringify(back));}
+      flows={restored:fl.original.id,restoredCents:restore,whole,removed,kept};ledger.event(account,'flow-restored',{reversalId:id,flowId:fl.original.id,restoredCents:restore,removed,kept});}
     if(t.effects.citationId)ledger.reverseCitation(account,t.effects.citationId,id);
     const after=this.values(account,ctx);
-    const payload={id,kind:'reversal',target:t.id,account,requestId:r.requestId,contentHash,pieceId:t.pieceId,orderId:t.orderId,side:t.side,note:r.note,kisReference:r.kisReference,confirmedAt:now,confirmedBy:this.who,stateVersion:sv,
-      effects:{reversedCents,reversed,promoted,reopenedCents:reopen,fundingReinstatedCents:reinstated,flows,citationWithdrawn:t.effects.citationId??null,effect:{side:t.side,obligationCents:-reopen,promotedCents:reversedCents-reopen}},preview:{before,after}};
+    const effects={reversedCents,reversed,promoted,reopenedCents:reopen,fundingReinstatedCents:reinstated,flows,citationWithdrawn:t.effects.citationId??null,effect:{side:t.side,obligationCents:-reopen,promotedCents:reversedCents-reopen}},contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
+    if(expected!=null&&expected!==contentHash)throw fail('PREVIEW_MISMATCH');
+    const payload={id,kind:'reversal',target:t.id,account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:t.pieceId,orderId:t.orderId,side:t.side,note:r.note,kisReference:r.kisReference,confirmedAt:now,confirmedBy:this.who,stateVersion:sv,
+      context:{balances:ctx.balances??null,inputs:ctx.inputs??null},effects,preview:{before,after}};
     this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,contentHash,'reversal',t.id,now,JSON.stringify(payload));
     ledger.event(account,'reconciliation-reversed',{id,target:t.id,pieceId:t.pieceId,reversedCents,reopenedCents:reopen});
     return payload;}

@@ -20,8 +20,8 @@ function world({regime=null,u6=false,db=new DatabaseSync(':memory:')}={}){let t=
     open:(...orders)=>{w.see({cash:500});for(const o of orders)funding.track(o);w.see({cash:500},orders);return orders;},
     req:(extra={})=>({requestId:'r'+Math.random().toString(36).slice(2),account:'a',pieceId:w.pid(),cents:10000,explanation:'settled',route:'USD',kisReference:'KIS 2026-11-06 settlement 0001',note:'checked in the KIS app',...extra}),
     // Preview, then confirm what was previewed.
-    reconcile:(extra={},ctx={})=>{const q=w.req(extra);const p=rec.preview(q,ctx);return {preview:p,record:rec.confirm({...q,stateVersion:p.stateVersion},ctx),request:q};},
-    reverse:(id,extra={})=>{const q={requestId:'v'+Math.random().toString(36).slice(2),account:'a',reconciliationId:id,note:'entered against the wrong order',...extra};const p=rec.previewReversal(q);return rec.reverse({...q,stateVersion:p.stateVersion});},
+    reconcile:(extra={},ctx={})=>{const q=w.req(extra);const p=rec.preview(q,ctx);return {preview:p,record:rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},ctx),request:q};},
+    reverse:(id,extra={})=>{const q={requestId:'v'+Math.random().toString(36).slice(2),account:'a',reconciliationId:id,note:'entered against the wrong order',...extra};const p=rec.previewReversal(q);return rec.reverse({...q,stateVersion:p.stateVersion,binding:p.binding});},
     count:table=>db.prepare(`SELECT count(*) n FROM ${table}`).get().n,allocatedTo:pid=>f.evidence.allocatedToPiece(pid)};
   return w;}
 const code=(fn,c)=>assert.throws(fn,e=>e.code===c||e.message===c,c);
@@ -45,25 +45,25 @@ test('T13: the preview equals the effect applied; a reading between preview and 
   assert.equal(p.before.tracker.buysUSD,100);assert.equal(p.after.tracker.buysUSD,40);assert.equal(p.before.funding.USD,100);assert.equal(p.after.funding.USD,40);
   assert.equal(p.before.valuation.US.low,400);assert.equal(p.after.valuation.US.low,460);assert.equal(w.count('settlement_reconciliations'),0,'a preview writes nothing');
   w.see({cash:500},[order('A')]);
-  assert.throws(()=>w.rec.confirm({...q,stateVersion:p.stateVersion}),e=>e.code==='STATE_CHANGED'&&e.preview&&e.preview.stateVersion!==p.stateVersion);
-  assert.equal(w.count('settlement_reconciliations'),0);let fresh;try{w.rec.confirm({...q,stateVersion:p.stateVersion});}catch(e){fresh=e.preview;}
-  const ctx={inputs:INPUTS};const p2=w.rec.preview(q,ctx);assert.equal(p2.stateVersion,fresh.stateVersion);const r=w.rec.confirm({...q,stateVersion:p2.stateVersion},ctx);
+  assert.throws(()=>w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding}),e=>e.code==='STATE_CHANGED'&&e.preview&&e.preview.stateVersion!==p.stateVersion);
+  assert.equal(w.count('settlement_reconciliations'),0);let fresh;try{w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding});}catch(e){fresh=e.preview;}
+  const ctx={inputs:INPUTS};const p2=w.rec.preview(q,ctx);assert.equal(p2.stateVersion,fresh.stateVersion);const r=w.rec.confirm({...q,stateVersion:p2.stateVersion,binding:p2.binding},ctx);
   assert.deepEqual(r.preview.after,p2.after,'the record keeps the preview');assert.deepEqual(w.rec.values('a',ctx),p2.after,'the state after equals the preview');
   assert.equal(r.confirmedBy.user,'tester');assert.equal(r.kisReference,'KIS 2026-11-06 settlement 0001');assert.equal(r.evidence.piece.usd,100);
 });
 test('T15: a repeated confirmation (same request id, or same content previewed on the same state) has one effect; a reused id for other content is refused',()=>{
-  const w=world();w.open(order('A'));const q=w.req({cents:3000});const p=w.rec.preview(q);const a=w.rec.confirm({...q,stateVersion:p.stateVersion});
-  const events=w.count('settlement_events');const again=w.rec.confirm({...q,stateVersion:p.stateVersion});assert.equal(again.repeat,true);assert.equal(again.id,a.id);
-  const other=w.rec.confirm({...q,requestId:'another',stateVersion:p.stateVersion});assert.equal(other.repeat,true);assert.equal(other.id,a.id,'same content hash, new request id');
+  const w=world();w.open(order('A'));const q=w.req({cents:3000});const p=w.rec.preview(q);const a=w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding});
+  const events=w.count('settlement_events');const again=w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding});assert.equal(again.repeat,true);assert.equal(again.id,a.id);
+  const other=w.rec.confirm({...q,requestId:'another',stateVersion:p.stateVersion,binding:p.binding});assert.equal(other.repeat,true);assert.equal(other.id,a.id,'same content hash, new request id');
   assert.equal(w.count('settlement_events'),events);assert.equal(w.current().buysUSD,70,'one effect');
-  code(()=>w.rec.confirm({...q,cents:1000,stateVersion:p.stateVersion}),'REQUEST_ID_REUSED');
+  code(()=>w.rec.confirm({...q,cents:1000,stateVersion:p.stateVersion,binding:p.binding}),'REQUEST_ID_REUSED');
   // A second, deliberate $30 (a new preview, so a new state version) is a record of its own.
   w.reconcile({cents:3000});assert.equal(w.current().buysUSD,40);assert.equal(w.rec.active('a').length,2);
 });
 test('T16: a restart between preview and confirmation, and after it: the same values from the records',()=>{
   const w=world();w.open(order('A'));const q=w.req({cents:2500});const p=w.rec.preview(q,{inputs:INPUTS});
   w.restart();assert.equal(w.rec.preview(q,{inputs:INPUTS}).stateVersion,p.stateVersion,'the state version is the stored state');
-  w.rec.confirm({...q,stateVersion:p.stateVersion},{inputs:INPUTS});const after=w.rec.values('a',{inputs:INPUTS});
+  w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},{inputs:INPUTS});const after=w.rec.values('a',{inputs:INPUTS});
   w.restart();assert.deepEqual(w.rec.values('a',{inputs:INPUTS}),after);assert.deepEqual(after,p.after);assert.equal(w.current().buysUSD,75);
 });
 test('T2 (v3): a K row is shown, not used; reconciled with route USD, the obligation resolves and capacity rises by that amount only',()=>{
@@ -160,7 +160,7 @@ test('R1: rounding closes only a remainder under $1, exactly, and releases fundi
 test('R4 atomicity: a failure inside the apply transaction leaves nothing written',()=>{
   const w=world();w.open(order('A'));w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:50,grossUSD:50})]);const g=w.ledger.kGroups('a')[0];
   const before=['settlement_events','settlement_allocations','settlement_evidence','settlement_reconciliations','settlement_citations','funding_releases'].map(w.count);const state=JSON.stringify(w.current());
-  const q=w.req({citation:{groupId:g.id,version:1}});code(()=>w.rec.preview(q),'CITATION_EXCEEDS_ROW');const p=w.rec.stateVersion('a').id;code(()=>w.rec.confirm({...q,stateVersion:p}),'CITATION_EXCEEDS_ROW');
+  const q=w.req({citation:{groupId:g.id,version:1}});code(()=>w.rec.preview(q),'CITATION_EXCEEDS_ROW');const p=w.rec.stateVersion('a').id;code(()=>w.rec.confirm({...q,stateVersion:p,binding:"unused: fails before the binding check"}),'CITATION_EXCEEDS_ROW');
   assert.deepEqual(['settlement_events','settlement_allocations','settlement_evidence','settlement_reconciliations','settlement_citations','funding_releases'].map(w.count),before);assert.equal(JSON.stringify(w.current()),state);
 });
 test('R4/R7: records and funding releases are append-only; a reversed record\'s evidence cannot be allocated again',()=>{
@@ -208,4 +208,64 @@ test('R9: a release never exceeds the commitment\'s filled part, and a reversal 
   const w=world();const A=order('A');w.see({cash:500});w.funding.track(order('A',{fillPrice:90,limitPrice:90,costEstimate:{netCash:-90},resultCosts:{netCash:-90}}));w.see({cash:500},[A]);
   const {record}=w.reconcile({cents:9500});assert.equal(record.effects.funding.cents,9000);assert.equal(w.funding.releasedCents('A'),9000);assert.equal(w.funding.commitments('a').usd,0);
   w.reverse(record.id);assert.equal(w.funding.releasedCents('A'),0);assert.equal(w.funding.commitments('a').usd,90);
+});
+test('R3 (review of 8b929ea, P1): a confirmation is bound to the previewed request and inputs; so is a reversal',()=>{
+  const w=world();w.open(order('A'));const ctx={inputs:INPUTS,balances:{us:{cash:500,timestamp:new Date(w.clock()).toISOString()},fx:{usdKRW:1300}}};
+  const q=w.req({cents:4000}),p=w.rec.preview(q,ctx);const before=['settlement_events','settlement_reconciliations','funding_releases'].map(w.count);
+  code(()=>w.rec.confirm({...q,cents:10000,stateVersion:p.stateVersion,binding:p.binding},ctx),'PREVIEW_MISMATCH');
+  code(()=>w.rec.confirm({...q,route:'KRW',stateVersion:p.stateVersion,binding:p.binding},ctx),'PREVIEW_MISMATCH');
+  code(()=>w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},{...ctx,inputs:{...INPUTS,kCash:0}}),'PREVIEW_MISMATCH');
+  code(()=>w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},{...ctx,balances:{...ctx.balances,fx:{usdKRW:1400}}}),'PREVIEW_MISMATCH');
+  code(()=>w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},{}),'PREVIEW_MISMATCH');
+  // The same figures read later are other inputs than the preview showed.
+  code(()=>w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},{...ctx,balances:{...ctx.balances,us:{...ctx.balances.us,timestamp:new Date(w.clock()+60000).toISOString()}}}),'PREVIEW_MISMATCH');
+  code(()=>w.rec.confirm({...q,stateVersion:p.stateVersion}),'PREVIEW_REQUIRED');
+  assert.deepEqual(['settlement_events','settlement_reconciliations','funding_releases'].map(w.count),before,'nothing applied');assert.equal(w.current().buysUSD,100);
+  const r=w.rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding},ctx);assert.equal(r.cents,4000);assert.deepEqual(r.context.inputs,INPUTS);
+  // Another request id with another amount cannot ride on that binding.
+  code(()=>w.rec.confirm({...q,requestId:'other',cents:6000,stateVersion:p.stateVersion,binding:p.binding},ctx),'PREVIEW_MISMATCH');
+  const v={requestId:'rv',account:'a',reconciliationId:r.id,note:'wrong'},pv=w.rec.previewReversal(v,ctx);
+  code(()=>w.rec.reverse({...v,stateVersion:pv.stateVersion,binding:pv.binding},{inputs:{...INPUTS,uCash:0}}),'PREVIEW_MISMATCH');
+  code(()=>w.rec.reverse({...v,reconciliationId:'M-other',stateVersion:pv.stateVersion,binding:pv.binding},ctx),'RECONCILIATION_UNKNOWN');
+  assert.equal(w.rec.reverse({...v,stateVersion:pv.stateVersion,binding:pv.binding},ctx).target,r.id);
+});
+test('R9 (review of 8b929ea, P1): coverage under review restores the funding restriction, in part or whole, across restarts, until the row holds again',()=>{
+  const w=world();const [A]=w.open(order('A'));w.ledger.importK(SCOPE,W,[k()]);const g=w.ledger.links('a',[A]).get('A');w.reconcile({citation:{groupId:g.groupId,version:g.version}});
+  assert.equal(w.funding.commitments('a').usd,0);
+  // The cited row disappears from a later complete window: $100 unresolved in valuation, $100 committed again.
+  w.ledger.importK(SCOPE,W,[]);assert.equal(w.current().unresolved.buysUSD,100);assert.equal(w.funding.commitments('a').usd,100);assert.equal(w.funding.summary('a').rows[0].underReviewUSD,100);
+  const cap=w.funding.capacity({account:'a',market:'US',inputs:INPUTS});w.restart();assert.equal(w.funding.commitments('a').usd,100,'after a restart');assert.equal(w.funding.capacity({account:'a',market:'US',inputs:INPUTS}),cap);
+  // The row is seen again: coverage holds, the release counts again.
+  w.ledger.importK(SCOPE,W,[k()]);assert.equal(w.current().unresolved.buysUSD,0);assert.equal(w.funding.commitments('a').usd,0);
+  // Corrected lower to $97: the $3 shortfall alone is committed again.
+  w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);assert.equal(w.current().unresolved.buysUSD,3);assert.equal(w.funding.commitments('a').usd,3);
+  // A reversal while under review: the release is reinstated once, not also suspended (no double count).
+  const x=world();const [B]=x.open(order('A'));x.ledger.importK(SCOPE,W,[k()]);const h=x.ledger.links('a',[B]).get('A');const {record}=x.reconcile({citation:{groupId:h.groupId,version:h.version}});
+  x.ledger.importK(SCOPE,W,[]);assert.equal(x.funding.commitments('a').usd,100);x.reverse(record.id);assert.equal(x.funding.commitments('a').usd,100);assert.equal(x.current().buysUSD,100);
+  // A release with no citation is not affected by rows under review.
+  const y=world();y.open(order('A'));y.reconcile();y.ledger.importK(SCOPE,W,[k()]);y.ledger.importK(SCOPE,W,[]);assert.equal(y.funding.commitments('a').usd,0);
+});
+test('R8/R7 (review of 8b929ea, P1): reversing a split keeps a later reconciliation of its unexplained part; only the reversed settlement returns',()=>{
+  const B=()=>order('B',{ticker:'OTHER',fillPrice:50,limitPrice:50,costEstimate:{netCash:-50},resultCosts:{netCash:-50}});
+  const w=world();w.open(order('A'),B());const flow=w.perf.addFlow('a',{day:D,market:'US',amount:-150,detected:true,note:'Detected: U.S. cash fell'});
+  const a=w.reconcile({flowId:flow.id,split:[{kind:'settlement',cents:-10000},{kind:'unexplained',cents:-5000}]}).record;const residual=w.perf.flows('a')[0];assert.equal(residual.amount,-50);
+  const b=w.reconcile({pieceId:w.pid('B'),cents:5000,flowId:residual.id}).record;assert.deepEqual(w.perf.flows('a'),[]);
+  const v=w.reverse(a.id);assert.ok(w.rec.active('a').some(r=>r.id===b.id));
+  assert.deepEqual(w.perf.flows('a').map(f=>[f.id,f.amount,Boolean(f.detected)]),[[flow.id,-100,true]],'only the reversed $100');assert.equal(v.effects.flows.kept[0].by,b.id);
+  // Reversing the later record too brings back its $50: -$150 in all, as detected.
+  w.reverse(b.id);assert.equal(w.perf.flows('a').reduce((n,f)=>n+Math.round(f.amount*100),0),-15000);
+  // In the other order the original returns whole.
+  const x=world();x.open(order('A'),B());const f2=x.perf.addFlow('a',{day:D,market:'US',amount:-150,detected:true,note:'Detected'});
+  const a2=x.reconcile({flowId:f2.id,split:[{kind:'settlement',cents:-10000},{kind:'unexplained',cents:-5000}]}).record;const b2=x.reconcile({pieceId:x.pid('B'),cents:5000,flowId:x.perf.flows('a')[0].id}).record;
+  x.reverse(b2.id);x.reverse(a2.id);assert.deepEqual(x.perf.flows('a'),[f2]);
+  // An added part the user removed since is not brought back.
+  const y=world();y.open(order('A'));const f3=y.perf.addFlow('a',{day:D,market:'US',amount:-150,detected:true,note:'Detected'});
+  const a3=y.reconcile({flowId:f3.id,split:[{kind:'settlement',cents:-10000},{kind:'unexplained',cents:-5000}]}).record;y.perf.removeFlow('a',y.perf.flows('a')[0].id);
+  const v3=y.reverse(a3.id);assert.equal(y.perf.flows('a')[0].amount,-100);assert.equal(v3.effects.flows.kept[0].reason,'removed since');
+});
+test('R9 (review of 8b929ea): the alignment is shown in the preview; an estimate above the reconciled amount by more than a cent stays committed',()=>{
+  const w=world();w.open(order('A',{costEstimate:{netCash:-100.01}}));const p=w.rec.preview(w.req());assert.deepEqual([p.funding.releasedCents,p.funding.alignmentCents,p.funding.unreleasedEstimateCents],[10001,1,0]);
+  const x=world();x.open(order('A',{costEstimate:{netCash:-101}}));assert.equal(x.funding.commitments('a').usd,101);const q=x.req(),px=x.rec.preview(q);
+  assert.deepEqual([px.funding.releasedCents,px.funding.alignmentCents,px.funding.unreleasedEstimateCents],[10000,0,100]);assert.match(px.funding.reason,/exceeds the reconciled amount by \$1\.00/);
+  x.rec.confirm({...q,stateVersion:px.stateVersion,binding:px.binding});assert.equal(x.funding.commitments('a').usd,1,'the $1 excess stays committed');
 });
