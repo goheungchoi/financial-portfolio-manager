@@ -96,9 +96,11 @@ test('U.S. fills in flight are decided by evidence: the RDDT gap, cash already m
   // A sale filled but not yet in pending proceeds; then KIS shows the proceeds.
   f=fresh();f.observe('a',{us:{cash:10},orders:[],fx:1335});assert.equal(f.observe('a',{us:{cash:10},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:279.01}}],fx:1335}).sellsUSD,279.01);
   assert.equal(f.observe('a',{us:{cash:10,pendingSaleProceeds:279.01},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:279.01}}],fx:1335}).sellsUSD,0);
-  // Fills already listed at the first reading are not taken as new; a fill with no signal is dropped after MAX_DAYS, said so.
-  f=fresh();assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).buysUSD,0,'tracking starts with this reading');
+  // At the first reading a fill past its settlement date is history; a recent one stays in flight, unresolved (independent
+  // accounting review of 162d7c9). A fill with no signal for MAX_DAYS is overdue, not dropped.
+  const old={...buy(),createdAt:t-10*86400000};f=fresh();assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[old],fx:1335}).buysUSD,0,'settled long ago');
+  f=fresh();const first=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[{...buy(),createdAt:t-3600000}],fx:1335});assert.equal(first.buysUSD,97.66);assert.equal(first.unresolved.buysUSD,97.66);
   f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});
-  t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});assert.equal(late.buysUSD,0);assert.match(late.notes[0],/treated as settled after 7 days/);
-  assert.deepEqual(f.current('a'),{buysUSD:0,sellsUSD:0,unresolved:{buysUSD:0,sellsUSD:0},open:[]});
+  t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});assert.equal(late.buysUSD,97.66,'still owed');assert.equal(late.overdue.buysUSD,97.66);assert.match(late.notes[0],/no settlement evidence after 7 days/);
+  assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).notes.length,0,'noted once');
 });

@@ -158,8 +158,11 @@ test('the copied-profile build check keeps the saved preference and asserts the 
   for(const s of ["runtime.sessionArmed!==false","runtime.config.enabled!==verifyStart.enabled","runtime.scheduler?.label!=='Paused after restart'","end.intents!==verifyStart.intents||end.orders!==verifyStart.orders"])assert.ok(src.includes(s),s);
   assert.ok(require('node:fs').readFileSync(require.resolve('../scripts/verify-package.cjs'),'utf8').includes("'--verify-profile'"));
 });
-test('finding 1: a cash fall that matched nothing (a withdrawal) does not mark a later fill unresolved',()=>{
-  const x=tracker();x.see({cash:500});x.see({cash:400});const r=x.see({cash:400},[A]);assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,0);
+test('finding 1: a cash fall a reading before a fill is seen may be its payment or a withdrawal: the fill stays in flight, unresolved',()=>{
+  let x=tracker();x.see({cash:500});x.see({cash:400});let r=x.see({cash:400},[A]);assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,100);assert.equal(r.open[0].unresolved.why,'paid before seen');
+  assert.equal(x.see({cash:300},[A]).buysUSD,0,'a withdrawal after all: the fill\'s own payment clears it');
+  // Two readings earlier is not considered: the fill is in flight and not flagged by it.
+  x=tracker();x.see({cash:500});x.see({cash:400});x.see({cash:400});r=x.see({cash:400},[A]);assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,0);
 });
 
 // Fix review of 34474f7: the settlement tracker and the valuation as one contract. With no quote or rate change a
@@ -221,7 +224,7 @@ test('contract: a new fill reflected in cash while the reported total rises keep
   a=account();a.read();a.s.us.holdings.push(share('A',60));a.s.orders=[buy('A',60)];a.read();a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',60),buy('B',100)];a.s.us.cash-=100;krw(a.s,60);
   const two=a.read();assert.deepEqual([two.buysUSD,two.unresolved.buysUSD],[0,0]);assert.deepEqual([a.mark().low,a.mark().exact],[e0,true]);
 });
-test('contract: random purchase lifecycles conserve equity and log every allocation',()=>{
+test('contract: random purchase lifecycles conserve equity and log every allocation',t=>{let leftover=0;
   let seed=11;const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;const pick=a=>a[Math.floor(rnd()*a.length)];
   for(let c=0;c<150;c++){const a=account({usCash:2000});a.read();const e0=a.mark().low;const buys=[];const n=1+Math.floor(rnd()*3);const amounts=[100,150,230].sort(()=>rnd()-0.5);
     for(let i=0;i<n;i++)buys.push({id:'X'+i,usd:amounts[i],mode:pick(['cash','krw','usd']),fill:1+Math.floor(rnd()*4),lag:Math.floor(rnd()*2)});
@@ -229,6 +232,13 @@ test('contract: random purchase lifecycles conserve equity and log every allocat
         if(step===b.fill+b.lag)a.s.orders=[...a.s.orders,buy(b.id,b.usd)];
         if(step===b.fill+3&&b.mode!=='cash'){if(b.mode==='krw'){a.s.kr.cash-=b.usd*1300;a.s.kr.settledCash-=b.usd*1300;krw(a.s,b.usd,-1);}else{a.s.us.cash-=b.usd;a.s.us.unsettled.buyKRW-=b.usd*1300;}}}
       if(rnd()<0.2)a.restart();a.read();const m=a.mark();assert.ok(m.low<=e0+1,`case ${c} step ${step}: ${m.low} > ${e0} ${JSON.stringify(buys)}`);assert.ok(m.high>=m.low-1);assert.ok(!(m.exact&&m.inFlight.unresolved.buysUSD>0),'unresolved is never exact');}
-    a.later(8*DAY);a.read();const end=a.mark();assert.equal(end.low,e0,`case ${c}: settled ${JSON.stringify(buys)}`);assert.equal(end.exact,true);
+    // Time alone changes nothing (independent accounting review of 162d7c9): eight more days with no broker change leave
+    // the value where it was. Everything settles back exactly, unless amounts alone could not tie a fill to its
+    // settlement (a payment seen before its order; a new report netted against another's settlement in one reading):
+    // such a fill stays in flight, unresolved and then overdue, never exact, until reconciled.
+    const settledLow=a.mark().low;a.later(8*DAY);a.read();const end=a.mark();assert.equal(end.low,settledLow,`case ${c}: no change from time alone`);
+    const left=a.state().open;assert.ok(left.every(f=>f.unresolved&&f.overdueAt),`case ${c}: anything left is unresolved and overdue`);if(left.length)leftover++;
+    if(!left.length){assert.equal(end.low,e0,`case ${c}: settled`);assert.equal(end.exact,true);}else{assert.equal(end.exact,false);assert.equal(end.low,e0-Math.round(left.reduce((n,f)=>n+f.usd,0)*1300));}
     const allocated=a.state().evidence.flatMap(e=>e.allocated.map(x=>x.id));assert.equal(new Set(allocated).size,allocated.length,`case ${c}: no fill allocated twice`);}
+  t.diagnostic(`${leftover} of 150 lifecycles leave a fill overdue for reconciliation`);
 });
