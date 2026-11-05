@@ -111,7 +111,11 @@ class LiveEngine {
       if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
       // Both markets' buys share one funding ledger: checked under its lock against fresh balances, and reserved
       // durably before anything is sent. Sales are never held back here.
-      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy')await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance});
+      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy')await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment});
+      // Rechecked immediately before sending, with no wait until the order is marked Submitting: trading may have been
+      // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
+      // been sent, so the reservation is released.
+      {const stopped=this.notSendable(order,policy);if(stopped){this.funding?.release(order,'stopped before sending: '+stopped);throw new Error(stopped);}}
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
@@ -120,6 +124,13 @@ class LiveEngine {
       this.save(order);return order;
     }finally{this.busy=false;}
   }
+  // Why an order may not be sent now, or null: trading stopped, another account connected, expired, or no longer allowed
+  // by the current limits. Synchronous, so nothing can change between this check and the send.
+  notSendable(order,policy){
+    if(!this.enabled||Date.now()>order.expiresAt)return 'DISABLED_OR_EXPIRED';
+    let key=null;try{key=this.identity();}catch{}if(key!==order.accountKey)return 'ACCOUNT_CHANGED';
+    let now=null;try{now=this.policy();}catch{}if(!now||now.day!==policy.day||!now.anyStock&&!now.symbols.includes(order.symbol)||now.maxOrderKRW!=null&&order.notional>now.maxOrderKRW)return 'LIMIT_CHANGED';
+    return null;}
   // Whether open orders' statuses were confirmed with KIS, for reviews: null when nothing is open. After failed checks an
   // order listed as open may already be filled, so its exposure is unknown rather than additional.
   // The day's starting value plus that day's deposits less withdrawals, so a deposit neither hides a loss nor a
@@ -241,7 +252,15 @@ class LiveEngine {
       const remaining=order.quantity-(order.filled??0);if(remaining<1)throw new Error('ORDER_NOT_OPEN');const from=order.currentBrokerOrderId??order.brokerOrderId;
       // A higher price on a buy is checked and reserved first; the marker is written before the request, so a reply
       // lost to a crash or a timeout leaves the revision unconfirmed and the higher price committed.
-      if(!cancel&&this.funding&&order.side==='Buy'&&price>Math.max(order.limitPrice,order.currentPrice??0)){await this.funding.admitRevision({order,market:this.market,price,balance:null});}
+      // A revision raising a buy's price adds exposure: it needs trading enabled and the order's account connected, before
+      // its funds are checked and again after (stage 1 review, P1). Nothing has been sent if it fails, so the order's
+      // commitment is recomputed without it. Sale revisions, lower prices and cancellations reduce exposure and are not
+      // held back here.
+      if(!cancel&&this.funding&&order.side==='Buy'&&price>Math.max(order.limitPrice,order.currentPrice??0)){
+        const stillAllowed=()=>{if(!this.enabled)return 'DISABLED_OR_EXPIRED';let key=null;try{key=this.identity();}catch{}return key===order.accountKey?null:'ACCOUNT_CHANGED';};
+        {const stopped=stillAllowed();if(stopped)throw new Error(stopped);}
+        await this.funding.admitRevision({order,market:this.market,price,balance:null,environment:this.getConnection().snapshot?.environment??null});
+        const stopped=stillAllowed();if(stopped){this.funding.track(order);throw new Error(stopped);}}
       order={...order,pendingRevision:{at:Date.now(),from,cancel,...(cancel?{}:{price})}};this.save(order);
       let result;try{result=await this.broker.request('revise-order',{command:{originalOrderId:from,organization:order.currentOrganization??order.organization??'',symbol:order.symbol,side:order.side,quantity:remaining,price,cancel}});}
       catch(error){if(error.message==='BROKER_REJECTED'){const {pendingRevision:_,...rest}=order;order=rest;this.save(order);}throw error;}
