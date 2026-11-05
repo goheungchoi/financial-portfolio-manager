@@ -88,7 +88,7 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
 class TradingCosts{
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);
     // Rows imported by 1.5.35 took the KRW unit price as USD; they are dropped and imported again (parser 2).
-    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);this.gaps=new (require('./trade-history.cjs').HistoryGaps)(db);this.jobs=new (require('./trade-history.cjs').HistoryJobs)(db);
+    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);this.gaps=new (require('./trade-history.cjs').HistoryGaps)(db);this.jobs=new (require('./trade-history.cjs').HistoryJobs)(db);this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db);
     // Injected by the app: the connected account, Korean non-trading days and the broker's U.S. holdings.
     this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;this.marketRate=()=>null;}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
@@ -140,9 +140,8 @@ class TradingCosts{
   fills(){return this.matchedFills().fills;}
   matchedFills(){
     const {taxpayerAccounts,ownerAccount}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());
-    const nyDate=ms=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
     // The order time gives the U.S. trade date; an order day far from it (old or test records) is used as it is.
-    const tradeDate=o=>{if(Number.isFinite(o.createdAt)&&o.createdAt>0){const d=nyDate(o.createdAt);if(Math.abs(Date.parse(d)-Date.parse(o.day))<=2*86400000)return d;}return o.day;};
+    const tradeDate=require('./settlement-evidence.cjs').usTradeDate;
     const app=this.orders().filter(o=>o.environment==='live'&&accounts.has(ownerAccount(o.accountKey))&&o.market==='US'&&o.filled>0&&o.fillPrice>0&&['Buy','Sell'].includes(o.side)&&/^\d{4}-\d{2}-\d{2}$/.test(o.day??'')&&/^(NASD|NYSE|AMEX):/.test(o.symbol??'')).map(o=>{const r=o.reportedCosts?.status==='reported'?o.reportedCosts:null;
       return {id:o.id,account:ownerAccount(o.accountKey),symbol:o.symbol,side:o.side,quantity:o.filled,price:o.fillPrice,feesUSD:r?r.feesUSD:o.resultCosts?(o.resultCosts.commission+o.resultCosts.transactionTax):null,tradeDate:tradeDate(o),placedAt:o.createdAt,filledBy:o.filledObservedAt??null,settlementDate:r?.settlementDate??null,settlementKRW:r?.settlementKRW??null,exchangeRate:r?.exchangeRate??null,feesSource:r?'Broker':'Estimated',source:'App order'};});
     const broker=this.db.prepare('SELECT payload FROM tax_events').all().map(r=>JSON.parse(r.payload)).filter(e=>accounts.has(e.account));
@@ -183,7 +182,8 @@ class TradingCosts{
   // a later complete read of those dates. Returns the rows added and the ranges left incomplete.
   importHistory(account,ranges,now=Date.now()){
     const {ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);let added=0;const incomplete=[];
-    for(const r of ranges){if(r.complete)added+=this.importTrades(account,r.rows,now,{start:r.start,end:r.end});else incomplete.push({start:r.start,end:r.end,reason:r.reason});this.gaps.record(owner,r,now);}
+    // A complete range's rows are also the settlement evidence ledger's K rows (supporting evidence only, stage 2b.2).
+    for(const r of ranges){if(r.complete){added+=this.importTrades(account,r.rows,now,{start:r.start,end:r.end});this.evidence.importK({account,environment:'live',market:'US'},{start:r.start,end:r.end},r.rows,now);}else incomplete.push({start:r.start,end:r.end,reason:r.reason});this.gaps.record(owner,r,now);}
     return {added,incomplete};
   }
   // Reads and imports an account's trade history as a job (electron/trade-history.cjs readRanges): plan() gives the

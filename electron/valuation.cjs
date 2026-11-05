@@ -153,6 +153,12 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
 // - a fill with no evidence after MAX_DAYS is marked overdue, noted once, and stays in flight, unresolved: time alone
 //   never removes an obligation, raises equity or frees buying capacity (same review, P1: a fill was dropped as settled).
 // The state (open fills, cumulative amounts, the last reading, the evidence) survives restarts (inflight_settlement).
+// Stage 2b.2: each reading is one transaction, and its evidence, allocations and every piece change are also written to
+// the settlement evidence ledger (electron/settlement-evidence.cjs): evidence is identified by its reading pair, side
+// and field, every allocation is checked there against what is left of the evidence and of the piece, and the events
+// are append-only. KIS settled-trade rows linked with certainty to an order are supporting evidence only (A1 off): they
+// resolve nothing, but one more than a cent from what was allocated reopens the difference (a conflict). Coverage that
+// relies on a K row that no longer holds counts as unresolved again (under review).
 // orders: the U.S. engine's.
 const MAX_DAYS=7,PAIR_DAYS=4,TOLERANCE=0.95,BOUND=12,EVIDENCE_KEPT=60,DAY=86400000;
 // When an order filled: when the app saw it filled, or failing that when it was placed.
@@ -161,7 +167,7 @@ const fillTime=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.
 const REPORTED=['reported before seen','reported total moved by an unmatched amount'];
 const cents=v=>Math.round(v*100);
 class InFlight {
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
+  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db,clock);}
   state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[],evidence:[]};}
   // An order's cumulative execution amount in cents and its basis: KIS net cash when known (fees included), otherwise gross.
   static amountOf(o){const net=o.resultCosts?.netCash;return Number.isFinite(net)?{cents:Math.abs(cents(net)),basis:'net'}:{cents:cents(o.filled*o.fillPrice),basis:'gross'};}
@@ -180,12 +186,18 @@ class InFlight {
   static candidates(open,amount){const {sets,over}=InFlight.sets(open,amount);return over?[...open]:[...new Set(sets.flat())];}
   // us: the U.S. balance just read (cash, pendingSaleProceeds, unsettled, timestamp); fx: USD/KRW. Returns {buysUSD,
   // sellsUSD, unresolved: the part of each marked unresolved, open, notes}.
-  observe(account,{us,orders=[],fx=null}){
+  // One transaction per reading: the state, the evidence, the allocations and the events commit together, or nothing.
+  observe(account,input){return this.evidence.tx(()=>this.read(account,input));}
+  read(account,{us,orders=[],fx=null}){
     if(typeof account!=='string'||!account||!us)return {...InFlight.totals({open:[]}),notes:[]};
     const now=this.clock(),st=this.state(account),notes=[];const basis=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0),readAt=at(us);
     const save=()=>this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));
     const reported={buys:fx>0?Math.max(0,Number(us.unsettled?.buyKRW)||0)/fx:0,sells:fx>0?Math.max(0,Number(us.unsettled?.sellKRW)||0)/fx:0};
     const filled=o=>o.filled>0&&o.fillPrice>0&&['Buy','Sell'].includes(o.side);
+    // Every piece has its own id and the amount it opened with, which allocations are checked against; pieces saved
+    // before ids were kept get them now. An opened piece is an event.
+    const ledger=this.evidence,mint=p=>{p.pid??=`${p.id}#${st.pseq=(st.pseq??0)+1}`;p.cents0??=cents(p.usd);return p;};for(const f of st.open)mint(f);
+    const opened=p=>{mint(p);ledger.event(account,'piece-opened',{pieceId:p.pid,orderId:p.id,side:p.side,usd:p.usd,basis:p.basis,why:p.unresolved?.why??null,...(p.pretracking?{pretracking:true}:{})});return p;};
     // The first reading starts tracking. Every fill listed then stays in flight, awaiting verification (bootstrap B1),
     // and those KIS's reported total could cover are marked so; recorded as evidence.
     if(st.basis==null){Object.assign(st,{basis,observed:reported,readAt,startedAt:now,lastAt:now,evidence:[],seq:0});const early=[];
@@ -194,9 +206,9 @@ class InFlight {
       for(const [side,key] of [['Buy','buys'],['Sell','sells']]){const mine=early.filter(f=>f.side===side);if(!mine.length)continue;
         const covered=InFlight.candidates(mine,reported[key]);for(const f of covered)f.unresolved={why:'reported before seen',at:now};
         log({side,amount:mine.reduce((n,f)=>n+cents(f.usd),0)/100,kind:'first reading',flagged:mine.map(f=>f.id),possiblyReported:covered.map(f=>f.id)});}
-      st.open.push(...early);save();
-      return {...InFlight.totals(st),notes:['tracking of U.S. fills awaiting settlement starts with this reading',...(early.length?[`${early.length} fill(s) from before tracking stay in flight, awaiting verification, until KIS evidence or a reconciliation resolves them`]:[])]};}
-    if(readAt!=null&&st.readAt!=null&&readAt<st.readAt)return {...InFlight.totals(st),notes:['a U.S. balance reading older than the last one was ignored']};
+      st.open.push(...early.map(opened));save();
+      return {...this.withReview(account,st),notes:['tracking of U.S. fills awaiting settlement starts with this reading',...(early.length?[`${early.length} fill(s) from before tracking stay in flight, awaiting verification, until KIS evidence or a reconciliation resolves them`]:[])]};}
+    if(readAt!=null&&st.readAt!=null&&readAt<st.readAt)return {...this.withReview(account,st),notes:['a U.S. balance reading older than the last one was ignored']};
     // State saved before readings were kept: its reported baseline may hold an old unmatched total, so no reported change
     // is evidence at this first reading.
     if(!st.observed){st.observed=reported;delete st.reported;}st.evidence??=[];
@@ -205,13 +217,13 @@ class InFlight {
     // figures already carry it.
     const adjust=(id,side,delta,basisNow)=>{const mine=st.open.filter(f=>f.id===id);for(const f of mine)f.basis=basisNow;if(!delta)return;
       if(!mine.length){notes.push(`${side} ${id}: execution amount changed by $${(delta/100).toFixed(2)}; none of it is in flight`);return;}
-      let left=delta;for(const f of mine.reverse()){const c=Math.max(0,cents(f.usd)+left);left-=c-cents(f.usd);f.usd=c/100;f.corrected=now;if(!left)break;}
+      let left=delta;for(const f of mine.reverse()){const c=Math.max(0,cents(f.usd)+left);left-=c-cents(f.usd);f.cents0+=c-cents(f.usd);ledger.event(account,'piece-corrected',{pieceId:f.pid,orderId:id,fromUSD:f.usd,toUSD:c/100});f.usd=c/100;f.corrected=now;if(!left)break;}
       st.open=st.open.filter(f=>f.usd>0);notes.push(`${side} ${id}: execution amount ${delta>0?'rose':'fell'} by $${Math.abs(delta/100).toFixed(2)}${basisNow==='net'?', fees included':''}; the amount in flight is corrected`);};
     // New fill amounts since the last reading: the cumulative amount less the last one.
     const fresh=[];for(const o of orders){if(!filled(o))continue;const id=String(o.id),a=InFlight.amountOf(o);let was=st.seen[id];
       // An order first listed after tracking started that filled before it (order history arriving after the balance):
       // the same rule as at the first reading, not a new fill this reading can explain.
-      if(!was&&Number.isFinite(st.startedAt)&&fillTime(o)<st.startedAt){st.seen[id]={filled:o.filled,...a};st.open.push(InFlight.early(o,id,a,now));notes.push(`${o.side} ${id}: filled before tracking started; it stays in flight, awaiting verification`);continue;}
+      if(!was&&Number.isFinite(st.startedAt)&&fillTime(o)<st.startedAt){st.seen[id]={filled:o.filled,...a};st.open.push(opened(InFlight.early(o,id,a,now)));notes.push(`${o.side} ${id}: filled before tracking started; it stays in flight, awaiting verification`);continue;}
       // Saved before cumulative amounts were kept: only the quantity, so the earlier amount is taken at the current average.
       if(typeof was==='number')was={filled:was,cents:Math.round(a.cents*Math.min(was,o.filled)/o.filled),basis:a.basis};
       if(was&&o.filled<was.filled)continue;st.seen[id]={filled:o.filled,...a};const delta=a.cents-(was?.cents??0);
@@ -223,14 +235,22 @@ class InFlight {
     const payable=side=>live(side).filter(f=>f.unresolved?.why!=='paid before seen');
     // Exact amounts: the run's fills, oldest first, each take what is left of the evidence up to their own amount; a fill
     // not fully covered keeps its remainder in flight, unresolved, with the shortfall (nothing is written off).
-    const take=(run,amountCents,evidence)=>{let left=amountCents;const out=[];
-      for(const f of run){const c=cents(f.usd),a=Math.max(0,Math.min(c,left));left-=a;if(a)out.push({id:f.id,usd:a/100});if(a===c){settled.add(f);continue;}
+    // Each allocation is also written to the ledger (src: its evidence), which refuses more than is left of either.
+    const take=(run,amountCents,evidence,src=null)=>{let left=amountCents;const out=[];
+      for(const f of run){const c=cents(f.usd),a=Math.max(0,Math.min(c,left));left-=a;
+        if(a){if(src)ledger.allocate({account,evidenceId:src.evidenceId,pieceId:f.pid,orderId:f.id,cents:a,pieceCents:f.cents0,rule:src.rule});out.push({id:f.id,pid:f.pid,usd:a/100});}if(a===c){settled.add(f);continue;}
         f.usd=(c-a)/100;f.unresolved={why:'evidence short',shortUSD:(c-a)/100,evidence,at:now};notes.push(`${f.side} ${f.id}: evidence covered $${(a/100).toFixed(2)}; $${f.usd.toFixed(2)} stays in flight, unresolved (evidence short)`);}
       return {allocated:out,left};};
-    const record=(e,run=[],flagged=[],extra={})=>{const id=`e${st.seq=(st.seq??0)+1}`,open=live(e.side).map(f=>f.id),t=take(run,run.length?cents(e.amount):0,id);
-      const v={id,at:now,...e,amount:cents(e.amount)/100,open,allocated:t.allocated,...(run.length&&t.left?{unallocated:t.left/100}:{}),...(flagged.length?{flagged:flagged.map(f=>f.id)}:{}),...extra};
+    // Ledger evidence for this reading pair: U.S. cash, or the reported total of a side, each its whole movement in the
+    // pair, so every allocation drawn from that movement (a fast-path remainder included) shares one amount.
+    const pairOf={readingA:`${st.readAt??''}@${st.lastAt??''}`,readingB:`${readAt??''}@${now}`},field=(cash,side)=>cash?'cash':side==='Buy'?'ustl_buy_amt_smtl':'ustl_sll_amt_smtl';
+    const source=(cash,side,extra={})=>ledger.aggregate({account,environment:us.environment??null,market:'US',...pairOf,side,field:field(cash,side),amountCents:Math.abs(cents(cash?moved:delta(side))),...extra});
+    const record=(e,run=[],flagged=[],extra={})=>{const id=`e${st.seq=(st.seq??0)+1}`,open=live(e.side).map(f=>f.id);
+      // A record about an earlier reading's movement (paid before seen) is a flag only, not evidence of this pair.
+      const src=e.earlierReading?null:{evidenceId:source(e.channel==='cash',e.side,extra.krw?{krw:extra.krw,rate:extra.rate}:{}),rule:e.kind},t=take(run,run.length?cents(e.amount):0,id,src);
+      const v={id,at:now,...e,...(src?{evidenceId:src.evidenceId}:{}),amount:cents(e.amount)/100,open,allocated:t.allocated,...(run.length&&t.left?{unallocated:t.left/100}:{}),...(flagged.length?{flagged:flagged.map(f=>f.id)}:{}),...extra};
       st.evidence.push(v);return v;};
-    const flag=(run,why,extra={})=>{for(const f of run)f.unresolved={why,at:now,...extra};};
+    const flag=(run,why,extra={})=>{for(const f of run)f.unresolved={why,at:now,...extra};if(run.length)ledger.event(account,'flag',{pieces:run.map(f=>f.pid),why,...extra});};
     // An allocation through one channel (cash, or the reported total) not yet paired with one through the other: the two
     // may be one purchase shown both ways, however far apart they were seen (fix review 2026-11-05, P1), so a later
     // allocation of the other channel for the same amount on the same side is paired with it rather than taken as a
@@ -246,7 +266,7 @@ class InFlight {
       const one=paid?InFlight.match(live(side).filter(f=>f.unresolved?.why==='possibly one purchase'&&!covered.includes(f)),-paid):[];
       let left=-d/TOLERANCE;for(const e of st.evidence)if(e.pairable&&!e.pairedWith&&e.channel==='reported'&&e.side===side&&e.amount<=left){e.pairedWith='settled';left-=e.amount;}
       if(covered.length||one.length||paid){const v=record({channel:paid?'cash and reported':'reported',side,amount:-d,kind:'reported settlement'},covered);
-        if(one.length){const t=take(one,cents(-paid),v.id);v.allocated.push(...t.allocated);if(t.left)v.unallocatedPaid=t.left/100;}}}
+        if(one.length){const t=take(one,cents(-paid),v.id,{evidenceId:source(true,side),rule:'reported settlement: its payment'});v.allocated.push(...t.allocated);if(t.left)v.unallocatedPaid=t.left/100;}}}
     // 2. New pieces the reading already moved by (buys down, sales up), all together, within the tolerance either way: a
     // cash allocation like any other, recorded and paired. Paired with an earlier reported allocation, the cash may be
     // that purchase's, so the new pieces stay in flight, marked unresolved.
@@ -259,11 +279,11 @@ class InFlight {
     let reflected=false;const other=s=>s==='Buy'?'Sell':'Buy';
     if(sides.size===1&&!live(other([...sides][0])).length&&Math.abs(want)>0&&Math.sign(movement)===Math.sign(want)){
       const run=InFlight.match([...payable([...sides][0]),...fresh],Math.abs(movement));reflected=run.length===fresh.length&&run.every(f=>fresh.includes(f));}
-    if(reflected){const side=want<0?'Buy':'Sell',p=partner('cash',side,Math.abs(movement));st.open.push(...fresh);
+    if(reflected){const side=want<0?'Buy':'Sell',p=partner('cash',side,Math.abs(movement));st.open.push(...fresh.map(opened));
       if(p){flag(fresh,'possibly one purchase',{with:p.id});pair(record({channel:'cash',side,amount:Math.abs(movement),kind:'ambiguous'},[],fresh),p);
         notes.push(`${side} ${fresh.map(f=>f.id).join(', ')}: U.S. cash moved by this fill, as the reported settlement total did for an earlier one; whether they are one purchase is unresolved, so it stays in flight`);movement=0;}
       else{const v=record({channel:'cash',side,amount:Math.abs(movement),kind:'reflected at once'},fresh);v.pairable=true;movement=Math.sign(movement)*(v.unallocated??0);}}
-    else{st.open.push(...fresh);
+    else{st.open.push(...fresh.map(opened));
       // The order list one reading behind the balance: a cash movement in the reading just before, that matched no fill
       // then, may have been their payment, or a withdrawal of the same amount. They stay in flight, marked unresolved;
       // a later settlement of theirs clears them as usual.
@@ -288,7 +308,7 @@ class InFlight {
       const v=record({channel,side,amount,kind:run.length?'settled':several?'ambiguous fit':'unmatched'},run,[],{...extra,...(several?(over?{overBound:pool.length}:{ambiguousCandidates:sets.map(s=>s.map(f=>f.id))}):{})});v.pairable=run.length>0;
       // Several fits of a cash movement: each candidate may be the one paid, so it is marked (a reported total's
       // candidates are marked below, as possibly reported, so that its settling can resolve them).
-      if(several&&channel==='cash')for(const f of over?pool:new Set(sets.flat()))f.unresolved??={why:'ambiguous evidence',evidence:v.id,at:now};
+      if(several&&channel==='cash'){const marked=[];for(const f of over?pool:new Set(sets.flat()))if(!f.unresolved){f.unresolved={why:'ambiguous evidence',evidence:v.id,at:now};marked.push(f.pid);}if(marked.length)ledger.event(account,'flag',{pieces:marked,why:'ambiguous evidence',evidence:v.id});}
       if(several)notes.push(`${side}: ${channel==='cash'?'U.S. cash':'the reported settlement total'} moved by $${(cents(amount)/100).toFixed(2)}, which ${over?`more than ${BOUND} open fills could explain`:`${sets.length} different sets of open fills fit`}; nothing is settled`);
       // A reported rise matching no open fill while fills of its side are open may cover part of them: they stay in
       // flight, marked unresolved.
@@ -301,17 +321,30 @@ class InFlight {
     // movement their net did not match be allocated to one side).
     const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f));
     if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell')))allocate('cash',movement<0?'Buy':'Sell',Math.abs(movement));
-    st.open=st.open.filter(f=>!settled.has(f));
-    for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};
+    st.open=st.open.filter(f=>!settled.has(f));for(const f of settled)ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id});
+    // A KIS settled-trade row linked with certainty to an order whose pieces evidence resolved, for an amount more than a
+    // cent from what was allocated, contradicts that allocation: the difference alone reopens (design v3 §3, T13).
+    // Compared only once the order's own amount is net of fees, so fees KIS has not reported yet are no conflict.
+    const links=ledger.links(account,orders);st.conflicts??={};
+    for(const o of orders){const l=links.get(String(o.id));if(l?.state!=='linked'||!(l.fields.exchangeRate>0)||!(l.fields.settlementUSD>0)||InFlight.amountOf(o).basis!=='net'||st.open.some(f=>f.id===String(o.id)))continue;
+      const got=ledger.allocatedToOrder(account,o.id),mark=`${o.id}|${l.groupId}|${l.version}`;if(!got||st.conflicts[mark])continue;const diff=Math.abs(cents(l.fields.settlementUSD)-got);if(diff<=1)continue;
+      st.conflicts[mark]=now;st.open.push(opened({id:String(o.id),side:o.side,usd:diff/100,basis:'net',at:now,filledAt:now,unresolved:{why:'conflict',evidence:l.groupId,version:l.version,kUSD:l.fields.settlementUSD,allocatedUSD:got/100}}));
+      ledger.event(account,'conflict',{orderId:String(o.id),groupId:l.groupId,version:l.version,kCents:cents(l.fields.settlementUSD),allocatedCents:got});
+      notes.push(`${o.side} ${o.id}: KIS's settled record says $${l.fields.settlementUSD.toFixed(2)} where $${(got/100).toFixed(2)} was allocated; $${(diff/100).toFixed(2)} is unresolved again (conflict)`);}
+    for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};ledger.event(account,'overdue',{pieceId:f.pid,orderId:f.id,usd:f.usd});
       notes.push(`${f.side} ${f.id} ($${f.usd}): no settlement evidence after ${MAX_DAYS} days; it stays in flight, unresolved, until KIS shows it or it is reconciled`);}
     Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
     // Orders no longer listed are forgotten, so the record stays bounded.
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
-    save();return {...InFlight.totals(st),notes};
+    save();return {...this.withReview(account,st),notes};
   }
+  // The tracker's totals with coverage under review (electron/settlement-evidence.cjs underReview): unresolved again,
+  // beside the open pieces, never matched by evidence here.
+  withReview(account,st){const review=this.evidence.underReview(account).map(r=>({id:r.orderId,pid:'review:'+r.citationId,side:r.side,usd:r.usd,unresolved:{why:'under review',reason:r.reason}}));
+    return InFlight.totals(review.length?{...st,open:[...st.open,...review]}:st);}
   static totals(st){const sum=(side,only=()=>true)=>st.open.filter(f=>f.side===side&&only(f)).reduce((n,f)=>n+cents(f.usd),0)/100;
     return {buysUSD:sum('Buy'),sellsUSD:sum('Sell'),unresolved:{buysUSD:sum('Buy',f=>f.unresolved),sellsUSD:sum('Sell',f=>f.unresolved)},overdue:{buysUSD:sum('Buy',f=>f.overdueAt),sellsUSD:sum('Sell',f=>f.overdueAt)},
       pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},open:st.open};}
-  current(account){return InFlight.totals(this.state(account));}
+  current(account){return this.withReview(account,this.state(account));}
 }
 module.exports={value,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND};
