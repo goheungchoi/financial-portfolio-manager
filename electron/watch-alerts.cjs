@@ -74,9 +74,9 @@ function parts(row){return symbolsOf(row).map(s=>{const m=marketOf(s.symbol),con
   return {key:[row.scope??'unrecorded',m,sessionOf(m,row.at),s.symbol,row.rules??'unrecorded'].join('|'),signature:{outcome:`${condition}:${s.old?.kind??'-'}:${s.new?.kind??'-'}`,reset:JSON.stringify([s.old?.baseline??null,s.new?.baseline??null,Math.sign(s.old?.changePct??s.new?.changePct??0)])},detail:{symbol:s.symbol,market:m,condition,held:s.held,old:s.old?.kind??null,new:s.new?.kind??null}};});}
 class AlertObservations {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS alert_observations(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
-  record(at,{current,proposed,held,scope=null}){if(!current&&!proposed)return;const brief=t=>t?{kind:t.kind,symbols:t.kind==='watchlist'?t.alerts.map(a=>a.symbol):[t.symbol,...(t.alongside??[]).map(a=>a.symbol)],...(t.changePct!=null?{changePct:Math.round(t.changePct*100)/100}:{})}:null;
+  record(at,{current,proposed,held,scope=null,mode=null}){if(!current&&!proposed)return;const brief=t=>t?{kind:t.kind,symbols:t.kind==='watchlist'?t.alerts.map(a=>a.symbol):[t.symbol,...(t.alongside??[]).map(a=>a.symbol)],...(t.changePct!=null?{changePct:Math.round(t.changePct*100)/100}:{})}:null;
     const per=new Map();for(const [side,t] of [['old',current],['new',proposed]])for(const a of items(t)){const x=per.get(a.symbol)??{symbol:a.symbol,held:held.has(a.symbol),old:null,new:null};x[side]=sideOf(a);per.set(a.symbol,x);}
-    this.db.prepare('INSERT INTO alert_observations(at,payload) VALUES(?,?)').run(at,JSON.stringify({current:brief(current),proposed:brief(proposed),currentHeld:current?held.has(current.symbol):null,scope,rules:RULES_VERSION,symbols:[...per.values()]}));}
+    this.db.prepare('INSERT INTO alert_observations(at,payload) VALUES(?,?)').run(at,JSON.stringify({current:brief(current),proposed:brief(proposed),currentHeld:current?held.has(current.symbol):null,scope,rules:RULES_VERSION,...(mode?{mode}:{}),symbols:[...per.values()]}));}
   // Episodes since a time. assessed(symbol, from, to): the time of a completed review between two checks that assessed
   // the symbol (it was triggered by it, gave a verdict on it or held it), which ends the episode.
   episodes(since,{assessed=()=>null}={}){const rows=this.db.prepare('SELECT id,at,payload FROM alert_observations WHERE at>=? ORDER BY at').all(since).map(r=>({id:r.id,at:r.at,...JSON.parse(r.payload)}));
@@ -99,4 +99,4 @@ class AlertObservations {
     return {since:new Date(since).toISOString(),checks:{current,proposed},episodes:{total:eps.length,oldOnly:by('old-only'),newOnly:by('new-only'),both:by('both')},reviewsStarted:started,notHeldAlerts:candidates,
       delayed:candidates.filter(c=>c.delayMinutes>0).length,notAlerted:candidates.filter(c=>c.proposedAt==null).length};}
 }
-module.exports={WatchAlerts,AlertObservations,COOLDOWN_MS,RULES_VERSION,symbolsOf,parts};
+module.exports={WatchAlerts,AlertObservations,COOLDOWN_MS,RULES_VERSION,symbolsOf,parts,sessionOf};
