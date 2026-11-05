@@ -47,7 +47,7 @@ test('finding 2: an old reported total is no evidence; a coincident withdrawal s
   let x=track();x.see({cash:500,unsettled:{buyKRW:130000}});assert.equal(x.see({cash:500,unsettled:{buyKRW:130000}},[A]).buysUSD,100,'$100 reported before the buy is not its settlement');
   assert.equal(x.see({cash:500,unsettled:{buyKRW:260000}},[A]).buysUSD,0,'a rise of $100 is');
   x=track();x.see({cash:1500});x.see({cash:1500},[A]);assert.equal(x.see({cash:500},[A]).buysUSD,100,'a $1,000 fall is not a $100 settlement');
-  x=track();x.see({cash:500});const half={id:'P',side:'Buy',filled:1,fillPrice:100};x.see({cash:500},[half]);const full={...half,filled:2,fillPrice:101};assert.equal(x.see({cash:500},[full]).buysUSD,201,'the second share at a new average adds its part');
+  x=track();x.see({cash:500});const half={id:'P',side:'Buy',filled:1,fillPrice:100};x.see({cash:500},[half]);const full={...half,filled:2,fillPrice:101};assert.equal(x.see({cash:500},[full]).buysUSD,202,'two shares averaging $101 are $202 in all (the earlier expectation of $201 took the new share at the new average)');
   x=track();x.see({cash:500});x.see({cash:500},[A,B]);x.see({cash:400},[A,B]);x.restart();assert.equal(x.see({cash:400},[A,B]).buysUSD,100,'after a restart the remainder is kept');assert.equal(x.see({cash:300},[A,B]).buysUSD,0);
 });
 

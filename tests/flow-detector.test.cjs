@@ -260,7 +260,8 @@ test('the single-name upgrade still compares Korean cash, marked as unchecked ag
   const {perf,read}=saved('net-of-confirmed',{pending:{KR:{amount:200000,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
   assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:1214148,usCash:279.85}),[]);
   const found=read('2026-10-30T10:30:00+09:00',{krCash:1214148,usCash:279.85});
-  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',1000000]],'the ₩800k now plus the ₩200k held');assert.match(found[0].note,/could not be compared/);assert.ok(found[0].note.length<=200);
+  // Fix review 2026-11-05, P1: the ₩200k held and the ₩800k now stay two flows, each with its own window.
+  assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',200000],['KR',800000]],'the ₩200k held and the ₩800k now');for(const f of found){assert.match(f.note,/could not be compared/);assert.ok(f.note.length<=200);}
   assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0);
 });
 // Stage 2 (audit 2026-11-04): 2026-10-30 23:12 KST an RDDT buy ($97.66 net) was paid from unsettled sale proceeds;

@@ -97,5 +97,5 @@ test('U.S. fills in flight are decided by evidence: the RDDT gap, cash already m
   f=fresh();assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).buysUSD,0,'tracking starts with this reading');
   f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});
   t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});assert.equal(late.buysUSD,0);assert.match(late.notes[0],/treated as settled after 7 days/);
-  assert.deepEqual(f.current('a'),{buysUSD:0,sellsUSD:0,open:[]});
+  assert.deepEqual(f.current('a'),{buysUSD:0,sellsUSD:0,unresolved:{buysUSD:0,sellsUSD:0},open:[]});
 });
