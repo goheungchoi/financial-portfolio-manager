@@ -11,10 +11,11 @@ export type SettlementPiece={pieceId:string;orderId:string;side:'Buy'|'Sell';sym
 type Timing={entryId:string;ifPaidEarlierUSD:number;ifPaidHereUSD:number;low:number;high:number};
 export type SettlementRecord={id:string;pieceId:string;orderId:string;side:'Buy'|'Sell';symbol:string|null;usd:number;signedUSD:number;explanation:string;route:string|null;kisReference:string;settledOn:string|null;note:string;confirmedAt:number;confirmedBy:{user:string|null;session:string}|null;flowId:string|null;reversed:{id:string;at:number;note:string}|null;timing:Timing[]};
 type Entry={id:string;after:number|null;by:number|null;observedUSD:number;low:number;high:number;candidates:{reconciliationId:string;side:string|null;symbol:string|null;paymentUSD:number|null;ifPaidEarlierUSD:number}[]};
-export type SettlementState={account:string;environment:string|null;pieces:SettlementPiece[];reconciliations:SettlementRecord[];timing:Entry[];detectedFlows:{id:string;day:string;amountUSD:number}[];
-  summary:{unresolved:{buysUSD:number;sellsUSD:number};overdue:{buysUSD:number;sellsUSD:number};pretracking:number;inFlight:{buysUSD:number;sellsUSD:number};timingOpen:number;timingRange:{low:number;high:number}};home:{title:string;detail:string;tone:string}|null};
-type Values={tracker:{buysUSD:number;sellsUSD:number;unresolved:{buysUSD:number;sellsUSD:number}};funding:{USD:number;KRW:number;capacity?:{KR?:number|null;US?:number|null;error?:string}};flows:{amount:number;detected:boolean}[]|null;valuation?:{US:Range|null;combined:Range}};
-type Preview={kind:'preview';stateVersion:string;binding:string;before:Values;after:Values;funding?:{releasedCents:number;alignmentCents:number;unreleasedEstimateCents:number;reason:string|null}};
+export type SettlementState={account:string;environment:string|null;pieces:SettlementPiece[];reconciliations:SettlementRecord[];timing:Entry[];funding:{orderId:string;symbol:string|null;retainedUSD:number;reason:string;detail:string;reconciliationIds:string[]}[];detectedFlows:{id:string;day:string;amountUSD:number}[];
+  summary:{unresolved:{buysUSD:number;sellsUSD:number};overdue:{buysUSD:number;sellsUSD:number};pretracking:number;inFlight:{buysUSD:number;sellsUSD:number};timingOpen:number;timingRange:{low:number;high:number};fundingRetainedUSD:number};home:{title:string;detail:string;tone:string}|null};
+type Loss={breached:boolean;ambiguous:boolean;loss:number|null;limit:number|null;baseline:number|null;equity:number|null;adjustment:{low:number|null;high:number|null}|null;ifPaidBeforeBaseline:{low:number|null;high:number|null}|null;scenarios:{name:string;loss:number|null;breached:boolean}[];error?:string};
+type Values={loss?:{KR:Loss|null;US:Loss|null};tracker:{buysUSD:number;sellsUSD:number;unresolved:{buysUSD:number;sellsUSD:number}};funding:{USD:number;KRW:number;capacity?:{KR?:number|null;US?:number|null;error?:string}};flows:{amount:number;detected:boolean}[]|null;valuation?:{US:Range|null;combined:Range}};
+type Preview={kind:'preview';stateVersion:string;binding:string;before:Values;after:Values;effects?:{timing?:{entryId:string;candidateUSD:number;observedBefore:number;observedAfter:number;closed:boolean;flow:{amount:number}|null}[]};funding?:{releasedCents:number;alignmentCents:number;unreleasedEstimateCents:number;reason:string|null}};
 export type SettlementReply={ok:boolean;error?:string;data?:any;preview?:Preview;remainingCents?:number;flowCents?:number;state:SettlementState|null};
 const usd=(v:number|null|undefined)=>v==null?'—':`$${Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const signed=(v:number|null|undefined)=>v==null?'—':`${v<0?'−':v>0?'+':''}${usd(v)}`;
@@ -36,14 +37,15 @@ export function SettlementPanel(){
   useEffect(()=>{void load();const t=setInterval(()=>void load(),30000);return()=>clearInterval(t);},[load]);
   const run=async(key:string,name:string,...args:unknown[])=>{setBusy(key);try{const r=await call(name,...args);if(r.state)setState(r.state);if(!r.ok)toast(message(r),'error');return r;}finally{setBusy('');}};
   if(!state)return null;
-  const s=state.summary,quiet=!state.pieces.length&&!state.reconciliations.length&&!state.timing.length;
-  const line=quiet?'Nothing to reconcile.':[s.unresolved.buysUSD>0.005&&`${usd(s.unresolved.buysUSD)} of buys unresolved`,s.unresolved.sellsUSD>0.005&&`${usd(s.unresolved.sellsUSD)} of sales unresolved`,(s.overdue.buysUSD+s.overdue.sellsUSD)>0.005&&`${usd(s.overdue.buysUSD+s.overdue.sellsUSD)} overdue`,s.timingOpen>0&&`${s.timingOpen} timing to confirm`].filter(Boolean).join(' · ')||'Fills settling normally.';
+  const s=state.summary,quiet=!state.pieces.length&&!state.reconciliations.length&&!state.timing.length&&!state.funding.length;
+  const line=quiet?'Nothing to reconcile.':[s.unresolved.buysUSD>0.005&&`${usd(s.unresolved.buysUSD)} of buys unresolved`,s.unresolved.sellsUSD>0.005&&`${usd(s.unresolved.sellsUSD)} of sales unresolved`,(s.overdue.buysUSD+s.overdue.sellsUSD)>0.005&&`${usd(s.overdue.buysUSD+s.overdue.sellsUSD)} overdue`,s.fundingRetainedUSD>0.005&&`${usd(s.fundingRetainedUSD)} of buy funding still committed`,s.timingOpen>0&&`${s.timingOpen} timing to confirm`].filter(Boolean).join(' · ')||'Fills settling normally.';
   return <section className="trade-card settlement-panel" id="settlements" aria-label="U.S. settlements">
     <div className="section-head"><div><h2>Settlements</h2><small>{line}</small></div></div>
     {state.pieces.length>0&&<ul className="settlement-list" aria-label="Open settlement pieces">{state.pieces.map(p=><li key={p.pieceId}><PieceRow piece={p} busy={busy} open={open===p.pieceId} onOpen={()=>setOpen(open===p.pieceId?null:p.pieceId)}
       onCheck={async()=>{const r=await run('check:'+p.pieceId,'check-again',p.pieceId);if(r.ok)toast(r.data?.busy?'A check of this order is already running.':r.data?.skipped?`Waiting after a failed read; try after ${when(r.data.nextAt)}.`:r.data?.done?'KIS trade history read for this order.':'The check stopped; it resumes where it stopped next time.');}}/>
       {open===p.pieceId&&p.reconcilable&&<ReconcileForm piece={p} flows={state.detectedFlows} onDone={()=>{setOpen(null);void load();}} onState={setState}/>}</li>)}</ul>}
     {state.timing.length>0&&<TimingList entries={state.timing} busy={busy} onResolve={async(entry,reconciliationId,paidHere)=>{const r=await run('timing:'+entry+reconciliationId,'resolve-timing',entry,{reconciliationId,paidHere});if(r.ok)toast(r.data?.flow?`Recorded a detected flow of ${signed(r.data.flow.amount)} to confirm or remove in Performance.`:'Timing recorded.');}}/>}
+    {state.funding.length>0&&<div className="settlement-records" aria-label="Funding still committed"><h3>Funding still committed</h3><ul className="settlement-list">{state.funding.map(f=><li key={f.orderId}><div className="settlement-line"><span className="settlement-title"><b>Buy {f.symbol??f.orderId}</b> · {f.reason}</span><strong className="neg">{usd(f.retainedUSD)}</strong></div><small className="muted">{f.detail} Reconciliation{f.reconciliationIds.length===1?'':'s'} {f.reconciliationIds.map(short).join(', ')}.</small></li>)}</ul></div>}
     {state.reconciliations.length>0&&<RecordList records={state.reconciliations} onState={setState} onDone={()=>void load()}/>}
     <Note summary="How settlements are reconciled">A U.S. fill stays in flight until KIS figures show it. One the app cannot match is unresolved: buys lower equity's low bound and buying capacity, sales leave their proceeds out of the high bound. Reconcile a piece only with a KIS reference; the preview shows every effect before anything is written, and a reconciliation can be reversed. KIS settled-trade records are shown as supporting evidence only. Check again reads this order's KIS trade history once, within a page and time limit; it never starts an AI review.</Note>
   </section>;
@@ -79,7 +81,9 @@ function PreviewTable({preview}:{preview:Preview}){
   const f=preview.funding;
   return <div className="settlement-preview"><table className="compact-table" aria-label="Preview"><thead><tr><th>Effect</th><th>Now</th><th>After</th></tr></thead><tbody>{rows.map(([n,x,y])=><tr key={n} className={x!==y?'changed':''}><td>{n}</td><td>{x}</td><td>{y}</td></tr>)}</tbody></table>
     {f&&<small className="muted">Funding released: {usd(f.releasedCents/100)}{f.alignmentCents?` (with ${usd(f.alignmentCents/100)} rounding alignment)`:''}{f.unreleasedEstimateCents?` · ${usd(f.unreleasedEstimateCents/100)} of the estimate stays committed`:''}{f.reason?` · ${f.reason}`:''}</small>}
-    <small className="muted">Performance: no flow or return changes unless a flow is reclassified; past days are untouched.</small></div>;
+    <LossTable before={b.loss} after={a.loss}/>
+    {(preview.effects?.timing??[]).map(t=><small key={t.entryId} className="muted">Payment timing: withdrawn from an open entry; the interval reads {signed(t.observedAfter)} instead of {signed(t.observedBefore)}{t.closed?t.flow?`, and the entry closes as a detected flow of ${signed(t.flow.amount)} to confirm or remove`:', and the entry closes':''}.</small>)}
+    <small className="muted">Returns: how a reconciliation counts in performance is not finished yet (Stage 3), so this preview does not show it.</small></div>;
 }
 
 function ReconcileForm({piece:p,flows,onDone,onState}:{piece:SettlementPiece;flows:SettlementState['detectedFlows'];onDone():void;onState(s:SettlementState):void}){
@@ -145,4 +149,20 @@ function ReverseForm({record,onState,onDone}:{record:SettlementRecord;onState(s:
     <div className="form-grid"><label className="wide">Why it is reversed<input value={note} maxLength={500} required onChange={e=>{setNote(e.target.value);setPreview(null);}}/></label><label>KIS reference (optional)<input value={reference} maxLength={120} onChange={e=>{setReference(e.target.value);setPreview(null);}}/></label></div>
     {error&&<p role="alert" className="error">{error}</p>}{preview&&<PreviewTable preview={preview}/>}
     <div className="form-actions"><button type="submit" disabled={busy}>{preview?'Preview again':'Preview'}</button><button type="button" className="primary" disabled={busy||!preview} onClick={()=>void ask('reverse')}>Confirm reversal</button></div></form>;
+}
+
+// Each market's daily-loss check before and after: the verdict, the baseline adjustment for settlement corrections, and
+// every scenario behind More.
+function LossTable({before,after}:{before?:{KR:Loss|null;US:Loss|null};after?:{KR:Loss|null;US:Loss|null}}){
+  if(!before||!after)return <small className="muted">Daily loss: not available (no day's baseline yet).</small>;
+  const fmt=(m:'KR'|'US',v:number|null|undefined)=>m==='US'?usd(v):krw(v);
+  const verdict=(m:'KR'|'US',l:Loss|null)=>!l?'no baseline today':l.error?'unavailable':`${fmt(m,l.loss)} loss${l.limit!=null?` of ${fmt(m,l.limit)} allowed`:''} · ${l.breached?'limit reached':l.ambiguous?'limit reached in some scenarios':'within the limit'}`;
+  const sgn=(m:'KR'|'US',v:number|null)=>v==null?'—':m==='US'?signed(v):`${v<0?'−':v>0?'+':''}${krw(Math.abs(v))}`;
+  const adj=(m:'KR'|'US',l:Loss|null)=>l?.adjustment?`low ${sgn(m,l.adjustment.low)}, high ${sgn(m,l.adjustment.high)}${l.ifPaidBeforeBaseline?` (or low ${fmt(m,l.ifPaidBeforeBaseline.low)}, high ${fmt(m,l.ifPaidBeforeBaseline.high)} if paid before the baseline)`:''}`:'none';
+  const names=(m:'KR'|'US')=>[...new Set([...(before[m]?.scenarios??[]),...(after[m]?.scenarios??[])].map(x=>x.name))];
+  return <><table className="compact-table" aria-label="Daily loss"><thead><tr><th>Daily loss</th><th>Now</th><th>After</th></tr></thead><tbody>
+    {(['KR','US'] as const).flatMap(m=>[<tr key={m} className={verdict(m,before[m])!==verdict(m,after[m])?'changed':''}><td>{m==='US'?'U.S.':'Korea'}</td><td>{verdict(m,before[m])}</td><td>{verdict(m,after[m])}</td></tr>,
+      <tr key={m+'-adj'} className={adj(m,before[m])!==adj(m,after[m])?'changed':''}><td>{m==='US'?'U.S.':'Korea'} baseline adjustment</td><td>{adj(m,before[m])}</td><td>{adj(m,after[m])}</td></tr>])}</tbody></table>
+    <Note summary="Daily-loss scenarios">{(['KR','US'] as const).map(m=>names(m).length?<table key={m} className="compact-table" aria-label={`${m} loss scenarios`}><thead><tr><th>{m==='US'?'U.S.':'Korea'} scenario</th><th>Now</th><th>After</th></tr></thead><tbody>{names(m).map(n=>{const x=before[m]?.scenarios.find(y=>y.name===n),y=after[m]?.scenarios.find(z=>z.name===n);
+      return <tr key={n}><td>{n}</td><td>{x?`${fmt(m,x.loss)}${x.breached?' · reached':''}`:'—'}</td><td>{y?`${fmt(m,y.loss)}${y.breached?' · reached':''}`:'—'}</td></tr>;})}</tbody></table>:<p key={m} className="muted">{m==='US'?'U.S.':'Korea'}: one scenario only.</p>)}</Note></>;
 }

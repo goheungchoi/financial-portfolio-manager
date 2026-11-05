@@ -54,10 +54,12 @@ const osUser=()=>{try{return os.userInfo().username;}catch{return null;}};
 const round2=v=>Number.isFinite(v)?Math.round(v*100)/100:null;
 class Reconciliation{
   // inFlight: the U.S. settlement tracker (electron/valuation.cjs InFlight); funding: the funding ledger; performance:
-  // PerformanceHistory (flows); who: {user, session} recorded as confirmedBy.
-  constructor(db,{inFlight,funding=null,performance=null,clock=Date.now,who=null,u6Verified=false}={}){
+  // PerformanceHistory (flows); who: {user, session} recorded as confirmedBy. loss(account): each market's daily-loss
+  // check as the engines compute it now ({KR, US}, each LiveEngine.lossOf), so a preview shows its before and after
+  // (stage 2b.5 review, P2); computed inside the preview's transaction, it sees the applied state.
+  constructor(db,{inFlight,funding=null,performance=null,clock=Date.now,who=null,u6Verified=false,loss=null}={}){
     if(!inFlight)throw new Error('RECONCILIATION_NEEDS_TRACKER');
-    this.db=db;this.inFlight=inFlight;this.ledger=inFlight.evidence;this.funding=funding??new FundingLedger(db,{clock});this.performance=performance;this.clock=clock;this.u6=Boolean(u6Verified);this.who=who??{user:osUser(),session:SESSION};
+    this.db=db;this.inFlight=inFlight;this.ledger=inFlight.evidence;this.funding=funding??new FundingLedger(db,{clock});this.performance=performance;this.clock=clock;this.loss=loss;this.u6=Boolean(u6Verified);this.who=who??{user:osUser(),session:SESSION};
     db.exec(`CREATE TABLE IF NOT EXISTS settlement_reconciliations(id TEXT PRIMARY KEY,account TEXT NOT NULL,requestId TEXT NOT NULL UNIQUE,contentHash TEXT NOT NULL,kind TEXT NOT NULL,target TEXT,at INTEGER NOT NULL,payload TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS settlement_reconciliations_content ON settlement_reconciliations(account,contentHash);
       CREATE TRIGGER IF NOT EXISTS settlement_reconciliations_no_update BEFORE UPDATE ON settlement_reconciliations BEGIN SELECT RAISE(ABORT,'settlement_reconciliations is append-only'); END;
@@ -84,7 +86,15 @@ class Reconciliation{
     if(inputs){try{capacity={KR:round2(this.funding.capacity({account,market:'KR',inputs})),US:round2(this.funding.capacity({account,market:'US',inputs}))};}catch(e){capacity={error:e.message};}}
     const flows=this.performance?this.performance.flows(account).filter(x=>x.market==='US').map(x=>({day:x.day,amount:x.amount,detected:Boolean(x.detected)})):null;
     let valuation;if(balances){const v=require('./valuation.cjs').value({korea:balances.korea??null,us:balances.us??null,fx:balances.fx??null,inFlight:t,now:balances.now??this.clock()});valuation={US:v.markets.US.equity??null,combined:{low:v.combined.low,high:v.combined.high,exact:v.combined.exact}};}
-    return {tracker,funding:{USD:c.usd,KRW:c.krw,...(capacity?{capacity}:{})},flows,...(valuation?{valuation}:{})};}
+    let loss;if(this.loss){const out={};let all;try{all=this.loss(account)??{};}catch(e){all={error:e.message};}for(const m of ['KR','US'])out[m]=all.error?{error:all.error}:Reconciliation.lossSummary(all[m]);loss=out;}
+    return {tracker,funding:{USD:c.usd,KRW:c.krw,...(capacity?{capacity}:{})},flows,...(valuation?{valuation}:{}),...(loss?{loss}:{})};}
+  // A market's daily-loss check as a preview shows it: the verdict, the loss and limit, the baseline adjustment for
+  // settlement corrections (and the other one when timing is unknown) and every scenario.
+  static lossSummary(l){if(!l)return null;const r=v=>Number.isFinite(v)?Math.round(v*100)/100:null;
+    return {breached:Boolean(l.breached),ambiguous:Boolean(l.ambiguous),loss:r(l.loss),limit:r(l.limitKRW),baseline:r(l.baseline),equity:r(l.equity),
+      adjustment:l.settlement?.adjustment?{low:r(l.settlement.adjustment.low),high:r(l.settlement.adjustment.high)}:null,
+      ifPaidBeforeBaseline:l.settlement?.ifPaidBeforeBaseline?{low:r(l.settlement.ifPaidBeforeBaseline.low),high:r(l.settlement.ifPaidBeforeBaseline.high)}:null,
+      scenarios:(l.scenarios??[]).map(x=>({name:x.name,loss:r(x.loss),breached:Boolean(x.breached)})),reasons:l.reasons??[]};}
   // R1: the request's own fields, normalized; no state is read.
   fields(req){if(!req||typeof req!=='object')throw fail('REQUEST_INVALID');
     const requestId=text(req.requestId,100);if(!requestId)throw fail('REQUEST_ID_REQUIRED');const account=text(req.account,200);if(!account)throw fail('ACCOUNT_REQUIRED');
@@ -132,7 +142,7 @@ class Reconciliation{
   static content(r){const {requestId,...rest}=r;return rest;}
   // The binding (R3): everything the preview showed and was computed from; generated ids and times are left out.
   static binding(r,sv,ctx,{before,after,effects}){return hash({request:Reconciliation.content(r),stateVersion:sv.id,context:{balances:ctx.balances??null,inputs:ctx.inputs??null},before,after,effects:Reconciliation.boundEffects(effects)});}
-  static boundEffects(e){const fl=e.flows;return e.reversedCents!=null?{reversedCents:e.reversedCents,promoted:e.promoted.map(p=>[p.evidenceId,p.cents]),reopenedCents:e.reopenedCents,fundingReinstatedCents:e.fundingReinstatedCents,flows:fl?{restoredCents:fl.restoredCents,removed:fl.removed.length,kept:fl.kept.map(k=>[k.cents,k.by])}:null,citation:Boolean(e.citationWithdrawn),effect:e.effect}
+  static boundEffects(e){const fl=e.flows;return e.reversedCents!=null?{reversedCents:e.reversedCents,promoted:e.promoted.map(p=>[p.evidenceId,p.cents]),reopenedCents:e.reopenedCents,fundingReinstatedCents:e.fundingReinstatedCents,flows:fl?{restoredCents:fl.restoredCents,removed:fl.removed.length,kept:fl.kept.map(k=>[k.cents,k.by])}:null,citation:Boolean(e.citationWithdrawn),timing:(e.timing??[]).map(x=>[x.entryId,x.candidateUSD,x.observedAfter,x.closed,x.flow?.amount??null]),effect:e.effect}
     :{leftCents:e.leftCents,closed:e.closed,citation:Boolean(e.citationId),funding:{cents:e.funding.cents,alignmentCents:e.funding.alignmentCents??0,unreleasedCents:e.funding.unreleasedCents??0},flows:fl?{settlementCents:fl.settlementCents,added:fl.added.map(a=>[a.kind,a.cents])}:null,effect:e.effect};}
   // Repeats (R5): the same request id, or the same binding, with the same request returns the record.
   repeat(r,binding){const requestHash=hash(Reconciliation.content(r));const byId=this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE requestId=?').get(r.requestId);
@@ -221,8 +231,10 @@ class Reconciliation{
         this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(fl.original.id,account,JSON.stringify(back));}
       flows={restored:fl.original.id,restoredCents:restore,whole,removed,kept};ledger.event(account,'flow-restored',{reversalId:id,flowId:fl.original.id,restoredCents:restore,removed,kept});}
     if(t.effects.citationId)ledger.reverseCitation(account,t.effects.citationId,id);
+    // Its open settlement timing is withdrawn in the same transaction (stage 2b.5 review, P1).
+    const timing=require('./flow-detector.cjs').withdrawTiming(this.db,{performance:this.performance,clock:this.clock},account,t.id,id);
     const after=this.values(account,ctx);
-    const effects={reversedCents,reversed,promoted,reopenedCents:reopen,fundingReinstatedCents:reinstated,flows,citationWithdrawn:t.effects.citationId??null,effect:{side:t.side,obligationCents:-reopen,promotedCents:reversedCents-reopen}},contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
+    const effects={reversedCents,reversed,promoted,reopenedCents:reopen,fundingReinstatedCents:reinstated,flows,timing,citationWithdrawn:t.effects.citationId??null,effect:{side:t.side,obligationCents:-reopen,promotedCents:reversedCents-reopen}},contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
     if(expected!=null&&expected!==contentHash)throw fail('PREVIEW_MISMATCH');
     const payload={id,kind:'reversal',target:t.id,account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:t.pieceId,orderId:t.orderId,side:t.side,note:r.note,kisReference:r.kisReference,confirmedAt:now,confirmedBy:this.who,stateVersion:sv,
       context:{balances:ctx.balances??null,inputs:ctx.inputs??null},effects,preview:{before,after}};

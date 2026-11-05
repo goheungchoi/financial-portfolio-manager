@@ -123,3 +123,65 @@ test('P5: the check reads the order\'s dates as asked (never after today, a gap 
   const x=world();x.open(order('A'),order('B'));const k=kis([raw('2026-11-05','TEST')]);await x.check(k.fetch);
   const p=x.view().pieces.find(q=>q.orderId==='A');assert.equal(p.evidence.k.state,'uncertain');assert.match(p.evidence.k.reason,/several app orders/);assert.ok(p.unknown.some(u=>/not with certainty/.test(u)));assert.equal(p.state,'unresolved');
 });
+test('R1 (review of 9ef95fe, P1): a reversal withdraws its reconciliation from open timing in the same transaction; other candidates stay; a stale resolution is refused',()=>{
+  // The reviewer's case: $100 reconciled, reversed, then "paid in this interval" from a page not yet refreshed.
+  const w=world();w.open(order('A'));w.detect();w.later(MIN);const m=w.reconcile({pieceId:w.pid('A')});w.later(MIN);w.detect();const [e]=w.fd.timing('a');assert.deepEqual(e.candidates.map(c=>c.id),[m.id]);
+  const q={requestId:'v1',account:'a',reconciliationId:m.id,note:'wrong'};const p=w.rec.previewReversal(q);
+  assert.deepEqual(p.effects.timing.map(t=>[t.entryId,t.candidateUSD,t.observedBefore,t.observedAfter,t.closed,t.flow]),[[e.id,100,100,0,true,null]],'shown in the preview');assert.equal(w.fd.timing('a').length,1,'a preview changes nothing');
+  w.rec.reverse({...q,stateVersion:p.stateVersion,binding:p.binding});assert.deepEqual(w.fd.timing('a'),[]);assert.deepEqual(w.view().timing,[]);assert.equal(w.view().summary.timingOpen,0);
+  for(const paidHere of [true,false])assert.throws(()=>w.fd.resolveTiming('a',e.id,{reconciliationId:m.id,paidHere}),/TIMING_CANDIDATE_REVERSED/);assert.equal(w.perf.flows('a').length,0,'no false flow');
+  // The next interval explains the reopening; nothing is left over.
+  w.later(MIN);w.detect();assert.deepEqual(w.fd.timing('a'),[]);assert.equal(w.perf.flows('a').length,0);assert.deepEqual(w.fd.pending('a'),[]);
+  assert.throws(()=>w.fd.resolveTiming('a',e.id,{reconciliationId:m.id,paidHere:true}),/TIMING_CANDIDATE_REVERSED/,'remembered across later readings');
+  // Opposite candidates: reversing the sale leaves the buy's candidate, its reading taken out (0 - (-100) = +100).
+  const S=()=>order('S',{side:'Sell',fillPrice:100,limitPrice:100,costEstimate:undefined,resultCosts:{netCash:100}});
+  const x=world();x.open(order('A'),S());x.detect();x.later(MIN);const ra=x.reconcile({pieceId:x.pid('A')}).id,rs=x.reconcile({pieceId:x.pid('S'),route:undefined}).id;x.later(MIN);x.detect();const [g]=x.fd.timing('a');
+  x.reverse(rs);const [h]=x.fd.timing('a');assert.equal(h.id,g.id);assert.deepEqual(h.candidates.map(c=>[c.id,c.usd]),[[ra,100]]);assert.deepEqual([h.observed,h.low,h.high],[100,0,100]);
+  x.later(MIN);x.detect();assert.throws(()=>x.fd.resolveTiming('a',g.id,{reconciliationId:rs,paidHere:false}),/TIMING_CANDIDATE_REVERSED/);const ok=x.fd.resolveTiming('a',g.id,{reconciliationId:ra,paidHere:true});assert.equal(ok.flow.amount,100);
+  // Reconciled and reversed within one interval: never a candidate, never a flow.
+  const y=world();y.open(order('A'));y.detect();y.later(MIN);const r=y.reconcile({pieceId:y.pid('A')});y.reverse(r.id);y.later(MIN);y.detect();assert.deepEqual(y.fd.timing('a'),[]);assert.equal(y.perf.flows('a').length,0);assert.deepEqual(y.fd.pending('a'),[]);
+});
+test('R1: the withdrawal is atomic with the reversal; the last candidate leaves a real unexplained change as a detected flow',()=>{
+  // Paid in the interval as reconciled (cash fell $100), then reversed: the fall has no explanation left.
+  const w=world();w.open(order('A'));w.detect();w.later(MIN);const m=w.reconcile({pieceId:w.pid('A')});w.us.cash-=100;w.later(MIN);w.detect();const e=w.fd.timing('a')[0];
+  assert.deepEqual([e.observed,e.candidates[0].usd],[0,100]);
+  const add=w.perf.addFlow.bind(w.perf);w.perf.addFlow=()=>{throw new Error('DISK_FULL');};
+  const q={requestId:'v1',account:'a',reconciliationId:m.id,note:'wrong'};assert.throws(()=>{const p=w.rec.previewReversal(q);w.rec.reverse({...q,stateVersion:p.stateVersion,binding:p.binding});},/DISK_FULL/);
+  assert.equal(w.rec.reversalOf(m.id),null,'nothing reversed');assert.deepEqual(w.fd.timing('a').map(x=>x.candidates.length),[1],'the entry unchanged');assert.equal(w.view().reconciliations[0].reversed,null);
+  w.perf.addFlow=add;const b=w.reverse(m.id);assert.equal(b.effects.timing[0].flow.amount,-100);assert.deepEqual(w.perf.flows('a').map(f=>[f.amount,f.detected]),[[-100,true]]);assert.deepEqual(w.fd.timing('a'),[]);
+});
+test('R2 (review of 9ef95fe, P2): funding still committed after a reconciliation is shown and keeps the Home row: route unknown, or the estimate above the reconciled amount',()=>{
+  const w=world();w.open(order('A'));w.later(MIN);w.reconcile({pieceId:w.pid('A'),route:'unknown',settledOn:'2026-11-01'});w.detect();
+  const v=w.view();assert.equal(v.pieces.length,0);assert.equal(w.funding.commitments('a').usd,100);
+  assert.deepEqual(v.funding.map(f=>[f.orderId,f.retainedUSD,f.reason]),[['A',100,'route unknown']]);assert.equal(v.summary.fundingRetainedUSD,100);
+  assert.deepEqual(v.home,{title:'U.S. settlements to reconcile',detail:'$100.00 of buy funding still committed after reconciliation',tone:'warning'});
+  // A named route releases it: nothing retained, no row.
+  const n=world();n.open(order('A'));n.later(MIN);n.reconcile({pieceId:n.pid('A'),settledOn:'2026-11-01'});n.detect();assert.deepEqual(n.view().funding,[]);assert.equal(n.view().home,null);
+  // The estimate ($101 at the fill price) above the $100 reconciled: the $1 difference stays committed and is shown.
+  const x=world();x.open(order('A',{fillPrice:101}));x.later(MIN);x.reconcile({pieceId:x.pid('A'),settledOn:'2026-11-01'});x.detect();
+  assert.deepEqual(x.view().funding.map(f=>[f.retainedUSD,f.reason]),[[1,'estimate above reconciled']]);assert.match(x.view().home.detail,/\$1\.00 of buy funding still committed/);
+  // Partly reconciled with the route unknown: what the open piece still owes is not counted twice.
+  const y=world();y.open(order('A'));y.later(MIN);y.reconcile({pieceId:y.pid('A'),cents:4000,route:'unknown',settledOn:'2026-11-01'});const f=y.view();
+  assert.deepEqual(f.funding.map(z=>z.retainedUSD),[40]);assert.equal(f.pieces[0].usd,60);
+  // Reversed: the record no longer holds anything; the piece is open again.
+  y.reverse(f.reconciliations[0].id);assert.deepEqual(y.view().funding,[]);
+});
+test('R3 (review of 9ef95fe, P2): a preview carries each market\'s daily-loss check before and after, computed in the preview\'s transaction and bound',()=>{
+  const w=world();w.open(order('A'));
+  const loss=account=>{const t=w.f.current(account);return {KR:null,US:{loss:t.buysUSD,limitKRW:30,baseline:500,equity:500-t.buysUSD,breached:t.buysUSD>30,ambiguous:false,settlement:{adjustment:{low:0,high:0}},scenarios:[{name:'low bounds',loss:t.buysUSD,breached:t.buysUSD>30}]}};};
+  const rec=new Reconciliation(w.db,{inFlight:w.f,funding:w.funding,performance:w.perf,clock:w.clock,who:{user:'t',session:'s'},loss});
+  const q={requestId:'L1',account:'a',pieceId:w.pid('A'),cents:10000,explanation:'settled',route:'USD',kisReference:'KIS',note:'n'};const p=rec.preview(q);
+  assert.deepEqual([p.before.loss.US.loss,p.before.loss.US.breached,p.after.loss.US.loss,p.after.loss.US.breached],[100,true,0,false],'the after state is the applied one');assert.equal(p.before.loss.KR,null);
+  assert.deepEqual(p.after.loss.US.scenarios,[{name:'low bounds',loss:0,breached:false}]);assert.deepEqual(p.after.loss.US.adjustment,{low:0,high:0});
+  // A different loss result at confirmation applies nothing.
+  let skew=0;const rec2=new Reconciliation(w.db,{inFlight:w.f,funding:w.funding,performance:w.perf,clock:w.clock,who:{user:'t',session:'s'},loss:a=>{const r=loss(a);r.US.loss+=skew;return r;}});
+  const p2=rec2.preview(q);skew=1;assert.throws(()=>rec2.confirm({...q,stateVersion:p2.stateVersion,binding:p2.binding}),/PREVIEW_MISMATCH/);assert.equal(w.f.current('a').open.length,1);
+  skew=0;const done=rec2.confirm({...q,stateVersion:p2.stateVersion,binding:p2.binding});assert.equal(done.preview.after.loss.US.loss,0);
+  // The UI no longer promises that returns are unchanged.
+  const ui=fs.readFileSync(path.join(__dirname,'../src/SettlementPanel.tsx'),'utf8');assert.ok(!/no flow or return changes/.test(ui));assert.match(ui,/not finished yet \(Stage 3\)/);
+});
+test('R4: a fill dated before the daily KIS history read says only Check again reads it',()=>{
+  const w=world();w.open(order('A',{day:'2024-12-30',createdAt:Date.parse('2024-12-30T15:00:00Z')}));const p=w.view().pieces[0];
+  assert.equal(p.evidence.inDailyRead,false);assert.ok(p.unknown.some(u=>/before 2025-01-01.*only Check again/.test(u)));
+  const x=world();x.open(order('A'));assert.equal(x.view().pieces[0].evidence.inDailyRead,true);
+});

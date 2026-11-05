@@ -156,6 +156,9 @@ class LiveEngine {
   // Settlement corrections since the baseline (stage 2b.4, settlementAdjustments set by the app for the U.S. engine:
   // SettlementBaseline.adjustments): {certain:{low,high}, withUnknown:{low,high}|null, items}, in this market's currency.
   settlement(policy){try{const a=this.settlementAdjustments?.(policy);if(a&&Number.isFinite(a.certain?.low)&&Number.isFinite(a.certain?.high))return a;}catch{}return null;}
+  // Today's daily-loss check on the balance the engine holds (as getState shows it), or null before the day's baseline.
+  currentLoss(){const policy=this.policy(),connection=this.getConnection().snapshot,snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;
+    return policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null;}
   lossOf(policy,snapshot){
     const limit=policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW};const version=policy.valuation??'broker-total';const f=this.flows(policy);
     // A reconciliation or correction moves the baseline with the value (stage 2b.4); of unknown payment timing, both
