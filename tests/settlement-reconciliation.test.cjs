@@ -185,12 +185,12 @@ test('R1/R8/R9: a sale needs no route, commits no funding, and its proceeds recl
   assert.equal(w.current().sellsUSD,0);assert.deepEqual(w.perf.flows('a'),[]);assert.equal(record.effects.effect.correctionCents,0);
   code(()=>w.rec.preview(w.req({pieceId:'x',flowId:flow.id,split:[{kind:'settlement',cents:-100}]})),'PIECE_NOT_OPEN');
 });
-// Step 2b.4 dependency (spec CN2/CN5, a release dependency): the reconciliation changes the tracker's U.S. basis, which
-// the flow detector does not yet receive as an explained adjustment, so it would hold the change as a deposit.
-test('2b.4 dependency: a reconciliation is not yet an explained adjustment for the flow detector',{todo:'step 2b.4 passes reconciliation effects to the flow detector'},()=>{
+// Spec CN25, cleared in step 2b.4: the reconciliation changes the tracker's U.S. basis, which the flow detector now
+// receives as an explained adjustment (InFlight.explained), so it is no deposit.
+test('CN25 (cleared in 2b.4): a reconciliation is an explained adjustment for the flow detector, not a deposit',()=>{
   const {FlowDetector}=require('../electron/flow-detector.cjs');const w=world();const [A]=w.open(order('A'));let t0=w.clock();const fd=new FlowDetector(w.db,w.perf,()=>t0);
-  const usCash=()=>500-w.current().buysUSD;fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A]});w.reconcile();
-  t0+=60000;fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A]});t0+=3*3600000;const flows=fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A]});
+  const usCash=()=>500-w.current().buysUSD,x=()=>({usExplained:r=>w.f.explained('a',r),usReview:w.current().review});fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A],...x()});w.reconcile();
+  t0+=60000;fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A],...x()});t0+=3*3600000;const flows=fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A],...x()});
   assert.deepEqual(flows,[],'no detected deposit from a reconciliation');
 });
 test('R7/E8: a KIS record raised later never restores coverage from a reversed reconciliation',()=>{

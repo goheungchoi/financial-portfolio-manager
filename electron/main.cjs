@@ -385,9 +385,16 @@ app.whenReady().then(async () => {
   const brokerBalances=new (require('./broker-raw.cjs').BrokerBalances)(store.db);
   // U.S. fills KIS does not reflect yet (electron/valuation.cjs InFlight), decided at each U.S. balance reading.
   const inFlight=new (require('./valuation.cjs').InFlight)(store.db);inFlightOf=account=>{try{return inFlight.current(account);}catch{return null;}};
+  // The U.S. daily-loss baseline and settlement corrections (electron/settlement-baseline.cjs, stage 2b.4): the tracker's
+  // pieces are saved with each day's baseline, and reconciliations or corrections after it move the baseline with the value.
+  const settlementBaseline=new (require('./settlement-baseline.cjs').SettlementBaseline)(store.db,{inFlight});
+  usLive.baselineTaken=policy=>{const a=kisState.snapshot?.accountKey;if(a)settlementBaseline.take(a,policy.day,policy.baselineAt);};
+  usLive.settlementAdjustments=policy=>{const a=kisState.snapshot?.accountKey;return a?settlementBaseline.adjustments(a,policy):null;};
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
     if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
-    for(const flow of flowDetector.observe(s.accountKey,{krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?(f=>usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0)-(f?.buysUSD??0)+(f?.sellsUSD??0))(inFlightOf(s.accountKey)):null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
+    // The tracker's own changes to the U.S. basis (reconciliations, late pre-tracking fills, corrections, coverage under
+    // review) are explained, never flows (stage 2b.4).
+    for(const flow of flowDetector.observe(s.accountKey,{usExplained:range=>inFlight.explained(s.accountKey,range),usReview:inFlightOf(s.accountKey)?.review??null,krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?(f=>usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0)-(f?.buysUSD??0)+(f?.sellsUSD??0))(inFlightOf(s.accountKey)):null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
   // Recorded flows and the changes the detector still holds (electron/flow-detector.cjs flowsSince).
   live.flowsSince=policy=>{const a=kisState.snapshot?.accountKey;return a?flowDetector.flowsSince(a,'KR',policy?.baselineAt):null;};
