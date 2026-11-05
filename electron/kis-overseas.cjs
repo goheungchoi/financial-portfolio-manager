@@ -90,9 +90,10 @@ class OverseasClient{
   // Returns {rows,complete,reason,pages}: complete only when KIS reported the last page (stage 2a: it used to stop after
   // 10 pages and return what it had as the whole range). Otherwise reason says why and the rows are only part of the
   // range: PAGE_LIMIT (more than maxPages pages; electron/trade-history.cjs reads the range in halves), DUPLICATE_PAGE
-  // (a continuation key, or a page's rows, repeated; the repeat is not added), MISSING_CURSOR, or INVALID_RESPONSE (no
-  // output1 at all, or a buy or sale row that cannot be read: an empty history is an empty output1, never a missing
-  // one; stage 2a review, P1). Transport failures still throw.
+  // (a continuation key, or a page's rows, repeated; the repeat is not added), MISSING_CURSOR, or INVALID_RESPONSE
+  // (output1 missing or not a list, or a buy or sale row that cannot be read). Only an empty list is an empty history:
+  // null, {} or "" are not (records() would read them as empty; stage 2a review rounds 1-2, P1). Transport failures
+  // still throw.
   async trades(start,end,{maxPages=TRADE_PAGES}={}){
     if(!Number.isInteger(maxPages)||maxPages<1||maxPages>TRADE_PAGES)maxPages=TRADE_PAGES;
     if(![start,end].every(d=>/^\d{4}-\d{2}-\d{2}$/.test(d))||start>end)throw new Error('INVALID_DATE_RANGE');if(this.identity().environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
@@ -100,7 +101,7 @@ class OverseasClient{
     for(;;){
       if(pages>=maxPages){reason='PAGE_LIMIT';break;}
       const result=await this.query('inquire-period-trans','CTOS4001R',{ERLM_STRT_DT:start.replaceAll('-',''),ERLM_END_DT:end.replaceAll('-',''),OVRS_EXCG_CD:'',PDNO:'',SLL_BUY_DVSN_CD:'00',LOAN_DVSN_CD:'',CTX_AREA_FK100:fk,CTX_AREA_NK100:nk},{continuation});pages++;
-      let list;try{if(!result?.body||typeof result.body!=='object'||!Object.hasOwn(result.body,'output1'))throw new Error('INVALID_RESPONSE');list=records(result.body.output1);}catch{reason='INVALID_RESPONSE';break;}
+      let list;try{if(!result?.body||typeof result.body!=='object'||!Array.isArray(result.body.output1))throw new Error('INVALID_RESPONSE');list=result.body.output1;}catch{reason='INVALID_RESPONSE';break;}
       const content=JSON.stringify(list);if(list.length&&content===last){reason='DUPLICATE_PAGE';break;}last=content;
       rows.push(...list);if(!['M','F'].includes(result.continuation))break;
       fk=result.body.ctx_area_fk100;nk=result.body.ctx_area_nk100;if(typeof fk!=='string'||typeof nk!=='string'||!fk&&!nk){reason='MISSING_CURSOR';break;}

@@ -205,10 +205,12 @@ class TradingCosts{
     this.jobs.put(owner,{...job,queue:out.remaining,state:'paused',stopped:out.stopped,code:out.code,attempts,nextAt:failed?clock()+th.backoff(attempts):0});
     return {planned,done:false,stopped:out.stopped,code:out.code,remaining:out.remaining};
   }
-  // Gaps in the trade history of this taxpayer's accounts, with the ranges a stopped job has not read yet (NOT_READ).
+  // Gaps in the trade history of this taxpayer's accounts, with the ranges a job has not read yet (NOT_READ), running
+  // or stopped: a range leaves the job's queue only in the same savepoint that stores its result (stage 2a review
+  // round 2, P1: while a job ran, its unread dates were reported as read).
   historyGaps(){const {taxpayerAccounts}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());
     const gaps=this.gaps.all(),{subtract}=require('./trade-history.cjs');
-    const unread=this.jobs.all().filter(j=>j.state!=='running').flatMap(j=>gaps.filter(g=>g.account===j.account).reduce(subtract,j.queue.map(r=>({start:r.start,end:r.end,reason:'NOT_READ',account:j.account,since:j.createdAt}))));
+    const unread=this.jobs.all().flatMap(j=>gaps.filter(g=>g.account===j.account).reduce(subtract,j.queue.map(r=>({start:r.start,end:r.end,reason:'NOT_READ',account:j.account,since:j.createdAt}))));
     return [...gaps,...unread].filter(g=>accounts.has(g.account)).sort((a,b)=>a.start.localeCompare(b.start));}
   // A gap up to the end of the tax year leaves the year's figures incomplete: its dates may hold the year's sales or the
   // purchases they are measured against.
