@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import {useDraftState} from './useDraftState';
 import {ValueChart,PnlChart,DrawdownChart,ReturnChart} from './PerfCharts';
-type Point={day:string;value:number;flow:number;dailyReturn:number|null;index:number;pnl?:number|null;high?:number;low?:number;cash?:number|null;unrealized?:number|null};
+type Point={day:string;value:number;flow:number;dailyReturn:number|null;index:number;pnl?:number|null;pnlRange?:{low:number;high:number};high?:number;low?:number;cash?:number|null;unrealized?:number|null};
 type Mark={value:number;day:string};
 type Analytics={from:string;to:string;days:number;twrPct:number|null;gain:number;peak:Mark;trough:Mark;intradayHigh:Mark;intradayLow:Mark;maxDrawdownPct:number|null;currentDrawdownPct:number|null;volatilityPct:number|null;bestDay:{day:string;returnPct:number;pnl:number}|null;worstDay:{day:string;returnPct:number;pnl:number}|null;positiveDaysPct:number|null;unrealized:number|null;cashSharePct:number|null;dailyPnl:{day:string;pnl:number|null;returnPct:number|null}[];drawdown:{day:string;drawdownPct:number}[];contributions:{symbol:string;name:string;startUnrealized:number;endUnrealized:number;change:number;status:string}[]|null};
 type Period={label:string;start:string;end:string;partial:boolean;twr:number|null;gain:number|null;flows:number;benchmark:number|null};

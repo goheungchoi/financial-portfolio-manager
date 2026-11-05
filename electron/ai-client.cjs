@@ -76,11 +76,16 @@ function planGap(plan,{cover=false}={}){
   if(evidence.some(e=>!e.verified)&&!(plan.uncertainty?.acceptableAtThisSize&&plan.uncertainty?.beforeAddingMore))return 'unverified evidence without saying why it is acceptable at this size and what must be verified before adding more';
   return null;
 }
+function validationMemory(context,options){const v=options?.validation;const m=v?v.positionMemory:context.positionMemory;if(m==null)return null;
+  if(!Array.isArray(m)||m.some(r=>!r||typeof r.symbol!=='string'))throw Object.assign(new Error('VALIDATION_STATE_INVALID'),{detail:'position memory for validation is not the full list'});return m;}
 function normalizeReversal(r){if(!r||typeof r!=='object')return null;const s=(x,n)=>String(x??'').trim().replace(/\s+/g,' ').slice(0,n);
   return {priorDecisionId:s(r.priorDecisionId,64),basis:['new-evidence','corrected-reasoning'].includes(r.basis)?r.basis:null,whatChanged:s(r.whatChanged,400),priorRequirement:s(r.priorRequirement,400),newEvidence:(Array.isArray(r.newEvidence)?r.newEvidence:[]).slice(0,5).map(e=>({claim:s(e?.claim,200),source:s(e?.source,160),date:s(e?.date,30)})),afterCost:s(r.afterCost,300)};}
 // memory: context.positionMemory; with it, an opening that reverses a recent filled exit needs its reversal explanation
 // (else withheld, kind reversal), and a reduction that reverses a recent entry is flagged when it has none, never withheld.
 function validateDecision(value,symbols,{requirePlan=false,memory=null,quotes=[],now=Date.now(),context=null}={}) {
+  // Position memory given for validation must be the full list (release review 2026-11-05, P1): a compressed reference or
+  // anything else is an explicit failure, never read as "no earlier trade".
+  if(memory!=null&&(!Array.isArray(memory)||memory.some(r=>!r||typeof r.symbol!=='string')))throw Object.assign(new Error('VALIDATION_STATE_INVALID'),{detail:'position memory for validation is not the full list'});
   // The scout brief is checked on its own; a malformed brief is dropped and never invalidates the trade decision.
   let brief=null;if(value&&typeof value==='object'&&'scoutBrief' in value){const {scoutBrief,...rest}=value;value=rest;if(scoutBrief&&scoutBrief.request!=='none')brief=require('./scout-feedback.cjs').normalizeBrief(scoutBrief);}
   let verdicts=null;if(value&&typeof value==='object'&&'planVerdicts' in value){const {planVerdicts,...rest}=value;value=rest;verdicts=(Array.isArray(planVerdicts)?planVerdicts:[]).filter(v=>v&&typeof v.symbol==='string'&&['acted','waiting','passed'].includes(v.verdict)&&typeof v.reason==='string').slice(0,12).map(v=>{const s=(x,n)=>String(x??'').trim().slice(0,n);const c=v.condition;const g=v.dataGap;const m=v.minimumPosition;
@@ -225,10 +230,13 @@ class AiClient {
         return {toolCalls:calls.map(call=>({name:call.name,callId:call.call_id,args:JSON.parse(call.arguments)})),continuation:[...input,...body.output],usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
-      const decision=validateDecision(JSON.parse(output),context.universe.map(row=>row.symbol),{requirePlan:true,memory:context.positionMemory??null,quotes:context.quotes??[],context});
+      // Validation reads the authoritative state the app sends beside the prompt (options.validation: the position memory
+      // before any compression), never the shaped prompt, where position memory can be a reference (release review
+      // 2026-11-05, P1). Without it, the prompt's memory is used only when it is the full list; anything else fails.
+      const memory=validationMemory(context,options);const decision=validateDecision(JSON.parse(output),context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {decision,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }
-module.exports={AiClient,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};
+module.exports={AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};

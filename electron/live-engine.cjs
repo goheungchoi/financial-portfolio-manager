@@ -121,7 +121,7 @@ class LiveEngine {
   // Money moved since the day's baseline was taken (flowsSince, set by the app): confirmed (recorded or confirmed by
   // you) and unresolved (detected, awaiting you). Only confirmed flows adjust the baseline; unresolved ones are a
   // scenario in lossOf. Without flowsSince, flowsToday counts as confirmed.
-  flows(policy){try{const f=this.flowsSince?.(policy);if(f&&Number.isFinite(f.confirmed))return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0};}catch{}return {confirmed:Number(this.flowsToday?.())||0,unresolved:0};}
+  flows(policy){try{const f=this.flowsSince?.(policy);if(f&&Number.isFinite(f.confirmed))return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0,uncertain:{confirmed:Number(f.uncertain?.confirmed)||0,unresolved:Number(f.uncertain?.unresolved)||0}};}catch{}return {confirmed:Number(this.flowsToday?.())||0,unresolved:0,uncertain:{confirmed:0,unresolved:0}};}
   // The value the daily loss is measured on (audit 2026-11-04, Stage 2): the account valuation's net equity for this
   // market (netEquityOf, set by the app: {low, high, version}), or KIS's total when that is unavailable. A day's baseline
   // and its current value always use the same version: the baseline records its version when the day starts, and a
@@ -136,7 +136,11 @@ class LiveEngine {
     const limit=policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW};const version=policy.valuation??'broker-total';const f=this.flows(policy);
     const v=version==='broker-total'?{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version}:this.lossValue(snapshot);
     if(v.version!==version){const s=lossStatus(limit,policy.baseline+f.confirmed,v.low);return {...s,breached:false,ambiguous:s.breached,version,reasons:['the valuation this day started on is not available now']};}
-    const scenarios=[['low bounds',policy.baseline+f.confirmed,v.low],['high bounds',(policy.baselineHigh??policy.baseline)+f.confirmed,v.high],...(f.unresolved?[['unresolved money changes counted',policy.baseline+f.confirmed+f.unresolved,v.low]]:[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
+    // Flows whose side of the baseline cannot be told (same-day entries with only a date, a detection straddling the
+    // baseline reading) are a scenario of their own, never a precise adjustment (release review 2026-11-05, P1).
+    const u=f.uncertain??{confirmed:0,unresolved:0};
+    const scenarios=[['low bounds',policy.baseline+f.confirmed,v.low],['high bounds',(policy.baselineHigh??policy.baseline)+f.confirmed,v.high],...(f.unresolved?[['unresolved money changes counted',policy.baseline+f.confirmed+f.unresolved,v.low]]:[]),
+      ...(u.confirmed||u.unresolved?[['flows of uncertain timing counted',policy.baseline+f.confirmed+u.confirmed+u.unresolved,v.low]]:[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
     const all=scenarios.every(x=>x.breached),any=scenarios.some(x=>x.breached);
     return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(any&&!all?{reasons:[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]}:{})};
   }

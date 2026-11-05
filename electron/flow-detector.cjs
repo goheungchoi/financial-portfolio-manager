@@ -123,7 +123,7 @@ class FlowDetector {
     // threshold applies to the accumulated difference (a gradual return to the earlier balance cancels it).
     for(const market of ['KR','US']){const amount=u[market],held=state.pending[market];if(!amount||!held&&!big(market,amount,fx))continue;
       const mark=usStart&&market==='KR'?{usUnseen:true}:{};
-      state.pending[market]=held?{...held,amount:round(market,held.amount+amount),funding:held.funding||u.usTraded,...mark}:{amount:round(market,amount),since:now.at,funding:u.usTraded,...mark};}
+      state.pending[market]=held?{...held,amount:round(market,held.amount+amount),funding:held.funding||u.usTraded,...mark}:{amount:round(market,amount),since:now.at,after:prev.at??null,funding:u.usTraded,...mark};}
     const found=this.resolve(account,state,now,prev,fx);save();return found;
   }
   // Provisional changes held now, for the review context and the performance page.
@@ -139,10 +139,11 @@ class FlowDetector {
     if(p.KR&&p.US&&fx>0&&!big('KR',p.KR.amount+p.US.amount*fx,fx)){
       const kr=p.KR.amount,us=p.US.amount,day=seoulDate(Math.max(p.KR.since,p.US.since)),funding=p.KR.funding||p.US.funding;
       const settling=now.unsettledKRW>0||(prev.unsettledKRW??0)>0||state.settled.length>0;
+      const window={occurredAfter:Math.min(p.KR.after??-Infinity,p.US.after??-Infinity),occurredBy:Math.max(p.KR.since,p.US.since)};
       const prior=!funding&&settling?this.recordedTransfer(account,kr,us,now.at):null;
       if(prior){this.performance.markExchanged(account,prior.map(f=>f.id),{at:now.at,KRW:kr,USD:us});
         note('Currency exchange matched',`${money('KR',kr)} exchanged into ${money('US',us)} completes the transfer between markets recorded on ${prior[0].day}; it is not counted again.`);}
-      else out.push(...[['KR',kr],['US',us]].map(([market,amount])=>this.performance.addFlow(account,{day,market,amount,transfer:true,...(funding?{awaitingExchange:true}:{source:'exchange'}),
+      else out.push(...[['KR',kr],['US',us]].map(([market,amount])=>this.performance.addFlow(account,{day,market,amount,transfer:true,...window,...(funding?{awaitingExchange:true}:{source:'exchange'}),
         note:funding?`Transfer between markets: ${amount<0?'out of':'into'} the ${market==='US'?'U.S.':'Korean'} account (integrated-margin funding of a U.S. buy).`:`Transfer between markets: ${amount<0?'out of':'into'} the ${market==='US'?'U.S.':'Korean'} account (currency exchange).`})));
       delete p.KR;delete p.US;}
     // A fall in Korean or U.S. cash matching the outstanding payment for U.S. buys that settled while their funding was
@@ -155,7 +156,7 @@ class FlowDetector {
       const couldSettle=now.provisionalKRW>0&&(m==='KR'?q.amount<0:q.amount>0)&&(krw==null||Math.abs(krw)<=now.provisionalKRW*1.05+THRESHOLD_KRW);
       if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
       const unseen=q.usUnseen?' The U.S. balance could not be compared before this change, so money moved to or from the U.S. account cannot be ruled out.':'';
-      out.push(this.performance.addFlow(account,{day:seoulDate(q.since),market:m,amount:q.amount,detected:true,note:`Detected: ${label(m)} cash ${q.amount>0?'rose':'fell'} with no matching trade.${unseen} Confirm or remove.`}));delete p[m];}
+      out.push(this.performance.addFlow(account,{day:seoulDate(q.since),market:m,amount:q.amount,detected:true,occurredAfter:q.after??null,occurredBy:q.since,note:`Detected: ${label(m)} cash ${q.amount>0?'rose':'fell'} with no matching trade.${unseen} Confirm or remove.`}));delete p[m];}
     return out;
   }
   // A transfer pair recorded in the last MATCH_DAYS days as funding awaiting its exchange (or by the user), not yet

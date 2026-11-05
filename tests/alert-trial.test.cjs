@@ -14,8 +14,9 @@ test('an alert on a holding or an entry crossing must be answered by a review wi
   for(const [shadow,proposed,kind] of [[null,{kind:'percent',symbol:'028050'},'held-no-review'],[{kind:'percent',symbol:'028050'},null,'shadow-held-no-review'],[null,{kind:'watchlist',alerts:[{kind:'entry-level',symbol:'396500'}]},'entry-no-review'],[{kind:'price',symbol:'396500'},null,'entry-no-review']]){
     const {t,at}=trial();t.check({now:t0,shadow,proposed,held,quotes:[q('028050')]});at(t0+4*MIN);assert.equal(t.monitor({now:t0+4*MIN,marketsOpen:true}),null);
     assert.equal(t.monitor({now:t0+5*MIN+1,marketsOpen:true}).end,kind,kind);}
-  const {t}=trial();t.check({now:t0,shadow:null,proposed:{kind:'percent',symbol:'028050'},held});t.attempt({now:t0+2*MIN,trigger:'Price movement trigger',reviewId:'R1',shadowFired:false});
-  assert.equal(t.monitor({now:t0+10*MIN}),null,'answered by a review');
+  const {t}=trial();t.check({now:t0,shadow:null,proposed:{kind:'percent',symbol:'028050'},held});t.attempt({now:t0+MIN,trigger:'Price movement trigger',reviewId:'R1',shadowFired:false});
+  assert.equal(t.current().obligations.length,1,'a review starting answers nothing yet');t.answered({now:t0+2*MIN,reviewId:'R1',assessed:['028050']});
+  assert.equal(t.monitor({now:t0+10*MIN}),null,'answered by a completed review that assessed it');assert.equal(t.current().answered[0].symbol,'028050');
   const {t:b}=trial();b.check({now:t0,shadow:null,proposed:{kind:'percent',symbol:'028050'},held});b.monitor({now:t0+4*MIN,busy:true});assert.equal(b.monitor({now:t0+8*MIN}),null,'the 5 minutes restart after a running review');assert.ok(b.monitor({now:t0+9*MIN+1}));
   const {t:c}=trial();c.check({now:t0,shadow:null,proposed:{kind:'percent',symbol:'028050'},held});c.monitor({now:t0+6*MIN,held:true});assert.equal(c.monitor({now:t0+10*MIN}),null,'a size-failure hold or an emergency is not the trial’s doing');
   const {t:d}=trial();d.check({now:t0,shadow:null,proposed:{kind:'watchlist',alerts:[{kind:'watchlist-move',symbol:'488080'}]},held});assert.equal(d.monitor({now:t0+30*MIN}),null,'a wide move on a stock not held is not an obligation');
@@ -79,8 +80,8 @@ test('during the trial the selective rules decide; the current rule is logged in
 test('a rollback switches the trial off at once, logs and notifies; price reviews come from the current rule again',()=>{
   const {a,notes}=harness();const now=Date.now();a.configure({alertTrial:'on'});a.sessionArmed=true;a.config={...a.config,enabled:true};
   a.alertTrial.check({now:now-6*MIN,shadow:null,proposed:{kind:'percent',symbol:'028050'},held:new Set(['028050'])});
-  a.lastTrialCheck=0;try{a.tick();}catch{}
-  assert.equal(a.config.alertTrial,'off');assert.equal(a.alertTrial.all()[0].status,'rolled back');assert.equal(a.alertTrial.all()[0].endReason,'held-no-review');assert.match(notes.join(' '),/Watchlist alert trial ended\. Rolled back: 028050: A held position moved/);
+  a.trialWatchSince=now-7*MIN;a.lastTrialCheck=0;try{a.tick();}catch{}
+  assert.equal(a.config.alertTrial,'off');assert.equal(a.alertTrial.all()[0].status,'rolled back');assert.equal(a.alertTrial.all()[0].endReason,'held-no-review');assert.match(notes.join(' '),/Watchlist alert trial ended\. Rolled back: 028050: A held position moved past its review threshold or level and no completed review assessed it/);
   a.lastPrices=new Map([['488080',26240]]);assert.equal(a.priceTrigger('s',[{symbol:'488080',price:27090,timestamp:now}],now).symbol,'488080','the current rule decides again');
   assert.equal(a.watchlistAlertsState().trial.status,'rolled back');
 });
@@ -114,4 +115,33 @@ test('gate, schedule and review records carry the alert rules in force and the t
   a.configure({alertTrial:'on'});const id=a.alertTrial.current().id;assert.deepEqual(a.alertTag(),{mode:'trial',rules:require('../electron/watch-alerts.cjs').RULES_VERSION,trialId:id});
   a.scheduleObserver.save('proposed-run',{at:Date.now(),reasons:[]});assert.equal(JSON.parse(db.prepare('SELECT payload FROM schedule_observations').get().payload).alerts.mode,'trial');
   const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.match(src,/this\.reviewGate\.log\(Date\.now\(\),\{scope:watchScope,trigger,mode:gateMode,alerts:this\.alertTag\(\)/);assert.match(src,/alerts:this\.alertTag\(\),\.\.\.reviewSymbols/);
+});
+// Release review 2026-11-05, P2: open alerts survive a restart; downtime and pauses do not count; only a completed review
+// that assessed the symbol answers an alert.
+test('open alerts survive a restart: time before it counts, downtime does not, and an alert overdue before it still rolls back',()=>{
+  const {t,db}=trial();t.check({now:t0,shadow:null,proposed:{kind:'percent',symbol:'028050'},held});assert.equal(t.monitor({now:t0+3*MIN}),null);
+  const again=new AlertTrial(db,()=>t0);assert.equal(again.current().obligations.length,1,'restored');
+  assert.equal(again.monitor({now:t0+60*MIN,since:t0+60*MIN}),null,'the hour the app was closed is not counted');assert.equal(again.monitor({now:t0+61*MIN,since:t0+60*MIN}),null);
+  assert.equal(again.monitor({now:t0+62*MIN+1000,since:t0+60*MIN}).end,'held-no-review','3 minutes before and 2 after the restart');
+  const {t:o,db:db2}=trial();o.check({now:t0,shadow:null,proposed:{kind:'percent',symbol:'028050'},held});assert.equal(o.monitor({now:t0+6*MIN}).end,'held-no-review','overdue before the restart');
+  assert.equal(new AlertTrial(db2,()=>t0).monitor({now:t0+90*MIN,since:t0+90*MIN}).end,'held-no-review','and still after it');
+});
+test('a delivered entry crossing stays open until a review assesses that stock; a review of other stocks or a failed one answers nothing',()=>{
+  const {t}=trial();t.check({now:t0,shadow:null,proposed:{kind:'watchlist',alerts:[{kind:'entry-level',symbol:'396500'}]},held});t.check({now:t0+MIN,shadow:null,proposed:null,held});
+  t.attempt({now:t0+MIN,trigger:'Price movement trigger',reviewId:'R1',shadowFired:false});t.answered({now:t0+2*MIN,reviewId:'R1',assessed:['028050','NASD:NVDA']});
+  assert.equal(t.current().obligations.length,1,'an unrelated review does not answer it');assert.equal(t.monitor({now:t0+5*MIN+1000}).end,'entry-no-review');
+});
+test('through the scheduler: an alert overdue before a restart rolls the trial back once auto trading resumes, restoring the current rule',()=>{
+  const {a,db}=harness();const now=Date.now();a.configure({alertTrial:'on'});
+  a.alertTrial.check({now:now-7*MIN,shadow:null,proposed:{kind:'percent',symbol:'028050'},held:new Set(['028050'])});a.alertTrial.monitor({now:now-MIN});
+  const b=restart(db);assert.equal(b.trialRunning(),true);assert.equal(b.alertTrial.current().obligations.length,1);
+  b.lastTrialCheck=0;b.tick();assert.equal(b.trialRunning(),true,'paused after the restart: nothing is judged');
+  b.sessionArmed=true;b.config={...b.config,enabled:true};b.lastTrialCheck=0;try{b.tick();}catch{}
+  assert.equal(b.config.alertTrial,'off');assert.equal(b.alertTrial.all()[0].endReason,'held-no-review');assert.equal(notHeldMove(b,now).symbol,'488080','the current rule decides');
+});
+test('a review that fails before its decision answers no alert; a completed one does, by what it assessed',async()=>{
+  const {a}=harness();a.configure({alertTrial:'on'});a.alertTrial.check({shadow:null,proposed:{kind:'percent',symbol:'028050'},held:new Set(['028050'])});
+  a.provider.request=async()=>{throw new Error('AI_SERVER_ERROR');};await a.review('Price movement trigger').catch(()=>{});
+  assert.equal(a.alertTrial.current().obligations.length,1,'failed: still open');assert.equal(a.alertTrial.current().attempts.length>=0,true);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');const at=src.indexOf("run(id,JSON.stringify(recorded));");assert.ok(at>0&&src.slice(at,at+400).includes('this.alertTrial.answered({reviewId:id,assessed:recorded.assessed??[]})'),'answered right after the review is recorded');
 });

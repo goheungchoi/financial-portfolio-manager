@@ -37,6 +37,9 @@ function dryRunSummary(c,{assembledAt=Date.now(),account=null,scope=null}={}){
 }
 // The symbols that started a review and the symbols it assessed: those, its verdicts and decision, and holdings
 // (audit 2026-11-04, Stage 5), so observation episodes can be linked to the reviews that actually looked at them.
+// The validation snapshot of a review (release review 2026-11-05, P1): the full position memory and quotes, taken from
+// the review context before it is compressed for the prompt, and checked again at the execution boundary.
+function validationOf(context){return {positionMemory:Array.isArray(context?.positionMemory)?structuredClone(context.positionMemory):null,quotes:structuredClone(context?.quotes??[])};}
 function reviewSymbols(context,decision){const t=context?.triggerEvidence;const trigger=[...new Set([t?.symbol,...(t?.symbols??[]),...(t?.alerts??[]).map(a=>a?.symbol),...(t?.alongside??[]).map(a=>a?.symbol),...(t?.events??[]).flatMap(e=>[e?.symbol,...(e?.symbols??[])])].filter(s=>typeof s==='string'&&s))];
   const held=Object.entries(context?.positions??{}).filter(([,p])=>p?.quantity>0).map(([s])=>s);
   return {triggerSymbols:trigger,assessed:[...new Set([...trigger,...(decision?.planVerdicts??[]).map(v=>v.symbol),decision?.symbol,...held].filter(s=>typeof s==='string'&&s))]};}
@@ -280,7 +283,7 @@ class Automation {
       if(mode==='review'){
         // Shaped and logged as a live review is ("Review size"); the size, every request's bytes and the full research
         // transcript (detail reads, condensing, refusals) are kept with the record, also when the review fails.
-        const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context));
+        const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context));const dryValidation=validationOf(context);
         const size={...shapedDry.report,mandatoryBytes:shapedDry.mandatoryBytes,steps:shapedDry.steps,detailAvailable:shapedDry.context.detailAvailable??[]};
         this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
         const providerContext=shapedDry.context;const transcript=[],requests=[];
@@ -293,7 +296,7 @@ class Automation {
         // Every desk tool is a no-op except compute, which only reads prices.
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
         const model={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');let calls=0;const callIds=[];
-        const request=async options=>{options={...options,...model};
+        const request=async options=>{options={...options,...model,validation:dryValidation};
           requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options)});
           const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
           const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
@@ -494,17 +497,19 @@ class Automation {
         assessed=this.config.modelRouting==='complexity'||this.config.shadowEvaluation?this.routingInputs(context,trigger):null;const inputs=this.config.modelRouting==='complexity'?assessed:null;
         let selected=saver.route(this.config,{trigger,emergencyActive:emergency.active,triggerEvidence:context.triggerEvidence,nearBudget:saver.nearBudget(this.config,today),complexity:inputs?.complexity,hardRule:inputs?.hardRule,eligible:this.routingEligibility().eligible});
         if(assessed)assessed.routeInputs={emergencyActive:Boolean(emergency.active),triggerEvidence:context.triggerEvidence?{kind:context.triggerEvidence.kind??null,events:(context.triggerEvidence.events??[]).map(e=>({importance:e.importance??null}))}:null,nearBudget:saver.nearBudget(this.config,today)};
+        // The validation snapshot: position memory and quotes before compression, for every request of this review.
+        const validation=validationOf(context);
         let providerContext=saver.compact(context);
         const shaped=require('./review-context.cjs').shape(providerContext);providerContext=shaped.context;const detail=shaped.detail;
         this.log(id,'System','Review size',JSON.stringify({...shaped.report,mandatoryBytes:shaped.mandatoryBytes,steps:shaped.steps}));
         if(!shaped.fits){const failure=require('./review-context.cjs').sizeFailure(shaped,{stage:'first request'});this.saveSizeFailure(id,failure,{report:{...shaped.report,mandatoryBytes:shaped.mandatoryBytes},steps:shaped.steps,input:providerContext});throw failure;}
         this.replays.saveContext(id,providerContext);firstRequest=providerContext;
         // Shadow evaluation runs alongside this review, on a copy of the same context and with shared evidence.
-        if(assessed&&this.config.shadowEvaluation&&!this.shadowing&&selected.openaiModel===this.config.openaiModel&&selected.reasoningEffort===this.config.reasoningEffort&&Math.random()*100<this.config.shadowPct){anchor=require('./evidence-anchor.cjs').createAnchor();shadowRun=this.shadowRun(id,structuredClone(providerContext),anchor,detail);}
+        if(assessed&&this.config.shadowEvaluation&&!this.shadowing&&selected.openaiModel===this.config.openaiModel&&selected.reasoningEffort===this.config.reasoningEffort&&Math.random()*100<this.config.shadowPct){anchor=require('./evidence-anchor.cjs').createAnchor();shadowRun=this.shadowRun(id,structuredClone(providerContext),anchor,detail,validation);}
         if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`+(inputs?` · complexity ${inputs.complexity.score}/100${inputs.complexity.reasons.length?': '+inputs.complexity.reasons.join('; '):''}`:''));
         const research=()=>require('./research-review.cjs').researchReview({context,detail,watched:watchedIn(this.discovery,context),wrap:anchor?anchor.wrapper('live'):null,evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:this.researchFor({watchScope,trigger,emergency:emergency.active,gate,gateMode,id})}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config,{heldMoves:this.heldMoves(context)});},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');}):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
           if(this.disposed||watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
-          const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};options={...options,...modelConfig};
+          const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};options={...options,...modelConfig,validation};
           const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options)});
           const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
           if(require('./ai-models.cjs').budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
@@ -548,6 +553,9 @@ class Automation {
       if(this.disposed)return;if(watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
       decided=true;stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+(routing?.confirmedBy||routing?.spotCheck||routing?.verdictChange?this.config.reasoningEffort:routing?.effort??this.config.reasoningEffort)+(routing?.confirmedBy?` (confirmed ${routing.confirmed?'unchanged':'with changes'})`:''));
       this.log(id,'Agent','Decision',JSON.stringify(result.decision,null,2));
+      // The execution boundary (release review 2026-11-05, P1): a model decision is checked once more against this review's
+      // full position memory, whatever the prompt showed, so compression or a repair round can never remove the reversal rule.
+      if(result.provider==='openai'&&context.environment!=='local-paper')result={...result,decision:require('./position-memory.cjs').enforce(result.decision,context.positionMemory??[],{price:context.quotes?.find(q=>q.symbol===result.decision.symbol)?.price??null})};
       if(result.decision.withheld)this.log(id,'System',result.decision.withheld.kind==='reversal'?'Opening held back · reversal not explained':'Buy held back · trade plan',`${result.decision.withheld.quantity} ${result.decision.withheld.symbol}: ${result.decision.withheld.reason}.`);
       if(result.decision.reversalFlag)this.log(id,'System','Reversal not explained',`${result.decision.action} ${result.decision.quantity} ${result.decision.symbol}: ${result.decision.reversalFlag.reason}. A reduction is never held back for this.`);
       // A Buy whose stop is not below the current price is held back too.
@@ -563,6 +571,8 @@ class Automation {
       const contextEvidence={guidelines:this.config.guidelines,environment:context.environment,marketSession:context.marketSession??null,quote:context.quotes.find(q=>q.symbol===result.decision.symbol)??null,position:context.positions?.[result.decision.symbol]??null,emergency:context.emergency.active,reviewedLessons:context.reviewedLessons,lessonIds};
       const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,...(result.provider==='openai'?{instructions:require('./ai-client.cjs').instructions()}:{}),...(context.reviewScope?{reviewScope:context.reviewScope.kind}:{}),alerts:this.alertTag(),...reviewSymbols(context,result.decision),decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null};
       this.db.prepare('INSERT INTO reviews VALUES(?,?)').run(id,JSON.stringify(recorded));
+      // A completed review answers the watchlist alert trial's open alerts on the symbols it assessed.
+      if(this.trialRunning())try{this.alertTrial.answered({reviewId:id,assessed:recorded.assessed??[]});}catch{}
       if(this.config.scope!=='paper')try{const events=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.runId')=?").all(id).map(r=>JSON.parse(r.payload));this.researchGaps.record(watchScope,result.decision.planVerdicts,require('./research-gaps.cjs').researchFromEvents(events));}catch{}
       try{const {nextOpen}=require('./market-hours.cjs');const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
         // The daily reassessment: the first open after the session in progress (or after now, while closed).
@@ -654,13 +664,13 @@ class Automation {
   // review received, at the same time and without seeing the live answer. Read requests go through the shared evidence
   // anchor, so both models see the same data for the same question; write tools answer "not applied" and do nothing.
   // Its calls use their own daily allowance (shadow_usage), never the live budget. The result goes only to routing_eval.
-  shadowRun(reviewId,frozen,anchor,detail=null){
+  shadowRun(reviewId,frozen,anchor,detail=null,validation=null){
     this.shadowing=true;
     const model={openaiModel:this.config.routineModel,reasoningEffort:this.config.routineEffort};const models=require('./ai-models.cjs');
     const noop=name=>async()=>({status:'not-applied',reason:`Shadow run: ${name} changes nothing.`});
     const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
     const desk=frozen.agentDesk?(()=>{const real=this.deskActions(this.watchScope(),frozen,reviewId,()=>{});return {compute:real.compute,save_note:noop('save_note'),save_assessment:noop('save_assessment'),set_review_trigger:noop('set_review_trigger'),set_conditional_order:noop('set_conditional_order')};})():null;
-    const request=async options=>{options={...options,...model};const reserve=models.reservation(model,frozen,{...options,maxBytes:models.reviewByteLimit(options)});const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM shadow_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
+    const request=async options=>{options={...options,...model,...(validation?{validation}:{})};const reserve=models.reservation(model,frozen,{...options,maxBytes:models.reviewByteLimit(options)});const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM shadow_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
       if(usage.reservedMicro+reserve>this.config.shadowUSDPerDay*1e6)throw new Error('SHADOW_BUDGET_EXHAUSTED');const callId=randomUUID();
       this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('INSERT INTO shadow_usage VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(day,usage.calls+1,usage.reservedMicro+reserve);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,JSON.stringify({reviewId,model:model.openaiModel,reasoningEffort:model.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'shadow'}));this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}
       try{const r=await this.decisionWithRetry(frozen,options);require('./ai-accounting.cjs').settle(this.db,'shadow_usage',day,callId,r,'completed');return r;}catch(error){require('./ai-accounting.cjs').settle(this.db,'shadow_usage',day,callId,error,'failed-or-uncertain');throw error;}};

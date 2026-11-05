@@ -86,7 +86,7 @@ export function ReturnChart({rows,benchmark}:{rows:{day:string;portfolio:number;
   </Frame>;
 }
 // Daily P/L after deposits and withdrawals: bars from zero, rounded at the data end; the best and worst days are labelled.
-export function PnlChart({rows,fmt,currency='KRW'}:{rows:{day:string;pnl:number|null;returnPct:number|null}[];fmt:(v:number)=>string;currency?:string}){
+export function PnlChart({rows,fmt,currency='KRW'}:{rows:{day:string;pnl:number|null;returnPct:number|null;pnlRange?:{low:number;high:number}}[];fmt:(v:number)=>string;currency?:string}){
   const [ref,w]=useWidth();const vals=rows.map(r=>r.pnl??0);const span=Math.max(...vals,0)-Math.min(...vals,0);const s=scale(w,rows.length,[...vals,Math.max(...vals,0)+span*0.1,Math.min(...vals,0)-span*0.1],{bars:true,includeZero:true});const {hover,move,leave}=useHover(rows.length,s,true);
   const step=s.ticks.length>1?s.ticks[1]-s.ticks[0]:1;const slot=(s.w-L-R)/Math.max(1,rows.length);const bw=Math.max(2,Math.min(16,slot*0.7));
   const best=vals.indexOf(Math.max(...vals)),worst=vals.indexOf(Math.min(...vals));const h=hover==null?null:rows[hover];
@@ -97,7 +97,7 @@ export function PnlChart({rows,fmt,currency='KRW'}:{rows:{day:string;pnl:number|
     return <path key={i} className={`perf-bar ${v>0?'up':'down'} ${hover!=null&&hover!==i?'dim':''}`} d={d}/>;};
   return <Frame boxRef={ref} label={`Daily profit and loss from ${rows[0].day} to ${rows.at(-1)!.day}: ${up} up days, ${down} down days`} days={rows.map(r=>r.day)} s={s} fmt={v=>axisMoney(v,step,currency)} hover={hover} move={move} leave={leave}
     legend={<div className="perf-legend"><span><i className="swatch up"/>{up} up days</span><span><i className="swatch down"/>{down} down days</span><span className="muted">Net {signedMoney(total,fmt)}</span></div>}
-    tip={h&&<><b>{shortDay(h.day,true)}</b><span className={(h.pnl??0)>=0?'positive':'negative'}>{h.pnl==null?'—':signedMoney(h.pnl,fmt)}</span>{h.returnPct!=null&&<span className="muted">{h.returnPct>0?'+':''}{h.returnPct.toFixed(2)}% on the day</span>}</>}>
+    tip={h&&<><b>{shortDay(h.day,true)}</b><span className={(h.pnl??0)>=0?'positive':'negative'}>{h.pnl==null?'—':signedMoney(h.pnl,fmt)}</span>{h.pnlRange&&<span className="muted">Provisional: {signedMoney(h.pnlRange.low,fmt)} to {signedMoney(h.pnlRange.high,fmt)} (the valuation range changed)</span>}{h.returnPct!=null&&<span className="muted">{h.returnPct>0?'+':''}{h.returnPct.toFixed(2)}% on the day</span>}</>}>
     {vals.map(bar)}<line className="perf-zero" x1={L} x2={s.w-R} y1={s.y(0)} y2={s.y(0)}/>
     {vals[best]>0&&<text className="perf-mark-text" x={Math.min(Math.max(s.x(best),L+30),s.w-R-30)} y={s.y(vals[best])-8} textAnchor="middle">{axisMoney(vals[best],step/10,currency)}</text>}
     {vals[worst]<0&&<text className="perf-mark-text" x={Math.min(Math.max(s.x(worst),L+30),s.w-R-30)} y={s.y(vals[worst])+16} textAnchor="middle">{axisMoney(vals[worst],step/10,currency)}</text>}
