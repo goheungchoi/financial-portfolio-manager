@@ -212,10 +212,14 @@ class LiveEngine {
     const due=this.orders().filter(o=>o.filled>0&&o.fillPrice>0&&o.brokerOrderId&&o.costSettings&&['Filled','Canceled','Rejected'].includes(o.status)&&(!['reported','unavailable','ambiguous'].includes(o.reportedCosts?.status)||provisional(o))&&(o.reportedCosts?.attempts??0)<12&&now-(o.reportedCosts?.lastAttempt??0)>=15*60000&&now-(o.createdAt??now)<10*86400000);
     if(!due.length)return 0;let updated=0;
     if(this.market==='US'){
-      const start=due.map(o=>o.day).sort()[0];let trades;
-      try{trades=await this.broker.request('charges',{start,end:this.day(now)});}catch(error){for(const o of due)attempt(o,error.message==='FEATURE_UNAVAILABLE'?'unavailable':'pending',error.message);return 0;}
-      const near=(a,b)=>Math.abs(Date.parse(a)-Date.parse(b))<=86400000;
+      const {readTradeHistory,addDay}=require('./trade-history.cjs');const start=due.map(o=>o.day).sort()[0];let ranges;
+      try{ranges=await readTradeHistory((a,b)=>this.broker.request('charges',{start:a,end:b}),start,this.day(now));}catch(error){for(const o of due)attempt(o,error.message==='FEATURE_UNAVAILABLE'?'unavailable':'pending',error.message);return 0;}
+      const trades=ranges.flatMap(r=>r.rows),near=(a,b)=>Math.abs(Date.parse(a)-Date.parse(b))<=86400000;
+      // Dates the history could not be read whole: an absent row is not "not settled", a quantity difference is not
+      // final, and even a matching row may have peers on the unread pages, so the order waits (stage 2a).
+      const unread=o=>ranges.some(r=>!r.complete&&r.start<=addDay(o.day,1)&&r.end>=addDay(o.day,-1));
       for(const o of due){
+        if(unread(o)){attempt(o,'pending','HISTORY_INCOMPLETE');continue;}
         const rows=trades.filter(t=>t.ticker===o.symbol.split(':')[1]&&t.side===o.side&&near(t.tradeDate,o.day));if(!rows.length){attempt(o,'pending','NOT_SETTLED');continue;}
         const peers=this.orders().filter(p=>p.symbol===o.symbol&&p.side===o.side&&near(p.day,o.day)&&p.filled>0),rowQty=rows.reduce((n,r)=>n+r.quantity,0),appQty=peers.reduce((n,p)=>n+p.filled,0);
         if(rowQty!==appQty){attempt(o,'ambiguous','QUANTITY_MISMATCH');continue;}
