@@ -251,16 +251,17 @@ class InFlight {
     // cash allocation like any other, recorded and paired. Paired with an earlier reported allocation, the cash may be
     // that purchase's, so the new pieces stay in flight, marked unresolved.
     const want=fresh.reduce((n,f)=>n+(f.side==='Buy'?-f.usd:f.usd),0),sides=new Set(fresh.map(f=>f.side));
-    // Strict and exact (stage 2b): with one side, the movement must fit the new fills as the only fitting set among them
-    // and the side's open fills; with both sides (net cash, which cannot be divided), only an exact match to the cent.
-    let reflected=false;
-    if(fresh.length&&Math.abs(want)>0&&Math.sign(movement)===Math.sign(want)){
-      if(sides.size>1)reflected=cents(movement)===cents(want);
-      else{const run=InFlight.match([...payable([...sides][0]),...fresh],Math.abs(movement));reflected=run.length===fresh.length&&run.every(f=>fresh.includes(f));}}
-    if(reflected){const side=want<0?'Buy':'Sell',p=sides.size===1?partner('cash',side,Math.abs(movement)):null;st.open.push(...fresh);
+    // Strict and exact (stage 2b): the new fills must be of one side, and the movement must fit them as the only fitting
+    // set among them and the side's open fills. New buys and sales together are never reflected at once: their net cash
+    // cannot be divided, and an exact net match is no unique allocation (an older open fill may fit as well; review of
+    // 2d297f9, P1), so they stay in flight. Nor while fills of the other side are still in flight: the movement is then
+    // a net of both sides too.
+    let reflected=false;const other=s=>s==='Buy'?'Sell':'Buy';
+    if(sides.size===1&&!live(other([...sides][0])).length&&Math.abs(want)>0&&Math.sign(movement)===Math.sign(want)){
+      const run=InFlight.match([...payable([...sides][0]),...fresh],Math.abs(movement));reflected=run.length===fresh.length&&run.every(f=>fresh.includes(f));}
+    if(reflected){const side=want<0?'Buy':'Sell',p=partner('cash',side,Math.abs(movement));st.open.push(...fresh);
       if(p){flag(fresh,'possibly one purchase',{with:p.id});pair(record({channel:'cash',side,amount:Math.abs(movement),kind:'ambiguous'},[],fresh),p);
         notes.push(`${side} ${fresh.map(f=>f.id).join(', ')}: U.S. cash moved by this fill, as the reported settlement total did for an earlier one; whether they are one purchase is unresolved, so it stays in flight`);movement=0;}
-      else if(sides.size>1){const v=record({channel:'cash',side,amount:Math.abs(movement),kind:'reflected at once',net:true});for(const f of fresh){settled.add(f);v.allocated.push({id:f.id,usd:f.usd});}movement=0;}
       else{const v=record({channel:'cash',side,amount:Math.abs(movement),kind:'reflected at once'},fresh);v.pairable=true;movement=Math.sign(movement)*(v.unallocated??0);}}
     else{st.open.push(...fresh);
       // The order list one reading behind the balance: a cash movement in the reading just before, that matched no fill
@@ -295,8 +296,10 @@ class InFlight {
     // What KIS reports awaiting settlement: a rise is evidence for open fills of its side.
     // KRW evidence: converted at this reading's rate; the KRW amount and the rate are recorded with it.
     for(const side of ['Buy','Sell']){const d=delta(side);if(d>0.005)allocate('reported',side,d,{krw:Math.round(d*fx),rate:fx});}
-    // The cash movement, while only one side is open (buys and sales together net, so it cannot be divided).
-    const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f)&&!fresh.includes(f));
+    // The cash movement, while only one side is open (buys and sales together net, so it cannot be divided). Every fill
+    // still in flight counts, the new ones too (review of 2d297f9, P1: new buys and sales left out of this check let a
+    // movement their net did not match be allocated to one side).
+    const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f));
     if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell')))allocate('cash',movement<0?'Buy':'Sell',Math.abs(movement));
     st.open=st.open.filter(f=>!settled.has(f));
     for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};

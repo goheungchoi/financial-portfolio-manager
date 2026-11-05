@@ -76,3 +76,23 @@ test('T45: more than 12 open candidate pieces on one side: nothing applied to an
   assert.ok(r.open.some(f=>f.id==='A'),'13: nothing applied');assert.equal(r.open.length,13);const e=x.evidence().at(-1);assert.equal(e.overBound,13);assert.deepEqual(e.allocated,[]);
   assert.ok(r.open.every(f=>f.unresolved?.why==='ambiguous evidence'),'the whole set stays uncertain, not just the first 12');
 });
+// Review of 2d297f9 (P1 ×2; artifacts/reviews/stage2b1-independent-repro.cjs): a cash movement while buys and sales are
+// both in flight is never divided, the new ones included.
+test('review 2b.1: an exact net match of new buys and sales is not a unique allocation; it stays unresolved',()=>{
+  // An older $50 buy is open; a new $100 buy and $50 sale arrive with a $50 cash fall: the older buy alone fits, and so
+  // does the new pair.
+  let x=tracker();x.see({cash:500});const old=buy('old',50);x.see({cash:500},[old]);
+  let r=x.see({cash:450},[old,buy('nb',100),sell('ns',50)]);assert.deepEqual([r.buysUSD,r.sellsUSD],[150,50]);assert.ok(!x.evidence().some(e=>e.kind==='reflected at once'),'nothing reflected at once');
+  // With no older fill open the exact net is still no allocation: buys and sales net, and cannot be divided.
+  x=tracker();x.see({cash:500});r=x.see({cash:450},[buy('nb',100),sell('ns',50)]);assert.deepEqual([r.buysUSD,r.sellsUSD],[100,50]);
+});
+test('review 2b.1: a movement the new buys and sales do not match is not allocated to one side',()=>{
+  let x=tracker();x.see({cash:500});let r=x.see({cash:405},[buy('b',100),sell('s',50)]);assert.deepEqual([r.buysUSD,r.sellsUSD],[100,50],'not $95 to the buy');
+  assert.equal(x.evidence().length,0,'no allocation recorded');
+  // An older open sale and a new buy: both sides are in flight, so a fall of the new buy's own $100 is not allocated
+  // either, at once or later.
+  x=tracker();x.see({cash:500});x.see({cash:500},[sell('s',50)]);r=x.see({cash:400},[sell('s',50),buy('b',100)]);assert.deepEqual([r.buysUSD,r.sellsUSD],[100,50]);
+  r=x.see({cash:300},[sell('s',50),buy('b',100)]);assert.deepEqual([r.buysUSD,r.sellsUSD],[100,50],'a later fall while both are open: still not divided');
+  // One side only: ordinary strict matching (the same new buy, no sale in flight).
+  x=tracker();x.see({cash:500});assert.equal(x.see({cash:400},[buy('b',100)]).buysUSD,0,'reflected at once');
+});
