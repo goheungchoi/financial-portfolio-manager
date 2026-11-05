@@ -368,7 +368,24 @@ class InFlight {
     return {buysUSD:sum('Buy'),sellsUSD:sum('Sell'),unresolved:{buysUSD:sum('Buy',f=>f.unresolved),sellsUSD:sum('Sell',f=>f.unresolved)},overdue:{buysUSD:sum('Buy',f=>f.overdueAt),sellsUSD:sum('Sell',f=>f.overdueAt)},
       // Evidence released by KIS records lower than what was allocated: reported, not an obligation.
       reducedCoverage:Object.entries(st.conflicts??{}).filter(([,c])=>c.released?.length).map(([orderId,c])=>({orderId,usd:c.released.reduce((n,r)=>n+r.cents,0)/100,groupId:c.groupId,version:c.version})),
-      pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},open:st.open};}
+      pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},
+      review:{buysUSD:sum('Buy',f=>String(f.pid??'').startsWith('review:')),sellsUSD:sum('Sell',f=>String(f.pid??'').startsWith('review:'))},open:st.open};}
   current(account){return this.withReview(account,this.state(account));}
+  // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
+  // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,
+  // conflict pieces opened or reduced, reconciliations resolving pieces and reversals reopening them. These are
+  // explained changes for the flow detector, never deposits or withdrawals. Fills and cash evidence are already
+  // explained by the detector's own fill records. Coverage under review is passed apart (totals().review), as it
+  // changes without an event. In USD, positive when the basis rose. Counted after a ledger event id (afterId: the last one
+  // a reading accounted for), so a change in the same millisecond as a reading is neither missed nor counted twice; a
+  // time (since) only when no id was kept. through: the last event id now.
+  // pretracking: the part from pre-tracking fills, by order, which the flow detector leaves out for an order whose fill it
+  // explains itself in the same comparison (the order first listed then), so nothing is explained twice.
+  explained(account,{afterId=null,since=null}={}){const side=new Map(),pre={};let c=0,through=0;
+    for(const e of this.evidence.events(account)){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;const s=side.get(e.pieceId)==='Sell'?1:-1;
+      if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
+      else if(e.kind==='reconciliation')c-=s*e.cents;else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;}
+    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100]))};}
+  explainedSince(account,since){return this.explained(account,{since}).usd;}
 }
 module.exports={value,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND};

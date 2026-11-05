@@ -46,7 +46,7 @@ class SettlementEvidence{
     try{const r=fn();this.db.exec(own?'COMMIT':'RELEASE settlement_evidence');return r;}
     catch(error){if(own)this.db.exec('ROLLBACK');else{this.db.exec('ROLLBACK TO settlement_evidence');this.db.exec('RELEASE settlement_evidence');}throw error;}}
   event(account,kind,payload={}){this.db.prepare('INSERT INTO settlement_events(account,at,kind,payload) VALUES(?,?,?,?)').run(account,this.clock(),kind,JSON.stringify(payload));}
-  events(account){return this.db.prepare('SELECT id,at,kind,payload FROM settlement_events WHERE account=? ORDER BY id').all(account).map(r=>({id:r.id,at:r.at,kind:r.kind,...JSON.parse(r.payload)}));}
+  events(account){return this.db.prepare('SELECT id,at,kind,payload FROM settlement_events WHERE account=? ORDER BY id').all(account).map(r=>({id:r.id,at:r.at,kind:r.kind,...JSON.parse(r.payload),seq:r.id}));}
   version(evidenceId,version){const r=this.db.prepare('SELECT payload,amountCents FROM settlement_evidence WHERE id=?').get(`${evidenceId}:${version}`);return r?{...JSON.parse(r.payload),amountCents:r.amountCents}:null;}
   // An aggregate (cash or a reported total) between two readings. Recorded once per identity: a second record of the
   // same movement (the fast path's remainder, say) is the same evidence, so allocations from both draw on one amount.

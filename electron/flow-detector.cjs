@@ -56,7 +56,10 @@ function unexplained(prev,now,orders){
   // Without both U.S. readings a U.S. fill funded from KRW could look like a withdrawal.
   const usKnown=Number.isFinite(now.usCash)&&Number.isFinite(prev.usCash);if(usTraded&&!usKnown)return null;
   const explained=market=>moved.filter(m=>m.market===market).reduce((sum,m)=>sum+m.amount,0);
-  return {KR:now.krCash-prev.krCash-explained('KR'),US:usKnown?now.usCash-prev.usCash-explained('US'):0,usTraded};
+  // usAdjust: the settlement tracker's own changes to the U.S. basis since the previous reading (stage 2b.4), less a
+  // pre-tracking fill's part for an order whose fill this comparison explains already (usPretracking, by order).
+  const pre=now.usPretracking??{},overlap=orders.filter(o=>(o.market??'KR')==='US'&&Math.abs(change(o))>=0.005&&Number.isFinite(pre[String(orderKey(o))])).reduce((n,o)=>n+pre[String(orderKey(o))],0);
+  return {KR:now.krCash-prev.krCash-explained('KR'),US:usKnown?now.usCash-prev.usCash-explained('US')-((Number(now.usAdjust)||0)-overlap):0,usTraded};
 }
 // Whether an amount in a market's currency is large enough to matter (U.S. amounts at the rate, or $10 without one).
 const big=(market,amount,fx)=>market==='US'?(fx>0?Math.abs(amount*fx)>=THRESHOLD_KRW:Math.abs(amount)>=10):Math.abs(amount)>=THRESHOLD_KRW;
@@ -91,11 +94,18 @@ class FlowDetector {
   constructor(db,performance,clock=Date.now){this.db=db;this.performance=performance;this.clock=clock;this.onNote=null;db.exec('CREATE TABLE IF NOT EXISTS flow_watch(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   // Records and returns the flows resolved at this observation; the observation advances only when it was judged.
   // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD); unsettledKRW: all unsettled U.S. buys.
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0}){
+  // usExplained({afterId, since}): {usd, through}: USD the settlement tracker moved the U.S. basis by after the last
+  // ledger event the previous reading accounted for (or since its time) without cash or a fill (InFlight.explained);
+  // usReview: its coverage under review now ({buysUSD, sellsUSD}), compared with the last reading (stage 2b.4: a
+  // reconciliation, a late pre-tracking fill or a correction is no deposit or withdrawal).
+  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0,usExplained=null,usReview=null}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)}};
+    const reviewEffect=usReview?Math.round(((Number(usReview.sellsUSD)||0)-(Number(usReview.buysUSD)||0))*100)/100:0;
+    // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
+    let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usReview:reviewEffect,usEvent};
     // Provisional changes and settlement evidence carry over between readings.
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
     // A change held since before parts were kept: when its later additions happened is unknown, so its one part spans
@@ -117,7 +127,7 @@ class FlowDetector {
     // investigates it rather than taking it for a withdrawal.
     const usStart=prev.usCash==null&&now.usCash!=null;
     // Any open order, U.S. ones included, still means the reading cannot be judged.
-    const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):unexplained(prev,now,orders);
+    const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):unexplained(prev,{...now,usAdjust,usPretracking},orders);
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
     // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.

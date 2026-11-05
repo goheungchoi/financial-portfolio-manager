@@ -32,7 +32,9 @@ class LiveEngine {
   enableAuto(confirmation){const environment=this.getConnection().snapshot?.environment;if(!this.enabled||confirmation!==(environment==='live'?'ENABLE AUTO LIVE':'ENABLE AUTO MOCK'))throw new Error('ACTIVATION_REQUIRED');this.autoEnabled=true;return this.getState();}
   getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;return {httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null};}
   observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day();const v=policy.day===today?(policy.valuation&&policy.valuation!=='broker-total'?this.lossValue(snapshot):{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version:'broker-total'}):this.lossValue(snapshot);
-    const next=policy.day===today?{...policy,dayPeakEquity:Math.max(policy.dayPeakEquity??policy.baseline,v.version===(policy.valuation??'broker-total')?v.low:policy.baseline)}:{...policy,day:today,baseline:v.low,baselineHigh:v.high,valuation:v.version,baselineAt:Date.now(),dayPeakEquity:v.low};this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),this.identity());}
+    const next=policy.day===today?{...policy,dayPeakEquity:Math.max(policy.dayPeakEquity??policy.baseline,v.version===(policy.valuation??'broker-total')?v.low:policy.baseline)}:{...policy,day:today,baseline:v.low,baselineHigh:v.high,valuation:v.version,baselineAt:Date.now(),dayPeakEquity:v.low};this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),this.identity());
+    // Stage 2b.4: the settlement tracker's pieces are saved with a new day's baseline (electron/settlement-baseline.cjs).
+    if(policy.day!==today)try{this.baselineTaken?.(next);}catch{}}
   async context(supplied=null) {
     const executionEnabled=this.enabled;const configured=this.policy();
     const extra=this.market==='KR'?[...new Set((await this.extraSymbols?.())??[])].filter(symbol=>/^\d{6}$/.test(symbol)&&!(configured?.symbols??[]).includes(symbol)).slice(0,20):[];
@@ -150,17 +152,29 @@ class LiveEngine {
   // counted. A breach under every scenario is a breach; under some only it is ambiguous: reported with the scenarios,
   // and new buys are restricted as a breach would restrict them (automation.cjs), without claiming a loss. Deposits,
   // withdrawals and the resolution of funding uncertainty move baseline and value alike, so they are not losses.
+  // Settlement corrections since the baseline (stage 2b.4, settlementAdjustments set by the app for the U.S. engine:
+  // SettlementBaseline.adjustments): {certain:{low,high}, withUnknown:{low,high}|null, items}, in this market's currency.
+  settlement(policy){try{const a=this.settlementAdjustments?.(policy);if(a&&Number.isFinite(a.certain?.low)&&Number.isFinite(a.certain?.high))return a;}catch{}return null;}
   lossOf(policy,snapshot){
     const limit=policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW};const version=policy.valuation??'broker-total';const f=this.flows(policy);
+    // A reconciliation or correction moves the baseline with the value (stage 2b.4); of unknown payment timing, both
+    // scenarios are kept: adjusted (paid before the baseline) and not adjusted (paid after it).
+    const s0=version==='broker-total'?null:this.settlement(policy),adj=s0?.certain??{low:0,high:0},alt=s0?.withUnknown??null;
     const v=version==='broker-total'?{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version}:this.lossValue(snapshot);
     if(v.version!==version){const s=lossStatus(limit,policy.baseline+f.confirmed,v.low);return {...s,breached:false,ambiguous:s.breached,version,reasons:['the valuation this day started on is not available now']};}
     // Flows whose side of the baseline cannot be told (same-day entries with only a date, a detection straddling the
     // baseline reading) are a scenario of their own, never a precise adjustment (release review 2026-11-05, P1).
     const u=f.uncertain??{confirmed:0,unresolved:0};
-    const scenarios=[['low bounds',policy.baseline+f.confirmed,v.low],['high bounds',(policy.baselineHigh??policy.baseline)+f.confirmed,v.high],...(f.unresolved?[['unresolved money changes counted',policy.baseline+f.confirmed+f.unresolved,v.low]]:[]),
-      ...(u.confirmed||u.unresolved?[['flows of uncertain timing counted',policy.baseline+f.confirmed+u.confirmed+u.unresolved,v.low]]:[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
+    // Each scenario on the certain adjustment and, when some timing is unknown, again on the adjusted one.
+    const on=(a,tag)=>{const low=policy.baseline+a.low,high=(policy.baselineHigh??policy.baseline)+a.high,n=x=>tag?`${tag}: ${x}`:x;
+      return [[n('low bounds'),low+f.confirmed,v.low],[n('high bounds'),high+f.confirmed,v.high],...(f.unresolved?[[n('unresolved money changes counted'),low+f.confirmed+f.unresolved,v.low]]:[]),
+        ...(u.confirmed||u.unresolved?[[n('flows of uncertain timing counted'),low+f.confirmed+u.confirmed+u.unresolved,v.low]]:[])];};
+    const scenarios=[...on(adj,null),...(alt?on(alt,'settlement of unknown timing adjusted (paid before the baseline)'):[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
     const all=scenarios.every(x=>x.breached),any=scenarios.some(x=>x.breached);
-    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(any&&!all?{reasons:[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]}:{})};
+    const settled=s0&&(adj.low||adj.high||alt)?{settlement:{adjustment:adj,...(alt?{ifPaidBeforeBaseline:alt,assumption:'not adjusted: paid after the baseline'}:{}),items:s0.items}}:{};
+    const note=s0&&(adj.low||adj.high)?[`baseline adjusted for settlement corrections: low ${adj.low>=0?'+':''}${adj.low.toFixed(2)}, high ${adj.high>=0?'+':''}${adj.high.toFixed(2)}`]:[];
+    const reasons=[...(any&&!all?[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]:[]),...note];
+    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(reasons.length?{reasons}:{}),...settled};
   }
   // The equity new exposure is measured against: KIS's total, or the account valuation's low bound when lower (it nets
   // liabilities KIS's total does not, such as KRW committed to U.S. buys). Not delayed to a day boundary.
