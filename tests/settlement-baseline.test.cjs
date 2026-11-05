@@ -145,10 +145,10 @@ test('B1/B8: after the baseline is decided by the ledger event, not the clock; w
   assert.equal(a.certain.low,0);assert.equal(a.withUnknown.low,-50);
 });
 test('F5 (reviews of 06a0b95 and b88178d, P1): with no evidence of when a reconciled payment was made, the interval keeps both readings; neither a zero nor a matching residual settles it',()=>{
-  const timing=w=>w.fd.timing('a').map(x=>[x.ifPaidHere,x.ifPaidEarlier,x.usd]);
+  const timing=w=>w.fd.timing('a').map(x=>[x.ifPaidHere,x.ifPaidEarlier,x.candidates.reduce((n,c)=>n+c.usd,0)]);
   // Cash -$100 with the reconciliation dated today: no certain withdrawal; kept as 0 (paid here) or -$100 (paid earlier).
   const w=world();const notes=[];w.fd.onNote=(t,m)=>notes.push(m);const [A]=w.open(order('A'));w.detect([A]);w.later(MIN);w.reconcile({settledOn:D});w.us.cash-=100;w.later(MIN);w.detect([A]);w.later(3*HOUR);
-  assert.deepEqual(w.detect([A]),[]);assert.deepEqual(w.perf.flows('a'),[]);assert.deepEqual(timing(w),[[0,-100,100]]);assert.ok(notes.some(m=>/Both are kept until resolved/.test(m)));
+  assert.deepEqual(w.detect([A]),[]);assert.deepEqual(w.perf.flows('a'),[]);assert.deepEqual(timing(w),[[0,-100,100]]);assert.ok(notes.some(m=>/Kept until resolved/.test(m)));
   assert.ok(!notes.some(m=>/no payment in this interval|paid in this interval/.test(m)),'nothing concluded');
   // No cash movement and no date (a payment with an offsetting deposit, or neither): +$100 or 0, both kept.
   const x=world();const [B]=x.open(order('A'));x.detect([B]);x.later(MIN);x.reconcile();x.later(MIN);x.detect([B]);x.later(3*HOUR);assert.deepEqual(x.detect([B]),[]);assert.deepEqual(timing(x),[[100,0,100]]);
@@ -219,4 +219,23 @@ test('F8b: a timing entry may also be no money at all, and held changes widen th
   // On the high bounds as well: a genuine loss seen only there with a possible deposit counted is not missed.
   const e=w.e,p={...e.policy()};e.flowsSince=q=>w.fd.flowsSince('a','US',q.baselineAt);const l=e.lossOf(p,{accountKey:'a:US',environment:'live',cash:w.us.cash,holdings:[{symbol:'X',quantity:1,price:-300}],pendingSaleProceeds:0,reportedTotal:w.us.cash,timestamp:new Date(w.clock()).toISOString()});
   assert.ok(l.scenarios.some(x=>/highest total, high bounds/.test(x.name)&&x.breached));
+});
+test('F10 (review of 94ea856, P1): each reconciliation keeps its own timing: opposite amounts in one interval do not cancel, and are resolved one by one',()=>{
+  // A $100 buy and a $100 sale reconciled in one interval, cash unchanged: -$100 (buy paid earlier, sale here) to +$100.
+  const S=()=>order('S',{side:'Sell',fillPrice:100,limitPrice:100,costEstimate:undefined,resultCosts:{netCash:100}});
+  const w=world();const [A,B]=w.open(order('A'),S());w.baseline(D);const at=w.e.policy().baselineAt;w.detect([A,B]);w.later(MIN);
+  const ra=w.reconcile({pieceId:w.pid('A')}).id,rs=w.reconcile({pieceId:w.pid('S'),route:undefined}).id;w.later(MIN);w.detect([A,B]);
+  const [e]=w.fd.timing('a');assert.deepEqual(e.candidates.map(c=>[c.id,c.usd]),[[ra,100],[rs,-100]]);assert.equal(e.observed,0);assert.deepEqual([e.low,e.high],[-100,100]);
+  const r=w.fd.flowsSince('a','US',at);assert.deepEqual(r.range,{low:-100,high:100});
+  // Resolved one at a time: the sale paid earlier leaves +$100 from the buy's side still open (0 or +$100).
+  assert.throws(()=>w.fd.resolveTiming('a',e.id,{paidHere:true}),/TIMING_CANDIDATE_REQUIRED/);
+  const one=w.fd.resolveTiming('a',e.id,{reconciliationId:rs,paidHere:false});assert.equal(one.flow,null);assert.deepEqual([one.entry.observed,one.entry.low,one.entry.high],[100,0,100]);
+  assert.deepEqual(w.fd.flowsSince('a','US',at).range,{low:0,high:100});assert.equal(w.fd.resolveTiming('a',e.id,{reconciliationId:rs,paidHere:false}).repeat,true);
+  assert.throws(()=>w.fd.resolveTiming('a',e.id,{reconciliationId:rs,paidHere:true}),/TIMING_ALREADY_RESOLVED/);
+  // The buy paid here too: +$100 is a detected flow (a deposit, unless you remove it); the entry closes.
+  const two=w.fd.resolveTiming('a',e.id,{reconciliationId:ra,paidHere:true});assert.equal(two.flow.amount,100);assert.equal(two.entry,null);assert.deepEqual(w.fd.timing('a'),[]);
+  assert.equal(w.fd.resolveTiming('a',e.id,{reconciliationId:ra,paidHere:true}).repeat,true);assert.equal(w.perf.flows('a').length,1);
+  // Several candidates of one side: each still apart (a $100 and a $50 buy: observed +$150, readings 0 to +$150).
+  const x=world();const [C,E]=x.open(order('A'),order('E',{ticker:'OTHER',fillPrice:50,limitPrice:50,costEstimate:{netCash:-50},resultCosts:{netCash:-50}}));x.detect([C,E]);x.later(MIN);
+  x.reconcile({pieceId:x.pid('A')});x.reconcile({pieceId:x.pid('E'),cents:5000});x.later(MIN);x.detect([C,E]);const [g]=x.fd.timing('a');assert.equal(g.candidates.length,2);assert.deepEqual([g.observed,g.low,g.high],[150,0,150]);
 });

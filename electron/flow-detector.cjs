@@ -89,6 +89,12 @@ function piecesOf(m,q,fx){const parts=q.parts?.length?q.parts:[{amount:q.amount,
   if(merged.length>1&&!big(m,merged[0].amount,fx)){const [a,b]=merged.splice(0,2);merged.unshift({amount:a.amount+b.amount,parts:[...a.parts,...b.parts]});}
   const out=merged.map(g=>({amount:round(m,g.amount),...spanOf(g.parts),pendingIds:idsOf(g.parts)}));out[out.length-1].amount=round(m,q.amount-out.slice(0,-1).reduce((n,x)=>n+x.amount,0));return out;}
 const label=market=>market==='US'?'U.S.':'Korean';
+// A settlement-timing entry with its readings: observed (every open candidate paid in the interval), ifPaidEarlier
+// (every one paid earlier), low and high (the extremes over every combination: buy-side candidates paid earlier lower
+// it, sale-side ones raise it). Entries saved before candidates were kept apart are read as one candidate.
+function timingEntry(e){const observed=Number.isFinite(e.observed)?e.observed:e.ifPaidHere,candidates=Array.isArray(e.candidates)?e.candidates:[{id:(e.ids??[]).join('+')||'(all)',usd:round('US',(e.ifPaidHere??0)-(e.ifPaidEarlier??0))}];
+  const sum=f=>candidates.reduce((n,c)=>n+f(c.usd),0);const {ids,usd,...rest}=e;
+  return {...rest,observed,candidates,ifPaidHere:round('US',observed),ifPaidEarlier:round('US',observed-sum(v=>v)),low:round('US',observed-sum(v=>Math.max(0,v))),high:round('US',observed-sum(v=>Math.min(0,v)))};}
 const money=(market,amount)=>market==='US'?`$${Math.abs(amount).toFixed(2)}`:`₩${Math.abs(Math.round(amount)).toLocaleString('en-US')}`;
 class FlowDetector {
   constructor(db,performance,clock=Date.now){this.db=db;this.performance=performance;this.clock=clock;this.onNote=null;db.exec('CREATE TABLE IF NOT EXISTS flow_watch(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
@@ -104,7 +110,7 @@ class FlowDetector {
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     const reviewEffect=usReview?Math.round(((Number(usReview.sellsUSD)||0)-(Number(usReview.buysUSD)||0))*100)/100:0;
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
-    let usAdjust=0,usPretracking={},usCandidate={usd:0,ids:[]},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};usCandidate={usd:Number(x?.candidates?.usd)||0,ids:x?.candidates?.ids??[]};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
+    let usAdjust=0,usPretracking={},usCandidate={usd:0,ids:[],items:[]},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};usCandidate={usd:Number(x?.candidates?.usd)||0,ids:x?.candidates?.ids??[],items:x?.candidates?.items??[]};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
     const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usReview:reviewEffect,usEvent};
     // Provisional changes and settlement evidence carry over between readings.
     // timing: U.S. changes whose reading depends on when a reconciled payment was made (kept until resolved).
@@ -134,10 +140,12 @@ class FlowDetector {
     // timing entry with both, ifPaidHere (the payment is in this interval: the change as observed) and ifPaidEarlier
     // (the reconciliation moved no cash here: the change less it). It stays unresolved, a loss scenario either way,
     // until resolved (resolveTiming). Nothing goes to the held changes for it.
-    const weigh=u=>{if(!u||!usCandidate.usd||usStart)return u;const u0=round('US',u.US),u1=round('US',u0-usCandidate.usd);
-      return {...u,US:0,timing:{id:randomUUID(),ids:usCandidate.ids,usd:usCandidate.usd,ifPaidHere:u0,ifPaidEarlier:u1,after:prev.at??null,by:now.at}};};
+    // Each reconciliation keeps its own timing (review of 94ea856, P1: a $100 buy and a $100 sale summed to nothing, and no
+    // entry was kept): the entry holds the observed change once and every candidate apart, whatever they sum to.
+    const weigh=u=>{if(!u||!(usCandidate.items?.length)||usStart)return u;
+      return {...u,US:0,timing:timingEntry({id:randomUUID(),observed:round('US',u.US),candidates:usCandidate.items.map(c=>({id:c.id,usd:round('US',c.usd)})),after:prev.at??null,by:now.at})};};
     const keep=u=>{if(!u?.timing)return;state.timing.push(u.timing);
-      try{this.onNote?.('U.S. settlement timing unknown',`U.S. cash changed by ${money('US',u.timing.ifPaidHere)} while $${Math.abs(u.timing.usd).toFixed(2)} was reconciled with no payment date in this interval: ${money('US',u.timing.ifPaidHere)} if it was paid here, ${money('US',u.timing.ifPaidEarlier)} if earlier. Both are kept until resolved.`);}catch{}};
+      try{this.onNote?.('U.S. settlement timing unknown',`U.S. cash changed by ${money('US',u.timing.observed)} while ${u.timing.candidates.length} reconciliation(s) had no payment date in this interval: between ${money('US',u.timing.low)} and ${money('US',u.timing.high)}, by when each was paid. Kept until resolved.`);}catch{}};
     const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):weigh(unexplained(prev,{...now,usAdjust,usPretracking},orders));
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
@@ -182,9 +190,11 @@ class FlowDetector {
     const entries=market==='US'&&row&&recorded0?(JSON.parse(row.payload).timing??[]).filter(x=>Number.isFinite(since)?x.by>since:seoulDate(x.by)===seoulDate(this.clock())):[];
     // Each entry may be either reading, or not money at all (it is unresolved): it widens the range by min(0, a, b) and
     // max(0, a, b) (review of f26d33f, P1: tested apart from other uncertain flows, two $20 doubts hid a $40 loss).
-    const tlow=entries.reduce((n,x)=>n+Math.min(0,x.ifPaidHere,x.ifPaidEarlier),0),thigh=entries.reduce((n,x)=>n+Math.max(0,x.ifPaidHere,x.ifPaidEarlier),0);
+    // Each entry's readings run from low (every buy-side candidate paid earlier) to high (every sale-side one), the observed
+    // change counted once; or it is no money at all.
+    const ents=entries.map(timingEntry),tlow=ents.reduce((n,x)=>n+Math.min(0,x.low),0),thigh=ents.reduce((n,x)=>n+Math.max(0,x.high),0);
     const widen=(r,low,high)=>r?{...r,range:{low:round(market,(r.range?.low??0)+low),high:round(market,(r.range?.high??0)+high)}}:r;
-    const recorded=entries.length?widen({...recorded0,timing:{low:round('US',entries.reduce((n,x)=>n+Math.min(x.ifPaidHere,x.ifPaidEarlier),0)),high:round('US',entries.reduce((n,x)=>n+Math.max(x.ifPaidHere,x.ifPaidEarlier),0)),count:entries.length}},tlow,thigh):recorded0;
+    const recorded=ents.length?widen({...recorded0,timing:{low:round('US',ents.reduce((n,x)=>n+x.low,0)),high:round('US',ents.reduce((n,x)=>n+x.high,0)),count:ents.length}},tlow,thigh):recorded0;
     const q=row?JSON.parse(row.payload).pending?.[market]:null;if(!q||!recorded)return recorded;
     const done=new Set(this.performance.flows(account).flatMap(f=>f.pendingIds??[]));
     const parts=(Array.isArray(q.parts)&&q.parts.length?q.parts:[{amount:q.amount,after:q.after??null,by:q.since}]).filter(x=>!x.id||!done.has(x.id));
@@ -196,24 +206,31 @@ class FlowDetector {
     return widen({...recorded,unresolved:(recorded.unresolved??0)+after,uncertain:{confirmed:recorded.uncertain?.confirmed??0,unresolved:(recorded.uncertain?.unresolved??0)+unsure},held:{after,uncertain:unsure,parts:parts.map(x=>x.id??null)}},counted.reduce((n,x)=>n+Math.min(0,x.amount),0),counted.reduce((n,x)=>n+Math.max(0,x.amount),0));
   }
   // Timing entries open now (U.S.), for the reconciliation panel (step 2b.5).
-  timing(account){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);return row?(JSON.parse(row.payload).timing??[]):[];}
+  timing(account){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);return row?(JSON.parse(row.payload).timing??[]).map(timingEntry):[];}
   // Resolves a timing entry once the payment's timing is known (paidHere: true if it was made in that interval): the
   // reading chosen becomes a detected flow when it matters, for you to confirm or remove; the entry is closed.
   // One transaction (review of f26d33f, P1): the entry is closed and its flow recorded together, or neither. A resolved
   // entry is remembered (timingResolved), so a repeat returns the first resolution and creates nothing; another choice
   // for it is refused.
-  resolveTiming(account,id,{paidHere}={}){if(typeof paidHere!=='boolean')throw new Error('TIMING_CHOICE_REQUIRED');
+  // Each candidate is resolved on its own (reconciliationId; optional when the entry has one): paid in that interval leaves
+  // the observed change as it is, paid earlier takes its amount out. When the last candidate is resolved the entry
+  // closes, and its reading becomes a detected flow when it matters. Remembered per candidate.
+  resolveTiming(account,id,{paidHere,reconciliationId=null}={}){if(typeof paidHere!=='boolean')throw new Error('TIMING_CHOICE_REQUIRED');
     const own=!this.db.isTransaction;this.db.exec(own?'BEGIN IMMEDIATE':'SAVEPOINT resolve_timing');
     try{const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)throw new Error('TIMING_UNKNOWN');const w=JSON.parse(row.payload);
-      const done=(w.timingResolved??[]).find(e=>e.id===id);
-      if(done){if(done.paidHere!==paidHere)throw new Error('TIMING_ALREADY_RESOLVED');const flow=done.flowId?this.performance.flows(account).find(f=>f.id===done.flowId)??null:null;this.db.exec(own?'COMMIT':'RELEASE resolve_timing');return {resolved:done.entry,flow,repeat:true};}
-      const x=(w.timing??[]).find(e=>e.id===id);if(!x)throw new Error('TIMING_UNKNOWN');
-      const amount=paidHere?x.ifPaidHere:x.ifPaidEarlier;let flow=null;
-      if(big('US',amount,null))flow=this.performance.addFlow(account,{day:seoulDate(x.by),market:'US',amount,detected:true,...(Number.isFinite(x.after)?{occurredAfter:x.after}:{}),occurredBy:x.by,
-        note:`Detected: U.S. cash ${amount>0?'rose':'fell'} with no matching trade, the reconciled payment taken as ${paidHere?'made in this interval':'made earlier'}. Confirm or remove.`});
-      const resolved=[...(w.timingResolved??[]),{id,paidHere,flowId:flow?.id??null,at:this.clock(),entry:x}].slice(-200);
-      this.db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify({...w,timing:w.timing.filter(e=>e.id!==id),timingResolved:resolved}),account);
-      this.db.exec(own?'COMMIT':'RELEASE resolve_timing');return {resolved:x,flow};}
+      const open=(w.timing??[]).map(timingEntry),x=open.find(e=>e.id===id),past=(w.timingResolved??[]).filter(e=>e.id===id);
+      const cid=reconciliationId??(x?x.candidates.length===1?x.candidates[0].id:null:past.length===1?past[0].candidate:null);
+      if(cid==null)throw new Error(x?'TIMING_CANDIDATE_REQUIRED':'TIMING_UNKNOWN');
+      const done=past.find(e=>e.candidate===cid);
+      if(done){if(done.paidHere!==paidHere)throw new Error('TIMING_ALREADY_RESOLVED');const flow=done.flowId?this.performance.flows(account).find(f=>f.id===done.flowId)??null:null;this.db.exec(own?'COMMIT':'RELEASE resolve_timing');return {resolved:done.entry,candidate:cid,flow,repeat:true};}
+      if(!x)throw new Error('TIMING_UNKNOWN');const c=x.candidates.find(k=>k.id===cid);if(!c)throw new Error('TIMING_CANDIDATE_UNKNOWN');
+      const next=timingEntry({...x,observed:round('US',paidHere?x.observed:x.observed-c.usd),candidates:x.candidates.filter(k=>k.id!==cid)});let flow=null;
+      if(!next.candidates.length&&big('US',next.observed,null))flow=this.performance.addFlow(account,{day:seoulDate(x.by),market:'US',amount:next.observed,detected:true,...(Number.isFinite(x.after)?{occurredAfter:x.after}:{}),occurredBy:x.by,
+        note:`Detected: U.S. cash ${next.observed>0?'rose':'fell'} with no matching trade, with the reconciled payments' timing resolved. Confirm or remove.`});
+      const resolved=[...(w.timingResolved??[]),{id,candidate:cid,paidHere,flowId:flow?.id??null,at:this.clock(),entry:x}].slice(-200);
+      const timing=next.candidates.length?open.map(e=>e.id===id?next:e):open.filter(e=>e.id!==id);
+      this.db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify({...w,timing,timingResolved:resolved}),account);
+      this.db.exec(own?'COMMIT':'RELEASE resolve_timing');return {resolved:x,candidate:cid,entry:next.candidates.length?next:null,flow};}
     catch(e){if(own)this.db.exec('ROLLBACK');else{this.db.exec('ROLLBACK TO resolve_timing');this.db.exec('RELEASE resolve_timing');}throw e;}}
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
