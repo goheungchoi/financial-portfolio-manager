@@ -9,6 +9,10 @@
 // It ends by itself on any rollback condition (ROLLBACK), on the added-cost limit, or when it has run its trading days.
 const {sessionOf}=require('./watch-alerts.cjs');
 const LIMITS={respondMinutes:5,checkGapMinutes:15,priceReviewsPerDay:10,priceReviewUSDPerDay:1.2,addedUSD:2.5,tradingDays:5,calendarDays:14};
+// A trading day counts toward the trial only when the trial watched it: at least 95% of that market's regular-session
+// minutes covered (auto trading running and a price check within the last 5 minutes) and no uncovered stretch longer
+// than 15 minutes. Korea and the U.S. are counted apart, each by its own trading date; a holiday has no session minutes.
+const COVERAGE={minShare:0.95,maxGapMinutes:15,checkFreshMinutes:5};
 const ROLLBACK={
   'held-no-review':'A held position moved past its review threshold or level and no review started within 5 minutes.',
   'shadow-held-no-review':'The current rule (in shadow) alerted on a held position and no review started within 5 minutes.',
@@ -27,7 +31,22 @@ class AlertTrial {
   current(){return this.all().find(t=>t.status==='running')??null;}
   // scope: the account scope; markets: the markets in the review scope.
   start({scope,markets}){if(this.current())return this.current();const now=this.clock();const id=Number(this.db.prepare('INSERT INTO alert_trials(payload) VALUES(?)').run('{}').lastInsertRowid);
-    this.obligations.clear();return this.save({id,status:'running',scope,markets,startedAt:now,limits:LIMITS,days:{KR:[],US:[]},lastCheckAt:now,attempts:[],events:[]});}
+    this.obligations.clear();return this.save({id,status:'running',scope,markets,startedAt:now,limits:LIMITS,coverageRule:COVERAGE,days:{KR:[],US:[]},partialDays:{KR:[],US:[]},coverage:{},lastCheckAt:now,attempts:[],events:[]});}
+  // Coverage, every monitor call while auto trading runs: each regular-session minute of each market in the trial with a
+  // fresh price check is covered. A day is judged once its session is over (judge()).
+  cover({now=this.clock(),regularOpen,closedDays}={}){const t=this.current();if(!t||!regularOpen)return;const minute=Math.floor(now/MIN);let changed=false;
+    for(const m of t.markets){if(!regularOpen(m,now,closedDays))continue;const key=`${m}|${sessionOf(m,now)}`,c=t.coverage[key]??[];
+      if(now-t.lastCheckAt<=COVERAGE.checkFreshMinutes*MIN&&c.at(-1)!==minute){c.push(minute);t.coverage[key]=c;changed=true;}else if(!t.coverage[key]){t.coverage[key]=c;changed=true;}}
+    if(changed)this.save(t);}
+  // Days whose regular session has ended: qualifying ones count, others are kept as partial with their coverage.
+  judge({now=this.clock(),regularOpen,closedDays}={}){const t=this.current();if(!t||!regularOpen)return;let changed=false;
+    for(const [key,covered] of Object.entries(t.coverage)){const [m,day]=key.split('|');const from=Date.parse(`${day}T00:00:00Z`)-15*3600000,to=from+40*3600000;
+      this.sessions??=new Map();if(!this.sessions.has(key)){const s=[];for(let x=Math.ceil(from/MIN);x*MIN<to;x++)if(sessionOf(m,x*MIN)===day&&regularOpen(m,x*MIN,closedDays))s.push(x);this.sessions.set(key,s);}const session=this.sessions.get(key);
+      if(session.length&&now<=(session.at(-1)+1)*MIN)continue;const set=new Set(covered);let gap=0,longest=0;for(const x of session){if(set.has(x))gap=0;else longest=Math.max(longest,++gap);}
+      const share=session.length?session.filter(x=>set.has(x)).length/session.length:0;const ok=session.length>0&&share>=COVERAGE.minShare&&longest<=COVERAGE.maxGapMinutes;
+      if(ok){if(!t.days[m].includes(day))t.days[m].push(day);}else t.partialDays[m].push({day,sessionMinutes:session.length,coveredPct:Math.round(share*1000)/10,longestGapMinutes:longest});
+      delete t.coverage[key];this.sessions.delete(key);changed=true;}
+    if(changed)this.save(t);}
   end(reason,detail=null){const t=this.current();if(!t)return null;this.obligations.clear();return this.save({...t,status:reason==='completed'?'completed':reason==='turned off'?'stopped':'rolled back',endedAt:this.clock(),endReason:reason,...(detail?{endDetail:detail}:{})});}
   // Each price check while the trial runs. shadow: the current rule's trigger; proposed: the selective rules' trigger;
   // held: held symbols; watches: the review levels as they were before the check. Opens an obligation for each alert that
@@ -36,7 +55,6 @@ class AlertTrial {
   // alert counts as a crossing only when the level was not already passed when it was set (the MAX level of Oct 30 was
   // set below the price and is no crossing). Returns nothing; monitor() decides.
   check({now=this.clock(),shadow,proposed,held,quotes=[],watches=[]}){const t=this.current();if(!t)return;
-    for(const m of ['KR','US'])if(quotes.some(q=>(/:/.test(q.symbol)?'US':'KR')===m)){const d=sessionOf(m,now);if(!t.days[m].includes(d))t.days[m].push(d);}
     const items=x=>!x?[]:x.kind==='watchlist'?x.alerts:[x,...(x.alongside??[])];const open=(kind,symbol)=>{const k=`${kind}|${symbol}`;if(!this.obligations.has(k))this.obligations.set(k,{kind,symbol,since:now});};
     for(const a of items(proposed)){if(held.has(a.symbol)&&['percent','price'].includes(a.kind))open('held-no-review',a.symbol);else if(a.kind==='entry-level')open('entry-no-review',a.symbol);}
     const passedWhenSet=s=>{const w=watches.find(x=>x.symbol===s);return Boolean(w&&w.baseline>0&&(w.direction==='above'?w.baseline>=w.price:w.baseline<=w.price));};
@@ -69,6 +87,6 @@ class AlertTrial {
   report(){const t=this.current()??this.all().at(-1);if(!t)return null;const price=t.attempts.filter(a=>a.trigger==='Price movement trigger'),added=price.filter(a=>a.added);
     let episodes=null;try{const O=new (require('./watch-alerts.cjs').AlertObservations)(this.db);const eps=O.episodes(t.startedAt).filter(e=>e.detail);episodes={total:eps.length,oldOnly:eps.filter(e=>e.detail.condition==='old-only').length,newOnly:eps.filter(e=>e.detail.condition==='new-only').length,both:eps.filter(e=>e.detail.condition==='both').length};}catch{}
     return {status:t.status,startedAt:new Date(t.startedAt).toISOString(),...(t.endedAt?{endedAt:new Date(t.endedAt).toISOString(),endReason:t.endReason,endDetail:t.endDetail??null}:{}),limits:t.limits,
-      days:{KR:t.days.KR.length,US:t.days.US.length},checks:t.checks??0,reviewsStarted:t.attempts.length,priceReviews:price.length,addedReviews:added.length,addedUSD:+this.cost(added.map(a=>a.reviewId)).toFixed(3),episodes};}
+      days:{KR:t.days.KR.length,US:t.days.US.length},qualifyingDays:t.days,partialDays:t.partialDays??{KR:[],US:[]},checks:t.checks??0,reviewsStarted:t.attempts.length,priceReviews:price.length,addedReviews:added.length,addedUSD:+this.cost(added.map(a=>a.reviewId)).toFixed(3),episodes};}
 }
-module.exports={AlertTrial,LIMITS,ROLLBACK};
+module.exports={AlertTrial,LIMITS,ROLLBACK,COVERAGE};

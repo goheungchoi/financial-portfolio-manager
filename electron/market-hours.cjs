@@ -18,4 +18,7 @@ function marketHours(scope,now=Date.now(),closedDays=new Set()){
   const preOpen=next&&next.nextOpen-now<=PRE_OPEN_MS?{market:next.market,at:next.nextOpen-PRE_OPEN_MS,key:`${next.market}:${next.nextOpen}`}:null;
   return {open:!markets.length||markets.some(m=>m.open),markets,preOpen,next:next?{market:next.market,at:next.nextOpen}:null};
 }
-module.exports={marketHours,marketsFor,krOpen,nextOpen,seoulDay:t=>seoul(t).day,PRE_OPEN_MS};
+// Whether a market's regular session is open at t (Korea's KIS order window; the U.S. regular session), without the
+// extended sessions a user can switch on.
+const regularOpen=(market,t,closedDays=new Set())=>market==='KR'?krOpen(t,closedDays):usOpen(t);
+module.exports={marketHours,marketsFor,krOpen,nextOpen,regularOpen,seoulDay:t=>seoul(t).day,PRE_OPEN_MS};

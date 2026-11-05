@@ -31,11 +31,28 @@ test('price reviews and their cost are capped per trading day; added reviews ove
   assert.equal(e.monitor({now:t0+2*86400000+MIN}).end,'added-cost','$2.70 of reviews the current rule would not have started');
   const {t:g}=trial();assert.equal(g.monitor({now:t0+16*MIN,marketsOpen:false}),null,'markets closed');assert.equal(g.monitor({now:t0+16*MIN,marketsOpen:true,since:t0+10*MIN}),null,'auto trading resumed 6 minutes ago');assert.equal(g.monitor({now:t0+16*MIN,marketsOpen:true}).end,'check-gap');
 });
-test('it completes after its trading days in each market, or after 14 calendar days',()=>{
-  const {t}=trial(['KR','US']);for(let i=0;i<5;i++)t.check({now:t0+i*86400000,shadow:null,proposed:null,held,quotes:[q('028050')]});
-  assert.equal(t.monitor({now:t0+4*86400000}),null,'no U.S. days yet');for(let i=0;i<5;i++)t.check({now:t0+i*86400000+12*3600000,shadow:null,proposed:null,held,quotes:[q('NASD:NVDA')]});
-  assert.equal(t.monitor({now:t0+4*86400000+12*3600000}).end,'completed');
-  const {t:c}=trial(['KR']);assert.equal(c.monitor({now:t0+15*86400000}).end,'completed');
+// A qualifying day: at least 95% of the market's regular-session minutes covered by fresh price checks, no uncovered
+// stretch over 15 minutes; Korea and the U.S. counted apart by their own trading dates.
+const {regularOpen}=require('../electron/market-hours.cjs');
+function run(t,from,to,{skip=()=>false}={}){for(let x=from;x<=to;x+=MIN){if(skip(x))continue;t.check({now:x,shadow:null,proposed:null,held});t.cover({now:x,regularOpen,closedDays:new Set()});}}
+const kr=(day,h,m)=>Date.parse(`${day}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00+09:00`),ny=(day,h,m)=>Date.parse(`${day}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00-05:00`);
+test('a trading day counts only when the session was watched: 95% of its minutes and no gap over 15 minutes',()=>{
+  const {t}=trial(['KR']);run(t,kr('2026-11-09',8,50),kr('2026-11-09',15,30));                                  // full session
+  run(t,kr('2026-11-10',8,50),kr('2026-11-10',15,30),{skip:x=>x>=kr('2026-11-10',10,0)&&x<kr('2026-11-10',10,20)}); // a 20-minute hole
+  run(t,kr('2026-11-11',10,0),kr('2026-11-11',15,30));                                                        // started an hour late
+  t.judge({now:kr('2026-11-11',15,10),regularOpen,closedDays:new Set()});assert.deepEqual(t.current().days.KR,['2026-11-09','2026-11-10'].slice(0,1),'the 11th is still in session and not judged');
+  t.judge({now:kr('2026-11-11',16,0),regularOpen,closedDays:new Set()});const c=t.current();
+  assert.deepEqual(c.days.KR,['2026-11-09']);assert.deepEqual(c.partialDays.KR.map(p=>[p.day,p.sessionMinutes,p.longestGapMinutes]),[['2026-11-10',380,20],['2026-11-11',380,60]]);
+  assert.ok(c.partialDays.KR[1].coveredPct<85);assert.deepEqual(t.report().qualifyingDays.KR,['2026-11-09']);
+});
+test('Korea and the U.S. are counted apart; the trial completes only when each market has its qualifying days',()=>{
+  const {t}=trial(['KR','US']);const days=['2026-11-09','2026-11-10','2026-11-11','2026-11-12','2026-11-13'];
+  for(const d of days){run(t,kr(d,8,55),kr(d,15,25));}t.judge({now:kr('2026-11-13',16,0),regularOpen,closedDays:new Set()});
+  assert.equal(t.current().days.KR.length,5);assert.equal(t.current().days.US.length,0);assert.equal(t.monitor({now:kr('2026-11-13',16,0)}),null,'no U.S. day yet');
+  for(const d of days){run(t,ny(d,9,25),ny(d,16,5));}t.judge({now:ny('2026-11-13',17,0),regularOpen,closedDays:new Set()});
+  assert.deepEqual(t.current().days.US,days,'each U.S. day by its New York date');assert.equal(t.monitor({now:ny('2026-11-13',17,0)}).end,'completed');
+  const {t:c}=trial(['KR']);assert.equal(c.monitor({now:t0+15*86400000}).end,'completed','14 calendar days at most');
+  const {t:h}=trial(['KR']);run(h,kr('2026-11-09',8,55),kr('2026-11-09',15,25));h.judge({now:kr('2026-11-10',8,0),regularOpen,closedDays:new Set(['2026-11-09'])});assert.deepEqual(h.current().days.KR,[],'a holiday has no session minutes');
 });
 function harness(){const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');const notes=[];
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});a.notify=(id,m)=>notes.push(m);
@@ -66,4 +83,35 @@ test('a rollback switches the trial off at once, logs and notifies; price review
   assert.equal(a.config.alertTrial,'off');assert.equal(a.alertTrial.all()[0].status,'rolled back');assert.equal(a.alertTrial.all()[0].endReason,'held-no-review');assert.match(notes.join(' '),/Watchlist alert trial ended\. Rolled back: 028050: A held position moved/);
   a.lastPrices=new Map([['488080',26240]]);assert.equal(a.priceTrigger('s',[{symbol:'488080',price:27090,timestamp:now}],now).symbol,'488080','the current rule decides again');
   assert.equal(a.watchlistAlertsState().trial.status,'rolled back');
+});
+// Rollback restores the current rule, and stays restored across a restart; protective monitoring (conditional orders and
+// the emergency response) runs before, during and after the trial.
+function restart(db){const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});a.watchScope=()=>'s';a.brokerPositions=()=>({'028050':{quantity:3}});a.sessionOpen=()=>true;return a;}
+const notHeldMove=(a,now)=>{a.lastPrices=new Map([['488080',26240]]);a.watchAlerts.clear();return a.priceTrigger('s',[{symbol:'488080',price:27090,timestamp:now}],now);};
+test('after a rollback and a restart the current rule decides; a restart during a trial resumes it only when auto trading resumes',()=>{
+  const {a,db}=harness();const now=Date.now();a.configure({alertTrial:'on'});assert.equal(notHeldMove(a,now),null,'trial: the selective rules decide');
+  a.endTrial('check-gap');const b=restart(db);assert.equal(b.config.alertTrial,'off','the rollback was saved');assert.equal(b.trialRunning(),false);assert.equal(notHeldMove(b,now).symbol,'488080','the current rule decides after the restart');
+  assert.equal(b.config.watchlistAlerts,'observe');
+  // A restart while the trial runs: it is still on, auto trading is paused, and nothing is judged until auto trading resumes.
+  const {a:c,db:db2}=harness();c.configure({alertTrial:'on'});const d=restart(db2);assert.equal(d.trialRunning(),true);assert.equal(d.sessionArmed,false,'auto trading is not resumed by the restart');
+  d.lastTrialCheck=0;d.tick();assert.equal(d.trialRunning(),true,'paused: no check-gap rollback while auto trading is paused');
+  // The trial record ended but the setting still says on (a crash between the two writes): the current rule decides.
+  const {a:e,db:db3}=harness();e.configure({alertTrial:'on'});e.alertTrial.end('check-error');const f=restart(db3);assert.equal(f.config.alertTrial,'on');assert.equal(f.trialRunning(),false);assert.equal(notHeldMove(f,now).symbol,'488080');
+});
+test('protective monitoring runs before, during and after the trial: conditional orders are checked and fired, the emergency response runs',()=>{
+  const {a}=harness();a.configure({conditionalOrders:true});a.sessionArmed=true;a.config={...a.config,enabled:true};
+  assert.equal(a.desk.setOrder('s',{action:'add',id:'',symbol:'028050',side:'Sell',quantity:3,limitPrice:null,conditions:[{expr:'price("028050")',op:'<=',value:54000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['028050']}).status,'armed');
+  a.liveQuotes=()=>[{symbol:'028050',price:53000}];const fired=[];a.fireConditional=async o=>{fired.push(o.id);};const reviews=[];a.review=async trigger=>{reviews.push(trigger);return {};};
+  const step=()=>{a.lastDeskCheck=0;a.firing=false;a.lastTrialCheck=0;try{a.tick();}catch{}};
+  step();assert.equal(fired.length,1,'before the trial');
+  a.configure({alertTrial:'on'});step();assert.equal(fired.length,2,'during the trial');
+  a.endTrial('held-no-review');step();assert.equal(fired.length,3,'after the rollback');
+  a.configure({alertTrial:'on'});a.emergencyState=()=>({active:true,activeMarkets:['KR']});a.lastEmergencyAttempt=0;a.emergencyStartedAt=Date.now();step();assert.ok(reviews.includes('Emergency loss response'),'the emergency response still runs during the trial');
+});
+test('gate, schedule and review records carry the alert rules in force and the trial',()=>{
+  const {a,db}=harness();assert.deepEqual(a.alertTag(),{mode:'observe',rules:require('../electron/watch-alerts.cjs').RULES_VERSION});
+  a.configure({alertTrial:'on'});const id=a.alertTrial.current().id;assert.deepEqual(a.alertTag(),{mode:'trial',rules:require('../electron/watch-alerts.cjs').RULES_VERSION,trialId:id});
+  a.scheduleObserver.save('proposed-run',{at:Date.now(),reasons:[]});assert.equal(JSON.parse(db.prepare('SELECT payload FROM schedule_observations').get().payload).alerts.mode,'trial');
+  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.match(src,/this\.reviewGate\.log\(Date\.now\(\),\{scope:watchScope,trigger,mode:gateMode,alerts:this\.alertTag\(\)/);assert.match(src,/alerts:this\.alertTag\(\),\.\.\.reviewSymbols/);
 });
