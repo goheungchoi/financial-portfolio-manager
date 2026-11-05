@@ -263,7 +263,7 @@ test('live check fix: KIS trade history is parsed in USD, zero placeholders are 
   const googl={trad_dt:'20261023',sttl_dt:'20261026',sll_buy_dvsn_cd:'02',pdno:'GOOGL',ccld_qty:'1',ft_ccld_unpr2:'323.64000000',ovrs_stck_ccld_unpr:'428693.54400000',tr_frcr_amt2:'323.640000',tr_amt:'428693',frcr_excc_amt_1:'324.440000',wcrc_excc_amt:'429752',dmst_frcr_fee1:'0.80000',frcr_fee1:'',crcy_cd:'USD',erlm_exrt:'1324.60000000'};
   const early={...googl,pdno:'NVDA',ft_ccld_unpr2:'212.73000000',ovrs_stck_ccld_unpr:'0',tr_frcr_amt2:'212.730000',frcr_excc_amt_1:'212.730000',wcrc_excc_amt:'0',dmst_frcr_fee1:'0',erlm_exrt:'0'};
   const client=new OverseasClient({overseasIdentity:()=>({environment:'live'}),overseasRequest:async()=>({body:{output1:[googl,early]},continuation:''})});
-  const [g,n]=await client.trades('2026-10-01','2026-10-25');
+  const read=await client.trades('2026-10-01','2026-10-25');assert.equal(read.complete,true);const [g,n]=read.rows;
   assert.equal(g.price,323.64,'the USD unit price, not the KRW one');assert.equal(g.feesUSD,0.8);assert.equal(g.exchangeRate,1324.6);assert.equal(g.settlementKRW,429752);
   assert.equal(n.price,212.73);assert.equal(n.exchangeRate,null,'zero before KIS finalizes means unknown');assert.equal(n.settlementKRW,null);
   const {db,costs}=ledgerDb();assert.throws(()=>costs.importTrades('a',[{...row('Buy',1,428693.54,'2026-10-23','2026-10-26'),grossUSD:323.64}]),/INVALID_TRADE_HISTORY/,'a KRW price in a USD field is refused');

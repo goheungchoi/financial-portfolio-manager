@@ -19,6 +19,8 @@ function usSession(date=new Date()){
   return {open,status:open?'open':'closed',timeZone:'America/New_York',basis:'regular-session calendar; broker validates holidays, halts and eligibility',day};
 }
 const DAYTIME={NASD:'BAQ',NYSE:'BAY',AMEX:'BAA'};
+// Pages one trade-history read may take (about 30 seconds at the live request spacing) before the range is halved.
+const TRADE_PAGES=50;
 // The USD/KRW rate from the present balance: the USD cash row's first published rate. With no USD held, KIS returns no
 // cash row, so the base rate on the U.S. holding rows (bass_exrt) is used; without either the rate is unknown.
 function usdRate(usd,holdingRows){
@@ -85,14 +87,24 @@ class OverseasClient{
     return [...out.values()].sort((a,b)=>b.timestamp-a.timestamp||b.orderId.localeCompare(a.orderId));
   }
   // Settled trade history with broker fees, settlement date and the registered exchange rate (live accounts only).
-  async trades(start,end){
+  // Returns {rows,complete,reason,pages}: complete only when KIS reported the last page (stage 2a: it used to stop after
+  // 10 pages and return what it had as the whole range). Otherwise reason says why and the rows are only part of the
+  // range: PAGE_LIMIT (more than maxPages pages; electron/trade-history.cjs reads the range in halves), DUPLICATE_PAGE
+  // (a continuation key, or a page's rows, repeated; the repeat is not added) or MISSING_CURSOR.
+  async trades(start,end,{maxPages=TRADE_PAGES}={}){
     if(![start,end].every(d=>/^\d{4}-\d{2}-\d{2}$/.test(d))||start>end)throw new Error('INVALID_DATE_RANGE');if(this.identity().environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
-    const rows=[],seen=new Set();let fk='',nk='',continuation='';
-    for(let page=0;page<10;page++){
-      const result=await this.query('inquire-period-trans','CTOS4001R',{ERLM_STRT_DT:start.replaceAll('-',''),ERLM_END_DT:end.replaceAll('-',''),OVRS_EXCG_CD:'',PDNO:'',SLL_BUY_DVSN_CD:'00',LOAN_DVSN_CD:'',CTX_AREA_FK100:fk,CTX_AREA_NK100:nk},{continuation});
-      rows.push(...records(result.body.output1));if(!['M','F'].includes(result.continuation))break;
-      fk=result.body.ctx_area_fk100;nk=result.body.ctx_area_nk100;const key=fk+'|'+nk;if(typeof fk!=='string'||typeof nk!=='string'||seen.has(key))throw new Error('INCOMPLETE_HISTORY');seen.add(key);continuation='N';
+    const rows=[],seen=new Set();let fk='',nk='',continuation='',last=null,pages=0,reason=null;
+    for(;;){
+      if(pages>=maxPages){reason='PAGE_LIMIT';break;}
+      const result=await this.query('inquire-period-trans','CTOS4001R',{ERLM_STRT_DT:start.replaceAll('-',''),ERLM_END_DT:end.replaceAll('-',''),OVRS_EXCG_CD:'',PDNO:'',SLL_BUY_DVSN_CD:'00',LOAN_DVSN_CD:'',CTX_AREA_FK100:fk,CTX_AREA_NK100:nk},{continuation});pages++;
+      const list=records(result.body.output1),content=JSON.stringify(list);if(list.length&&content===last){reason='DUPLICATE_PAGE';break;}last=content;
+      rows.push(...list);if(!['M','F'].includes(result.continuation))break;
+      fk=result.body.ctx_area_fk100;nk=result.body.ctx_area_nk100;if(typeof fk!=='string'||typeof nk!=='string'||!fk&&!nk){reason='MISSING_CURSOR';break;}
+      const key=fk+'|'+nk;if(seen.has(key)){reason='DUPLICATE_PAGE';break;}seen.add(key);continuation='N';
     }
+    return {rows:this.tradeRows(rows),complete:reason==null,reason,pages};
+  }
+  tradeRows(rows){
     const day=v=>/^\d{8}$/.test(String(v??''))?`${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}`:null;const optional=v=>v==null||String(v).trim()===''?null:numeric(v);
     // Before KIS finalizes a trade it reports zero for the rate and settlement amounts: zero means not yet known.
     const positive=v=>{const n=optional(v);return n>0?n:null;};

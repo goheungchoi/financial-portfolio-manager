@@ -88,7 +88,7 @@ function withGain(costs,{us,side,quantity,costPerShare,symbol,settings,cls}){
 class TradingCosts{
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS trading_cost_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fx_rates(day TEXT PRIMARY KEY,rate REAL NOT NULL,source TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_events(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS tax_opening_lots(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS fund_tax_class(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.income=new (require('./income-events.cjs').IncomeEvents)(db);
     // Rows imported by 1.5.35 took the KRW unit price as USD; they are dropped and imported again (parser 2).
-    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);
+    db.prepare("DELETE FROM tax_events WHERE json_extract(payload,'$.parser') IS NOT 2").run();this.profile=new (require('./tax-profile.cjs').TaxProfile)(db);this.gaps=new (require('./trade-history.cjs').HistoryGaps)(db);
     // Injected by the app: the connected account, Korean non-trading days and the broker's U.S. holdings.
     this.currentAccount=()=>null;this.krClosed=()=>new Set();this.holdings=()=>null;this.marketRate=()=>null;}
   table(name){return Boolean(this.db.prepare('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(name));}
@@ -99,7 +99,7 @@ class TradingCosts{
   // passed on only when complete; otherwise estimates that need it are incomplete (taxStatus says what is missing).
   // Estimates use the ledger's KRW cost per share where the app holds purchase records.
   get(){
-    const settings=this.saved();let ledger;try{ledger=this.ledger(settings);}catch{return settings;}const year=annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US'),issues:ledger.issues??[]});
+    const settings=this.saved();let ledger;try{ledger=this.ledger(settings);}catch{return settings;}const year=annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US'),issues:[...ledger.issues??[],...this.historyIssues(settings.taxYear)]});
     // The entered per-share basis (shares beyond the records) is kept as entered; the ledger average fills only the rest.
     const basis={...settings.taxBasisKRW};for(const [symbol,p] of Object.entries(ledger.positions))if(p.perShareKRW!=null&&settings.taxBasisKRW[symbol]==null)basis[symbol]=p.perShareKRW;
     // The connected account's lots, so a quote for any quantity uses the ledger's own disposal rule; a symbol whose share
@@ -178,6 +178,19 @@ class TradingCosts{
     if(window)for(const r of this.db.prepare('SELECT id,payload FROM tax_events WHERE account=?').all(owner)){const d=JSON.parse(r.payload).tradeDate;if(d>=window.start&&d<=window.end&&!kept.has(r.id))this.db.prepare('DELETE FROM tax_events WHERE id=?').run(r.id);}
     return added;
   }
+  // Imports the ranges read by electron/trade-history.cjs readTradeHistory (stage 2a). A complete range replaces the stored
+  // rows of its dates; an incomplete one imports nothing (its stored rows are kept, none removed) and becomes a gap until
+  // a later complete read of those dates. Returns the rows added and the ranges left incomplete.
+  importHistory(account,ranges,now=Date.now()){
+    const {ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);let added=0;const incomplete=[];
+    for(const r of ranges){if(r.complete)added+=this.importTrades(account,r.rows,now,{start:r.start,end:r.end});else incomplete.push({start:r.start,end:r.end,reason:r.reason});this.gaps.record(owner,r,now);}
+    return {added,incomplete};
+  }
+  // Gaps in the trade history of this taxpayer's accounts.
+  historyGaps(){const {taxpayerAccounts}=require('./tax-profile.cjs');const accounts=taxpayerAccounts(this.profile.get(),this.currentAccount());return this.gaps.all().filter(g=>accounts.has(g.account));}
+  // A gap up to the end of the tax year leaves the year's figures incomplete: its dates may hold the year's sales or the
+  // purchases they are measured against.
+  historyIssues(year){const {describe}=require('./trade-history.cjs');return this.historyGaps().filter(g=>g.start<=`${year}-12-31`).map(describe);}
   // Shares acquired before the records, entered by the user: quantity, acquisition date and KRW cost.
   openingLots(account=null){return this.db.prepare('SELECT payload FROM tax_opening_lots').all().map(r=>JSON.parse(r.payload)).filter(l=>account==null||l.account===account);}
   addOpeningLot(value){
@@ -213,7 +226,7 @@ class TradingCosts{
   taxSummary(){
     const settings=this.saved(),ledger=this.ledger(settings);
     const orders=this.orders().filter(o=>o.filled>0&&o.resultCosts).sort((a,b)=>(b.createdAt??0)-(a.createdAt??0)).slice(0,30).map(o=>({id:o.id,market:o.market,symbol:o.symbol,side:o.side,quantity:o.filled,day:o.day,currency:o.resultCosts.currency??(o.market==='US'?'USD':'KRW'),basis:o.resultCosts.basis,commission:o.resultCosts.commission,transactionTax:o.resultCosts.transactionTax,netCash:o.resultCosts.netCash,estimate:o.costEstimate?{commission:o.costEstimate.commission,transactionTax:o.costEstimate.transactionTax}:null,reportStatus:o.reportedCosts?.status??'pending'}));
-    return {settings,year:annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US'),issues:ledger.issues??[]}),ledger,orders,openingLots:this.openingLots(require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey)),income:this.incomeSummary(settings.taxYear),fundClasses:this.fundClasses(),reconciliation:this.reconciliation(ledger),profile:this.profile.get(),applicability:{KR:this.applicability('KR'),US:this.applicability('US')},ruleVersion:rules.RULE_VERSION};
+    return {settings,year:annualTax(ledger,settings.taxYear,settings.annualRealizedKRW,{applicability:this.applicability('US'),issues:[...ledger.issues??[],...this.historyIssues(settings.taxYear)]}),historyGaps:this.historyGaps(),ledger,orders,openingLots:this.openingLots(require('./tax-profile.cjs').ownerAccount(this.currentAccount()?.accountKey)),income:this.incomeSummary(settings.taxYear),fundClasses:this.fundClasses(),reconciliation:this.reconciliation(ledger),profile:this.profile.get(),applicability:{KR:this.applicability('KR'),US:this.applicability('US')},ruleVersion:rules.RULE_VERSION};
   }
   // The statutory sale-tax rate of a Korean sale today: the override, or the higher of the KOSPI and KOSDAQ rates.
   krSaleTaxPct(settings=this.saved()){return settings.krSellTaxOverridePct??Math.max(...['KOSPI','KOSDAQ'].map(m=>rules.krSaleTax(m,1e6,today())?.ratePct??0));}

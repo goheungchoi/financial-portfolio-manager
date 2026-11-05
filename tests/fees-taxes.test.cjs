@@ -63,13 +63,13 @@ test('U.S. charges: unavailable on mock, matched by ticker/side/date on live, am
   const unavailable=Object.assign(new Error('FEATURE_UNAVAILABLE'));const mock=engine('US',{charges:unavailable});
   mock.put({id:'m',symbol:'NASD:TEST',side:'Buy',quantity:2,filled:2,fillPrice:100,day:'2026-10-15'});await mock.live.refreshCharges();assert.equal(mock.live.orders()[0].reportedCosts.status,'unavailable');
   const trades=[{tradeDate:'2026-10-15',settlementDate:'2026-10-17',ticker:'TEST',side:'Buy',quantity:2,price:100,settlementUSD:200.5,settlementKRW:281000,feesUSD:0.5,exchangeRate:1401.5},{tradeDate:'2026-10-15',ticker:'OTHER',side:'Buy',quantity:5,price:1,feesUSD:0.01}];
-  const real=engine('US',{charges:trades});real.put({id:'u',symbol:'NASD:TEST',side:'Buy',quantity:2,filled:2,fillPrice:100,day:'2026-10-15'});real.put({id:'o',symbol:'NYSE:OTHER',side:'Buy',quantity:4,filled:4,fillPrice:1,day:'2026-10-15'});
+  const real=engine('US',{charges:{rows:trades,complete:true,reason:null,pages:1}});real.put({id:'u',symbol:'NASD:TEST',side:'Buy',quantity:2,filled:2,fillPrice:100,day:'2026-10-15'});real.put({id:'o',symbol:'NYSE:OTHER',side:'Buy',quantity:4,filled:4,fillPrice:1,day:'2026-10-15'});
   assert.equal(await real.live.refreshCharges(),1);const u=real.live.orders().find(o=>o.id==='u'),o=real.live.orders().find(o=>o.id==='o');
   assert.equal(u.resultCosts.netCash,-200.5);assert.equal(u.reportedCosts.exchangeRate,1401.5);assert.equal(u.reportedCosts.settlementKRW,281000);assert.equal(o.reportedCosts.status,'ambiguous','5 broker shares vs 4 app shares');
 });
 test('U.S. charges: a report KIS has not finalized (zero rate) is not taken as final, and earlier zero reports are fetched again',async()=>{
   let trades=[{tradeDate:'2026-10-23',settlementDate:'2026-10-26',ticker:'GOOGL',side:'Buy',quantity:1,price:323.64,settlementUSD:323.64,settlementKRW:null,feesUSD:0,exchangeRate:null}];
-  const e=engine('US',{charges:()=>trades});const now=Date.now();
+  const e=engine('US',{charges:()=>({rows:trades,complete:true,reason:null,pages:1})});const now=Date.now();
   // As stored by 1.5.34 on 2026-10-23: zero fees and rate recorded as reported.
   e.put({id:'g',symbol:'NASD:GOOGL',side:'Buy',quantity:1,filled:1,fillPrice:323.64,day:'2026-10-23',createdAt:now-3600000,reportedCosts:{status:'reported',feesUSD:0,exchangeRate:0,settlementKRW:0,settlementDate:'2026-10-26'}});
   assert.equal(await e.live.refreshCharges(now),0);assert.equal(e.live.orders()[0].reportedCosts.status,'pending');assert.equal(e.live.orders()[0].reportedCosts.code,'NOT_FINAL');
