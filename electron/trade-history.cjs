@@ -8,7 +8,7 @@
 // (budget, time or a failed read) keeps its unread ranges and resumes from them, not from the start (review, P2).
 const DAY=86400000;
 const addDay=(d,n)=>new Date(Date.parse(d+'T00:00:00Z')+n*DAY).toISOString().slice(0,10);
-const REASONS={PAGE_LIMIT:'more pages than one read allows',DUPLICATE_PAGE:'KIS returned a page twice',MISSING_CURSOR:'KIS gave no continuation key for the next page',INVALID_RESPONSE:'KIS returned a response that could not be read',READ_FAILED:'the read failed',NOT_READ:'not read yet; the read stopped and resumes at the next check'};
+const REASONS={PAGE_LIMIT:'more pages than one read allows',DUPLICATE_PAGE:'KIS returned a page twice',MISSING_CURSOR:'KIS gave no continuation key for the next page',INVALID_RESPONSE:'KIS returned a response that could not be read',READ_FAILED:'the read failed',NOT_READ:'not read yet: the read is under way or resumes at the next check'};
 // Pages one read may take (OverseasClient TRADE_PAGES), and what one job may take: pages and elapsed time.
 const READ_PAGES=50,JOB_PAGES=150,JOB_MS=3*60000;
 // Retry spacing after a failed job or an incomplete range: 15 minutes, doubling, at most 6 hours.

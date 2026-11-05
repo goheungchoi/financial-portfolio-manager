@@ -105,7 +105,7 @@ test('settlement: dates read incompletely leave orders pending HISTORY_INCOMPLET
 const window={start:'2026-03-01',end:'2026-03-31'};
 const client=reply=>new OverseasClient({overseasIdentity:()=>({environment:'live'}),overseasRequest:async(...a)=>reply(...a)});
 test('review P1: a response without output1, or with an unreadable trade row, is incomplete; stored trades stay and a gap is kept',async()=>{
-  for(const [label,body] of [['no output1',{rt_cd:'0'}],['output1 not a list',{output1:'x'}],['a row without a trade date',{output1:[{...raw('2026-03-02','AAA'),trad_dt:''}]}],['a row with a quantity that is no number',{output1:[{...raw('2026-03-02','AAA'),ccld_qty:'n/a'}]}],['a filled row without a price',{output1:[{...raw('2026-03-02','AAA'),ft_ccld_unpr2:'0',tr_frcr_amt2:'0'}]}]]){
+  for(const [label,body] of [['no output1',{rt_cd:'0'}],['output1 not a list',{output1:'x'}],['output1 null',{output1:null}],['output1 an empty object',{output1:{}}],['output1 an empty string',{output1:''}],['output1 a single row object',{output1:raw('2026-03-02','AAA')}],['output1 with a row that is not an object',{output1:[null]}],['a row without a trade date',{output1:[{...raw('2026-03-02','AAA'),trad_dt:''}]}],['a row with a quantity that is no number',{output1:[{...raw('2026-03-02','AAA'),ccld_qty:'n/a'}]}],['a filled row without a price',{output1:[{...raw('2026-03-02','AAA'),ft_ccld_unpr2:'0',tr_frcr_amt2:'0'}]}]]){
     const {costs}=costsDb();costs.importHistory('a',[{...window,complete:true,rows:[trade('2026-03-02','AAA',1)]}],1);
     const r=await client(async()=>({body,continuation:''})).trades(window.start,window.end);assert.deepEqual([r.complete,r.reason],[false,'INVALID_RESPONSE'],label);
     const out=await costs.syncHistory('a',(s,e,o)=>client(async()=>({body,continuation:''})).trades(s,e,o),{plan:()=>[window],clock:()=>2});
@@ -177,4 +177,35 @@ test('review P1: settlement with a failed read: orders on read dates settle, the
   assert.equal(by('a').status,'reported');assert.deepEqual([by('b').status,by('b').code],['pending','HISTORY_INCOMPLETE']);
   const none=engine(new DatabaseSync(':memory:'),()=>{throw new Error('RATE_LIMITED');});none.put({id:'x',symbol:'NASD:AAA',side:'Buy',quantity:2,filled:2,fillPrice:100,day:'2026-10-15'});
   await none.live.refreshCharges(Date.now());assert.deepEqual([none.live.orders()[0].reportedCosts.status,none.live.orders()[0].reportedCosts.code],['pending','RATE_LIMITED']);
+});
+
+// Stage 2a review round 2, P1: a job's unread dates are reported while it runs, not only once it stops. They leave the
+// report only when a result and the queue without them are stored together.
+const tick=()=>new Promise(r=>setImmediate(r));
+const unread=costs=>costs.historyGaps().map(g=>[g.start,g.end,g.reason]);
+test('review round 2: unread dates are reported before the first response, between responses, during backoff and after a restart',async()=>{
+  const db=new DatabaseSync(':memory:');let {costs}=costsDb(db);let t=1000;const answers=[];const fetch=()=>new Promise((ok,fail)=>answers.push({ok,fail}));
+  const halves=[{start:'2026-01-01',end:'2026-06-30'},{start:'2026-07-01',end:'2026-12-31'}];
+  const run=costs.syncHistory('a',fetch,{plan:()=>halves,clock:()=>t});await tick();
+  assert.equal(costs.jobs.get('a').state,'running');
+  assert.deepEqual(unread(costs),[['2026-01-01','2026-06-30','NOT_READ'],['2026-07-01','2026-12-31','NOT_READ']],'before the first response');
+  assert.equal(costs.historyIssues(2026).length,2);assert.equal(costs.taxSummary().year.result.status,'incomplete');assert.ok(costs.get().taxStatus.missingInputs.some(m=>/2026-01-01 to 2026-06-30 could not be read completely \(not read yet/.test(m)));
+  answers[0].ok({rows:[],complete:true,reason:null,pages:1});await tick();
+  assert.deepEqual(unread(costs),[['2026-07-01','2026-12-31','NOT_READ']],'between responses: only the stored result is cleared');
+  // A restart while the second read is outstanding: the stored queue is reported by the new instance.
+  const restarted=costsDb(db).costs;assert.deepEqual(unread(restarted),[['2026-07-01','2026-12-31','NOT_READ']],'after a restart mid-run');assert.equal(restarted.historyIssues(2026).length,1);
+  answers[1].fail(new Error('REQUEST_TIMEOUT'));const out=await run;assert.deepEqual([out.stopped,out.code],['FAILED','REQUEST_TIMEOUT']);
+  assert.deepEqual(unread(costs),[['2026-07-01','2026-12-31','READ_FAILED']],'the failed range: a gap, not also a second unread entry');
+  t+=60000;assert.equal((await costs.syncHistory('a',fetch,{plan:()=>halves,clock:()=>t})).skipped,'BACKOFF');assert.deepEqual(unread(costs),[['2026-07-01','2026-12-31','READ_FAILED']],'during backoff');
+  ({costs}=costsDb(db));assert.deepEqual(unread(costs),[['2026-07-01','2026-12-31','READ_FAILED']],'after a restart during backoff');assert.equal(costs.historyIssues(2026).length,1);
+  t+=16*60000;const resumed=costs.syncHistory('a',fetch,{plan:()=>halves,clock:()=>t});await tick();
+  assert.deepEqual(unread(costs),[['2026-07-01','2026-12-31','READ_FAILED']],'resumed and waiting: still reported');
+  answers[2].ok({rows:[],complete:true,reason:null,pages:1});assert.equal((await resumed).done,true);assert.deepEqual(unread(costs),[]);assert.deepEqual(costs.historyIssues(2026),[]);
+});
+test('review round 2: a result whose import fails is rolled back with its queue update; its dates stay unread',async()=>{
+  const {costs}=costsDb();costs.importHistory('a',[{...window,complete:true,rows:[trade('2026-03-02','AAA',1)]}],1);
+  // A KRW price in a USD field: importTrades refuses it (INVALID_TRADE_HISTORY) inside the savepoint.
+  const bad={...trade('2026-03-02','AAA',1),price:140000,grossUSD:100};
+  await assert.rejects(costs.syncHistory('a',async()=>({rows:[trade('2026-03-05','NEW',1),bad],complete:true,reason:null,pages:1}),{plan:()=>[window],clock:()=>2}),/INVALID_TRADE_HISTORY/);
+  assert.deepEqual(unread(costs),[[window.start,window.end,'NOT_READ']],'still unread');assert.deepEqual(stored(costs).map(e=>[e.symbol,e.price]),[['US:AAA',100]],'the stored trade stays and the row written before the refusal is rolled back');
 });
