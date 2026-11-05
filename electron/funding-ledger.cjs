@@ -28,6 +28,11 @@ class FundingLedger {
   constructor(db,{clock=Date.now,fresh=null,fx=null,regime=null,buffer=BUFFER,alert=null}={}){
     this.db=db;this.clock=clock;this.fresh=fresh;this.fxSource=fx;this.verifiedRegime=REGIMES.includes(regime)&&regime!=='unknown'?regime:null;this.buffer=buffer;this.alert=alert;this.queue=Promise.resolve();
     db.exec('CREATE TABLE IF NOT EXISTS funding_commitments(orderId TEXT PRIMARY KEY,account TEXT NOT NULL,market TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS funding_events(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,orderId TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS funding_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
+    // Stage 2b.3: what audited reconciliations released of a buy's filled part (positive) or reinstated on reversal
+    // (negative). Append-only; a commitment counts its amount less the net released, never below its unfilled part.
+    db.exec(`CREATE TABLE IF NOT EXISTS funding_releases(id TEXT PRIMARY KEY,orderId TEXT NOT NULL,account TEXT NOT NULL,cents INTEGER NOT NULL,route TEXT,reconciliationId TEXT NOT NULL,at INTEGER NOT NULL,reason TEXT);
+      CREATE TRIGGER IF NOT EXISTS funding_releases_no_update BEFORE UPDATE ON funding_releases BEGIN SELECT RAISE(ABORT,'funding_releases is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS funding_releases_no_delete BEFORE DELETE ON funding_releases BEGIN SELECT RAISE(ABORT,'funding_releases is append-only'); END;`);
   }
   regime(){return this.verifiedRegime??'unknown';}
   row(orderId){const r=this.db.prepare('SELECT payload FROM funding_commitments WHERE orderId=?').get(orderId);return r?JSON.parse(r.payload):null;}
@@ -80,8 +85,26 @@ class FundingLedger {
       for(const c of this.db.prepare('SELECT payload FROM funding_commitments').all().map(r=>JSON.parse(r.payload)))if(c.state==='reserved'&&(byId.get(c.orderId)?.status??'Ready')==='Ready'){this.write({...c,state:'released',amount:0,remainderQty:0,reason:'reserved but never sent (restart before submission)'});this.event(c.orderId,{kind:'commitment',from:'reserved',to:'released',reason:'never sent'});}
       this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
   }
+  // The filled part of a commitment in cents (its unfilled remainder excluded), and what reconciliations released of it.
+  static filledCents(c){return c&&c.state!=='released'?Math.max(0,Math.round((c.amount-(c.remainderQty??0)*(c.perShare??0))*100)):0;}
+  releasedCents(orderId){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM funding_releases WHERE orderId=?').get(String(orderId)).n;}
+  // A commitment as it counts now: less what audited reconciliations released of its filled part.
+  effective(c){const net=Math.min(Math.max(0,this.releasedCents(c.orderId)),FundingLedger.filledCents(c));return net?{...c,amount:Math.round(c.amount*100-net)/100,releasedUSD:net/100}:c;}
+  // Stage 2b.3 (design v3 §4.3): a manual reconciliation naming the route (USD or KRW) releases that buy's filled part,
+  // up to the reconciled amount; "route unknown" releases nothing (it is never called then). whole: every part of the
+  // order's obligation is reconciled with a named route, so the rest of the filled part is released too, the difference
+  // between the funding estimate and the tracker's amount recorded as an alignment. Called inside the reconciliation's
+  // transaction. Returns what was released.
+  releaseFor({orderId,cents:c,route,reconciliationId,whole=false}){const row=this.row(String(orderId));const filled=FundingLedger.filledCents(row),left=Math.max(0,filled-this.releasedCents(orderId));
+    const take=Math.min(left,whole?left:c),alignment=whole?take-Math.min(c,left):0;
+    if(take>0){this.db.prepare('INSERT INTO funding_releases VALUES(?,?,?,?,?,?,?,?)').run(`${reconciliationId}:release`,String(orderId),row.account,take,route,reconciliationId,this.clock(),whole?'reconciled whole':'reconciled');
+      this.event(String(orderId),{kind:'released by reconciliation',reconciliationId,route,cents:take,...(alignment?{alignmentCents:alignment}:{})});}
+    return {cents:take,alignmentCents:alignment,committed:Boolean(row&&row.state!=='released'),filledCents:filled};}
+  // A reversed reconciliation: what it released counts again.
+  reinstate({reconciliationId,by}){const rows=this.db.prepare('SELECT * FROM funding_releases WHERE reconciliationId=?').all(reconciliationId),net=rows.reduce((n,r)=>n+r.cents,0);if(!(net>0))return 0;const r=rows[0];
+    this.db.prepare('INSERT INTO funding_releases VALUES(?,?,?,?,?,?,?,?)').run(`${reconciliationId}:reinstate`,r.orderId,r.account,-net,r.route,reconciliationId,this.clock(),`reversed by ${by}`);this.event(r.orderId,{kind:'reinstated by reversal',reconciliationId,by,cents:net});return net;}
   // Commitments of an account in each currency.
-  commitments(account){const rows=this.rows(account).filter(c=>c.state!=='released');const sum=m=>rows.filter(c=>c.market===m).reduce((n,c)=>n+c.amount,0);
+  commitments(account){const rows=this.rows(account).filter(c=>c.state!=='released').map(c=>this.effective(c));const sum=m=>rows.filter(c=>c.market===m).reduce((n,c)=>n+c.amount,0);
     return {usd:Math.round(sum('US')*100)/100,krw:Math.round(sum('KR')),overCommitted:rows.some(c=>c.overCommitted),rows};}
   // One at a time: fresh balances, the check and the durable reservation.
   lock(fn){const run=this.queue.then(fn,fn);this.queue=run.catch(()=>{});return run;}
@@ -145,6 +168,6 @@ class FundingLedger {
     if(z.have<z.commitmentsKRW)return 0;
     if(r==='integrated-usd-first')return Math.max(0,inputs.uCash-z.commitmentsUSD+(z.have-z.commitmentsKRW)/z.rho);
     return Math.max(0,(z.have-z.need)/z.rho);}
-  summary(account){const c=this.commitments(account);return {regime:this.regime(),commitments:{USD:c.usd,KRW:c.krw},overCommitted:c.overCommitted,rows:c.rows.map(({orderId,market,symbol,state,amount,currency,reason,pretracking})=>({orderId,market,symbol,state,amount,currency,reason,pretracking}))};}
+  summary(account){const c=this.commitments(account);return {regime:this.regime(),commitments:{USD:c.usd,KRW:c.krw},overCommitted:c.overCommitted,rows:c.rows.map(({orderId,market,symbol,state,amount,currency,reason,pretracking,releasedUSD})=>({orderId,market,symbol,state,amount,currency,reason,pretracking,...(releasedUSD?{releasedUSD}:{})}))};}
 }
 module.exports={FundingLedger,FX_FRESH_MS,BALANCE_FRESH_MS,BUFFER,REGIMES};

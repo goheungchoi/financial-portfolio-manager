@@ -168,6 +168,7 @@ const REPORTED=['reported before seen','reported total moved by an unmatched amo
 const cents=v=>Math.round(v*100);
 class InFlight {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db,clock);}
+  save(account,st){this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));}
   state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[],evidence:[]};}
   // An order's cumulative execution amount in cents and its basis: KIS net cash when known (fees included), otherwise gross.
   static amountOf(o){const net=o.resultCosts?.netCash;return Number.isFinite(net)?{cents:Math.abs(cents(net)),basis:'net'}:{cents:cents(o.filled*o.fillPrice),basis:'gross'};}
@@ -191,7 +192,7 @@ class InFlight {
   read(account,{us,orders=[],fx=null}){
     if(typeof account!=='string'||!account||!us)return {...InFlight.totals({open:[]}),notes:[]};
     const now=this.clock(),st=this.state(account),notes=[];const basis=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0),readAt=at(us);
-    const save=()=>this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));
+    const save=()=>this.save(account,st);
     const reported={buys:fx>0?Math.max(0,Number(us.unsettled?.buyKRW)||0)/fx:0,sells:fx>0?Math.max(0,Number(us.unsettled?.sellKRW)||0)/fx:0};
     const filled=o=>o.filled>0&&o.fillPrice>0&&['Buy','Sell'].includes(o.side);
     // Every piece has its own id and the amount it opened with, which allocations are checked against; pieces saved
@@ -337,8 +338,9 @@ class InFlight {
       const pieces=()=>st.open.filter(f=>f.id===id&&f.conflict),held=()=>pieces().reduce((n,f)=>n+cents(f.usd),0);
       // Restoration is exact (review of 790c852, P2): each released part restores at most what the order still lacks and
       // what is still unused in its evidence version; a part another piece has since used is no longer released (it is
-      // that piece's now). Allocation errors are not swallowed.
-      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const ev=ledger.version(r.evidenceId,r.version),free=ev?Math.max(0,ev.amountCents-ledger.allocated(r.evidenceId,r.version)):0,take=Math.min(r.cents,k-base,free);
+      // that piece's now). Allocation errors are not swallowed. Evidence voided by a reversed reconciliation (stage 2b.3)
+      // has nothing unused: what was released from it belonged to that record.
+      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const ev=ledger.version(r.evidenceId,r.version),free=ev&&!ev.reversedBy?Math.max(0,ev.amountCents-ledger.allocated(r.evidenceId,r.version)):0,take=Math.min(r.cents,k-base,free);
           if(take>0){ledger.allocate({account,evidenceId:r.evidenceId,version:r.version,pieceId:r.pieceId,orderId:id,cents:take,rule:'restored: KIS record raised'});r.cents-=take;base+=take;ledger.event(account,'coverage-restored',{orderId:id,evidenceId:r.evidenceId,cents:take});}
           const gone=Math.max(0,r.cents-(free-take));if(gone>0&&base<k){r.cents-=gone;ledger.event(account,'release-used-elsewhere',{orderId:id,evidenceId:r.evidenceId,cents:gone});}}
         c.released=c.released.filter(r=>r.cents>0);}
