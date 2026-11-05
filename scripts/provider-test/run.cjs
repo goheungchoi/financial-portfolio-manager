@@ -16,14 +16,19 @@ const RETRYABLE=['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'];
 async function runTest({dir,send,key,model='gpt-6-sol',effort='medium',routineModel='gpt-6-luna',routineEffort='none',live,limits={requests:6,usd:0.5},mode}){
   const P=require('./paths.cjs'),S=require('./state.cjs'),F=require('./fixture.cjs');
   const where=P.separate(dir,live?{live}:{});const liveDb=path.join(where.live,'portfolio.sqlite');
-  const fixturePath=path.join(where.dir,'fixture.json'),reportDb=path.join(where.dir,'provider-test.sqlite');
-  if(fs.existsSync(reportDb))throw Object.assign(new Error('ISOLATED_RUN_EXISTS'),{detail:'this folder already holds a run; prepare a new one'});
+  const fixturePath=path.join(where.dir,'fixture.json');
   const fixture=JSON.parse(fs.readFileSync(fixturePath,'utf8'));F.verify(fixture);
+  // Position memory that could not be recovered is not an empty history: the validator gets a marker that is not a
+  // full list, so it fails closed (VALIDATION_STATE_INVALID) instead of skipping the reversal check. A fixture with
+  // neither a list nor that mark is refused.
+  const context=structuredClone(fixture.context);const memoryGap=(fixture.meta.unavailable??[]).find(u=>u.field==='positionMemory')??null;
+  if(!memoryGap&&!Array.isArray(context.positionMemory))throw Object.assign(new Error('FIXTURE_INVALID'),{detail:'position memory is neither present nor marked unavailable'});
+  const validation={positionMemory:memoryGap?{unavailable:true,reason:memoryGap.reason}:structuredClone(context.positionMemory),quotes:structuredClone(context.quotes??[])};
+  const run=claim(where.dir);
   const before={live:fs.existsSync(liveDb)?S.snapshot(liveDb):null,files:fs.readdirSync(where.dir).sort()};
   const {Meter}=require('./meter.cjs'),{controlledTransport}=require('./transport.cjs');
-  const meter=new Meter(limits),requests=[];const transport=controlledTransport({send,guard,meter,log:requests});
+  const meter=new Meter(limits),requests=[];const transport=controlledTransport({send,guard,meter,log:requests,persist:run.persist});
   const {AiClient,reviewTools,instructions}=require('../../electron/ai-client.cjs');const ai=new AiClient(key,transport);
-  const context=structuredClone(fixture.context);const validation={positionMemory:Array.isArray(context.positionMemory)?structuredClone(context.positionMemory):null,quotes:structuredClone(context.quotes??[])};
   const shaped=require('../../electron/review-context.cjs').shape(require('../../electron/token-saver.cjs').compact(context));
   const tools=F.server(fixture),transcript=[];const log=(kind,title,body)=>transcript.push({at:new Date().toISOString(),kind,title,body:String(body).slice(0,2000)});
   const offered=reviewTools(shaped.context).map(t=>t.name);
@@ -41,16 +46,37 @@ async function runTest({dir,send,key,model='gpt-6-sol',effort='medium',routineMo
   else try{result=await require('../../electron/research-review.cjs').researchReview({context:shaped.context,detail:shaped.detail,watched:[],evidence,discovery,setInterval:tools.inert('set_review_interval'),setWatch:tools.inert('set_review_watch'),actions:desk,log,compact,request});}
   catch(error){const e=localStop()??error;failure={code:/^[A-Z_]{3,40}$/.test(e?.message)?e.message:'RUN_FAILED',reason:e?.reason??null,detail:typeof e?.detail==='string'?e.detail.slice(0,300):null};}
   const after={live:fs.existsSync(liveDb)?S.snapshot(liveDb):null};
-  const report=assemble({mode,model,effort,routineModel,routineEffort,instructions:instructions(),fixture,requests,meter,tools,transcript,offered,result,failure,before,after,started,dir:where.dir,S});
-  const out=new DatabaseSync(reportDb);out.exec('CREATE TABLE report(id INTEGER PRIMARY KEY,payload TEXT NOT NULL)');out.prepare('INSERT INTO report(payload) VALUES(?)').run(JSON.stringify(report));out.close();
+  const report=assemble({mode,model,effort,routineModel,routineEffort,instructions:instructions(),fixture,requests,meter,tools,transcript,offered,result,failure,before,after,started,dir:where.dir,S,memoryGap,runId:run.id});
+  run.finish(report);
   fs.writeFileSync(path.join(where.dir,'report.json'),JSON.stringify(report,null,1));fs.writeFileSync(path.join(where.dir,'report.md'),markdown(report));
   report.state.files.after=fs.readdirSync(where.dir).sort();return report;
 }
-function assemble({mode,model,effort,routineModel,routineEffort,instructions,fixture,requests,meter,tools,transcript,offered,result,failure,before,after,started,dir,S}){
+// A run is claimed before anything is sent: run.lock is created exclusively, so of two runs started together one wins
+// and the other is refused at once, and the run's database is created with it. Each reservation is written there
+// before its request is sent and updated when it settles, so a run that dies in between leaves its commitment on
+// record. A claimed folder is never used again, whether its run finished or not: prepare a new one.
+const FILES=['run.lock','provider-test.sqlite','report.json','report.md'];
+function claim(dir){
+  if(FILES.slice(1).some(f=>fs.existsSync(path.join(dir,f))))throw Object.assign(new Error('ISOLATED_RUN_EXISTS'),{detail:priorRun(dir)});
+  let fd;try{fd=fs.openSync(path.join(dir,'run.lock'),'wx');}catch(error){if(error.code!=='EEXIST')throw error;throw Object.assign(new Error('ISOLATED_RUN_EXISTS'),{detail:priorRun(dir)});}
+  const id=require('node:crypto').randomUUID(),startedAt=new Date().toISOString();fs.writeSync(fd,JSON.stringify({id,pid:process.pid,startedAt}));fs.closeSync(fd);
+  const db=new DatabaseSync(path.join(dir,'provider-test.sqlite'));db.exec('PRAGMA journal_mode=DELETE;PRAGMA synchronous=FULL;CREATE TABLE run(id TEXT PRIMARY KEY,startedAt TEXT NOT NULL,finishedAt TEXT);CREATE TABLE requests(n INTEGER PRIMARY KEY,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE report(id INTEGER PRIMARY KEY,payload TEXT NOT NULL)');
+  db.prepare('INSERT INTO run VALUES(?,?,NULL)').run(id,startedAt);const save=db.prepare('INSERT INTO requests VALUES(?,?,?) ON CONFLICT(n) DO UPDATE SET status=excluded.status,payload=excluded.payload');
+  return {id,persist:entry=>save.run(entry.n,entry.status,JSON.stringify(entry)),
+    finish:report=>{db.prepare('INSERT INTO report(payload) VALUES(?)').run(JSON.stringify(report));db.prepare('UPDATE run SET finishedAt=? WHERE id=?').run(report.finished,id);db.close();}};
+}
+// What an earlier run in this folder left: when it started, whether it finished, and what it had committed.
+function priorRun(dir){let lock=null;try{lock=JSON.parse(fs.readFileSync(path.join(dir,'run.lock'),'utf8'));}catch{}
+  const file=path.join(dir,'provider-test.sqlite');let finished=null,reserved=[];
+  if(fs.existsSync(file))try{const db=new DatabaseSync(file,{readOnly:true});try{finished=db.prepare('SELECT finishedAt FROM run').get()?.finishedAt??null;reserved=db.prepare('SELECT status,payload FROM requests').all().map(r=>({...JSON.parse(r.payload),status:r.status}));}finally{db.close();}}catch{}
+  if(!finished)try{finished=JSON.parse(fs.readFileSync(path.join(dir,'report.json'),'utf8')).finished??null;}catch{}
+  const committed=reserved.reduce((n,e)=>n+(e.status==='settled'?e.actualMicro:e.reservedMicro),0)/1e6,open=reserved.filter(e=>e.status!=='settled').length;
+  return `a run was started here${lock?.startedAt?` at ${lock.startedAt}`:''} and ${finished?`finished at ${finished}`:'did not finish'}; ${reserved.length} request(s) reserved, $${committed.toFixed(6)} committed${open?`, ${open} of unknown cost counted at their reservation`:''}; prepare a new folder`;}
+function assemble({mode,model,effort,routineModel,routineEffort,instructions,fixture,requests,meter,tools,transcript,offered,result,failure,before,after,started,dir,S,memoryGap,runId}){
   const sentRequests=requests.filter(r=>r.n!=null),rejected=requests.filter(r=>r.status==='rejected'),stops=requests.filter(r=>r.n==null);
   const decision=result?.decision??null,withheld=decision?.withheld??null;
   const exercised=[...new Set([...tools.calls.map(c=>c.tool),...transcript.filter(t=>t.title.startsWith('Context detail')).map(()=>'get_context_detail')])];
-  return {statement:STATEMENT,mode,started,finished:new Date().toISOString(),
+  return {statement:STATEMENT,mode,runId,started,finished:new Date().toISOString(),
     fixture:{kind:fixture.meta.kind,dryRun:fixture.meta.dryRun,cutoff:fixture.meta.cutoff,digest:fixture.digest,recordedBuild:fixture.meta.recordedBuild,unavailable:fixture.meta.unavailable,kept:Object.keys(fixture.meta.kept)},
     sent:{instructions,model,effort,routineModel,routineEffort},
     acceptance:{
@@ -59,6 +85,7 @@ function assemble({mode,model,effort,routineModel,routineEffort,instructions,fix
       localStops:stops.map(s=>({status:s.status,reason:s.reason??s.detail??null})),
       requests:sentRequests.map(r=>({n:r.n,kind:r.kind,status:r.status,http:r.http??null,providerError:r.providerError??null,responseStatus:r.responseStatus??null,toolCalls:r.toolCalls??[]})),
       finalResponseParsedAndValidated:Boolean(decision),
+      validationLimits:memoryGap?[`position memory unavailable at the cutoff (${memoryGap.reason}): every decision fails local validation closed with VALIDATION_STATE_INVALID; a fixture limitation, not a provider rejection`]:[],
       localGuard:withheld?{withheld:withheld.kind??'plan',reason:withheld.reason??null,note:'a deterministic local guard withheld the decision; this is not a provider rejection'}:null,
       failure:failure?{...failure,side:rejected.length?'provider rejected a request':['BUDGET_STOP','CONTEXT_OVER_BUDGET','CONTINUATION_OVER_BUDGET','VALIDATION_STATE_INVALID','ISOLATED_DESTINATION_REFUSED','ISOLATED_NETWORK_DENIED'].includes(failure.code)?'local':'local parsing or validation of an accepted response, or transport'}:null,
       decision:decision?{action:decision.action,symbol:decision.symbol??'',quantity:decision.quantity??0}:null},
@@ -74,7 +101,7 @@ function markdown(r){const a=r.acceptance,c=r.cost,lines=[`# Isolated provider t
   `- Fixture: ${r.fixture.kind}, dry run ${r.fixture.dryRun}, cutoff ${r.fixture.cutoff}, digest ${r.fixture.digest.slice(0,16)}`,
   `- Sent: ${r.sent.instructions.version} (${r.sent.instructions.fingerprint}), ${r.sent.model} ${r.sent.effort}; condensing ${r.sent.routineModel} ${r.sent.routineEffort}`,
   `- Provider accepted every request: ${a.providerAccepted}`,`- Final response parsed and passed local validation: ${a.finalResponseParsedAndValidated}${a.decision?` (${[a.decision.action,a.decision.symbol,a.decision.quantity||''].filter(Boolean).join(' ')})`:''}`,
-  ...a.localStops.map(s=>`- Local stop before sending: ${s.status}${s.reason?` (${s.reason})`:''}`),...(a.localGuard?[`- Local guard: ${a.localGuard.withheld}: ${a.localGuard.reason} (${a.localGuard.note})`]:[]),...(a.failure?[`- Failure: ${a.failure.code} (${a.failure.side})${a.failure.reason?`: ${a.failure.reason}`:''}`]:[]),
+  ...a.validationLimits.map(v=>`- Validation limit: ${v}`),...a.localStops.map(s=>`- Local stop before sending: ${s.status}${s.reason?` (${s.reason})`:''}`),...(a.localGuard?[`- Local guard: ${a.localGuard.withheld}: ${a.localGuard.reason} (${a.localGuard.note})`]:[]),...(a.failure?[`- Failure: ${a.failure.code} (${a.failure.side})${a.failure.reason?`: ${a.failure.reason}`:''}`]:[]),
   '','## Requests','',...a.requests.map(q=>`- ${q.n}. ${q.kind}: ${q.status}${q.http?` HTTP ${q.http}`:''}${q.providerError?` ${q.providerError.code??q.providerError.type}`:''}${q.toolCalls.length?` tools ${q.toolCalls.join(', ')}`:''}`),
   '','## Tools','',`- Offered: ${r.tools.offered.join(', ')}`,`- Exercised: ${r.tools.exercised.join(', ')||'none'}`,`- Not exercised: ${r.tools.notExercised.join(', ')||'none'}`,...(r.tools.note?[`- ${r.tools.note}`]:[]),
   ...r.tools.calls.map(x=>`  - ${x.tool} ${JSON.stringify(x.args)}: ${x.served}`),`- Tested offline only: ${r.tools.offlineOnly.join('; ')}`,
