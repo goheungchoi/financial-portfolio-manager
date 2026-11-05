@@ -16,7 +16,7 @@
 //   app; Stage 1 attributes none of it to the app's own fills, so those count twice, conservatively).
 // - A broker fill beyond what was committed marks the account over-committed: new buys are refused and an alert is
 //   raised; sales are never checked here.
-const FX_FRESH_MS=2*60000,BALANCE_FRESH_MS=2*60000,BUFFER=0.02,FALLBACK_FEE=0.01;
+const FX_FRESH_MS=2*60000,BALANCE_FRESH_MS=2*60000,BUFFER=0.02,FALLBACK_FEE=0.01,ALIGNMENT_MAX_CENTS=1;
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 const REGIMES=['unknown','integrated-usd-first','separate'];
 const fail=(code,detail)=>Object.assign(new Error(code),{detail});
@@ -30,9 +30,11 @@ class FundingLedger {
     db.exec('CREATE TABLE IF NOT EXISTS funding_commitments(orderId TEXT PRIMARY KEY,account TEXT NOT NULL,market TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS funding_events(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,orderId TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS funding_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
     // Stage 2b.3: what audited reconciliations released of a buy's filled part (positive) or reinstated on reversal
     // (negative). Append-only; a commitment counts its amount less the net released, never below its unfilled part.
-    db.exec(`CREATE TABLE IF NOT EXISTS funding_releases(id TEXT PRIMARY KEY,orderId TEXT NOT NULL,account TEXT NOT NULL,cents INTEGER NOT NULL,route TEXT,reconciliationId TEXT NOT NULL,at INTEGER NOT NULL,reason TEXT);
+    // A release that relied on a KIS row carries the citation, so the restriction returns while that row is under review.
+    db.exec(`CREATE TABLE IF NOT EXISTS funding_releases(id TEXT PRIMARY KEY,orderId TEXT NOT NULL,account TEXT NOT NULL,cents INTEGER NOT NULL,route TEXT,reconciliationId TEXT NOT NULL,at INTEGER NOT NULL,reason TEXT,citationId TEXT);
       CREATE TRIGGER IF NOT EXISTS funding_releases_no_update BEFORE UPDATE ON funding_releases BEGIN SELECT RAISE(ABORT,'funding_releases is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS funding_releases_no_delete BEFORE DELETE ON funding_releases BEGIN SELECT RAISE(ABORT,'funding_releases is append-only'); END;`);
+    if(!db.prepare('PRAGMA table_info(funding_releases)').all().some(c=>c.name==='citationId'))db.exec('ALTER TABLE funding_releases ADD COLUMN citationId TEXT');
   }
   regime(){return this.verifiedRegime??'unknown';}
   row(orderId){const r=this.db.prepare('SELECT payload FROM funding_commitments WHERE orderId=?').get(orderId);return r?JSON.parse(r.payload):null;}
@@ -88,23 +90,37 @@ class FundingLedger {
   // The filled part of a commitment in cents (its unfilled remainder excluded), and what reconciliations released of it.
   static filledCents(c){return c&&c.state!=='released'?Math.max(0,Math.round((c.amount-(c.remainderQty??0)*(c.perShare??0))*100)):0;}
   releasedCents(orderId){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM funding_releases WHERE orderId=?').get(String(orderId)).n;}
-  // A commitment as it counts now: less what audited reconciliations released of its filled part.
-  effective(c){const net=Math.min(Math.max(0,this.releasedCents(c.orderId)),FundingLedger.filledCents(c));return net?{...c,amount:Math.round(c.amount*100-net)/100,releasedUSD:net/100}:c;}
+  // A commitment as it counts now: less what audited reconciliations released of its filled part, except what is
+  // suspended because the KIS row a release relied on is under review.
+  effective(c,suspended=0){const net=Math.min(Math.max(0,this.releasedCents(c.orderId)-suspended),FundingLedger.filledCents(c));
+    return net||suspended?{...c,amount:Math.round(c.amount*100-net)/100,...(net?{releasedUSD:net/100}:{}),...(suspended?{underReviewUSD:suspended/100}:{})}:c;}
+  // Releases relying on a KIS row (a reconciliation citing it) count only while that coverage holds (review of 8b929ea,
+  // P1: a cited row disappeared, valuation reopened $100, and funding stayed released). For each such release still in
+  // effect, the citation's shortfall under review is committed again (the whole release when the whole citation is
+  // under review). Recomputed from the ledger at every check, so restarts, partial shortfalls and re-confirmation follow.
+  suspendedCents(account){const out=new Map();const rows=this.db.prepare('SELECT orderId,MAX(citationId) citationId,SUM(cents) n FROM funding_releases WHERE account=? GROUP BY reconciliationId').all(baseAccount(account)).filter(r=>r.citationId&&r.n>0);
+    if(!rows.length)return out;const ev=this.settlement??=new (require('./settlement-evidence.cjs').SettlementEvidence)(this.db,this.clock);
+    const short=new Map();for(const x of ev.underReview(baseAccount(account)))short.set(x.citationId,(short.get(x.citationId)??0)+Math.round(x.usd*100));
+    const cited=new Map(ev.citations(baseAccount(account)).map(c=>[c.id,c.cents]));
+    for(const r of rows){const s=short.get(r.citationId)??0;if(!s)continue;const part=s>=(cited.get(r.citationId)??Infinity)?r.n:Math.min(r.n,s);out.set(r.orderId,(out.get(r.orderId)??0)+part);}
+    return out;}
   // Stage 2b.3 (design v3 §4.3): a manual reconciliation naming the route (USD or KRW) releases that buy's filled part,
   // up to the reconciled amount; "route unknown" releases nothing (it is never called then). whole: every part of the
-  // order's obligation is reconciled with a named route, so the rest of the filled part is released too, the difference
-  // between the funding estimate and the tracker's amount recorded as an alignment. Called inside the reconciliation's
-  // transaction. Returns what was released.
-  releaseFor({orderId,cents:c,route,reconciliationId,whole=false}){const row=this.row(String(orderId));const filled=FundingLedger.filledCents(row),left=Math.max(0,filled-this.releasedCents(orderId));
-    const take=Math.min(left,whole?left:c),alignment=whole?take-Math.min(c,left):0;
-    if(take>0){this.db.prepare('INSERT INTO funding_releases VALUES(?,?,?,?,?,?,?,?)').run(`${reconciliationId}:release`,String(orderId),row.account,take,route,reconciliationId,this.clock(),whole?'reconciled whole':'reconciled');
-      this.event(String(orderId),{kind:'released by reconciliation',reconciliationId,route,cents:take,...(alignment?{alignmentCents:alignment}:{})});}
-    return {cents:take,alignmentCents:alignment,committed:Boolean(row&&row.state!=='released'),filledCents:filled};}
+  // order's obligation is reconciled with a named route, so a rounding difference of the funding estimate (at most
+  // ALIGNMENT_MAX_CENTS) is released with it and recorded as an alignment; a larger excess of the estimate over the
+  // reconciled amount stays committed and is reported (review of 8b929ea: not silently treated as rounding). Called
+  // inside the reconciliation's transaction. citationId: the KIS row the reconciliation cited, if any. Returns what was
+  // released.
+  releaseFor({orderId,cents:c,route,reconciliationId,whole=false,citationId=null}){const row=this.row(String(orderId));const filled=FundingLedger.filledCents(row),left=Math.max(0,filled-this.releasedCents(orderId));
+    const exact=Math.min(left,c),extra=whole?left-exact:0,alignment=extra<=ALIGNMENT_MAX_CENTS?extra:0,unreleased=extra-alignment,take=exact+alignment;
+    if(take>0){this.db.prepare('INSERT INTO funding_releases(id,orderId,account,cents,route,reconciliationId,at,reason,citationId) VALUES(?,?,?,?,?,?,?,?,?)').run(`${reconciliationId}:release`,String(orderId),row.account,take,route,reconciliationId,this.clock(),whole?'reconciled whole':'reconciled',citationId);
+      this.event(String(orderId),{kind:'released by reconciliation',reconciliationId,route,cents:take,...(alignment?{alignmentCents:alignment}:{}),...(citationId?{citationId}:{})});}
+    return {cents:take,alignmentCents:alignment,unreleasedCents:unreleased,...(unreleased?{reason:`the funding estimate exceeds the reconciled amount by $${(unreleased/100).toFixed(2)}; it stays committed (only a rounding difference of up to ${ALIGNMENT_MAX_CENTS} cent is aligned)`}:{}),committed:Boolean(row&&row.state!=='released'),filledCents:filled};}
   // A reversed reconciliation: what it released counts again.
   reinstate({reconciliationId,by}){const rows=this.db.prepare('SELECT * FROM funding_releases WHERE reconciliationId=?').all(reconciliationId),net=rows.reduce((n,r)=>n+r.cents,0);if(!(net>0))return 0;const r=rows[0];
-    this.db.prepare('INSERT INTO funding_releases VALUES(?,?,?,?,?,?,?,?)').run(`${reconciliationId}:reinstate`,r.orderId,r.account,-net,r.route,reconciliationId,this.clock(),`reversed by ${by}`);this.event(r.orderId,{kind:'reinstated by reversal',reconciliationId,by,cents:net});return net;}
+    this.db.prepare('INSERT INTO funding_releases(id,orderId,account,cents,route,reconciliationId,at,reason,citationId) VALUES(?,?,?,?,?,?,?,?,?)').run(`${reconciliationId}:reinstate`,r.orderId,r.account,-net,r.route,reconciliationId,this.clock(),`reversed by ${by}`,r.citationId??null);this.event(r.orderId,{kind:'reinstated by reversal',reconciliationId,by,cents:net});return net;}
   // Commitments of an account in each currency.
-  commitments(account){const rows=this.rows(account).filter(c=>c.state!=='released').map(c=>this.effective(c));const sum=m=>rows.filter(c=>c.market===m).reduce((n,c)=>n+c.amount,0);
+  commitments(account){const s=this.suspendedCents(account);const rows=this.rows(account).filter(c=>c.state!=='released').map(c=>this.effective(c,s.get(String(c.orderId))??0));const sum=m=>rows.filter(c=>c.market===m).reduce((n,c)=>n+c.amount,0);
     return {usd:Math.round(sum('US')*100)/100,krw:Math.round(sum('KR')),overCommitted:rows.some(c=>c.overCommitted),rows};}
   // One at a time: fresh balances, the check and the durable reservation.
   lock(fn){const run=this.queue.then(fn,fn);this.queue=run.catch(()=>{});return run;}
@@ -168,6 +184,6 @@ class FundingLedger {
     if(z.have<z.commitmentsKRW)return 0;
     if(r==='integrated-usd-first')return Math.max(0,inputs.uCash-z.commitmentsUSD+(z.have-z.commitmentsKRW)/z.rho);
     return Math.max(0,(z.have-z.need)/z.rho);}
-  summary(account){const c=this.commitments(account);return {regime:this.regime(),commitments:{USD:c.usd,KRW:c.krw},overCommitted:c.overCommitted,rows:c.rows.map(({orderId,market,symbol,state,amount,currency,reason,pretracking,releasedUSD})=>({orderId,market,symbol,state,amount,currency,reason,pretracking,...(releasedUSD?{releasedUSD}:{})}))};}
+  summary(account){const c=this.commitments(account);return {regime:this.regime(),commitments:{USD:c.usd,KRW:c.krw},overCommitted:c.overCommitted,rows:c.rows.map(({orderId,market,symbol,state,amount,currency,reason,pretracking,releasedUSD,underReviewUSD})=>({orderId,market,symbol,state,amount,currency,reason,pretracking,...(releasedUSD?{releasedUSD}:{}),...(underReviewUSD?{underReviewUSD}:{})}))};}
 }
-module.exports={FundingLedger,FX_FRESH_MS,BALANCE_FRESH_MS,BUFFER,REGIMES};
+module.exports={FundingLedger,FX_FRESH_MS,BALANCE_FRESH_MS,BUFFER,REGIMES,ALIGNMENT_MAX_CENTS};
