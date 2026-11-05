@@ -5,6 +5,8 @@ function setup({market='US',history={orders:[]},revise}={}){
   const db=new DatabaseSync(':memory:');const sent=[];const events=[];let n=0;
   const snapshot={accountKey:market==='US'?'acct:US':'acct',environment:'mock',reportedTotal:1e6,cash:1e6,holdings:[]};
   const engine=new LiveEngine(db,{request:async(op,data)=>{sent.push([op,data?.command??data]);if(op==='orders')return history;if(op==='revise-order'){if(revise)return revise(data.command);n++;return {brokerOrderId:'R'+n};}return {};}},()=>({status:'connected',snapshot}),{market});
+  // Trading is on, as when the app tracks its orders; a stopped engine refuses raising a buy (tests/shared-funding.test.cjs).
+  engine.enabled=true;
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},(id,kind,title,body)=>events.push({id,title,body}));
   if(market==='US')a.usLive=engine;else a.live=engine;a.config.scope=market==='US'?'us':'kis';a.sessionOpen=()=>true;
   const book={bid:285.32,ask:285.48};a.orderBook=async()=>book.bid==null?{status:'unavailable'}:{status:'available',retrievedAt:Date.now(),data:{bid:book.bid,ask:book.ask}};

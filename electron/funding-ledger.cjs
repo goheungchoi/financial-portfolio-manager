@@ -89,7 +89,9 @@ class FundingLedger {
   // review, P1: a fresh balance of another account funded a submission). own: the balance the engine just read.
   // account: the order's account (Korean key; the U.S. one is it with ':US'); environment: live or mock.
   async inputs(market,own,{account=null,environment=null}={}){
-    const now=this.clock();const fresh=async m=>m===market&&own?own:(this.fresh?await this.fresh(m):null);const kr=await fresh('KR'),us=await fresh('US');
+    // Ages are measured after every read has finished, just before the check (stage 1 review, P2: a slow read let
+    // inputs older than the limit pass, measured from before the reads); the check follows with no further wait.
+    const fresh=async m=>m===market&&own?own:(this.fresh?await this.fresh(m):null);const kr=await fresh('KR'),us=await fresh('US');const appRate=this.fxSource?.()??null;const now=this.clock();
     const env=environment??own?.environment??null;
     for(const [b,key,label] of [[kr,account,'Korean'],[us,account?account+':US':null,'U.S.']])if(b&&(key&&b.accountKey!==key||env&&b.environment!==env))throw fail('ACCOUNT_CHANGED',`the ${label} balance read for this check is of another account or environment`);
     const t=b=>{const x=Date.parse(b?.timestamp??'');return Number.isFinite(x)?x:null;};
@@ -97,7 +99,7 @@ class FundingLedger {
     if(us&&!(now-(t(us)??-Infinity)<=BALANCE_FRESH_MS))throw fail('FUNDING_BALANCE_STALE','a U.S. balance read within two minutes is required');
     const kCash=Math.min(kr.cash,Number.isFinite(kr.settledCash)?kr.settledCash:kr.cash);if(!Number.isFinite(kCash))throw fail('FUNDING_BALANCE_STALE','Korean cash is unknown');
     const fxOf=v=>{const ts=typeof v?.timestamp==='number'?v.timestamp:Date.parse(v?.timestamp??'');return v?.usdKRW>0&&Number.isFinite(ts)&&now-ts<=FX_FRESH_MS?v.usdKRW:null;};
-    const rate=fxOf(us?.fx)??fxOf(this.fxSource?.()??null);
+    const rate=fxOf(us?.fx)??fxOf(appRate);
     return {kCash,uCash:us&&Number.isFinite(us.cash)?us.cash:0,reportedKRW:Math.max(0,Number(us?.unsettled?.buyKRW)||0),rate,kr,us};
   }
   // Whether a buy costing cost (its currency) fits, and if it does, its durable reservation. Throws when it does not.

@@ -252,15 +252,17 @@ class LiveEngine {
       const remaining=order.quantity-(order.filled??0);if(remaining<1)throw new Error('ORDER_NOT_OPEN');const from=order.currentBrokerOrderId??order.brokerOrderId;
       // A higher price on a buy is checked and reserved first; the marker is written before the request, so a reply
       // lost to a crash or a timeout leaves the revision unconfirmed and the higher price committed.
-      // A revision raising a buy's price adds exposure: it needs trading enabled and the order's account connected, before
-      // its funds are checked and again after (stage 1 review, P1). Nothing has been sent if it fails, so the order's
-      // commitment is recomputed without it. Sale revisions, lower prices and cancellations reduce exposure and are not
-      // held back here.
-      if(!cancel&&this.funding&&order.side==='Buy'&&price>Math.max(order.limitPrice,order.currentPrice??0)){
+      // A revision raising a buy above its effective price (its confirmed current price, else its limit) adds exposure:
+      // it needs trading enabled and the order's account connected, before its funds are checked and again after
+      // (stage 1 reviews, P1). That permission does not depend on whether the order's reservation already covers the
+      // new price (one reduced earlier and raised again still reserves its original limit). Nothing has been sent if it
+      // fails, so the commitment is recomputed without it. Sale revisions, lower prices and cancellations reduce exposure
+      // and are not held back here.
+      if(!cancel&&order.side==='Buy'&&price>(order.currentPrice??order.limitPrice)){
         const stillAllowed=()=>{if(!this.enabled)return 'DISABLED_OR_EXPIRED';let key=null;try{key=this.identity();}catch{}return key===order.accountKey?null:'ACCOUNT_CHANGED';};
         {const stopped=stillAllowed();if(stopped)throw new Error(stopped);}
-        await this.funding.admitRevision({order,market:this.market,price,balance:null,environment:this.getConnection().snapshot?.environment??null});
-        const stopped=stillAllowed();if(stopped){this.funding.track(order);throw new Error(stopped);}}
+        if(this.funding){await this.funding.admitRevision({order,market:this.market,price,balance:null,environment:this.getConnection().snapshot?.environment??null});
+          const stopped=stillAllowed();if(stopped){this.funding.track(order);throw new Error(stopped);}}}
       order={...order,pendingRevision:{at:Date.now(),from,cancel,...(cancel?{}:{price})}};this.save(order);
       let result;try{result=await this.broker.request('revise-order',{command:{originalOrderId:from,organization:order.currentOrganization??order.organization??'',symbol:order.symbol,side:order.side,quantity:remaining,price,cancel}});}
       catch(error){if(error.message==='BROKER_REJECTED'){const {pendingRevision:_,...rest}=order;order=rest;this.save(order);}throw error;}
