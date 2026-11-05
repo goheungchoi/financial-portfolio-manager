@@ -85,9 +85,13 @@ class FundingLedger {
     return {usd:Math.round(sum('US')*100)/100,krw:Math.round(sum('KR')),overCommitted:rows.some(c=>c.overCommitted),rows};}
   // One at a time: fresh balances, the check and the durable reservation.
   lock(fn){const run=this.queue.then(fn,fn);this.queue=run.catch(()=>{});return run;}
-  // The balances and rate a check needs, each fresh. own: the balance the engine just read for its market.
-  async inputs(market,own){
+  // The balances and rate a check needs, each fresh and each of the order's own account and environment (stage 1
+  // review, P1: a fresh balance of another account funded a submission). own: the balance the engine just read.
+  // account: the order's account (Korean key; the U.S. one is it with ':US'); environment: live or mock.
+  async inputs(market,own,{account=null,environment=null}={}){
     const now=this.clock();const fresh=async m=>m===market&&own?own:(this.fresh?await this.fresh(m):null);const kr=await fresh('KR'),us=await fresh('US');
+    const env=environment??own?.environment??null;
+    for(const [b,key,label] of [[kr,account,'Korean'],[us,account?account+':US':null,'U.S.']])if(b&&(key&&b.accountKey!==key||env&&b.environment!==env))throw fail('ACCOUNT_CHANGED',`the ${label} balance read for this check is of another account or environment`);
     const t=b=>{const x=Date.parse(b?.timestamp??'');return Number.isFinite(x)?x:null;};
     if(!kr||!(now-(t(kr)??-Infinity)<=BALANCE_FRESH_MS))throw fail('FUNDING_BALANCE_STALE','a Korean balance read within two minutes is required');
     if(us&&!(now-(t(us)??-Infinity)<=BALANCE_FRESH_MS))throw fail('FUNDING_BALANCE_STALE','a U.S. balance read within two minutes is required');
@@ -97,20 +101,26 @@ class FundingLedger {
     return {kCash,uCash:us&&Number.isFinite(us.cash)?us.cash:0,reportedKRW:Math.max(0,Number(us?.unsettled?.buyKRW)||0),rate,kr,us};
   }
   // Whether a buy costing cost (its currency) fits, and if it does, its durable reservation. Throws when it does not.
-  async admit({order,market,cost,balance}){
+  // The balances are read first; the commitments are read after them, and the check and the reservation follow with
+  // no wait in between, so nothing that changed during the reads is missed (stage 1 review, P1).
+  async admit({order,market,cost,balance,environment=null}){
     return this.lock(async()=>{
-      const account=baseAccount(order.accountKey),c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
-      const i=await this.inputs(market,balance);const check=this.check({market,cost,commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);
+      const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment});
+      const c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
+      const check=this.check({market,cost,commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);
       const prev=this.row(order.id);const reserved={...FundingLedger.commitment({...order,status:'Submitting'},prev),state:'reserved',reason:'reserved before submission'};
       this.write(reserved);this.event(order.id,{kind:'commitment',from:prev?.state??null,to:'reserved',amount:reserved.amount,currency:reserved.currency,check});return check;});
   }
+  // A reservation whose order provably never left (a check failed between admission and sending): released.
+  release(order,reason){const prev=this.row(order.id);if(!prev||prev.state!=='reserved')return prev;const next={...prev,state:'released',amount:0,remainderQty:0,reason};this.write(next);this.event(order.id,{kind:'commitment',from:'reserved',to:'released',reason});return next;}
   // A revision raising the price of an open buy: the increase is checked and reserved under the lock before the
   // revision is sent. pendingRevision is the marker the engine then saves with the order.
-  async admitRevision({order,market,price,balance}){
+  async admitRevision({order,market,price,balance,environment=null}){
     return this.lock(async()=>{
-      const account=baseAccount(order.accountKey),c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
+      const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment});
+      const c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
       const prev=this.row(order.id),next=FundingLedger.commitment({...order,pendingRevision:{price}},prev);const delta=Math.max(0,(next?.amount??0)-(prev?.amount??0));
-      if(delta>0){const i=await this.inputs(market,balance);const check=this.check({market,cost:delta,commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);}
+      if(delta>0){const check=this.check({market,cost:delta,commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);}
       if(next){this.write(next);this.event(order.id,{kind:'commitment',from:prev?.state??null,to:next.state,amount:next.amount,currency:next.currency,reason:'revision sent; the higher of the old and new prices stays committed until KIS confirms it'});}
       return {delta};});
   }

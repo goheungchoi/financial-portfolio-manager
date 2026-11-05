@@ -155,3 +155,43 @@ test('markers and admission on the other revision paths; a stale balance refuses
   // A Korean balance read more than two minutes before the check: refused, nothing sent.
   a=account();a.s.krAge=3*60000;assert.equal(await a.buyUS(1),'FUNDING_BALANCE_STALE');assert.equal(a.s.posts.length,0);
 });
+
+// Stage 1 review (8836d45), P1 1-3: what can change while the ledger reads balances.
+const during=(a,fn)=>{const fresh=a.ledger.fresh;a.ledger.fresh=async m=>{await fn(m);return fresh(m);};};
+test('review P1-1: trading stopped, account switched, order expired or limits changed during the funding check: not sent, reservation released',async()=>{
+  let a=account();during(a,()=>a.kr.stop());assert.equal(await a.buyKR(100),'DISABLED_OR_EXPIRED');assert.equal(a.s.posts.length,0);assert.equal(a.committed().krw,0,'released');
+  // The U.S. engine's account changes while the Korean balance is read.
+  a=account();during(a,m=>{if(m==='KR')a.s.us.accountKey='other:US';});assert.equal(await a.buyUS(1),'ACCOUNT_CHANGED');assert.equal(a.s.posts.length,0);assert.equal(a.committed().usd,0);
+  // Expires while the check waits.
+  a=account();let o=a.kr.propose({symbol:'005930',side:'Buy',quantity:100,limitPrice:1000});a.kr.save({...o,expiresAt:Date.now()+30});during(a,()=>new Promise(r=>setTimeout(r,60)));
+  await assert.rejects(a.kr.submit(o.id,'PLACE MOCK ORDER'),/DISABLED_OR_EXPIRED/);assert.equal(a.s.posts.length,0);assert.equal(a.committed().krw,0);
+  // The symbol is no longer allowed by the limits saved during the check.
+  a=account();during(a,()=>{const p=a.kr.policy();a.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify({...p,anyStock:false,symbols:['000660']}),'acct');});
+  assert.equal(await a.buyKR(100),'LIMIT_CHANGED');assert.equal(a.s.posts.length,0);assert.equal(a.committed().krw,0);
+  // A revision: stopped during its funding check, so not sent and its commitment back to the old price; a cancellation still goes through.
+  a=account();assert.equal(await a.buyKR(10,50000),'Accepted');const id=a.kr.orders()[0].id;during(a,()=>a.kr.stop());
+  await assert.rejects(a.kr.revise(id,{price:60000}),/DISABLED_OR_EXPIRED/);assert.equal(a.s.revisions.length,0);assert.equal(a.committed().krw,500000);
+  a.ledger.fresh=async m=>m==='KR'?{...a.s.kr,timestamp:new Date().toISOString()}:null;await a.kr.revise(id,{cancel:true});assert.equal(a.s.revisions.length,1,'the cancellation was sent');
+});
+test('review P1-2: commitments that change while balances are read are counted; so is over-commitment',async()=>{
+  // The review's case: a Korean commitment rises to ₩900,000 during the read; the $300.75 U.S. buy (₩398,794.50) no longer fits.
+  let a=account();assert.equal(await a.buyKR(100),'Accepted');let o=a.kr.orders()[0];during(a,()=>a.kr.save({...o,currentPrice:9000}));
+  assert.equal(await a.buyUS(3),'INSUFFICIENT_CAPACITY');assert.equal(a.s.posts.length,1);assert.ok(a.committed().krw+a.committed().usd*1326<=1000000);
+  // Over-committed during the read.
+  a=account();assert.equal(await a.buyKR(100),'Accepted');o=a.kr.orders()[0];during(a,()=>a.kr.save({...o,status:'Filled',filled:150,fillPrice:1000}));assert.equal(await a.buyUS(1),'FUNDING_OVERCOMMITTED');
+  // A revision whose increase no longer fits once another commitment rose during its read.
+  a=account();assert.equal(await a.buyKR(10,50000),'Accepted');assert.equal(await a.buyUS(1),'Accepted');const k=a.kr.orders()[0],u=a.us.orders()[0];
+  // ₩600,000 + $401.00 × 1,326 = ₩1,131,726 > ₩1,000,000 once the U.S. order is at $400.
+  during(a,()=>a.us.save({...u,currentPrice:400}));await assert.rejects(a.kr.revise(k.id,{price:60000}),/INSUFFICIENT_CAPACITY/);assert.equal(a.s.revisions.length,0);
+});
+test('review P1-3: balances of another account or environment never fund a check',async()=>{
+  // The review's case: a fresh ₩1,000,000 Korean balance of another account.
+  let a=account({krw:100000});const fresh=a.ledger.fresh;a.ledger.fresh=async m=>m==='KR'?{...(await fresh(m)),accountKey:'other-account',cash:1000000,settledCash:1000000}:fresh(m);
+  a.s.integratedUSD=1000;a.s.krSnapshot.settledCash=1000000;assert.equal(await a.buyUS(3),'ACCOUNT_CHANGED');assert.equal(a.s.posts.length,0);
+  // The live environment's balance for a mock order.
+  a=account();const f2=a.ledger.fresh;a.ledger.fresh=async m=>m==='US'?{...(await f2(m)),environment:'live'}:f2(m);assert.equal(await a.buyKR(1),'ACCOUNT_CHANGED');
+  // A U.S. balance of another account for a Korean buy.
+  a=account();const f3=a.ledger.fresh;a.ledger.fresh=async m=>m==='US'?{...(await f3(m)),accountKey:'other:US'}:f3(m);assert.equal(await a.buyKR(1),'ACCOUNT_CHANGED');
+  // A matching account and environment still pass.
+  assert.equal(await account().buyKR(1),'Accepted');
+});
