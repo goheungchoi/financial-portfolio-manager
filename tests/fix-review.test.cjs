@@ -25,19 +25,30 @@ test('finding 1: an unmatched reported total before a new fill is not its settle
   // KIS settles the reported buy: cash and the reported total fall together, which resolves it.
   assert.equal(x.see({cash:400,unsettled:R(0)},[A]).buysUSD,0);assert.equal(x.state().evidence.at(-1).kind,'reported settlement');assert.deepEqual(x.state().evidence.at(-1).allocated.map(a=>a.id),['A']);
 });
-test('finding 1: a reported rise and a cash fall in one reading may be one purchase: one fill clears, the other stays unresolved',()=>{
+// C: a fill of a distinct amount, so the pairing between channels is tested where strict A5 can tell fills apart.
+const C={id:'C',side:'Buy',filled:1,fillPrice:130};
+test('finding 1: a reported rise and a cash fall in one reading may be one purchase: never both cleared',()=>{
+  // Two equal fills (stage 2b S2): each channel fits A or B, so nothing is cleared, and the candidates are recorded.
   const x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);const r=x.see({cash:400,unsettled:R(100)},[A,B]);
-  assert.equal(r.buysUSD,100,'not both cleared');assert.equal(r.unresolved.buysUSD,100);assert.equal(r.open[0].id,'B');assert.equal(r.open[0].unresolved.why,'possibly one purchase');
-  const e=x.state().evidence;assert.deepEqual(e.map(v=>v.kind),['settled','ambiguous']);assert.equal(e[0].pairedWith,e[1].id,'the two allocations are paired');
+  assert.equal(r.buysUSD,200,'not both cleared, nor one');assert.equal(r.unresolved.buysUSD,200);
+  const e=x.state().evidence;assert.deepEqual(e.map(v=>v.kind),['ambiguous fit','ambiguous fit']);assert.deepEqual(e[0].ambiguousCandidates,[['A'],['B']]);
+  assert.equal(x.see({cash:300,unsettled:R(100)},[A,B]).buysUSD,200,'a later equal cash fall is no less ambiguous');
+  // Distinct amounts: the reported rise settles A, and the cash fall of the same amount is paired with it, not taken as C's.
+  const y=tracker();y.see({cash:500});y.see({cash:500},[A,C]);const p=y.see({cash:400,unsettled:R(100)},[A,C]);
+  assert.equal(p.buysUSD,130);const pe=y.state().evidence;assert.deepEqual(pe.map(v=>v.kind),['settled','paired']);assert.equal(pe[0].pairedWith,pe[1].id,'the two allocations are paired');
   // A later cash fall on its own is a separate event: it clears the remaining fill.
-  assert.equal(x.see({cash:300,unsettled:R(100)},[A,B]).buysUSD,0);
+  assert.equal(y.see({cash:270,unsettled:R(100)},[A,C]).buysUSD,0);
 });
 test('finding 1: a time gap alone does not make two channels two events; a reported buy settling with its payment does; it is not evidence for another',()=>{
-  let x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);assert.equal(x.see({cash:500,unsettled:R(100)},[A,B]).buysUSD,100,'reported only: A');
-  const later=x.see({cash:400,unsettled:R(100)},[A,B]);assert.equal(later.buysUSD,100,'cash a reading later, same amount: possibly the same purchase');assert.equal(later.unresolved.buysUSD,100);
-  const paid=x.see({cash:300,unsettled:R(0)},[A,B]);assert.equal(paid.buysUSD,0,'A settles with a cash payment: cash has now gone out for both, whichever was which');
-  x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);x.see({cash:500,unsettled:R(100)},[A,B]);
-  const r=x.see({cash:400,unsettled:R(0)},[A,B]);assert.equal(r.buysUSD,100,'cash and reported fall together: A settling, not B');assert.equal(x.state().evidence.at(-1).kind,'reported settlement');
+  // Equal fills (stage 2b S2): no channel tells A from B, so nothing resolves; identity waits for a reconciliation.
+  let x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);assert.equal(x.see({cash:500,unsettled:R(100)},[A,B]).buysUSD,200,'reported $100: A or B, so neither');
+  assert.equal(x.see({cash:400,unsettled:R(100)},[A,B]).buysUSD,200);assert.equal(x.see({cash:300,unsettled:R(0)},[A,B]).buysUSD,200,'the reported buy settling fits A or B: neither');
+  // Distinct amounts: the reported rise settles A; cash of the same amount a reading later is that purchase, not C.
+  x=tracker();x.see({cash:500});x.see({cash:500},[A,C]);assert.equal(x.see({cash:500,unsettled:R(100)},[A,C]).buysUSD,130,'reported only: A');
+  const later=x.see({cash:400,unsettled:R(100)},[A,C]);assert.equal(later.buysUSD,130,'cash a reading later, same amount: paired with A');assert.equal(x.state().evidence.at(-1).kind,'paired');
+  assert.equal(x.see({cash:400,unsettled:R(0)},[A,C]).buysUSD,130,'the reported buy settling: A, already paid');assert.equal(x.see({cash:270,unsettled:R(0)},[A,C]).buysUSD,0,'C settles by its own cash');
+  x=tracker();x.see({cash:500});x.see({cash:500},[A,C]);x.see({cash:500,unsettled:R(100)},[A,C]);
+  const r=x.see({cash:400,unsettled:R(0)},[A,C]);assert.equal(r.buysUSD,130,'cash and reported fall together: A settling, not C');assert.equal(x.state().evidence.at(-1).kind,'reported settlement');
   // Cash-only and reported-only updates on their own.
   x=tracker();x.see({cash:500});x.see({cash:500},[A]);assert.equal(x.see({cash:400},[A]).buysUSD,0,'cash only');
   x=tracker();x.see({cash:500});x.see({cash:500},[A]);assert.equal(x.see({cash:500,unsettled:R(100)},[A]).buysUSD,0,'reported only');
@@ -46,11 +57,11 @@ test('finding 1: a time gap alone does not make two channels two events; a repor
   const s=x.see({cash:500,unsettled:{buyKRW:0,sellKRW:130000}},[S]);assert.equal(s.sellsUSD,100);assert.equal(s.unresolved.sellsUSD,100);
 });
 test('finding 1: repeated and out-of-order readings, and a restart between the two channels',()=>{
-  let x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);x.see({cash:500,unsettled:R(100)},[A,B]);
-  for(let i=0;i<3;i++)assert.equal(x.see({cash:500,unsettled:R(100)},[A,B]).buysUSD,100,'the same reading again changes nothing');
-  const old=x.raw({cash:400,unsettled:R(100),timestamp:new Date(x.now()-HOUR).toISOString()},[A,B]);assert.equal(old.buysUSD,100);assert.match(old.notes[0],/older than the last one was ignored/);
-  // Restart, then the reported buy settles (not evidence for B); restart, then B's own cash movement.
-  x.restart();assert.equal(x.see({cash:400,unsettled:R(0)},[A,B]).buysUSD,100);x.restart();assert.equal(x.see({cash:300,unsettled:R(0)},[A,B]).buysUSD,0);
+  let x=tracker();x.see({cash:500});x.see({cash:500},[A,C]);x.see({cash:500,unsettled:R(100)},[A,C]);
+  for(let i=0;i<3;i++)assert.equal(x.see({cash:500,unsettled:R(100)},[A,C]).buysUSD,130,'the same reading again changes nothing');
+  const old=x.raw({cash:400,unsettled:R(100),timestamp:new Date(x.now()-HOUR).toISOString()},[A,C]);assert.equal(old.buysUSD,130);assert.match(old.notes[0],/older than the last one was ignored/);
+  // Restart, then the reported buy settles (not evidence for C); restart, then C's own cash movement.
+  x.restart();assert.equal(x.see({cash:400,unsettled:R(0)},[A,C]).buysUSD,130);x.restart();assert.equal(x.see({cash:270,unsettled:R(0)},[A,C]).buysUSD,0);
   const e=x.state().evidence;assert.ok(e.every(v=>Number.isFinite(v.at)&&v.id&&Array.isArray(v.open)&&Array.isArray(v.allocated)),'each piece of evidence keeps its time, the fills open then and its allocation');
   // State saved before readings were kept: its old reported baseline is not used as evidence.
   const db=new DatabaseSync(':memory:');let t=at('2026-11-05T14:00:00Z');db.exec('CREATE TABLE inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');
@@ -69,7 +80,8 @@ test('finding 1, consumer: a fill seen after KIS reported it, then settled, reco
   t=at('2026-11-12T22:00:00+09:00');const db2=new DatabaseSync(':memory:');const perf2=new PerformanceHistory(db2,()=>t);const in2=new InFlight(db2,()=>t);const det2=new FlowDetector(db2,perf2,()=>t);
   const read2=(cash,usd,orders=[])=>{const us={cash,pendingSaleProceeds:0,unsettled:R(usd),timestamp:new Date(t).toISOString()};in2.observe('a',{us,orders,fx:1300});const f=in2.current('a');const s=settlement(us);
     det2.observe('a',{krCash:1000000,usCash:cash-f.buysUSD+f.sellsUSD,fx:1300,orders,provisionalKRW:s.uncertainKRW,unsettledKRW:s.unsettledKRW});t+=30*MIN;};
-  const both=[order(A),order(B)];read2(500,0);read2(500,0,both);read2(400,0,both);read2(300,0,both);assert.equal(in2.current('a').buysUSD,0);for(let i=0;i<5*48;i++)read2(300,0,both);
+  // Distinct amounts, so each settlement fits one fill (stage 2b S2; equal fills stay unresolved until reconciled).
+  const both=[order(A),order(C)];read2(500,0);read2(500,0,both);read2(400,0,both);read2(270,0,both);assert.equal(in2.current('a').buysUSD,0);for(let i=0;i<5*48;i++)read2(270,0,both);
   assert.deepEqual(perf2.flows('a'),[]);
 });
 
@@ -160,7 +172,9 @@ test('the copied-profile build check keeps the saved preference and asserts the 
 });
 test('finding 1: a cash fall a reading before a fill is seen may be its payment or a withdrawal: the fill stays in flight, unresolved',()=>{
   let x=tracker();x.see({cash:500});x.see({cash:400});let r=x.see({cash:400},[A]);assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,100);assert.equal(r.open[0].unresolved.why,'paid before seen');
-  assert.equal(x.see({cash:300},[A]).buysUSD,0,'a withdrawal after all: the fill\'s own payment clears it');
+  // Stage 2b (design v2 T11, v3 T17): the earlier fall may have been this fill's payment, so a later fall is no proof
+  // either way; only a reconciliation (or A1 once U6 is verified) resolves it.
+  const later=x.see({cash:300},[A]);assert.equal(later.buysUSD,100,'a later cash fall does not clear it');assert.equal(later.open[0].unresolved.why,'paid before seen');
   // Two readings earlier is not considered: the fill is in flight and not flagged by it.
   x=tracker();x.see({cash:500});x.see({cash:400});x.see({cash:400});r=x.see({cash:400},[A]);assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,0);
 });
@@ -211,15 +225,21 @@ test('contract: a new fill reflected in cash while the reported total rises keep
   // The review's case: A open; B appears with cash down $100 and the reported total up $100.
   let a=account();a.read();const e0=a.mark().low;a.s.us.holdings.push(share('A',100));a.s.orders=[buy('A',100)];a.read();
   a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;krw(a.s,100);const r=a.read();
-  assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,100);assert.ok(a.mark().low<=e0);assert.equal(a.mark().exact,false);
-  const ev=a.state().evidence;assert.deepEqual(ev.map(e=>e.kind),['reflected at once','ambiguous']);assert.deepEqual(ev[0].allocated.map(x=>x.id),['B'],'the cash allocation to the new fill is logged');assert.equal(ev[0].pairedWith,ev[1].id);
+  // Strict A5 (stage 2b S2, S4): A and B are both $100, so neither channel can say which it was: both stay, more than
+  // the possible $100 the review required.
+  assert.equal(r.buysUSD,200);assert.equal(r.unresolved.buysUSD,200);assert.ok(a.mark().low<=e0);assert.equal(a.mark().exact,false);
+  let ev=a.state().evidence;assert.deepEqual(ev.map(e=>e.kind),['ambiguous fit','ambiguous fit']);
+  // Distinct amounts (A $130): the cash is B's at once, and the reported rise of the same amount is paired with it.
+  a=account();a.read();a.s.us.holdings.push(share('A',130));a.s.orders=[buy('A',130)];a.read();
+  a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',130),buy('B',100)];a.s.us.cash-=100;krw(a.s,100);const d=a.read();assert.equal(d.buysUSD,130);assert.ok(a.mark().low<=e0);
+  ev=a.state().evidence;assert.deepEqual(ev.map(e=>e.kind),['reflected at once','paired']);assert.deepEqual(ev[0].allocated.map(x=>x.id),['B'],'the cash allocation to the new fill is logged');assert.equal(ev[0].pairedWith,ev[1].id);
   // The same in the other order across readings (cash for B first, the reported rise later), with a restart between.
   a=account();a.read();a.s.us.holdings.push(share('A',100));a.s.orders=[buy('A',100)];a.read();a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;a.read();
-  a.restart();a.later(DAY);krw(a.s,100);const later=a.read();assert.equal(later.unresolved.buysUSD,100,'a time gap alone does not make them two events');
+  a.restart();a.later(DAY);krw(a.s,100);const later=a.read();assert.equal(later.unresolved.buysUSD,200,'a time gap alone does not make them two events');
   // Two new fills in one reading with both channels, and a new partial-fill piece.
-  a=account();a.read();a.s.us.holdings.push(share('A',100),share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;krw(a.s,100);assert.equal(a.read().unresolved.buysUSD,100);
+  a=account();a.read();a.s.us.holdings.push(share('A',100),share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;krw(a.s,100);assert.equal(a.read().unresolved.buysUSD,200);
   a=account();a.read();a.s.us.holdings.push(share('P',100));a.s.orders=[{id:'P',side:'Buy',filled:1,fillPrice:100}];a.read();a.s.us.holdings=[{...share('P',100),quantity:2}];a.s.orders=[{id:'P',side:'Buy',filled:2,fillPrice:100}];a.s.us.cash-=100;krw(a.s,100);
-  assert.equal(a.read().unresolved.buysUSD,100);assert.ok(a.mark().low<=e0);
+  assert.equal(a.read().unresolved.buysUSD,200,'the new piece equals the open one: neither is settled');assert.ok(a.mark().low<=e0);
   // Different amounts through the two channels are two events.
   a=account();a.read();a.s.us.holdings.push(share('A',60));a.s.orders=[buy('A',60)];a.read();a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',60),buy('B',100)];a.s.us.cash-=100;krw(a.s,60);
   const two=a.read();assert.deepEqual([two.buysUSD,two.unresolved.buysUSD],[0,0]);assert.deepEqual([a.mark().low,a.mark().exact],[e0,true]);

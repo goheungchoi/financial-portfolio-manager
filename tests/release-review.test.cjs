@@ -37,8 +37,10 @@ test('finding 1: the execution boundary holds back the same decision; reductions
 const {InFlight}=require('../electron/valuation.cjs');
 function track(){let t=1e12;const db=new DatabaseSync(':memory:');let f=new InFlight(db,()=>t);return {see:(us,orders=[])=>{const r=f.observe('a',{us,orders,fx:1300});t+=1000;return r;},restart:()=>{f=new InFlight(db,()=>t);}};}
 const A={id:'A',side:'Buy',filled:1,fillPrice:100},B={id:'B',side:'Buy',filled:1,fillPrice:100},C={id:'C',side:'Buy',filled:1,fillPrice:60},S={id:'S',side:'Sell',filled:1,fillPrice:100};
-test('finding 2: one cash movement settles fills once, oldest first; what it does not match stays open',()=>{
-  let x=track();x.see({cash:500});x.see({cash:500},[A,B]);assert.equal(x.see({cash:400},[A,B]).buysUSD,100,'two $100 buys, one $100 settlement: $100 still open');assert.equal(x.see({cash:300},[A,B]).buysUSD,0);
+test('finding 2: one cash movement settles fills once, only the one set that fits; what it does not match stays open',()=>{
+  // Strict A5 (stage 2b S2): two $100 buys and a $100 settlement fit two sets, so nothing is settled; a $200 one fits only both.
+  let x=track();x.see({cash:500});x.see({cash:500},[A,B]);assert.equal(x.see({cash:400},[A,B]).buysUSD,200,'two $100 buys, one $100 settlement: A or B, so neither');assert.equal(x.see({cash:300},[A,B]).buysUSD,200,'nor at the second');
+  x=track();x.see({cash:500});x.see({cash:500},[A,B]);assert.equal(x.see({cash:300},[A,B]).buysUSD,0,'$200 fits only {A, B}');
   x=track();x.see({cash:500});x.see({cash:500},[A,C]);assert.equal(x.see({cash:420},[A,C]).buysUSD,160,'$80 matches no run of fills: nothing settled');assert.equal(x.see({cash:320},[A,C]).buysUSD,60,'then $100: the older fill');
   x=track();x.see({cash:500});x.see({cash:500},[A,S]);assert.deepEqual([x.see({cash:500},[A,S])].map(r=>[r.buysUSD,r.sellsUSD])[0],[100,100],'a buy and a sale netting to zero stay open');
   assert.deepEqual([x.see({cash:400},[A,S])].map(r=>[r.buysUSD,r.sellsUSD])[0],[100,100],'a movement while both sides are open cannot be divided');
@@ -48,7 +50,7 @@ test('finding 2: an old reported total is no evidence; a coincident withdrawal s
   assert.equal(x.see({cash:500,unsettled:{buyKRW:260000}},[A]).buysUSD,0,'a rise of $100 is');
   x=track();x.see({cash:1500});x.see({cash:1500},[A]);assert.equal(x.see({cash:500},[A]).buysUSD,100,'a $1,000 fall is not a $100 settlement');
   x=track();x.see({cash:500});const half={id:'P',side:'Buy',filled:1,fillPrice:100};x.see({cash:500},[half]);const full={...half,filled:2,fillPrice:101};assert.equal(x.see({cash:500},[full]).buysUSD,202,'two shares averaging $101 are $202 in all (the earlier expectation of $201 took the new share at the new average)');
-  x=track();x.see({cash:500});x.see({cash:500},[A,B]);x.see({cash:400},[A,B]);x.restart();assert.equal(x.see({cash:400},[A,B]).buysUSD,100,'after a restart the remainder is kept');assert.equal(x.see({cash:300},[A,B]).buysUSD,0);
+  x=track();x.see({cash:500});x.see({cash:500},[A,C]);x.see({cash:400},[A,C]);x.restart();assert.equal(x.see({cash:400},[A,C]).buysUSD,60,'after a restart the remainder is kept');assert.equal(x.see({cash:340},[A,C]).buysUSD,0);
 });
 
 // 3. A flow belongs to the day it moved, not the day it was recorded.
