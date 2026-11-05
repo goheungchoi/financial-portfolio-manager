@@ -54,13 +54,21 @@ class SettlementEvidence{
     const identity={account,environment,market,readingA:readingA??null,readingB:readingB??null,side,field},evidenceId='A'+hash(identity);
     if(!this.version(evidenceId,1)){this.db.prepare('INSERT INTO settlement_evidence VALUES(?,?,?,?,?,?,?,?)').run(`${evidenceId}:1`,evidenceId,1,account,field,amountCents,currency,JSON.stringify({identity,...detail}));this.event(account,'evidence',{evidenceId,identity,amountCents,...detail});}
     return evidenceId;}
+  // A manual reconciliation's evidence (stage 2b.3): one version, the confirmed amount, allocated to its piece like any
+  // other evidence. Reversing the reconciliation reverses its allocations and voids the evidence, so nothing (a
+  // conflict's restoration included) can allocate from it again.
+  manual({account,evidenceId,amountCents,...detail}){this.db.prepare('INSERT INTO settlement_evidence VALUES(?,?,?,?,?,?,?,?)').run(`${evidenceId}:1`,evidenceId,1,account,'M',amountCents,'USD',JSON.stringify({manual:true,...detail}));this.event(account,'evidence',{evidenceId,source:'M',amountCents,...detail});return evidenceId;}
+  reverseEvidence(account,evidenceId,by){const rows=this.db.prepare('SELECT * FROM settlement_allocations WHERE evidenceId=? AND reversedBy IS NULL ORDER BY rowid').all(evidenceId);
+    for(const a of rows){this.db.prepare('UPDATE settlement_allocations SET reversedBy=? WHERE id=?').run(by,a.id);this.event(account,'allocation-reversed',{allocationId:a.id,evidenceId,pieceId:a.pieceId,orderId:a.orderId,cents:a.cents,by});}
+    for(const r of this.db.prepare('SELECT id,payload FROM settlement_evidence WHERE evidenceId=?').all(evidenceId))this.db.prepare('UPDATE settlement_evidence SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(r.payload),reversedBy:by}),r.id);
+    return rows.map(a=>({allocationId:a.id,pieceId:a.pieceId,orderId:a.orderId,cents:a.cents}));}
   allocated(evidenceId,version){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM settlement_allocations WHERE evidenceId=? AND version=? AND reversedBy IS NULL').get(evidenceId,version).n;}
   allocatedToPiece(pieceId){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM settlement_allocations WHERE pieceId=? AND reversedBy IS NULL').get(pieceId).n;}
   allocatedToOrder(account,orderId){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM settlement_allocations WHERE account=? AND orderId=? AND reversedBy IS NULL').get(account,String(orderId)).n;}
   // Consumes cents of an evidence version for a piece of pieceCents in all. What is left of both is re-read inside the
   // transaction; more than either refuses the whole allocation (design v2 §2.2).
   allocate({account,evidenceId,version=1,pieceId,orderId=null,cents:c,pieceCents,rule=null}){
-    return this.tx(()=>{const ev=this.version(evidenceId,version);if(!ev)throw fail('EVIDENCE_UNKNOWN');if(!Number.isInteger(c)||c<=0)throw fail('ALLOCATION_INVALID');
+    return this.tx(()=>{const ev=this.version(evidenceId,version);if(!ev)throw fail('EVIDENCE_UNKNOWN');if(ev.reversedBy)throw fail('EVIDENCE_REVERSED');if(!Number.isInteger(c)||c<=0)throw fail('ALLOCATION_INVALID');
       if(this.allocated(evidenceId,version)+c>ev.amountCents)throw fail('ALLOCATION_EXCEEDS_EVIDENCE');
       if(Number.isInteger(pieceCents)&&this.allocatedToPiece(pieceId)+c>pieceCents)throw fail('ALLOCATION_EXCEEDS_PIECE');
       const id='L'+hash([evidenceId,version,pieceId,this.allocated(evidenceId,version),this.clock()]);
@@ -120,7 +128,9 @@ class SettlementEvidence{
   cite({account,groupId,version,orderId,side,cents:c,rule}){const id='C'+hash([account,groupId,version,orderId,c,this.clock()]);const row={id,account,groupId,version,orderId:String(orderId),side,cents:c,rule,at:this.clock()};
     return this.tx(()=>{const v=this.version(groupId,version);if(!v)throw fail('CITATION_TARGET_UNKNOWN');
       if(this.citations(account).filter(x=>x.groupId===groupId).reduce((n,x)=>n+x.cents,0)+c>v.amountCents)throw fail('CITATION_EXCEEDS_ROW');this.db.prepare('INSERT INTO settlement_citations VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'citation',row);return id;});}
-  citations(account){return this.db.prepare('SELECT payload FROM settlement_citations WHERE account=?').all(account).map(r=>JSON.parse(r.payload));}
+  // Active citations (a reversed reconciliation's citation no longer covers anything); all: every one, for the record.
+  citations(account,{all=false}={}){return this.db.prepare('SELECT payload FROM settlement_citations WHERE account=?').all(account).map(r=>JSON.parse(r.payload)).filter(c=>all||!c.reversedBy);}
+  reverseCitation(account,id,by){const r=this.db.prepare('SELECT payload FROM settlement_citations WHERE id=?').get(id);if(!r)return;this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(r.payload),reversedBy:by}),id);this.event(account,'citation-reversed',{id,by});}
   // Re-confirms a citation against the group's current version (or another group), after review. Confirming against a
   // possible correction is the manual link that makes it a row of its own (v3.1 §2); an ambiguous group or one with
   // several rows cannot be confirmed.
@@ -142,6 +152,10 @@ class SettlementEvidence{
   // Evidence that agrees with a piece another record already resolved: kept, not consumed (design v3 §6).
   standby({account,evidenceId,version,pieceId,cents:c}){const id='S'+hash([evidenceId,version,pieceId]);const row={id,account,evidenceId,version,pieceId,cents:c,at:this.clock()};
     return this.tx(()=>{if(this.db.prepare('SELECT id FROM settlement_standby WHERE id=?').get(id))return id;this.db.prepare('INSERT INTO settlement_standby VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'standby',row);return id;});}
-  standbyFor(pieceId){return this.db.prepare('SELECT payload FROM settlement_standby').all().map(r=>JSON.parse(r.payload)).filter(s=>s.pieceId===pieceId);}
+  standbyFor(pieceId){return this.db.prepare('SELECT payload FROM settlement_standby').all().map(r=>JSON.parse(r.payload)).filter(s=>s.pieceId===pieceId).map(s=>({...s,promotedCents:(s.promoted??[]).reduce((n,p)=>n+p.cents,0)}));}
+  // Standby coverage consumed when the record it agreed with is reversed (design v3 §6): the part promoted, and by which
+  // reversal. A standby is promoted at most up to its amount.
+  promote(account,id,c,by){const r=this.db.prepare('SELECT payload FROM settlement_standby WHERE id=?').get(id);const s=JSON.parse(r.payload);s.promoted=[...(s.promoted??[]),{cents:c,by,at:this.clock()}];
+    this.db.prepare('UPDATE settlement_standby SET payload=? WHERE id=?').run(JSON.stringify(s),id);this.event(account,'standby-promoted',{id,pieceId:s.pieceId,evidenceId:s.evidenceId,version:s.version,cents:c,by});}
 }
 module.exports={SettlementEvidence,usTradeDate};
