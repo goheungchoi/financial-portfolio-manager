@@ -27,7 +27,9 @@ app.once('browser-window-created',(_event,win)=>{win.hide();win.webContents.once
     assert.ok(await run('document.querySelector(`[aria-label="App updates"]`).textContent.includes("Fixture release notes")'));
     await click('Download 9.9.9');await until(`${badge}==="VERSION 9.9.9 READY TO INSTALL"`,'Download not verified');
     assert.equal(await run(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Restart and install')?.disabled`),false,'install is allowed when nothing is running');
-    fs.writeFileSync(path.join(output,'update-ready.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+    // The screenshot is evidence, not a check: on some GPUs capturing a hidden window fails (UnknownVizError, seen
+    // 2026-11-05 on this machine at 517f794 too), and that must not stop the checksum checks below.
+    try{fs.writeFileSync(path.join(output,'update-ready.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());}catch(error){console.log('Screenshot skipped: '+error.message);}
     // A manifest whose checksum does not match the file must be rejected.
     release.version='9.9.10';release.sha512=crypto.createHash('sha512').update('tampered').digest('base64');
     await click('Check for updates');await until(`${badge}==="VERSION 9.9.10 AVAILABLE"`,'Second update not detected');
