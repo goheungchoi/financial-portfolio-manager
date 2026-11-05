@@ -48,7 +48,7 @@ const cents=v=>Math.round(Number(v)*100);
 const fail=(code,extra={})=>Object.assign(new Error(code),{code,...extra});
 const SESSION=crypto.randomUUID();
 const ROUTES=['USD','KRW','unknown'],EXPLANATIONS=['settled','rounding'],ENTRIES=['settlement','deposit','withdrawal','unexplained'];
-const ROUNDING_MAX_CENTS=100,MAX_SPLIT=8;
+const ROUNDING_MAX_CENTS=100,MAX_SPLIT=8,PROVISIONAL='provisional';
 const text=(v,max)=>typeof v==='string'&&v.trim()&&v.trim().length<=max?v.trim():null;
 const osUser=()=>{try{return os.userInfo().username;}catch{return null;}};
 const round2=v=>Number.isFinite(v)?Math.round(v*100)/100:null;
@@ -149,6 +149,14 @@ class Reconciliation{
     if(byId){const p=JSON.parse(byId.payload);if(p.contentHash!==binding||p.requestHash!==requestHash||p.account!==r.account)throw fail('REQUEST_ID_REUSED');return {...p,repeat:true};}
     const same=this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE account=? AND contentHash=?').get(r.account,binding);if(!same)return null;
     const p=JSON.parse(same.payload);if(p.requestHash!==requestHash)throw fail('PREVIEW_MISMATCH');return {...p,repeat:true};}
+  // The values after a change, read with its record and event in place (stage 2b.5 review round 2, P1: the daily-loss
+  // "after" was computed before the record and event the baseline adjustments read, so it showed no adjustment and a
+  // smaller loss than the committed state had). write() puts the record and event in place, as the final ones will be in
+  // everything any consumer reads (only the hash and the preview values differ); the values are read, and that savepoint
+  // is rolled back so the final record carries them. Both the preview and the confirmation compute it this way, so the
+  // binding covers the complete resulting state.
+  afterWith(account,ctx,write){this.db.exec('SAVEPOINT reconciliation_after');
+    try{write();return this.values(account,ctx);}finally{this.db.exec('ROLLBACK TO reconciliation_after');this.db.exec('RELEASE reconciliation_after');}}
   dry(fn){const own=!this.db.isTransaction;this.db.exec(own?'BEGIN IMMEDIATE':'SAVEPOINT reconciliation_preview');
     try{return fn();}finally{if(own)this.db.exec('ROLLBACK');else{this.db.exec('ROLLBACK TO reconciliation_preview');this.db.exec('RELEASE reconciliation_preview');}}}
   // R4: inside the caller's transaction.
@@ -179,13 +187,14 @@ class Reconciliation{
     // R10: what the reconciliation changes in accounting terms, for step 2b.4 and stage 3.
     const reclassified=flows?Math.abs(flows.settlementCents):0;
     const effect={side:f.side,obligationCents:r.cents,reclassifiedCashCents:reclassified,correctionCents:r.cents-reclassified,basis:r.explanation==='rounding'?'rounding':reclassified?'settlement in a tracked pair':f.pretracking?'basis change':'correction'};
-    const after=this.values(account,ctx);
-    const effects={evidenceId:id,allocationId,leftCents:Math.max(0,left),closed:left<=0,citationId,funding,flows,effect},contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
+    const effects={evidenceId:id,allocationId,leftCents:Math.max(0,left),closed:left<=0,citationId,funding,flows,effect},standby=ledger.standbyFor(f.pid);
+    const record=(contentHash,after)=>({id,kind:'reconciliation',account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:f.pid,orderId:f.id,side:f.side,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,note:r.note,settledOn:r.settledOn,flowId:r.flowId,
+      confirmedAt:now,confirmedBy:this.who,stateVersion:sv,context:{balances:ctx.balances??null,inputs:ctx.inputs??null},evidence:{piece:snapshot,seen,related,standby,citation:r.citation,flow:flow??null},effects,preview:{before,after}});
+    const write=payload=>{this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,payload.contentHash,'reconciliation',null,now,JSON.stringify(payload));
+      ledger.event(account,'reconciliation',{id,pieceId:f.pid,orderId:f.id,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,settledOn:r.settledOn,reclassified:Boolean(flows)});};
+    const after=this.afterWith(account,ctx,()=>write(record(PROVISIONAL,null))),contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
     if(expected!=null&&contentHash!==expected)throw fail('PREVIEW_MISMATCH');
-    const payload={id,kind:'reconciliation',account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:f.pid,orderId:f.id,side:f.side,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,note:r.note,settledOn:r.settledOn,flowId:r.flowId,
-      confirmedAt:now,confirmedBy:this.who,stateVersion:sv,context:{balances:ctx.balances??null,inputs:ctx.inputs??null},evidence:{piece:snapshot,seen,related,standby:ledger.standbyFor(f.pid),citation:r.citation,flow:flow??null},effects,preview:{before,after}};
-    this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,contentHash,'reconciliation',null,now,JSON.stringify(payload));
-    ledger.event(account,'reconciliation',{id,pieceId:f.pid,orderId:f.id,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,settledOn:r.settledOn,reclassified:Boolean(flows)});
+    const payload=record(contentHash,after);write(payload);
     return payload;}
   // Whether every part of the order is reconciled, by records with a named route or a closing rounding record, with no
   // automatic evidence allocated to it: then its whole filled commitment can be released (R9).
@@ -233,13 +242,14 @@ class Reconciliation{
     if(t.effects.citationId)ledger.reverseCitation(account,t.effects.citationId,id);
     // Its open settlement timing is withdrawn in the same transaction (stage 2b.5 review, P1).
     const timing=require('./flow-detector.cjs').withdrawTiming(this.db,{performance:this.performance,clock:this.clock},account,t.id,id);
-    const after=this.values(account,ctx);
-    const effects={reversedCents,reversed,promoted,reopenedCents:reopen,fundingReinstatedCents:reinstated,flows,timing,citationWithdrawn:t.effects.citationId??null,effect:{side:t.side,obligationCents:-reopen,promotedCents:reversedCents-reopen}},contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
+    const effects={reversedCents,reversed,promoted,reopenedCents:reopen,fundingReinstatedCents:reinstated,flows,timing,citationWithdrawn:t.effects.citationId??null,effect:{side:t.side,obligationCents:-reopen,promotedCents:reversedCents-reopen}};
+    const record=(contentHash,after)=>({id,kind:'reversal',target:t.id,account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:t.pieceId,orderId:t.orderId,side:t.side,note:r.note,kisReference:r.kisReference,confirmedAt:now,confirmedBy:this.who,stateVersion:sv,
+      context:{balances:ctx.balances??null,inputs:ctx.inputs??null},effects,preview:{before,after}});
+    const write=payload=>{this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,payload.contentHash,'reversal',t.id,now,JSON.stringify(payload));
+      ledger.event(account,'reconciliation-reversed',{id,target:t.id,pieceId:t.pieceId,reversedCents,reopenedCents:reopen});};
+    const after=this.afterWith(account,ctx,()=>write(record(PROVISIONAL,null))),contentHash=Reconciliation.binding(r,sv,ctx,{before,after,effects});
     if(expected!=null&&expected!==contentHash)throw fail('PREVIEW_MISMATCH');
-    const payload={id,kind:'reversal',target:t.id,account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:t.pieceId,orderId:t.orderId,side:t.side,note:r.note,kisReference:r.kisReference,confirmedAt:now,confirmedBy:this.who,stateVersion:sv,
-      context:{balances:ctx.balances??null,inputs:ctx.inputs??null},effects,preview:{before,after}};
-    this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,contentHash,'reversal',t.id,now,JSON.stringify(payload));
-    ledger.event(account,'reconciliation-reversed',{id,target:t.id,pieceId:t.pieceId,reversedCents,reopenedCents:reopen});
+    const payload=record(contentHash,after);write(payload);
     return payload;}
   // Whether standby coverage can still be consumed: its evidence exists, is not voided, has something left and, for a
   // KIS settled-trade row, is independent, current and usable (U6 verified; A1).
