@@ -166,6 +166,7 @@ const fillTime=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.
 // Why a fill may already be covered by what KIS reports awaiting settlement.
 const REPORTED=['reported before seen','reported total moved by an unmatched amount'];
 const cents=v=>Math.round(v*100);
+const nyDay=ms=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
 class InFlight {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db,clock);}
   save(account,st){this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));}
@@ -381,11 +382,17 @@ class InFlight {
   // time (since) only when no id was kept. through: the last event id now.
   // pretracking: the part from pre-tracking fills, by order, which the flow detector leaves out for an order whose fill it
   // explains itself in the same comparison (the order first listed then), so nothing is explained twice.
-  explained(account,{afterId=null,since=null}={}){const side=new Map(),pre={};let c=0,through=0;
+  // A reconciliation is a change without cash in the interval only when its payment is known to be outside it (review of
+  // 06a0b95, P1: a payment and its reconciliation in one interval left the basis unchanged, and explaining the
+  // reconciliation as well made a false withdrawal): a rounding record (no payment), a reclassified flow (its cash was
+  // recorded in an earlier interval), or a settlement date before the interval's first U.S. day (from: its start).
+  // Otherwise it is a candidate (candidates: usd and ids), which the flow detector weighs against the observed change.
+  explained(account,{afterId=null,since=null,from=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
     for(const e of this.evidence.events(account)){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;const s=side.get(e.pieceId)==='Sell'?1:-1;
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
-      else if(e.kind==='reconciliation')c-=s*e.cents;else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;}
-    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100]))};}
+      else if(e.kind==='reconciliation'){const outside=e.explanation==='rounding'||e.reclassified||typeof e.settledOn==='string'&&start!=null&&e.settledOn<start;if(outside)c-=s*e.cents;else cand.push({id:e.id,usd:-s*e.cents/100,settledOn:e.settledOn??null});}
+      else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;}
+    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100])),candidates:{usd:Math.round(cand.reduce((n,x)=>n+x.usd,0)*100)/100,ids:cand.map(x=>x.id)}};}
   explainedSince(account,since){return this.explained(account,{since}).usd;}
 }
 module.exports={value,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND};

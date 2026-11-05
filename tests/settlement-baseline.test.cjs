@@ -105,8 +105,8 @@ test('F1-F3 (CN2, CN5, CN25): the tracker\'s own changes are explained to the fl
   w.reverse(r.id);w.later(MIN);w.detect([A]);w.later(3*HOUR);assert.deepEqual(w.detect([A]),[],'no withdrawal from a reversal');
   // A pre-tracking fill listed late lowers the basis: no withdrawal.
   const B=order('B',{ticker:'OTHER',fillPrice:50,limitPrice:50,costEstimate:{netCash:-50},resultCosts:{netCash:-50}});w.see([A,B]);w.later(MIN);w.detect([A,B]);w.later(3*HOUR);assert.deepEqual(w.detect([A,B]),[],'no withdrawal from a late pre-tracking fill');
-  // A reconciliation and a real $200 deposit between the same readings: the deposit alone is detected.
-  w.reconcile({pieceId:w.pid('B'),cents:5000});w.us.cash+=200;w.later(MIN);w.detect([A,B]);w.later(3*HOUR);const found=w.detect([A,B]);assert.deepEqual(found.map(x=>[x.market,x.amount,Boolean(x.detected)]),[['US',200,true]]);
+  // A reconciliation paid before this interval and a real $200 deposit in it: the deposit alone is detected.
+  w.reconcile({pieceId:w.pid('B'),cents:5000,settledOn:'2026-11-01'});w.us.cash+=200;w.later(MIN);w.detect([A,B]);w.later(3*HOUR);const found=w.detect([A,B]);assert.deepEqual(found.map(x=>[x.market,x.amount,Boolean(x.detected)]),[['US',200,true]]);
 });
 test('F2: coverage under review and its return are explained to the flow detector',()=>{
   const w=world();const [A]=w.open(order('A'));w.ledger.importK(SCOPE,W,[k()]);const g=w.ledger.links('a',[A]).get('A');w.reconcile({citation:{groupId:g.groupId,version:g.version}});
@@ -143,4 +143,32 @@ test('B1/B8: after the baseline is decided by the ledger event, not the clock; w
   assert.equal(w.sb.adjustments('a',{day:D,baselineAt:at}).certain.low,-50,'opened after the snapshot, at the same time');
   const x=world();x.open(order('A'));x.e.baselineTaken=null;x.baseline(D);x.see([order('A'),B()]);const a=x.sb.adjustments('a',x.e.policy());
   assert.equal(a.certain.low,0);assert.equal(a.withUnknown.low,-50);
+});
+test('F5 (review of 06a0b95, P1): a payment and its reconciliation in one interval make no withdrawal; with no timing evidence and a change neither reading explains, the doubt is kept, not resolved',()=>{
+  // Cash falls $100 and the $100 obligation is reconciled (dated today) before the detector compares: no flow.
+  const w=world();const notes=[];w.fd.onNote=(t,m)=>notes.push(m);const [A]=w.open(order('A'));w.detect([A]);w.later(MIN);w.reconcile({settledOn:D});w.us.cash-=100;w.later(MIN);w.detect([A]);w.later(3*HOUR);
+  assert.deepEqual(w.detect([A]),[]);assert.deepEqual(w.perf.flows('a'),[]);assert.ok(notes.some(m=>/\$100\.00: paid in this interval/.test(m)),'the decision is logged');
+  // No cash movement and no date: the reconciliation moved no cash here (the false deposit stays cleared).
+  const x=world();const [B]=x.open(order('A'));x.detect([B]);x.later(MIN);x.reconcile();x.later(MIN);x.detect([B]);x.later(3*HOUR);assert.deepEqual(x.detect([B]),[]);
+  // Cash +$150 with an undated $100 reconciliation in the same interval: a +$150 flow if the payment was earlier, +$250 if
+  // in it. Neither reading explains the change, so neither is assumed: it is held unexplained (+$250), its note naming
+  // the $100 of unknown timing (a detected flow: unresolved, a loss scenario, for you to confirm).
+  const y=world();const [C]=y.open(order('A'));y.detect([C]);y.later(MIN);y.reconcile();y.us.cash+=150;y.later(MIN);y.detect([C]);y.later(3*HOUR);
+  const f=y.detect([C]);assert.equal(f.length,1);assert.equal(f[0].amount,250);assert.match(f[0].note,/reconciled payment of unknown timing: \$100\.00 is no flow if paid earlier/);assert.ok(f[0].note.length<=200);
+  // A settlement date before the interval settles it: cash-free here, so only the real change is a flow.
+  const z=world();const [E]=z.open(order('A'));z.detect([E]);z.later(MIN);z.reconcile({settledOn:'2026-11-01'});z.us.cash+=150;z.later(MIN);z.detect([E]);z.later(3*HOUR);assert.deepEqual(z.detect([E]).map(x=>x.amount),[150]);
+});
+test('B6 (review of 06a0b95, P1): a conflict already in the baseline moves it when reduced, up to what it held',()=>{
+  const w=world();const [A]=w.open(order('A'));w.reconcile({settledOn:'2026-11-02'});w.ledger.importK(SCOPE,W,[k({settlementUSD:150,grossUSD:150,price:150})]);w.see([A]);assert.equal(w.f.current('a').buysUSD,50);
+  w.baseline(D);assert.equal(Object.values(w.sb.get('a',D).pieces)[0].conflict,true);
+  w.ledger.importK(SCOPE,W,[k({settlementUSD:120,grossUSD:120,price:120,settlementDate:'2026-11-09'})]);w.see([A]);assert.equal(w.f.current('a').buysUSD,20);assert.equal(w.sb.adjustments('a',w.e.policy()).certain.low,30);assert.equal(w.loss().loss,0);
+  w.ledger.importK(SCOPE,W,[k({settlementUSD:100,grossUSD:100,price:100,settlementDate:'2026-11-10'})]);w.see([A]);assert.equal(w.f.current('a').buysUSD,0);assert.equal(w.sb.adjustments('a',w.e.policy()).certain.low,50);
+  // A genuine $35 loss on the same day stays visible.
+  w.us.holdings=[{symbol:'X',quantity:1,price:-35}];assert.equal(w.loss().loss,35);
+});
+test('F6: a reconciliation whose payment was already recorded as a flow is cash-free in a later interval, so a real withdrawal there is detected',()=>{
+  const w=world();const [A]=w.open(order('A'));const flow=w.perf.addFlow('a',{day:D,market:'US',amount:-100,detected:true,note:'Detected earlier'});w.detect([A]);w.later(MIN);
+  // The payment's flow is reclassified, and in the same interval $100 really leaves the account.
+  w.reconcile({flowId:flow.id});w.us.cash-=100;w.later(MIN);w.detect([A]);w.later(3*HOUR);const f=w.detect([A]);
+  assert.deepEqual(f.map(x=>x.amount),[-100],'the withdrawal is not taken for the reconciled payment');
 });

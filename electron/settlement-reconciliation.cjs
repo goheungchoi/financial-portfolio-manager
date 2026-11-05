@@ -175,7 +175,7 @@ class Reconciliation{
     const payload={id,kind:'reconciliation',account,requestId:r.requestId,contentHash,requestHash:hash(Reconciliation.content(r)),pieceId:f.pid,orderId:f.id,side:f.side,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,note:r.note,settledOn:r.settledOn,flowId:r.flowId,
       confirmedAt:now,confirmedBy:this.who,stateVersion:sv,context:{balances:ctx.balances??null,inputs:ctx.inputs??null},evidence:{piece:snapshot,seen,related,standby:ledger.standbyFor(f.pid),citation:r.citation,flow:flow??null},effects,preview:{before,after}};
     this.db.prepare('INSERT INTO settlement_reconciliations VALUES(?,?,?,?,?,?,?,?)').run(id,account,r.requestId,contentHash,'reconciliation',null,now,JSON.stringify(payload));
-    ledger.event(account,'reconciliation',{id,pieceId:f.pid,orderId:f.id,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference});
+    ledger.event(account,'reconciliation',{id,pieceId:f.pid,orderId:f.id,cents:r.cents,explanation:r.explanation,route:r.route,kisReference:r.kisReference,settledOn:r.settledOn,reclassified:Boolean(flows)});
     return payload;}
   // Whether every part of the order is reconciled, by records with a named route or a closing rounding record, with no
   // automatic evidence allocated to it: then its whole filled commitment can be released (R9).

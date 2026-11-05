@@ -104,7 +104,7 @@ class FlowDetector {
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     const reviewEffect=usReview?Math.round(((Number(usReview.sellsUSD)||0)-(Number(usReview.buysUSD)||0))*100)/100:0;
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
-    let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
+    let usAdjust=0,usPretracking={},usCandidate={usd:0,ids:[]},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};usCandidate={usd:Number(x?.candidates?.usd)||0,ids:x?.candidates?.ids??[]};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
     const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usReview:reviewEffect,usEvent};
     // Provisional changes and settlement evidence carry over between readings.
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
@@ -127,7 +127,15 @@ class FlowDetector {
     // investigates it rather than taking it for a withdrawal.
     const usStart=prev.usCash==null&&now.usCash!=null;
     // Any open order, U.S. ones included, still means the reading cannot be judged.
-    const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):unexplained(prev,{...now,usAdjust,usPretracking},orders);
+    // Reconciliations whose payment may fall in this interval (usCandidate): the interval itself decides. Unexplained
+    // already below the threshold: the payment is in it (cash moved with the obligation), nothing more is explained;
+    // below it once they are explained: they moved no cash here. Otherwise neither is assumed: the change stays
+    // unexplained, held with the candidates named, so its note and the loss scenarios keep the doubt.
+    const weigh=u=>{if(!u||!usCandidate.usd||usStart)return u;const u0=u.US,u1=u0-usCandidate.usd;
+      if(!big('US',u0,fx))return {...u,settlement:{decision:'paid in this interval',...usCandidate}};
+      if(!big('US',u1,fx))return {...u,US:u1,settlement:{decision:'no payment in this interval',...usCandidate}};
+      return {...u,settlement:{decision:'unknown',...usCandidate}};};
+    const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):weigh(unexplained(prev,{...now,usAdjust,usPretracking},orders));
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
     // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.
@@ -152,8 +160,9 @@ class FlowDetector {
     // keeps its own amount and the window it happened in (fix review 2026-11-05, P1: the accumulated amount took the
     // first change's window, so a deposit after the day's baseline was counted as before it). since stays the first
     // change's time: the hold runs from it, and a later change does not restart the wait.
+    if(u.settlement&&u.settlement.decision!=='unknown')try{this.onNote?.('U.S. settlement timing',`A reconciled settlement of $${Math.abs(u.settlement.usd).toFixed(2)}: ${u.settlement.decision} (${u.settlement.ids.join(', ')}).`);}catch{}
     for(const market of ['KR','US']){const amount=u[market],held=state.pending[market];if(!amount||!held&&!big(market,amount,fx))continue;
-      const mark=usStart&&market==='KR'?{usUnseen:true}:{};
+      const mark={...(usStart&&market==='KR'?{usUnseen:true}:{}),...(market==='US'&&u.settlement?.decision==='unknown'?{settlementUnknown:{usd:Math.round(((held?.settlementUnknown?.usd??0)+u.settlement.usd)*100)/100,ids:[...(held?.settlementUnknown?.ids??[]),...u.settlement.ids]}}:{})};
       if(held){Object.assign(held,{funding:held.funding||u.usTraded,...mark});add(held,market,amount);}
       else state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{id:randomUUID(),amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark};}
     const found=this.resolve(account,state,now,prev,fx);save();return found;
@@ -203,10 +212,10 @@ class FlowDetector {
     for(const m of ['KR','US']){const q=p[m];if(!q)continue;const age=now.at-q.since,krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;
       const couldSettle=now.provisionalKRW>0&&(m==='KR'?q.amount<0:q.amount>0)&&(krw==null||Math.abs(krw)<=now.provisionalKRW*1.05+THRESHOLD_KRW);
       if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
-      const unseen=q.usUnseen?' The U.S. balance could not be compared first, so a move to or from the U.S. account cannot be ruled out.':'';
+      const unseen=(q.usUnseen?' The U.S. balance could not be compared first, so a move to or from the U.S. account cannot be ruled out.':'')+(q.settlementUnknown?` Includes a reconciled payment of unknown timing: $${Math.abs(q.settlementUnknown.usd).toFixed(2)} is no flow if paid earlier.`:'');
       const pieces=piecesOf(m,q,fx);
       pieces.forEach((x,i)=>out.push(this.performance.addFlow(account,{day:seoulDate(x.occurredBy),market:m,amount:x.amount,detected:true,occurredAfter:x.occurredAfter,occurredBy:x.occurredBy,pendingIds:x.pendingIds,
-        note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen} Confirm or remove.`})));delete p[m];}
+        note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen} Confirm or remove.`.slice(0,200)})));delete p[m];}
     return out;
   }
   // A transfer pair recorded in the last MATCH_DAYS days as funding awaiting its exchange (or by the user), not yet
