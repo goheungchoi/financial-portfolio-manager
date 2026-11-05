@@ -73,7 +73,7 @@ test('T28/T46: unknown payment timing keeps both scenarios with their assumption
   const named=l.scenarios.map(s=>[s.name,s.loss]);assert.ok(named.some(([n,v])=>/paid before the baseline/.test(n)&&v===25),'the $25 loss is visible under the adjusted assumption');
   assert.equal(l.settlement.assumption,'not adjusted: paid after the baseline');
   // A $40 genuine loss: breached only if the payment was before the baseline: ambiguous (new buys restricted, a protective sale allowed: automation's ambiguous rule).
-  w.us.holdings=[{symbol:'X',quantity:10,price:96}];l=w.loss();assert.equal(l.breached,false);assert.equal(l.ambiguous,true);assert.match(l.reasons[0],/breached only with settlement of unknown timing adjusted \(paid before the baseline\)/);
+  w.us.holdings=[{symbol:'X',quantity:10,price:96}];l=w.loss();assert.equal(l.breached,false);assert.equal(l.ambiguous,true);assert.match(l.reasons[0],/^breached only with .*settlement of unknown timing adjusted \(paid before the baseline\)/);assert.ok(!l.scenarios.find(x=>x.name==='low bounds').breached,'not on the certain low bounds');
   // Today's settlement date is also unknown relative to the baseline.
   const x=world();x.open(order('A'));x.baseline(D);x.reconcile({settledOn:D});assert.equal(x.sb.adjustments('a',x.e.policy()).items.find(i=>i.kind==='reconciliation').timing,'unknown');
 });
@@ -163,7 +163,7 @@ test('F7: timing entries persist, enter the loss check at their lowest and highe
   // An undated reconciliation: its baseline adjustment and the interval's change (0 or -$100) are both of unknown timing.
   const restart=new FlowDetector(w.db,w.perf,w.clock);assert.equal(restart.timing('a').length,1,'kept across a restart');
   let l=w.loss();const names=l.scenarios.map(s=>[s.name,s.loss]);
-  assert.ok(names.some(([n])=>/settlement timing at the lowest reading/.test(n))&&names.some(([n])=>/settlement timing at the highest reading/.test(n)));
+  assert.ok(names.some(([n])=>/all uncertain money changes at their lowest total/.test(n))&&names.some(([n])=>/all uncertain money changes at their highest total/.test(n)));
   // A genuine $40 loss: a breach unless the $100 left as a withdrawal (lowest reading): ambiguous, not hidden, not claimed.
   w.us.holdings=[{symbol:'X',quantity:1,price:-40}];l=w.loss();assert.equal(l.breached,false);assert.equal(l.ambiguous,true);
   // Resolved: it was paid in that interval (0: no flow); the entry closes and the loss is plain again.
@@ -185,4 +185,38 @@ test('F6: a reconciliation whose payment was already recorded as a flow is cash-
   // The payment's flow is reclassified, and in the same interval $100 really leaves the account.
   w.reconcile({flowId:flow.id});w.us.cash-=100;w.later(MIN);w.detect([A]);w.later(3*HOUR);const f=w.detect([A]);
   assert.deepEqual(f.map(x=>x.amount),[-100],'the withdrawal is not taken for the reconciled payment');
+});
+test('F8 (review of f26d33f, P1): every uncertain money change is combined: two $20 doubts and a $40 loss over a $30 limit are ambiguous',()=>{
+  // A detected $20 deposit straddling the baseline, and a timing entry that may be another $20.
+  const w=world({limit:30});const [A]=w.open(order('A'));w.baseline(D);const at=w.e.policy().baselineAt;w.e.flowsSince=p=>w.fd.flowsSince('a','US',p.baselineAt);
+  w.perf.addFlow('a',{day:D,market:'US',amount:20,detected:true,note:'Detected',occurredAfter:at-MIN,occurredBy:at+MIN});
+  w.detect([A]);w.later(MIN);w.reconcile();w.us.cash-=80;w.later(MIN);w.detect([A]);assert.deepEqual(w.fd.timing('a').map(x=>[x.ifPaidHere,x.ifPaidEarlier]),[[20,-80]]);
+  const r=w.fd.flowsSince('a','US',at);assert.deepEqual([r.range.low,r.range.high],[-80,40],'item by item: -80 (the timing entry) to +20 +20');
+  // Equity unchanged at the baseline value apart from a genuine $40 loss offset by both possible deposits.
+  w.us.cash+=80;w.us.holdings=[{symbol:'X',quantity:1,price:0}];const l=w.loss();assert.equal(l.ambiguous,true);assert.ok(l.scenarios.some(x=>/highest total/.test(x.name)&&x.breached));
+  // Changes in both directions are not netted: +$50 and -$50 detected widen the range to -50..+50.
+  const x=world();x.open();x.baseline(D);const at2=x.e.policy().baselineAt;for(const a of [50,-50])x.perf.addFlow('a',{day:D,market:'US',amount:a,detected:true,note:'Detected',occurredAfter:at2+1,occurredBy:at2+2});
+  const r2=x.fd.flowsSince('a','US',at2);assert.equal(r2.unresolved,0);assert.deepEqual([r2.range.low,r2.range.high],[-50,50]);
+});
+test('F9 (review of f26d33f, P1): resolving a timing entry is one transaction and idempotent',()=>{
+  const w=world();const [A]=w.open(order('A'));w.detect([A]);w.later(MIN);w.reconcile();w.us.cash+=150;w.later(MIN);w.detect([A]);const id=w.fd.timing('a')[0].id;
+  // A failure closing the entry leaves neither the flow nor a closed entry.
+  w.db.exec("CREATE TRIGGER fail_close BEFORE UPDATE ON flow_watch BEGIN SELECT RAISE(ABORT,'injected'); END");
+  assert.throws(()=>w.fd.resolveTiming('a',id,{paidHere:false}),/injected/);assert.equal(w.fd.timing('a').length,1);assert.deepEqual(w.perf.flows('a'),[]);
+  w.db.exec('DROP TRIGGER fail_close');
+  const first=w.fd.resolveTiming('a',id,{paidHere:false});assert.equal(first.flow.amount,150);
+  const again=w.fd.resolveTiming('a',id,{paidHere:false});assert.equal(again.repeat,true);assert.equal(again.flow.id,first.flow.id);assert.equal(w.perf.flows('a').length,1,'no second flow');
+  assert.throws(()=>w.fd.resolveTiming('a',id,{paidHere:true}),/TIMING_ALREADY_RESOLVED/);assert.throws(()=>w.fd.resolveTiming('a',id,{}),/TIMING_CHOICE_REQUIRED/);
+  // The record of resolutions survives later readings.
+  w.later(MIN);w.detect([A]);assert.equal(w.fd.resolveTiming('a',id,{paidHere:false}).repeat,true);
+});
+test('F8b: a timing entry may also be no money at all, and held changes widen the range',()=>{
+  // Cash +$150 with an undated $100 reconciliation: +$250 or +$150 if real, or nothing: the range starts at 0.
+  const w=world();const [A]=w.open(order('A'));w.baseline(D);const at=w.e.policy().baselineAt;w.detect([A]);w.later(MIN);w.reconcile();w.us.cash+=150;w.later(MIN);w.detect([A]);
+  const r=w.fd.flowsSince('a','US',at);assert.deepEqual([r.range.low,r.range.high],[0,250]);
+  // A change still held (under the two-hour hold) after the baseline widens it too.
+  w.us.cash-=60;w.later(MIN);w.detect([A]);const h=w.fd.flowsSince('a','US',at);assert.equal(h.held.after,-60);assert.deepEqual([h.range.low,h.range.high],[-60,250]);
+  // On the high bounds as well: a genuine loss seen only there with a possible deposit counted is not missed.
+  const e=w.e,p={...e.policy()};e.flowsSince=q=>w.fd.flowsSince('a','US',q.baselineAt);const l=e.lossOf(p,{accountKey:'a:US',environment:'live',cash:w.us.cash,holdings:[{symbol:'X',quantity:1,price:-300}],pendingSaleProceeds:0,reportedTotal:w.us.cash,timestamp:new Date(w.clock()).toISOString()});
+  assert.ok(l.scenarios.some(x=>/highest total, high bounds/.test(x.name)&&x.breached));
 });

@@ -142,7 +142,7 @@ class LiveEngine {
   // you) and unresolved (detected, awaiting you). Only confirmed flows adjust the baseline; unresolved ones are a
   // scenario in lossOf. Without flowsSince, flowsToday counts as confirmed.
   // timing: U.S. changes whose reading depends on a reconciled payment's timing ({low, high} of their readings).
-  flows(policy){try{const f=this.flowsSince?.(policy);if(f&&Number.isFinite(f.confirmed))return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0,uncertain:{confirmed:Number(f.uncertain?.confirmed)||0,unresolved:Number(f.uncertain?.unresolved)||0},...(f.timing&&Number.isFinite(f.timing.low)&&Number.isFinite(f.timing.high)?{timing:{low:f.timing.low,high:f.timing.high}}:{})};}catch{}return {confirmed:Number(this.flowsToday?.())||0,unresolved:0,uncertain:{confirmed:0,unresolved:0}};}
+  flows(policy){try{const f=this.flowsSince?.(policy);if(f&&Number.isFinite(f.confirmed))return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0,uncertain:{confirmed:Number(f.uncertain?.confirmed)||0,unresolved:Number(f.uncertain?.unresolved)||0},...(f.timing&&Number.isFinite(f.timing.low)&&Number.isFinite(f.timing.high)?{timing:{low:f.timing.low,high:f.timing.high}}:{}),...(f.range&&Number.isFinite(f.range.low)&&Number.isFinite(f.range.high)?{range:{low:f.range.low,high:f.range.high}}:{})};}catch{}return {confirmed:Number(this.flowsToday?.())||0,unresolved:0,uncertain:{confirmed:0,unresolved:0}};}
   // The value the daily loss is measured on (audit 2026-11-04, Stage 2): the account valuation's net equity for this
   // market (netEquityOf, set by the app: {low, high, version}), or KIS's total when that is unavailable. A day's baseline
   // and its current value always use the same version: the baseline records its version when the day starts, and a
@@ -166,12 +166,18 @@ class LiveEngine {
     // Flows whose side of the baseline cannot be told (same-day entries with only a date, a detection straddling the
     // baseline reading) are a scenario of their own, never a precise adjustment (release review 2026-11-05, P1).
     const u=f.uncertain??{confirmed:0,unresolved:0};
+    // The combined range of uncertain money changes; from the sums when only they are given (each sum real or not).
+    const r=f.range??(()=>{const parts=[f.unresolved,u.confirmed,u.unresolved].map(x=>Number(x)||0),tl=Number(f.timing?.low)||0,th=Number(f.timing?.high)||0;
+      return {low:parts.reduce((n,x)=>n+Math.min(0,x),0)+Math.min(0,tl,th),high:parts.reduce((n,x)=>n+Math.max(0,x),0)+Math.max(0,tl,th)};})();
     // Each scenario on the certain adjustment and, when some timing is unknown, again on the adjusted one.
     const on=(a,tag)=>{const low=policy.baseline+a.low,high=(policy.baselineHigh??policy.baseline)+a.high,n=x=>tag?`${tag}: ${x}`:x;
       return [[n('low bounds'),low+f.confirmed,v.low],[n('high bounds'),high+f.confirmed,v.high],...(f.unresolved?[[n('unresolved money changes counted'),low+f.confirmed+f.unresolved,v.low]]:[]),
         ...(u.confirmed||u.unresolved?[[n('flows of uncertain timing counted'),low+f.confirmed+u.confirmed+u.unresolved,v.low]]:[]),
-        // Changes whose reading depends on a reconciled payment's timing: unresolved, at their lowest and highest readings.
-        ...(f.timing?[[n('unresolved money changes counted, settlement timing at the lowest reading'),low+f.confirmed+f.unresolved+f.timing.low,v.low],[n('unresolved money changes counted, settlement timing at the highest reading'),low+f.confirmed+f.unresolved+f.timing.high,v.low]]:[])];};
+        // Every uncertain money change together (review of f26d33f, P1): unresolved flows, flows of uncertain timing, held
+        // changes and settlement-timing entries, each real or not, at the lowest and highest combined total. The loss
+        // grows with the money counted as moved, so these two bound every combination; on both bounds.
+        ...(r&&(r.low||r.high)?[[n('all uncertain money changes at their lowest total, low bounds'),low+f.confirmed+r.low,v.low],[n('all uncertain money changes at their highest total, low bounds'),low+f.confirmed+r.high,v.low],
+          [n('all uncertain money changes at their lowest total, high bounds'),high+f.confirmed+r.low,v.high],[n('all uncertain money changes at their highest total, high bounds'),high+f.confirmed+r.high,v.high]]:[])];};
     const scenarios=[...on(adj,null),...(alt?on(alt,'settlement of unknown timing adjusted (paid before the baseline)'):[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
     const all=scenarios.every(x=>x.breached),any=scenarios.some(x=>x.breached);
     const settled=s0&&(adj.low||adj.high||alt)?{settlement:{adjustment:adj,...(alt?{ifPaidBeforeBaseline:alt,assumption:'not adjusted: paid after the baseline'}:{}),items:s0.items}}:{};
