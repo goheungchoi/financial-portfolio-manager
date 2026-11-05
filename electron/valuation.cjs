@@ -11,13 +11,15 @@
 //   amount (ustl_buy_amt_smtl), not how it is paid. The part known to be KRW-funded is subtracted in both bounds; the
 //   rest is subtracted in the low bound only (it may already have left U.S. cash).
 // - U.S. buys filled but in no broker figure yet (inFlight; 2026-10-30: an RDDT buy paid from unsettled sale proceeds
-//   was in neither currency until settlement): subtracted in the low bound only, beyond what KIS already reports.
-//   U.S. sales filled but not yet in the pending proceeds raise the high bound.
+//   was in neither currency until settlement): the fills the tracker holds open, subtracted in the low bound only; which
+//   fills KIS's figures cover is decided by the tracker's evidence, never by subtracting KIS's aggregate. U.S. sales
+//   filled but not yet in the pending proceeds raise the high bound.
 // - Credit accounts (margin loans, short sales) take KIS net assets (nass_amt), which already deduct loans and short
 //   obligations, so nothing is deducted twice; the app's own sum is kept beside it as a bridge. Until the field
 //   meanings are verified (Stage 3) such a value is marked unverified, not exact; without net assets it is incomplete.
 // The headline is the low bound: an estimate whenever the bounds differ, never presented as reconciled.
-const VERSION='net-equity 2026-11-04';
+// 2026-11-05: in-flight U.S. fills are no longer netted against KIS's aggregates (fix review of 34474f7).
+const VERSION='net-equity 2026-11-05';
 const STALE_MS=15*60000;
 const sum=(rows,f)=>rows.reduce((n,r)=>n+f(r),0);
 const finite=v=>typeof v==='number'&&Number.isFinite(v);
@@ -64,19 +66,24 @@ function bridge(k,components){
   const items=[{name:'prices',amount:long-brokerLong,note:'holdings at the latest prices against the broker price'},{name:'cashBasis',amount:cash-(total-brokerLong),note:'projected settled cash against the cash in the KIS total'},...(funding?[{name:'usBuyFunding',amount:funding.low,high:funding.high,note:'U.S. buys awaiting settlement, not netted in the KIS total'}]:[])];
   return {brokerTotal:total,field:'tot_evlu_amt',items,explained:Math.abs(items.find(i=>i.name==='cashBasis').amount)<1};
 }
-function unitedStates(u,{fx,inFlight,now,reportedKRW}){
+function unitedStates(u,{inFlight,now}){
   if(!u)return {currency:'USD',available:false,reasons:['U.S. balance not loaded']};
   const reasons=[],components=[];
   components.push(part('cash',u.cash,'observed','KIS U.S. deposit (frcr_dncl_amt_2)'));
   const pending=finite(u.pendingSaleProceeds)?Math.max(0,u.pendingSaleProceeds):0;
-  // Sales filled but not yet in KIS pending proceeds may be missing: they raise the high bound only.
-  const sells=Math.max(0,(inFlight?.sellsUSD??0)-pending);
+  // Sales the tracker holds in flight (InFlight below) may be missing from the pending proceeds: they raise the high
+  // bound only. Which sales KIS's total covers is the tracker's evidence, never KIS's total less the app's.
+  const sells=Math.max(0,inFlight?.sellsUSD??0);
   if(pending>0||sells>0)components.push(part('receivable',pending,'observed','U.S. sale proceeds awaiting settlement (frcr_sll_amt_smtl)',{low:pending,high:pending+sells,...(sells>0?{note:`${sells.toFixed(2)} of filled sales not yet reported by KIS`}:{})}));
   components.push(part('long',sum(u.holdings??[],h=>h.quantity*h.price),'observed','U.S. holdings at their latest prices'));
-  // Buys filled but in no KIS figure yet: beyond what KIS reports as awaiting settlement (in KRW), at the rate.
-  const buys=inFlight?.buysUSD??0;const reported=fx>0?(reportedKRW??0)/fx:null;
-  if(buys>0){if(reported==null)reasons.push('filled U.S. buys may not be in any KIS figure yet and there is no exchange rate to compare them with KIS settlement');
-    const gap=reported==null?buys:Math.max(0,buys-reported);if(gap>0.005)components.push(part('inFlightBuys',-gap,'derived','U.S. buys the app saw fill that KIS does not report yet (fill records)',{low:-gap,high:0,note:'paid from U.S. cash or proceeds at settlement, or already deducted'+(inFlight?.unresolved?.buysUSD>0?`; ${inFlight.unresolved.buysUSD.toFixed(2)} of it may already be in KIS figures (unresolved)`:'')}));}
+  // Buys the tracker holds in flight: every open fill, subtracted in the low bound only. Fix review of 34474f7, P1: the
+  // amount KIS reports awaiting settlement was subtracted from them, so an older reported purchase cancelled a newer
+  // unreported one and a purchase raised equity, labelled exact. Coverage is the tracker's: a fill it matched to KIS
+  // evidence is no longer open; one it could not tell apart (unresolved) stays in the low bound, where both obligations
+  // count, and out of the high bound, where it may already be counted, and the value says so.
+  const buys=Math.max(0,inFlight?.buysUSD??0);
+  if(buys>0.005)components.push(part('inFlightBuys',-buys,'derived','U.S. buys the app saw fill that no KIS evidence covers yet (fill records)',{low:-buys,high:0,note:'paid from U.S. cash or proceeds at settlement, or already deducted'}));
+  for(const [k,what] of [['buysUSD','buys'],['sellsUSD','sales']]){const u=inFlight?.unresolved?.[k]??0;if(u>0.005)reasons.push(`$${u.toFixed(2)} of U.S. ${what} in flight may already be in KIS figures: unresolved, so the value is a range`);}
   return finish('USD',u,components,reasons,{},now,{reportedTotal:u.reportedTotal});
 }
 function finish(currency,s,components,reasons,extra,now,broker){
@@ -91,8 +98,7 @@ function finish(currency,s,components,reasons,extra,now,broker){
 // value in KRW: low (the headline), high, whether it is exact, complete, which markets it covers and why not.
 function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
   const rate=fx?.usdKRW>0&&Number.isFinite(fx.usdKRW)?fx.usdKRW:null;
-  const unsettled=require('./integrated-settlement.cjs').settlement(us).unsettledKRW;
-  const KR=korea(k,{us,now}),US=unitedStates(us,{fx:rate,inFlight,now,reportedKRW:unsettled});
+  const KR=korea(k,{us,now}),US=unitedStates(us,{inFlight,now});
   const reasons=[...(KR.available?[]:['Korean balance not loaded']),...(US.available?[]:['U.S. balance not loaded'])];
   const usLow=US.equity?.low,usHigh=US.equity?.high;const usZero=US.available&&usLow===0&&usHigh===0;
   if(US.available&&rate==null&&!usZero)reasons.push('no USD/KRW rate');
@@ -122,22 +128,31 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
 //   - a cash movement settles fills of a side while only that side is open (buys and sales together net, so it cannot
 //     be divided). A fall in reported buys (with the fall in U.S. cash that comes with it) is a reported buy settling:
 //     it settles only fills marked unresolved for having been reported before they were seen, which it resolves;
-//   - a reported rise and a cash movement of the same side in one reading may describe one purchase: the rise is used,
-//     and the fills the cash movement would match stay open, marked unresolved, instead of being cleared twice;
+//   - cash and the reported total are not independent: one purchase may show in both, in one reading or apart (fix
+//     review of 34474f7, P1). Every allocation through one channel, new fills reflected at once included, is recorded
+//     and paired with a later (or same-reading) allocation of the same amount and side through the other channel within
+//     PAIR_DAYS; the fills the second would clear stay open, marked unresolved, instead of being cleared twice. A
+//     reported trade settling with a cash payment resolves them: cash has then gone out for both, whichever was which;
+//   - a reported rise matching no open fill while fills of its side are open may cover part of them: they are marked
+//     unresolved;
 //   - a movement that matches no run of open fills (an unrelated deposit or withdrawal) settles nothing;
 // - a reading older than the last one is ignored;
 // - after MAX_DAYS a fill is dropped as settled, with a note, so a missed signal cannot hold a value down for good.
 // The state (open fills, cumulative amounts, the last reading, the evidence) survives restarts (inflight_settlement).
 // orders: the U.S. engine's.
-const MAX_DAYS=7,TOLERANCE=0.95,EVIDENCE_KEPT=60;
+const MAX_DAYS=7,PAIR_DAYS=4,TOLERANCE=0.95,EVIDENCE_KEPT=60;
+// Why a fill may already be covered by what KIS reports awaiting settlement.
+const REPORTED=['reported before seen','reported total moved by an unmatched amount'];
 const cents=v=>Math.round(v*100);
 class InFlight {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[],evidence:[]};}
   // An order's cumulative execution amount in cents and its basis: KIS net cash when known (fees included), otherwise gross.
   static amountOf(o){const net=o.resultCosts?.netCash;return Number.isFinite(net)?{cents:Math.abs(cents(net)),basis:'net'}:{cents:cents(o.filled*o.fillPrice),basis:'gross'};}
-  // The oldest open fills of a side whose total matches an amount within the tolerance either way, or none.
-  static match(open,amount){if(!(amount>0))return [];let total=0;const run=[];for(const f of open){total+=f.usd;run.push(f);if(amount>=TOLERANCE*total&&amount<=total/TOLERANCE)return [...run];if(total>amount/TOLERANCE)break;}return [];}
+  // The oldest open fills of a side whose total matches an amount within the tolerance either way; failing that, the
+  // oldest single fill that matches it alone; or none.
+  static match(open,amount){if(!(amount>0))return [];const fits=t=>amount>=TOLERANCE*t&&amount<=t/TOLERANCE;let total=0;const run=[];
+    for(const f of open){total+=f.usd;run.push(f);if(fits(total))return [...run];if(total>amount/TOLERANCE)break;}const one=open.find(f=>fits(f.usd));return one?[one]:[];}
   // us: the U.S. balance just read (cash, pendingSaleProceeds, unsettled, timestamp); fx: USD/KRW. Returns {buysUSD,
   // sellsUSD, unresolved: the part of each marked unresolved, open, notes}.
   observe(account,{us,orders=[],fx=null}){
@@ -167,33 +182,56 @@ class InFlight {
       if(typeof was==='number')was={filled:was,cents:Math.round(a.cents*Math.min(was,o.filled)/o.filled),basis:a.basis};
       if(was&&o.filled<was.filled)continue;st.seen[id]={filled:o.filled,...a};const delta=a.cents-(was?.cents??0);
       if(o.filled>(was?.filled??0)&&delta>0)fresh.push({id,side:o.side,usd:delta/100,basis:a.basis,at:now});else if(delta||was&&was.basis!==a.basis)adjust(id,o.side,delta,a.basis);}
-    // Reflected at once when the reading already moved by them (buys down, sales up), all together, within the tolerance
-    // either way: a movement much larger than the fills is not evidence they are reflected.
-    const want=fresh.reduce((n,f)=>n+(f.side==='Buy'?-f.usd:f.usd),0);let movement=moved;
-    const reflected=fresh.length&&Math.abs(want)>0&&Math.sign(moved)===Math.sign(want)&&Math.abs(moved)>=TOLERANCE*Math.abs(want)&&Math.abs(moved)<=Math.abs(want)/TOLERANCE;
-    if(fresh.length&&!reflected)st.open.push(...fresh);if(reflected)movement=0;
+    let movement=moved;const KEY={Buy:'buys',Sell:'sells'},delta=side=>reported[KEY[side]]-st.observed[KEY[side]];
     const settled=new Set(),live=side=>st.open.filter(f=>f.side===side&&!settled.has(f));
-    const record=(e,run=[],flagged=[])=>{st.evidence.push({id:`e${st.seq=(st.seq??0)+1}`,at:now,...e,amount:cents(e.amount)/100,open:live(e.side).map(f=>f.id),allocated:run.map(f=>({id:f.id,usd:f.usd})),...(flagged.length?{flagged:flagged.map(f=>f.id)}:{})});for(const f of run)settled.add(f);};
-    // New fills an earlier unmatched rise could be: KIS may have reported them before the app saw them fill, which
+    const record=(e,run=[],flagged=[])=>{const v={id:`e${st.seq=(st.seq??0)+1}`,at:now,...e,amount:cents(e.amount)/100,open:live(e.side).map(f=>f.id),allocated:run.map(f=>({id:f.id,usd:f.usd})),...(flagged.length?{flagged:flagged.map(f=>f.id)}:{})};
+      st.evidence.push(v);for(const f of run)settled.add(f);return v;};
+    const flag=(run,why,extra={})=>{for(const f of run)f.unresolved={why,at:now,...extra};};
+    // An allocation through one channel (cash, or the reported total) not yet paired with one through the other: the two
+    // may be one purchase shown both ways, however far apart they were seen (fix review 2026-11-05, P1), so a later
+    // allocation of the other channel for the same amount on the same side is paired with it rather than taken as a
+    // second event. Pairing lasts PAIR_DAYS; a reported trade settling ends it for the reported side.
+    const partner=(channel,side,amount)=>st.evidence.find(e=>e.pairable&&!e.pairedWith&&e.channel!==channel&&e.side===side&&now-e.at<=PAIR_DAYS*86400000&&amount>=TOLERANCE*e.amount&&amount<=e.amount/TOLERANCE);
+    const pair=(v,p)=>{v.pairedWith=p.id;p.pairedWith=v.id;};
+    // 1. A fall in reported buys or sales is a reported trade settling, with the fall in U.S. cash that comes with it for
+    // buys. It resolves fills marked as possibly covered by the reported total, and, when cash fell with it, fills marked
+    // as possibly one purchase with an earlier allocation: whether the earlier cash was theirs or the reported trade's,
+    // cash has now gone out for both.
+    for(const side of ['Buy','Sell']){const d=delta(side);if(!(d<-0.005))continue;let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
+      const run=InFlight.match(live(side).filter(f=>REPORTED.includes(f.unresolved?.why)||paid&&f.unresolved?.why==='possibly one purchase'),paid?-paid:-d);
+      let left=-d/TOLERANCE;for(const e of st.evidence)if(e.pairable&&!e.pairedWith&&e.channel==='reported'&&e.side===side&&e.amount<=left){e.pairedWith='settled';left-=e.amount;}
+      if(run.length||paid)record({channel:paid?'cash and reported':'reported',side,amount:-d,kind:'reported settlement'},run);}
+    // 2. New pieces the reading already moved by (buys down, sales up), all together, within the tolerance either way: a
+    // cash allocation like any other, recorded and paired. Paired with an earlier reported allocation, the cash may be
+    // that purchase's, so the new pieces stay in flight, marked unresolved.
+    const want=fresh.reduce((n,f)=>n+(f.side==='Buy'?-f.usd:f.usd),0),sides=new Set(fresh.map(f=>f.side));
+    const reflected=fresh.length&&Math.abs(want)>0&&Math.sign(movement)===Math.sign(want)&&Math.abs(movement)>=TOLERANCE*Math.abs(want)&&Math.abs(movement)<=Math.abs(want)/TOLERANCE;
+    if(reflected){const side=want<0?'Buy':'Sell',p=sides.size===1?partner('cash',side,Math.abs(movement)):null;
+      if(p){st.open.push(...fresh);flag(fresh,'possibly one purchase',{with:p.id});pair(record({channel:'cash',side,amount:Math.abs(movement),kind:'ambiguous'},[],fresh),p);
+        notes.push(`${side} ${fresh.map(f=>f.id).join(', ')}: U.S. cash moved by this fill, as the reported settlement total did for an earlier one; whether they are one purchase is unresolved, so it stays in flight`);}
+      else{const v=record({channel:'cash',side,amount:Math.abs(movement),kind:'reflected at once'},fresh);v.pairable=sides.size===1;}
+      movement=0;}
+    else st.open.push(...fresh);
+    // 3. New fills an earlier unmatched rise could be: KIS may have reported them before the app saw them fill, which
     // nothing here can verify, so they stay in flight, marked unresolved.
-    for(const e of st.evidence.filter(e=>e.kind==='unmatched'&&e.channel==='reported'&&!e.flagged&&now-e.at<=MAX_DAYS*86400000)){
+    for(const e of st.evidence.filter(e=>e.kind==='unmatched'&&e.channel==='reported'&&!e.flagged&&!e.pairedWith&&now-e.at<=MAX_DAYS*86400000)){
       const run=InFlight.match(fresh.filter(f=>f.side===e.side&&st.open.includes(f)&&!f.unresolved),e.amount);if(!run.length)continue;
-      for(const f of run)f.unresolved={why:'reported before seen',evidence:e.id,at:e.at};e.flagged=run.map(f=>f.id);
+      flag(run,'reported before seen',{evidence:e.id});e.flagged=run.map(f=>f.id);
       notes.push(`${e.side} ${e.flagged.join(', ')}: KIS reported $${e.amount.toFixed(2)} awaiting settlement before the app saw this fill; whether it is this fill is unresolved, so it stays in flight`);}
-    // What KIS reports awaiting settlement: a rise is evidence for open fills of its side; a rise matching none is
-    // recorded and not carried forward. A fall is a reported trade settling (with the cash it moved, for buys).
-    const KEY={Buy:'buys',Sell:'sells'},rose={};
-    for(const side of ['Buy','Sell']){const d=reported[KEY[side]]-st.observed[KEY[side]];
-      if(d>0.005){const run=InFlight.match(live(side),d);rose[side]=run.length>0;record({channel:'reported',side,amount:d,kind:run.length?'settled':'unmatched'},run);}
-      else if(d<-0.005){let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
-        const run=InFlight.match(live(side).filter(f=>f.unresolved?.why==='reported before seen'),-d);if(run.length||paid)record({channel:paid?'cash and reported':'reported',side,amount:-d,kind:'reported settlement'},run);}}
-    // The cash movement, while only one side is open. With a reported rise of the same side in this reading it may be
-    // the same purchase: the fills it would match are marked unresolved, not settled.
+    // 4. Evidence through one channel: it settles the oldest open fills of its side it matches, unless it pairs with an
+    // allocation through the other channel; then the fills it would match stay in flight, marked unresolved.
+    const allocate=(channel,side,amount)=>{const p=partner(channel,side,amount);
+      if(p){const run=InFlight.match(live(side).filter(f=>!f.unresolved),amount);flag(run,'possibly one purchase',{with:p.id});pair(record({channel,side,amount,kind:run.length?'ambiguous':'paired'},[],run),p);
+        if(run.length)notes.push(`${side} ${run.map(f=>f.id).join(', ')}: U.S. cash and the reported settlement total each moved by this amount; whether they are one purchase is unresolved, so it stays in flight`);return;}
+      const run=InFlight.match(live(side),amount),v=record({channel,side,amount,kind:run.length?'settled':'unmatched'},run);v.pairable=run.length>0;
+      // A reported rise matching no open fill while fills of its side are open may cover part of them: they stay in
+      // flight, marked unresolved.
+      if(!run.length&&channel==='reported'){const rest=live(side).filter(f=>!f.unresolved);if(rest.length){flag(rest,'reported total moved by an unmatched amount',{evidence:v.id});v.flagged=rest.map(f=>f.id);}}};
+    // What KIS reports awaiting settlement: a rise is evidence for open fills of its side.
+    for(const side of ['Buy','Sell']){const d=delta(side);if(d>0.005)allocate('reported',side,d);}
+    // The cash movement, while only one side is open (buys and sales together net, so it cannot be divided).
     const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f)&&!fresh.includes(f));
-    if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell'))){const side=movement<0?'Buy':'Sell',amount=Math.abs(movement);
-      if(rose[side]){const run=InFlight.match(live(side).filter(f=>!f.unresolved),amount);for(const f of run)f.unresolved={why:'cash and reported moved together',at:now};record({channel:'cash',side,amount,kind:run.length?'ambiguous':'unmatched'},[],run);
-        if(run.length)notes.push(`${side} ${run.map(f=>f.id).join(', ')}: U.S. cash and the reported settlement total moved together; whether they are one purchase is unresolved, so it stays in flight`);}
-      else{const run=InFlight.match(live(side),amount);record({channel:'cash',side,amount,kind:run.length?'settled':'unmatched'},run);}}
+    if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell')))allocate('cash',movement<0?'Buy':'Sell',Math.abs(movement));
     st.open=st.open.filter(f=>{if(settled.has(f))return false;
       if(now-f.at>MAX_DAYS*86400000){notes.push(`${f.side} ${f.id} ($${f.usd}) treated as settled after ${MAX_DAYS} days without a signal`);return false;}
       return true;});

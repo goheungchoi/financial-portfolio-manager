@@ -8,7 +8,7 @@ const close=(a,b,msg)=>assert.ok(Math.abs(a-b)<0.01,`${msg??''} ${a} vs ${b}`);
 test('the Stage 0 worksheet: exact, complete, both markets, and the same total',()=>{
   const v=value({korea:kr(),us:us(),fx,now});assert.equal(v.combined.complete,true);assert.equal(v.combined.exact,true);assert.deepEqual(v.combined.scope,['KR','US']);
   close(v.markets.KR.equity.low,705451);close(v.markets.US.equity.low,559.34);close(v.combined.headline,1455637.808,'₩1,455,637.81 in the worksheet');
-  assert.ok(v.markets.KR.components.every(c=>['observed','derived'].includes(c.basis)&&c.source));assert.equal(v.version,'net-equity 2026-11-04');
+  assert.ok(v.markets.KR.components.every(c=>['observed','derived'].includes(c.basis)&&c.source));assert.equal(v.version,'net-equity 2026-11-05');
 });
 test('a cash-only deposit or withdrawal moves equity by exactly the flow, in both bounds',()=>{
   const base=value({korea:kr(),us:us({unsettled:{buyKRW:50000,sellKRW:0,krwFundedKRW:10000}}),fx,now}).combined;
@@ -32,8 +32,11 @@ test('2026-10-30: a U.S. buy paid from unsettled sale proceeds, in no KIS figure
   const blind=value({korea:kr(),us:gap,fx,now}).combined;const seen=value({korea:kr(),us:gap,fx,inFlight:{buysUSD:97.66},now}).combined;
   close(blind.low-seen.low,97.66*1341.2,'the buy is subtracted in the low bound');close(seen.high,blind.high,'and not in the high bound');assert.equal(seen.exact,false);
   const settled=value({korea:kr(),us:us({cash:182.19,holdings:[{symbol:'NYSE:RDDT',quantity:1,price:97.61}]}),fx,now}).combined;close(settled.low,seen.low,'after settlement the value is the old low bound');
-  // Once KIS reports it awaiting settlement, the fill adds nothing more.
-  const reported=value({korea:kr(),us:{...gap,unsettled:{buyKRW:97.66*1341.2,sellKRW:0,krwFundedKRW:0}},fx,inFlight:{buysUSD:97.66},now}).markets.US;assert.ok(!reported.components.some(c=>c.name==='inFlightBuys'));
+  // Once KIS reports it awaiting settlement the tracker no longer holds it in flight, and the low bound is unchanged:
+  // the obligation moves from the fill to KIS's figure, counted once (fix review of 34474f7: never netted by aggregate).
+  const reported=value({korea:kr(),us:{...gap,unsettled:{buyKRW:97.66*1341.2,sellKRW:0,krwFundedKRW:0}},fx,inFlight:{buysUSD:0},now});assert.ok(!reported.markets.US.components.some(c=>c.name==='inFlightBuys'));close(reported.combined.low,seen.low);
+  // Still held in flight beside a reported total (the tracker could not match them): both count in the low bound.
+  close(value({korea:kr(),us:{...gap,unsettled:{buyKRW:97.66*1341.2,sellKRW:0,krwFundedKRW:0}},fx,inFlight:{buysUSD:97.66},now}).combined.low,seen.low-97.66*1341.2);
   // A filled sale not yet in KIS pending proceeds raises the high bound only.
   const sale=value({korea:kr(),us:us(),fx,inFlight:{sellsUSD:279.01},now}).markets.US;close(sale.equity.high-sale.equity.low,279.01);
 });

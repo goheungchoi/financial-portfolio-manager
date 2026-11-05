@@ -19,22 +19,23 @@ test('finding 1: an unmatched reported total before a new fill is not its settle
   const r=x.see({cash:500,unsettled:R(100)},[A]);assert.equal(r.buysUSD,100,'the new $100 is kept');assert.equal(r.unresolved.buysUSD,100,'marked unresolved');
   assert.match(r.notes.join(' '),/before the app saw this fill/);
   const e=x.state().evidence;const unmatched=e.find(v=>v.kind==='unmatched');assert.equal(unmatched.channel,'reported');assert.deepEqual(unmatched.open,[],'no fill was open when it was seen');assert.deepEqual(unmatched.flagged,['A']);
-  // The valuation does not count it twice while KIS reports $100: the in-flight part is beyond what KIS reports.
-  const us={cash:500,unsettled:R(100),holdings:[],timestamp:new Date(x.now()).toISOString()};
-  assert.equal(value({us,fx:{usdKRW:1300},inFlight:x.raw(us,[A]),now:x.now()}).markets.US.components.find(c=>c.name==='inFlightBuys'),undefined);
+  // The valuation keeps the uncertainty: both obligations in the low bound, the fill out of the high bound, not exact.
+  const us={cash:500,unsettled:R(100),holdings:[],timestamp:new Date(x.now()).toISOString()};const v=value({us,fx:{usdKRW:1300},inFlight:x.raw(us,[A]),now:x.now()}).markets.US;
+  assert.equal(v.equity.low,400);assert.equal(v.equity.high,500);assert.equal(v.exact,false);assert.ok(v.reasons.some(r=>/unresolved/.test(r)));
   // KIS settles the reported buy: cash and the reported total fall together, which resolves it.
   assert.equal(x.see({cash:400,unsettled:R(0)},[A]).buysUSD,0);assert.equal(x.state().evidence.at(-1).kind,'reported settlement');assert.deepEqual(x.state().evidence.at(-1).allocated.map(a=>a.id),['A']);
 });
 test('finding 1: a reported rise and a cash fall in one reading may be one purchase: one fill clears, the other stays unresolved',()=>{
   const x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);const r=x.see({cash:400,unsettled:R(100)},[A,B]);
-  assert.equal(r.buysUSD,100,'not both cleared');assert.equal(r.unresolved.buysUSD,100);assert.equal(r.open[0].id,'B');assert.equal(r.open[0].unresolved.why,'cash and reported moved together');
-  const kinds=x.state().evidence.map(e=>e.kind);assert.deepEqual(kinds,['settled','ambiguous']);
+  assert.equal(r.buysUSD,100,'not both cleared');assert.equal(r.unresolved.buysUSD,100);assert.equal(r.open[0].id,'B');assert.equal(r.open[0].unresolved.why,'possibly one purchase');
+  const e=x.state().evidence;assert.deepEqual(e.map(v=>v.kind),['settled','ambiguous']);assert.equal(e[0].pairedWith,e[1].id,'the two allocations are paired');
   // A later cash fall on its own is a separate event: it clears the remaining fill.
   assert.equal(x.see({cash:300,unsettled:R(100)},[A,B]).buysUSD,0);
 });
-test('finding 1: separate settlements in separate readings clear separate fills; a reported buy settling is not evidence for another',()=>{
+test('finding 1: a time gap alone does not make two channels two events; a reported buy settling with its payment does; it is not evidence for another',()=>{
   let x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);assert.equal(x.see({cash:500,unsettled:R(100)},[A,B]).buysUSD,100,'reported only: A');
-  assert.equal(x.see({cash:400,unsettled:R(100)},[A,B]).buysUSD,0,'cash only, reported unchanged: B');
+  const later=x.see({cash:400,unsettled:R(100)},[A,B]);assert.equal(later.buysUSD,100,'cash a reading later, same amount: possibly the same purchase');assert.equal(later.unresolved.buysUSD,100);
+  const paid=x.see({cash:300,unsettled:R(0)},[A,B]);assert.equal(paid.buysUSD,0,'A settles with a cash payment: cash has now gone out for both, whichever was which');
   x=tracker();x.see({cash:500});x.see({cash:500},[A,B]);x.see({cash:500,unsettled:R(100)},[A,B]);
   const r=x.see({cash:400,unsettled:R(0)},[A,B]);assert.equal(r.buysUSD,100,'cash and reported fall together: A settling, not B');assert.equal(x.state().evidence.at(-1).kind,'reported settlement');
   // Cash-only and reported-only updates on their own.
@@ -159,4 +160,75 @@ test('the copied-profile build check keeps the saved preference and asserts the 
 });
 test('finding 1: a cash fall that matched nothing (a withdrawal) does not mark a later fill unresolved',()=>{
   const x=tracker();x.see({cash:500});x.see({cash:400});const r=x.see({cash:400},[A]);assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,0);
+});
+
+// Fix review of 34474f7: the settlement tracker and the valuation as one contract. With no quote or rate change a
+// purchase never raises the conservative (low) value, an unresolved match never becomes exact, and once every purchase
+// is settled the value is back where it started. Checked on the combined value, the U.S. market value the loss and
+// exposure checks use, the portfolio view and the sizing base.
+const {combinePortfolio}=require('../electron/portfolio-view.cjs');
+function account({krwCash=1300000,usCash=500,holdings=[],unsettled={buyKRW:0,sellKRW:0,krwFundedKRW:0}}={}){
+  let t=at('2026-11-05T14:00:00Z');const db=new DatabaseSync(':memory:');let f=new InFlight(db,()=>t);const fx={usdKRW:1300};
+  const s={kr:{cash:krwCash,settledCash:krwCash,holdings:[]},us:{cash:usCash,pendingSaleProceeds:0,holdings:[...holdings],unsettled:{...unsettled}},orders:[]};
+  const stamp=()=>({kr:{...s.kr,timestamp:new Date(t).toISOString()},us:{...s.us,unsettled:{...s.us.unsettled},holdings:[...s.us.holdings],timestamp:new Date(t).toISOString()}});
+  const mark=()=>{const {kr,us}=stamp();const inFlight=f.current('a');const v=value({korea:kr,us,fx,inFlight,now:t});const view=combinePortfolio(kr,us,fx,{},{inFlight,now:t});
+    const base=LiveEngine.prototype.exposureBase.call({netEquityOf:()=>({low:v.markets.US.equity.low})},{reportedTotal:Infinity});
+    return {low:v.combined.low,high:v.combined.high,exact:v.combined.exact,usLow:v.markets.US.equity.low,view:view.totals.equityKRW,base,reasons:v.combined.reasons,inFlight};};
+  return {s,mark,read:()=>{const {us}=stamp();const r=f.observe('a',{us,orders:s.orders,fx:1300});t+=30*MIN;return r;},restart:()=>{f=new InFlight(db,()=>t);},later:ms=>{t+=ms;},state:()=>f.state('a')};}
+const buy=(id,usd)=>({id,side:'Buy',filled:1,fillPrice:usd});const share=(id,usd)=>({symbol:'NYSE:'+id,quantity:1,price:usd,cost:usd});
+const krw=(s,usd,sign=1)=>{s.us.unsettled.buyKRW+=sign*usd*1300;s.us.unsettled.krwFundedKRW+=sign*usd*1300;};
+test('contract: an older reported purchase and a distinct new one: the low value is unchanged, the range is not exact',()=>{
+  const a=account({holdings:[share('OLD',100)]});a.read();
+  krw(a.s,100);a.read();const before=a.mark();assert.equal(before.low,1950000);assert.equal(before.exact,true);
+  a.s.us.holdings.push(share('NEW',100));a.s.orders=[buy('new',100)];a.read();const after=a.mark();
+  assert.equal(after.low,1950000,'a purchase alone creates no wealth');assert.equal(after.high,2080000,'unless the reported total was this purchase');assert.equal(after.exact,false);
+  assert.ok(after.reasons.some(r=>/unresolved/.test(r)));assert.equal(after.view,1950000,'the portfolio view shows the low value');assert.equal(after.usLow,600,'the U.S. value the loss and sizing checks use keeps the obligation: $500 cash and two $100 shares less the $100 in flight');assert.equal(after.base,600);
+});
+test('contract: a fill and KIS reporting it, in either order, are counted once; when it settles the value is where it started, exact',()=>{
+  for(const lag of [0,1]){const a=account();a.read();const e0=a.mark().low;assert.equal(e0,1950000);
+    // lag 0: the app sees the fill before KIS reports it; lag 1: KIS reports it (with its shares) before the app sees it.
+    a.s.us.holdings.push(share('A',100));if(lag)krw(a.s,100);else a.s.orders=[buy('A',100)];a.read();assert.ok(a.mark().low<=e0);
+    if(lag)a.s.orders=[buy('A',100)];else krw(a.s,100);a.read();const covered=a.mark();
+    if(lag){assert.ok(covered.low<=e0);assert.equal(covered.high,e0);assert.equal(covered.exact,false,'reported before seen: unresolved until it settles');}else{assert.equal(covered.low,e0);assert.equal(covered.high,e0);assert.equal(covered.exact,true,'KIS reports it');}
+    a.s.kr.cash-=130000;a.s.kr.settledCash-=130000;krw(a.s,100,-1);a.read();const done=a.mark();assert.equal(done.low,e0);assert.equal(done.exact,true);assert.equal(done.inFlight.buysUSD,0);}
+});
+test('contract: reported before the fill was seen, then settled; paid at once in USD; several trades partly covered',()=>{
+  // KIS reports the purchase (and its shares) a reading before the app sees the fill.
+  let a=account();a.read();const e0=a.mark().low;a.s.us.holdings.push(share('A',100));krw(a.s,100);a.read();assert.equal(a.mark().low,e0);
+  a.s.orders=[buy('A',100)];a.read();const unsure=a.mark();assert.ok(unsure.low<=e0);assert.equal(unsure.high,e0);assert.equal(unsure.exact,false);
+  a.s.kr.cash-=130000;a.s.kr.settledCash-=130000;krw(a.s,100,-1);a.read();assert.deepEqual([a.mark().low,a.mark().exact],[e0,true]);
+  // Paid from U.S. cash at the fill.
+  a=account();a.read();a.s.us.holdings.push(share('A',100));a.s.us.cash-=100;a.s.orders=[buy('A',100)];a.read();assert.deepEqual([a.mark().low,a.mark().exact],[e0,true]);
+  // Two fills, $100 and $50; KIS reports $120 for them (it matches neither): both stay in flight, unresolved; then $150.
+  a=account();a.read();a.s.us.holdings.push(share('A',100),share('B',50));a.s.orders=[buy('A',100),buy('B',50)];a.read();
+  a.s.us.unsettled.buyKRW=120*1300;a.s.us.unsettled.krwFundedKRW=120*1300;a.read();const part=a.mark();assert.ok(part.low<=e0);assert.equal(part.exact,false);assert.equal(part.inFlight.unresolved.buysUSD,150);
+  a.s.us.unsettled.buyKRW=150*1300;a.s.us.unsettled.krwFundedKRW=150*1300;a.read();assert.ok(a.mark().low<=e0,'a further $30 is no match either: still conservative');
+});
+test('contract: a new fill reflected in cash while the reported total rises keeps a possible $100 obligation',()=>{
+  // The review's case: A open; B appears with cash down $100 and the reported total up $100.
+  let a=account();a.read();const e0=a.mark().low;a.s.us.holdings.push(share('A',100));a.s.orders=[buy('A',100)];a.read();
+  a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;krw(a.s,100);const r=a.read();
+  assert.equal(r.buysUSD,100);assert.equal(r.unresolved.buysUSD,100);assert.ok(a.mark().low<=e0);assert.equal(a.mark().exact,false);
+  const ev=a.state().evidence;assert.deepEqual(ev.map(e=>e.kind),['reflected at once','ambiguous']);assert.deepEqual(ev[0].allocated.map(x=>x.id),['B'],'the cash allocation to the new fill is logged');assert.equal(ev[0].pairedWith,ev[1].id);
+  // The same in the other order across readings (cash for B first, the reported rise later), with a restart between.
+  a=account();a.read();a.s.us.holdings.push(share('A',100));a.s.orders=[buy('A',100)];a.read();a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;a.read();
+  a.restart();a.later(DAY);krw(a.s,100);const later=a.read();assert.equal(later.unresolved.buysUSD,100,'a time gap alone does not make them two events');
+  // Two new fills in one reading with both channels, and a new partial-fill piece.
+  a=account();a.read();a.s.us.holdings.push(share('A',100),share('B',100));a.s.orders=[buy('A',100),buy('B',100)];a.s.us.cash-=100;krw(a.s,100);assert.equal(a.read().unresolved.buysUSD,100);
+  a=account();a.read();a.s.us.holdings.push(share('P',100));a.s.orders=[{id:'P',side:'Buy',filled:1,fillPrice:100}];a.read();a.s.us.holdings=[{...share('P',100),quantity:2}];a.s.orders=[{id:'P',side:'Buy',filled:2,fillPrice:100}];a.s.us.cash-=100;krw(a.s,100);
+  assert.equal(a.read().unresolved.buysUSD,100);assert.ok(a.mark().low<=e0);
+  // Different amounts through the two channels are two events.
+  a=account();a.read();a.s.us.holdings.push(share('A',60));a.s.orders=[buy('A',60)];a.read();a.s.us.holdings.push(share('B',100));a.s.orders=[buy('A',60),buy('B',100)];a.s.us.cash-=100;krw(a.s,60);
+  const two=a.read();assert.deepEqual([two.buysUSD,two.unresolved.buysUSD],[0,0]);assert.deepEqual([a.mark().low,a.mark().exact],[e0,true]);
+});
+test('contract: random purchase lifecycles conserve equity and log every allocation',()=>{
+  let seed=11;const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;const pick=a=>a[Math.floor(rnd()*a.length)];
+  for(let c=0;c<150;c++){const a=account({usCash:2000});a.read();const e0=a.mark().low;const buys=[];const n=1+Math.floor(rnd()*3);const amounts=[100,150,230].sort(()=>rnd()-0.5);
+    for(let i=0;i<n;i++)buys.push({id:'X'+i,usd:amounts[i],mode:pick(['cash','krw','usd']),fill:1+Math.floor(rnd()*4),lag:Math.floor(rnd()*2)});
+    for(let step=1;step<=10;step++){for(const b of buys){if(step===b.fill){a.s.us.holdings.push(share(b.id,b.usd));if(b.mode==='cash')a.s.us.cash-=b.usd;else if(b.mode==='krw')krw(a.s,b.usd);else a.s.us.unsettled.buyKRW+=b.usd*1300;}
+        if(step===b.fill+b.lag)a.s.orders=[...a.s.orders,buy(b.id,b.usd)];
+        if(step===b.fill+3&&b.mode!=='cash'){if(b.mode==='krw'){a.s.kr.cash-=b.usd*1300;a.s.kr.settledCash-=b.usd*1300;krw(a.s,b.usd,-1);}else{a.s.us.cash-=b.usd;a.s.us.unsettled.buyKRW-=b.usd*1300;}}}
+      if(rnd()<0.2)a.restart();a.read();const m=a.mark();assert.ok(m.low<=e0+1,`case ${c} step ${step}: ${m.low} > ${e0} ${JSON.stringify(buys)}`);assert.ok(m.high>=m.low-1);assert.ok(!(m.exact&&m.inFlight.unresolved.buysUSD>0),'unresolved is never exact');}
+    a.later(8*DAY);a.read();const end=a.mark();assert.equal(end.low,e0,`case ${c}: settled ${JSON.stringify(buys)}`);assert.equal(end.exact,true);
+    const allocated=a.state().evidence.flatMap(e=>e.allocated.map(x=>x.id));assert.equal(new Set(allocated).size,allocated.length,`case ${c}: no fill allocated twice`);}
 });
