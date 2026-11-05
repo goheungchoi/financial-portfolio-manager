@@ -354,12 +354,15 @@ class InFlight {
         notes.push(`${o.side} ${id}: KIS's settled record says $${(k/100).toFixed(2)} where $${(base/100).toFixed(2)} was allocated; $${((base-k)/100).toFixed(2)} of that evidence is no longer explained by it (reduced coverage)`);}
       if(was.kCents!==k||was.version!==l.version)ledger.event(account,'conflict',{orderId:id,groupId:l.groupId,version:l.version,kCents:k,allocatedCents:ledger.allocatedToOrder(account,id),conflictCents:held(),releasedCents:c.released.reduce((n,r)=>n+r.cents,0)});
       if(!held()&&!c.released.length&&Math.abs(k-ledger.allocatedToOrder(account,id))<=1)c.settled=now;}
-    for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};ledger.event(account,'overdue',{pieceId:f.pid,orderId:f.id,usd:f.usd});
+    // Overdue is noted once (overdueAt is kept); newlyOverdue lists the pieces that became overdue in this reading, for the one
+    // app notification (stage 2b.5).
+    const newlyOverdue=[];
+    for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};ledger.event(account,'overdue',{pieceId:f.pid,orderId:f.id,usd:f.usd});newlyOverdue.push({pieceId:f.pid,orderId:f.id,side:f.side,usd:f.usd});
       notes.push(`${f.side} ${f.id} ($${f.usd}): no settlement evidence after ${MAX_DAYS} days; it stays in flight, unresolved, until KIS shows it or it is reconciled`);}
     Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
     // Orders no longer listed are forgotten, so the record stays bounded.
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
-    save();return {...this.withReview(account,st),notes};
+    save();return {...this.withReview(account,st),notes,newlyOverdue};
   }
   // The tracker's totals with coverage under review (electron/settlement-evidence.cjs underReview): unresolved again,
   // beside the open pieces, never matched by evidence here.

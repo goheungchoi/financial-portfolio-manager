@@ -7,6 +7,7 @@ import {usErrorMessage} from './usErrors';
 import {TickDelta} from './LiveValue';
 import {SaleCosts,type CostEstimate} from './TradingCosts';
 import {useDraftState} from './useDraftState';
+import {SettlementPanel} from './SettlementPanel';
 export type LivePolicy={symbols:string[];anyStock?:boolean;maxOrderKRW:number|null;maxDailyTurnoverKRW:number|null;maxCompanyPct:number|null;maxDailyLossKRW:number|null;lossLimit?:{mode:string;value:number}};
 export type LiveState={httpStatus?:number|null;brokerCode?:string|null;refreshError?:string|null;warnings?:{symbol:string;code:string}[];market?:string;currency?:string;portfolio?:{cash:number;reportedTotal:number;pendingSaleProceeds?:number;timestamp:string;holdings:{symbol:string;name:string;quantity:number;cost:number;price:number;marketValue:number}[]}|null;enabled:boolean;autoEnabled:boolean;busy:boolean;environment:string|null;policy:LivePolicy|null;loss:{loss:number;lossPct:number;limitKRW:number|null;baseline:number;breached:boolean}|null;orders:{costEstimate?:CostEstimate|null;resultCosts?:CostEstimate|null;credit?:{kind:string;type:string;loanDate:string|null};requiresApproval?:boolean;id:string;symbol:string;side:string;quantity:number;limitPrice:number;filled:number;status:string;reason:string|null;brokerOrderId:string|null;currentPrice?:number;revisions?:{price?:number;cancel?:boolean}[];tracking?:{bound?:number;cancelAfter?:string};handsOff?:{at:number};trackingStopped?:{reason:string};cancelRequestedAt?:number;closedReason?:string}[]};
 export type LiveReply={ok:boolean;state:LiveState;error?:string};
@@ -38,6 +39,7 @@ export function LiveTrading({draftKey='kis',market='KR'}:{draftKey?:string;marke
         {<table className="compact-table"><thead><tr><th>Stock</th><th>Shares</th><th>Price</th><th>Value</th></tr></thead><tbody>{state.portfolio.holdings.map(row=><tr key={row.symbol}><td>{row.symbol}</td><td>{row.quantity}</td><td>{(row.price??0).toFixed(2)}</td><td>{(row.marketValue??row.quantity*(row.price??0)).toFixed(2)}</td></tr>)}</tbody></table>}</>:<p className="muted">Connect KIS, then refresh to load U.S. balances.</p>}
       {state.refreshError&&<p role="status" className="error">{usErrorMessage(state.refreshError)}{state.httpStatus?` · HTTP ${state.httpStatus}`:''}{state.brokerCode?` · Broker reference ${state.brokerCode}`:''}</p>}{Boolean(state.warnings?.length)&&<small className="muted">Some quotes are unavailable.</small>}
       <Note summary="NASDAQ, NYSE and AMEX · whole-share limit orders">Home combines Korean and U.S. holdings using the displayed exchange rate. Both sessions can be active together. Regular-session, whole-share limit orders at $1 or above. Prices are broker snapshots and may be delayed by your data entitlement.</Note></section>}
+    {us&&<SettlementPanel/>}
     <MarketStatus markets={[market]}/>
     <section className="trade-card" aria-label="Trading session"><div className="section-head"><div><h2>Trading session</h2><small>The AI follows your guidelines in Engine settings.</small></div><span className={`state-pill ${state.enabled?'on':''}`}>{statusLabel}</span></div>
       <div className="trade-fields">
