@@ -24,11 +24,13 @@ async function runTest({dir,send,key,model='gpt-6-sol',effort='medium',routineMo
   const context=structuredClone(fixture.context);const memoryGap=(fixture.meta.unavailable??[]).find(u=>u.field==='positionMemory')??null;
   if(!memoryGap&&!Array.isArray(context.positionMemory))throw Object.assign(new Error('FIXTURE_INVALID'),{detail:'position memory is neither present nor marked unavailable'});
   const validation={positionMemory:memoryGap?{unavailable:true,reason:memoryGap.reason}:structuredClone(context.positionMemory),quotes:structuredClone(context.quotes??[])};
+  // The key is checked before the folder is claimed, so a key the client would refuse costs no folder.
+  const {AiClient,reviewTools,instructions}=require('../../electron/ai-client.cjs');new AiClient(key,async()=>{throw new Error('unused');});
   const run=claim(where.dir);
   const before={live:fs.existsSync(liveDb)?S.snapshot(liveDb):null,files:fs.readdirSync(where.dir).sort()};
   const {Meter}=require('./meter.cjs'),{controlledTransport}=require('./transport.cjs');
   const meter=new Meter(limits),requests=[];const transport=controlledTransport({send,guard,meter,log:requests,persist:run.persist});
-  const {AiClient,reviewTools,instructions}=require('../../electron/ai-client.cjs');const ai=new AiClient(key,transport);
+  const ai=new AiClient(key,transport);
   const shaped=require('../../electron/review-context.cjs').shape(require('../../electron/token-saver.cjs').compact(context));
   const tools=F.server(fixture),transcript=[];const log=(kind,title,body)=>transcript.push({at:new Date().toISOString(),kind,title,body:String(body).slice(0,2000)});
   const offered=reviewTools(shaped.context).map(t=>t.name);
@@ -117,13 +119,17 @@ function rehearsal(){let n=0;const call=(name,args,i)=>({type:'function_call',na
     const out=n===1?[call('get_market_evidence',{symbol:'028050',dataset:'daily_technicals'},1),call('get_company_research',{symbol:'028050',sections:['events','risk']},2),call('get_market_evidence',{symbol:'396500',dataset:'order_book'},3),call('set_review_watch',{symbol:'028050',above:100000},4)]
       :[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'Rehearsal: hold.'})}]}];
     return new Response(JSON.stringify({status:'completed',model:body.model,usage,output:out}),{status:200});};}
+// The key from a provider file in the app's own format ({"openaiApiKey": ...}, electron/provider-worker.cjs), or a
+// file holding only the key. Anything else is refused before a folder is claimed.
+function keyFrom(text){const raw=String(text).trim();let value=null;try{value=JSON.parse(raw);}catch{return raw;}
+  if(value&&typeof value==='object'&&typeof value.openaiApiKey==='string')return value.openaiApiKey;throw Object.assign(new Error('INVALID_PROVIDER_FILE'),{detail:'the file is JSON without openaiApiKey'});}
 async function main(argv){const arg=n=>{const i=argv.indexOf(n);return i>=0?argv[i+1]:null;};const dir=arg('--dir');if(!dir)throw new Error('--dir is required');
   let send,key,mode;
   if(argv.includes('--rehearse')){send=rehearsal();key='rehearsal-key-0000';mode='rehearsal (scripted provider, no network)';}
   else if(argv.includes('--paid')){if(!argv.includes('--confirm-paid'))throw new Error('--paid needs --confirm-paid');const file=arg('--key-file');if(!file)throw new Error('--paid needs --key-file');
-    const raw=fs.readFileSync(file,'utf8').trim();let k=raw;try{const j=JSON.parse(raw);k=j.apiKey??j.api_key??j.key??j.OPENAI_API_KEY??raw;}catch{}key=String(k);send=guard.original.fetch;mode='paid';}
+    key=keyFrom(fs.readFileSync(file,'utf8'));send=guard.original.fetch;mode='paid';}
   else throw new Error('choose --rehearse or --paid');
   const report=await runTest({dir,send,key,mode,model:arg('--model')??undefined,effort:arg('--effort')??undefined});
   process.stdout.write(markdown(report));}
 if(require.main===module)main(process.argv.slice(2)).catch(e=>{process.stderr.write(`Isolated provider test stopped: ${e.message}${e.detail?` (${typeof e.detail==='string'?e.detail:JSON.stringify(e.detail)})`:''}\n`);process.exit(1);});
-module.exports={runTest,rehearsal,markdown,STATEMENT};
+module.exports={runTest,rehearsal,markdown,keyFrom,STATEMENT};

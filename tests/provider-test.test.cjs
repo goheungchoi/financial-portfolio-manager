@@ -170,3 +170,10 @@ test('unavailable position memory is reported and fails validation closed; a rec
   x=prepared();const f=JSON.parse(fs.readFileSync(path.join(x.dir,'fixture.json'),'utf8'));delete f.context.positionMemory;const {digest:_,...rest}=f;fs.writeFileSync(path.join(x.dir,'fixture.json'),JSON.stringify({...rest,digest:F.digest(rest)}));
   await assert.rejects(runTest({...x,send:async()=>reply([hold]),key:'sk-fixture-key-123',mode:'test'}),/FIXTURE_INVALID/);assert.equal(fs.existsSync(path.join(x.dir,'run.lock')),false);
 });
+
+test('the key is read from the app\'s provider-file format and checked before the folder is claimed',async()=>{
+  const {keyFrom}=require('../scripts/provider-test/run.cjs');
+  assert.equal(keyFrom(JSON.stringify({openaiApiKey:'sk-fixture-key-123',dartApiKey:'d'})),'sk-fixture-key-123');assert.equal(keyFrom('  sk-fixture-key-123\n'),'sk-fixture-key-123');
+  assert.throws(()=>keyFrom(JSON.stringify({other:'x'})),/INVALID_PROVIDER_FILE/);
+  const x=prepared();await assert.rejects(runTest({...x,send:async()=>reply([hold]),key:'{"not":"a key"}',mode:'test'}),/INVALID_PROVIDER_FILE/);assert.equal(fs.existsSync(path.join(x.dir,'run.lock')),false,'the folder is not claimed');
+});
