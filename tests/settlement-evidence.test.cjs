@@ -54,7 +54,7 @@ test('T13: a reported rise allocated to a fill stays allocated for days; a linke
   w.ledger.importK(SCOPE,W,[k()]);assert.equal(w.see({cash:500,unsettled:{buyKRW:130000,sellKRW:0}},[A]).buysUSD,0);
   // Corrected to $103: the $3 difference alone is unresolved again.
   w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:103,grossUSD:103,price:103})]);const r=w.see({cash:500,unsettled:{buyKRW:130000,sellKRW:0}},[A]);
-  assert.equal(r.buysUSD,3);assert.equal(r.open[0].unresolved.why,'conflict');assert.equal(r.open[0].unresolved.kUSD,103);assert.match(r.notes.join(' '),/\$3\.00 is unresolved again/);
+  assert.equal(r.buysUSD,3);assert.equal(r.open[0].unresolved.why,'conflict');assert.equal(r.open[0].unresolved.kUSD,103);assert.match(r.notes.join(' '),/\$3\.00 is unresolved \(conflict\)/);
   assert.equal(w.see({cash:500,unsettled:{buyKRW:130000,sellKRW:0}},[A]).buysUSD,3,'not reopened twice');assert.equal(w.ledger.events('a').filter(e=>e.kind==='conflict').length,1);
   // An order still on its gross amount (fees not reported) is not compared.
   const x=world();const G=order('G',{resultCosts:undefined});x.see({cash:500});x.see({cash:500},[G]);x.see({cash:500,unsettled:{buyKRW:130000,sellKRW:0}},[G]);x.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:100.8})]);
@@ -123,4 +123,53 @@ test('scope: evidence of another account or environment is never considered; sta
   const e1=w.ledger.aggregate({account:'a',environment:'live',readingA:'1',readingB:'2',side:'Buy',field:'cash',amountCents:100}),e2=w.ledger.aggregate({account:'a',environment:'mock',readingA:'1',readingB:'2',side:'Buy',field:'cash',amountCents:100});assert.notEqual(e1,e2);
   const s=w.ledger.standby({account:'a',evidenceId:e1,version:1,pieceId:'P#1',cents:100});assert.equal(w.ledger.standby({account:'a',evidenceId:e1,version:1,pieceId:'P#1',cents:100}),s,'once');
   assert.equal(w.ledger.allocated(e1,1),0,'standby consumes nothing');assert.equal(w.ledger.standbyFor('P#1').length,1);
+});
+
+// Review of 4b534c1 (P1 ×3, P2; artifacts/reviews/stage2b2-independent-repro.cjs).
+test('review 2b.2: successive K versions are reconciled against the open conflict, both directions kept apart',()=>{
+  const w=world();const A=order('A');w.see({cash:500});w.see({cash:500},[A]);assert.equal(w.see({cash:400},[A]).buysUSD,0,'$100 cash settles A');
+  const at=usd=>{w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:usd,grossUSD:usd,price:usd})]);return w.see({cash:400},[A]);};
+  const alloc=()=>w.ledger.allocatedToOrder('a','A')/100,cov=r=>r.reducedCoverage.find(x=>x.orderId==='A')?.usd??0;
+  // Increased obligation: $103, then $150 — the open conflict follows the row, not the first difference.
+  let r=at(103);assert.equal(r.buysUSD,3);r=at(150);assert.equal(r.buysUSD,50,'raised to $50, not left at $3');assert.equal(r.open.filter(f=>f.conflict).length,2);
+  r=at(120);assert.equal(r.buysUSD,20,'lowered to $20');
+  // Reduced coverage: $97 — no obligation stays; $3 of the cash allocation is released and reported, not owed.
+  r=at(97);assert.equal(r.buysUSD,0,'no conflict piece when KIS says less');assert.equal(alloc(),97);assert.equal(cov(r),3);assert.match(r.notes.join(' '),/\$3\.00 of that evidence is no longer explained by it \(reduced coverage\)/);
+  r=at(90);assert.equal(r.buysUSD,0);assert.equal(alloc(),90);assert.equal(cov(r),10);
+  // Back up to $100: the released evidence is restored first (it is still unused), so no obligation appears.
+  r=at(100);assert.equal(r.buysUSD,0,'restored, not a new $10 obligation');assert.equal(alloc(),100);assert.equal(cov(r),0);
+  // Up to $104: what is left is an obligation again; within a cent of the allocation is no conflict.
+  r=at(104);assert.equal(r.buysUSD,4);r=at(100.01);assert.equal(r.buysUSD,0);assert.equal(alloc(),100);
+  // Repeated readings change nothing.
+  const events=w.ledger.events('a').length;for(let i=0;i<3;i++)w.see({cash:400},[A]);assert.equal(w.ledger.events('a').length,events);
+  // Released evidence consumed elsewhere in between cannot be restored: the rest is an obligation.
+  const x=world();x.see({cash:500});x.see({cash:500},[A]);x.see({cash:400},[A]);x.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);x.see({cash:400},[A]);
+  const ev=x.db.prepare("SELECT evidenceId FROM settlement_allocations WHERE orderId='A' LIMIT 1").get().evidenceId;x.ledger.allocate({account:'a',evidenceId:ev,pieceId:'other#1',cents:300});
+  x.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:100,grossUSD:100,price:100})]);assert.equal(x.see({cash:400},[A]).buysUSD,3,'the $3 went to another piece: owed again');
+  // A sale corrected upward is possible extra proceeds (the high bound), never a buy obligation.
+  const y=world();const S=order('S',{side:'Sell',resultCosts:{netCash:100}});y.see({cash:500});y.see({cash:500},[S]);assert.equal(y.see({cash:600},[S]).sellsUSD,0);
+  y.ledger.importK(SCOPE,W,[k('TEST',{side:'Sell',settlementUSD:105,grossUSD:105,price:105})]);const s=y.see({cash:600},[S]);assert.deepEqual([s.buysUSD,s.sellsUSD],[0,5]);
+});
+test('review 2b.2: citations of one row are checked together; a row is never cited beyond its amount',()=>{
+  const w=world();w.ledger.importK(SCOPE,W,[k()]);const g=w.group();
+  const c60=w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'A',side:'Buy',cents:6000,rule:'manual'});w.later(1);const c40=w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'B',side:'Buy',cents:4000,rule:'manual'});
+  assert.throws(()=>w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'C',side:'Buy',cents:1,rule:'manual'}),/CITATION_EXCEEDS_ROW/);
+  assert.deepEqual(w.ledger.underReview('a'),[]);
+  w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);const r=w.ledger.underReview('a');
+  assert.equal(r.reduce((n,x)=>n+x.usd,0),3,'$100 cited against $97: $3 short');assert.deepEqual(r.map(x=>[x.citationId,x.usd]),[[c40,3]],'the newest citation carries it');assert.match(r[0].reason,/citations total \$100\.00/);
+  assert.equal(w.current().buysUSD,3);
+  w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:30,grossUSD:30,price:30})]);assert.deepEqual(w.ledger.underReview('a').map(x=>[x.citationId,x.usd]),[[c40,40],[c60,30]],'$70 short: the newer $40 in full, then $30 of the older');
+  // A row that is not independent puts every citation of it under review, in full.
+  w.ledger.importK(SCOPE,W,[]);assert.equal(w.ledger.underReview('a').reduce((n,x)=>n+x.usd,0),100);
+});
+test('review 2b.2: a replacement arriving imports after its row went missing is a possible correction',()=>{
+  const w=world();w.ledger.importK(SCOPE,W,[k()]);w.ledger.importK(SCOPE,W,[]);w.ledger.importK(SCOPE,W,[k('OTHER')]);w.ledger.importK(SCOPE,W,[k('OTHER'),k('TEST',{quantity:2})]);
+  const g=w.ledger.kGroups('a').find(x=>x.key.quantity===2);assert.equal(g.state,'possible correction');assert.equal(w.ledger.independent(g),false);assert.deepEqual(g.possibleCorrectionOf,[w.ledger.kGroups('a').find(x=>x.key.ticker==='TEST'&&x.key.quantity===1).id]);
+  assert.equal(w.ledger.kGroups('a').find(x=>x.key.ticker==='OTHER').state,'single','another ticker is not a correction of it');
+});
+test('review 2b.2: an import of another environment or market says nothing about this scope\'s rows',()=>{
+  const w=world();w.ledger.importK(SCOPE,W,[k()]);w.ledger.importK({...SCOPE,environment:'mock'},W,[]);w.ledger.importK({...SCOPE,market:'KR'},W,[]);
+  const g=w.group();assert.equal(g.missingSince,undefined);assert.equal(w.ledger.independent(g),true);
+  // Nor is a mock row a possible correction of a live one that went missing.
+  w.ledger.importK(SCOPE,W,[]);w.ledger.importK({...SCOPE,environment:'mock'},W,[k('TEST',{quantity:2})]);assert.equal(w.ledger.kGroups('a').find(x=>x.key.environment==='mock').state,'single');
 });

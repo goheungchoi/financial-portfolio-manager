@@ -322,15 +322,31 @@ class InFlight {
     const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f));
     if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell')))allocate('cash',movement<0?'Buy':'Sell',Math.abs(movement));
     st.open=st.open.filter(f=>!settled.has(f));for(const f of settled)ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id});
-    // A KIS settled-trade row linked with certainty to an order whose pieces evidence resolved, for an amount more than a
-    // cent from what was allocated, contradicts that allocation: the difference alone reopens (design v3 §3, T13).
-    // Compared only once the order's own amount is net of fees, so fees KIS has not reported yet are no conflict.
+    // A KIS settled-trade row linked with certainty to an order whose pieces evidence resolved contradicts the allocation
+    // when it is more than a cent away (design v3 §3, T13). Every version is reconciled against what the conflict already
+    // holds, in both directions, kept apart (review of 4b534c1, P1):
+    // - the row says more than was allocated (an increased obligation): what evidence an earlier, lower version released
+    //   is restored first, if still unused; the rest is an open conflict piece of the order, raised or lowered to it;
+    // - the row says less (reduced coverage): no conflict piece stays, and the allocations above it are released back
+    //   to their evidence and reported as coverage no longer explained by KIS's record (no obligation is created).
+    // Compared only once the order's own amount is net of fees, and while no other piece of the order is open.
     const links=ledger.links(account,orders);st.conflicts??={};
-    for(const o of orders){const l=links.get(String(o.id));if(l?.state!=='linked'||!(l.fields.exchangeRate>0)||!(l.fields.settlementUSD>0)||InFlight.amountOf(o).basis!=='net'||st.open.some(f=>f.id===String(o.id)))continue;
-      const got=ledger.allocatedToOrder(account,o.id),mark=`${o.id}|${l.groupId}|${l.version}`;if(!got||st.conflicts[mark])continue;const diff=Math.abs(cents(l.fields.settlementUSD)-got);if(diff<=1)continue;
-      st.conflicts[mark]=now;st.open.push(opened({id:String(o.id),side:o.side,usd:diff/100,basis:'net',at:now,filledAt:now,unresolved:{why:'conflict',evidence:l.groupId,version:l.version,kUSD:l.fields.settlementUSD,allocatedUSD:got/100}}));
-      ledger.event(account,'conflict',{orderId:String(o.id),groupId:l.groupId,version:l.version,kCents:cents(l.fields.settlementUSD),allocatedCents:got});
-      notes.push(`${o.side} ${o.id}: KIS's settled record says $${l.fields.settlementUSD.toFixed(2)} where $${(got/100).toFixed(2)} was allocated; $${(diff/100).toFixed(2)} is unresolved again (conflict)`);}
+    for(const o of orders){const id=String(o.id),l=links.get(id);if(l?.state!=='linked'||!(l.fields.exchangeRate>0)||!(l.fields.settlementUSD>0)||InFlight.amountOf(o).basis!=='net'||st.open.some(f=>f.id===id&&!f.conflict))continue;
+      let base=ledger.allocatedToOrder(account,id);const c0=st.conflicts[id],k=cents(l.fields.settlementUSD);if(!c0&&(!base||Math.abs(k-base)<=1))continue;
+      const c=st.conflicts[id]??={released:[]};const was={kCents:c.kCents,version:c.version};Object.assign(c,{groupId:l.groupId,version:l.version,kCents:k});
+      const pieces=()=>st.open.filter(f=>f.id===id&&f.conflict),held=()=>pieces().reduce((n,f)=>n+cents(f.usd),0);
+      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const take=Math.min(r.cents,k-base);
+          try{ledger.allocate({account,evidenceId:r.evidenceId,version:r.version,pieceId:r.pieceId,orderId:id,cents:take,rule:'restored: KIS record raised'});r.cents-=take;base+=take;ledger.event(account,'coverage-restored',{orderId:id,evidenceId:r.evidenceId,cents:take});}catch{}}
+        c.released=c.released.filter(r=>r.cents>0);}
+      const target=k>base+1?k-base:0,have=held();
+      if(target>have){st.open.push(opened({id,side:o.side,usd:(target-have)/100,basis:'net',at:now,filledAt:now,conflict:true,unresolved:{why:'conflict',evidence:l.groupId,version:l.version,kUSD:k/100,allocatedUSD:base/100}}));
+        notes.push(`${o.side} ${id}: KIS's settled record says $${(k/100).toFixed(2)} where $${(base/100).toFixed(2)} was allocated; $${(target/100).toFixed(2)} is unresolved (conflict)`);}
+      else if(target<have){let left=have-target;for(const f of pieces().reverse()){const x=Math.min(cents(f.usd),left);left-=x;f.usd=(cents(f.usd)-x)/100;f.cents0-=x;ledger.event(account,'conflict-reduced',{pieceId:f.pid,orderId:id,cents:x});if(!left)break;}
+        st.open=st.open.filter(f=>!(f.conflict&&f.usd<=0));notes.push(`${o.side} ${id}: KIS's settled record now says $${(k/100).toFixed(2)}; the conflict is ${target?`$${(target/100).toFixed(2)}`:'closed'}`);}
+      if(k<base-1){const rel=ledger.reduceAllocations(account,id,base-k,'KIS record below the allocation');c.released.push(...rel);
+        notes.push(`${o.side} ${id}: KIS's settled record says $${(k/100).toFixed(2)} where $${(base/100).toFixed(2)} was allocated; $${((base-k)/100).toFixed(2)} of that evidence is no longer explained by it (reduced coverage)`);}
+      if(was.kCents!==k||was.version!==l.version)ledger.event(account,'conflict',{orderId:id,groupId:l.groupId,version:l.version,kCents:k,allocatedCents:ledger.allocatedToOrder(account,id),conflictCents:held(),releasedCents:c.released.reduce((n,r)=>n+r.cents,0)});
+      if(!held()&&!c.released.length&&Math.abs(k-ledger.allocatedToOrder(account,id))<=1)c.settled=now;}
     for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};ledger.event(account,'overdue',{pieceId:f.pid,orderId:f.id,usd:f.usd});
       notes.push(`${f.side} ${f.id} ($${f.usd}): no settlement evidence after ${MAX_DAYS} days; it stays in flight, unresolved, until KIS shows it or it is reconciled`);}
     Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
@@ -344,6 +360,8 @@ class InFlight {
     return InFlight.totals(review.length?{...st,open:[...st.open,...review]}:st);}
   static totals(st){const sum=(side,only=()=>true)=>st.open.filter(f=>f.side===side&&only(f)).reduce((n,f)=>n+cents(f.usd),0)/100;
     return {buysUSD:sum('Buy'),sellsUSD:sum('Sell'),unresolved:{buysUSD:sum('Buy',f=>f.unresolved),sellsUSD:sum('Sell',f=>f.unresolved)},overdue:{buysUSD:sum('Buy',f=>f.overdueAt),sellsUSD:sum('Sell',f=>f.overdueAt)},
+      // Evidence released by KIS records lower than what was allocated: reported, not an obligation.
+      reducedCoverage:Object.entries(st.conflicts??{}).filter(([,c])=>c.released?.length).map(([orderId,c])=>({orderId,usd:c.released.reduce((n,r)=>n+r.cents,0)/100,groupId:c.groupId,version:c.version})),
       pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},open:st.open};}
   current(account){return this.withReview(account,this.state(account));}
 }
