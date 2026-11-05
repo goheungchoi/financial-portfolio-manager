@@ -506,3 +506,25 @@ table.discover-table{table-layout:auto}
 .company-about-text:not(.open) p{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .company-about-text:lang(ko) p{word-break:keep-all}
 .company-about-foot{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;font-size:12px}
+/* U.S. settlements panel (stage 2b.5) */
+.settlement-list{list-style:none;margin:6px 0 0;padding:0}
+.settlement-list>li{padding:9px 0;border-top:1px solid var(--border)}
+.settlement-list>li:first-child{border-top:0}
+.settlement-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.settlement-title{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis}
+.settlement-line strong{font-variant-numeric:tabular-nums;font-size:13px}
+.settlement-line strong.neg{color:var(--negative,inherit)}
+.settlement-actions{display:flex;gap:6px}
+.settlement-piece>small,.settlement-records small{display:block;margin-top:2px}
+.state-pill.warn{border-color:var(--warning,currentColor)}
+.settlement-facts{margin:4px 0 0;padding-left:18px;font-size:12px}
+.settlement-timing,.settlement-records{margin-top:14px}
+.settlement-timing h3,.settlement-records h3{font-size:13px;margin:0 0 4px}
+.settlement-form{margin:8px 0 4px;padding:10px;border:1px solid var(--border);border-radius:8px}
+.settlement-form .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px 12px}
+.settlement-form label{display:flex;flex-direction:column;gap:3px;font-size:12px}
+.settlement-form label.wide{grid-column:1/-1}
+.settlement-form label.check{flex-direction:row;align-items:center;gap:6px;grid-column:1/-1}
+.settlement-form .form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.settlement-preview{margin-top:8px}
+.settlement-preview tr.changed td{font-weight:600}

@@ -191,19 +191,22 @@ class TradingCosts{
   // backoff. Dates of gaps not yet due for a retry are left out of a new job; due gaps are added to it. Each read's
   // import, gap and remaining queue are stored together, so a later failure or a restart loses nothing already read.
   // Returns {planned,done,stopped,code,remaining} or {skipped:'BACKOFF',nextAt}.
-  async syncHistory(account,fetch,{plan,clock=Date.now,...limits}){
-    const th=require('./trade-history.cjs'),{ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);let job=this.jobs.get(owner),planned=false;
+  // key (stage 2b.5, Check again): the job is stored under its own key, so a settlement check of one order is resumed,
+  // backed off and run once at a time apart from the account's tax job; its reads import and record gaps for the account
+  // as any other. exact: the plan is read as given, gaps not yet due included (the check was asked for).
+  async syncHistory(account,fetch,{plan,clock=Date.now,key=null,exact=false,...limits}){
+    const th=require('./trade-history.cjs'),{ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account),jobKey=key??owner;let job=this.jobs.get(jobKey),planned=false;
     if(job?.nextAt>clock())return {skipped:'BACKOFF',nextAt:job.nextAt};
-    if(!job){const now=clock(),gaps=this.gaps.list(owner);let queue=plan();for(const g of gaps.filter(g=>g.nextAt>now))queue=th.subtract(queue,g);
+    if(!job){const now=clock(),gaps=exact?[]:this.gaps.list(owner);let queue=plan();for(const g of gaps.filter(g=>g.nextAt>now))queue=th.subtract(queue,g);
       for(const g of gaps.filter(g=>!(g.nextAt>now)))queue=[...th.subtract(queue,g),{start:g.start,end:g.end}];
       job={queue:queue.sort((a,b)=>a.start.localeCompare(b.start)),createdAt:now,attempts:0};planned=true;}
-    job={...job,state:'running'};this.jobs.put(owner,job);
-    const step=({result,queue})=>{this.db.exec('SAVEPOINT trade_history');try{if(result)this.importHistory(account,[result],clock());this.jobs.put(owner,{...job,queue});this.db.exec('RELEASE trade_history');}catch(error){this.db.exec('ROLLBACK TO trade_history');this.db.exec('RELEASE trade_history');throw error;}};
+    job={...job,state:'running'};this.jobs.put(jobKey,job);
+    const step=({result,queue})=>{this.db.exec('SAVEPOINT trade_history');try{if(result)this.importHistory(account,[result],clock());this.jobs.put(jobKey,{...job,queue});this.db.exec('RELEASE trade_history');}catch(error){this.db.exec('ROLLBACK TO trade_history');this.db.exec('RELEASE trade_history');throw error;}};
     const out=await th.readRanges(fetch,job.queue,{clock,...limits,step});
-    if(!out.remaining.length){this.jobs.clear(owner);return {planned,done:true,stopped:null,code:null,remaining:[]};}
+    if(!out.remaining.length){this.jobs.clear(jobKey);return {planned,done:true,stopped:null,code:null,remaining:[],results:out.results.map(({rows,...r})=>r)};}
     const failed=out.stopped==='FAILED',attempts=failed?(job.attempts??0)+1:job.attempts??0;
-    this.jobs.put(owner,{...job,queue:out.remaining,state:'paused',stopped:out.stopped,code:out.code,attempts,nextAt:failed?clock()+th.backoff(attempts):0});
-    return {planned,done:false,stopped:out.stopped,code:out.code,remaining:out.remaining};
+    this.jobs.put(jobKey,{...job,queue:out.remaining,state:'paused',stopped:out.stopped,code:out.code,attempts,nextAt:failed?clock()+th.backoff(attempts):0});
+    return {planned,done:false,stopped:out.stopped,code:out.code,remaining:out.remaining,results:out.results.map(({rows,...r})=>r)};
   }
   // Gaps in the trade history of this taxpayer's accounts, with the ranges a job has not read yet (NOT_READ), running
   // or stopped: a range leaves the job's queue only in the same savepoint that stores its result (stage 2a review
