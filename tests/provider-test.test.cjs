@@ -57,9 +57,9 @@ test('the transport refuses other destinations, other methods and redirects, and
   const res=await r(URL,{method:'POST',body:body()});assert.equal(res.status,400);assert.equal(log[0].status,'rejected');assert.equal(log[0].providerError.code,'invalid_json_schema');
 });
 // A small source database with a recorded dry run, for composing.
-function source({credential=false}={}){const dir=tmp(),file=path.join(dir,'source.sqlite');const db=new DatabaseSync(file);const cut=Date.parse('2026-11-04T13:30:43.134Z');const MIN=60000;
+function source({credential=false,exit=false}={}){const dir=tmp(),file=path.join(dir,'source.sqlite');const db=new DatabaseSync(file);const cut=Date.parse('2026-11-04T13:30:43.134Z');const MIN=60000;
   db.exec('CREATE TABLE dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER,payload TEXT);CREATE TABLE trade_outcomes(id TEXT PRIMARY KEY,payload TEXT);CREATE TABLE outcome_versions(outcomeId TEXT,version INTEGER,signature TEXT,payload TEXT,recordedAt INTEGER);CREATE TABLE reviews(id TEXT PRIMARY KEY,payload TEXT)');
-  const snapshot={environment:'kis-combined',currency:'KRW',universe:[{symbol:'028050'}],quotes:[{symbol:'028050',price:100,stale:true}],positions:{'028050':{quantity:1}},equity:1000,marketSession:{open:false,status:'closed'},waits:[{symbol:'028050',reason:'r'}],discovery:{enabled:true},agentDesk:{conditionalOrders:{allowed:false}},...(credential?{connection:{appKey:'abcdef123456'}}:{})};
+  const snapshot={environment:'kis-combined',currency:'KRW',universe:[{symbol:'028050'}],quotes:[{symbol:'028050',price:100,stale:true}],positions:exit?{}:{'028050':{quantity:1}},equity:1000,marketSession:{open:false,status:'closed'},waits:[{symbol:'028050',reason:'r'}],discovery:{enabled:true},agentDesk:{conditionalOrders:{allowed:false}},...(credential?{connection:{appKey:'abcdef123456'}}:{})};
   const transcript=[{at:'2026-11-04T13:30:50.000Z',title:'Market data request',body:'{"symbol":"028050","dataset":"daily_technicals"}'},{at:'2026-11-04T13:30:51.000Z',title:'Market data result',body:'{"status":"available","bars":[1,2,3]}'},
     {at:'2026-11-04T13:30:55.000Z',title:'Discovery request',body:'{"symbol":"028050","sections":["events"]}'},{at:'2026-11-04T13:30:57.000Z',title:'Discovery result',body:'{"x":"'+'a'.repeat(3994)}];
   db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run('4c76aa03-test',cut+60000,JSON.stringify({summary:{assembledAt:'2026-11-04T13:30:43.134Z',account:{key:'acct',label:'KIS live'},sessions:{KR:'closed',US:'closed'},quotes:{count:1,stale:1}},snapshot,review:{model:'gpt-6-sol',effort:'medium',calls:3,costUSD:0.12,transcript}}));
@@ -68,6 +68,8 @@ function source({credential=false}={}){const dir=tmp(),file=path.join(dir,'sourc
   db.prepare('INSERT INTO trade_outcomes VALUES(?,?)').run('A',JSON.stringify(outcome('A',cut-3*86400000,100,{updatedAt:cut+DAY})));db.prepare('INSERT INTO outcome_versions VALUES(?,?,?,?,?)').run('A',1,'s',JSON.stringify(outcome('A',cut-3*86400000,100)),cut-3*86400000);
   db.prepare('INSERT INTO outcome_versions VALUES(?,?,?,?,?)').run('A',2,'s',JSON.stringify(outcome('A',cut-3*86400000,999)),cut+DAY);
   db.prepare('INSERT INTO trade_outcomes VALUES(?,?)').run('B',JSON.stringify(outcome('B',cut+10*MIN,120)));
+  // With exit: the position was sold two days before the cutoff, so buying it again is a reversal.
+  if(exit){const sale=outcome('X',cut-2*86400000,105,{side:'Sell',effect:'CLOSE_LONG',reviewId:'rev-A'});db.prepare('INSERT INTO trade_outcomes VALUES(?,?)').run('X',JSON.stringify(sale));db.prepare('INSERT INTO outcome_versions VALUES(?,?,?,?,?)').run('X',1,'s',JSON.stringify(sale),cut-2*86400000);}
   db.prepare('INSERT INTO reviews VALUES(?,?)').run('rev-A',JSON.stringify({timestamp:cut-3*86400000-MIN,account:{key:'acct'}}));db.prepare('INSERT INTO reviews VALUES(?,?)').run('later',JSON.stringify({timestamp:cut+5*MIN,account:{key:'acct'}}));
   db.close();return {dir,file,cut};}
 const DAY=86400000;
@@ -93,11 +95,14 @@ test('fixture tools: an exact recorded request is served; anything else is unava
   assert.match(s.lookup('get_company_research',{symbol:'028050',sections:['events']}).reason,/cut off/);assert.match(s.lookup('screen_market',{}).reason,/does not fetch/);
   assert.equal((await s.inert('save_note')({symbol:'028050'})).status,'not-applied');assert.deepEqual(s.calls.map(c=>c.served),['recorded','unavailable: recording cut off','unavailable: not recorded','not applied']);
 });
-test('the test folder is kept apart from the live profile by real path, junctions and case included',()=>{
+test('the test folder is kept apart from the live profile by real path, junctions and case included',t=>{
   const root=tmp(),live=path.join(root,'Live Profile');fs.mkdirSync(live);
   assert.throws(()=>P.separate(path.join(live,'test'),{live}),/ISOLATED_PATH_REFUSED/);assert.throws(()=>P.separate(root,{live}),/ISOLATED_PATH_REFUSED/);
   if(process.platform==='win32')assert.throws(()=>P.separate(path.join(live.toUpperCase(),'x'),{live}),/ISOLATED_PATH_REFUSED/);
-  const link=path.join(root,'innocent');fs.symlinkSync(live,link,'junction');assert.throws(()=>P.separate(path.join(link,'run'),{live}),/ISOLATED_PATH_REFUSED/,'a junction into the live profile');
+  // A child whose name starts with two dots is inside, not a way out (review of 222a950, P2).
+  assert.throws(()=>P.separate(path.join(live,'..test'),{live}),/ISOLATED_PATH_REFUSED/);assert.throws(()=>P.separate(path.join(live,'..'+'.','x'),{live}),/ISOLATED_PATH_REFUSED/);
+  const link=path.join(root,'innocent');let made=true;try{fs.symlinkSync(live,link,'junction');}catch(e){if(e.code!=='EPERM')throw e;made=false;}
+  if(made)assert.throws(()=>P.separate(path.join(link,'run'),{live}),/ISOLATED_PATH_REFUSED/,'a junction into the live profile');else t.diagnostic('junction case not run: Windows refused to create a junction here (EPERM)');
   assert.equal(P.separate(path.join(root,'elsewhere'),{live}).dir.toLowerCase(),path.join(fs.realpathSync.native(root),'elsewhere').toLowerCase());
 });
 test('the state comparison sees rows still in the write-ahead log',()=>{
@@ -106,15 +111,15 @@ test('the state comparison sees rows still in the write-ahead log',()=>{
   const c=S.compare(a,b);assert.equal(c.unchanged,false);assert.deepEqual(c.changedTables,['t']);assert.equal(c.mainFileUnchanged,true,'the main file alone would have shown no change');
 });
 // End to end with a fake provider, on a composed fixture and a stand-in live profile.
-function prepared(){const live=path.join(tmp(),'Live');fs.mkdirSync(live);const db=new DatabaseSync(path.join(live,'portfolio.sqlite'));db.exec('CREATE TABLE live_intents(x);INSERT INTO live_intents VALUES(1)');db.close();
-  const dir=path.join(tmp(),'run');fs.mkdirSync(dir);fs.writeFileSync(path.join(dir,'fixture.json'),JSON.stringify(F.compose({source:source().file,dryRun:'4c76aa03'})));return {dir,live};}
+function prepared(options={}){const live=path.join(tmp(),'Live');fs.mkdirSync(live);const db=new DatabaseSync(path.join(live,'portfolio.sqlite'));db.exec('CREATE TABLE live_intents(x);INSERT INTO live_intents VALUES(1)');db.close();
+  const dir=path.join(tmp(),'run');fs.mkdirSync(dir);fs.writeFileSync(path.join(dir,'fixture.json'),JSON.stringify(F.compose({source:(options.file??source(options).file),dryRun:'4c76aa03'})));return {dir,live};}
 const reply=(output,usage={input_tokens:1000,output_tokens:50,input_tokens_details:{cached_tokens:0},output_tokens_details:{reasoning_tokens:10}})=>new Response(JSON.stringify({status:'completed',model:'gpt-6-sol',usage,output}),{status:200});
 const hold={type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'Hold.'})}]};
 const call=(name,args,i)=>({type:'function_call',name,call_id:'c'+i,arguments:JSON.stringify(args)});
 test('the report separates acceptance, local validation and tool coverage; a Hold with no tools does not verify tool handling',async()=>{
   let x=prepared();let r=await runTest({...x,send:async()=>reply([hold]),key:'sk-fixture-key-123',mode:'test'});
   assert.equal(r.acceptance.providerAccepted,true);assert.equal(r.acceptance.finalResponseParsedAndValidated,true);assert.deepEqual(r.tools.exercised,[]);assert.match(r.tools.note,/does not verify tool handling/);
-  assert.equal(r.statement.includes('not a validation of accounting'),true);assert.equal(r.state.live.unchanged,true);assert.deepEqual(r.state.files.after,['fixture.json','provider-test.sqlite','report.json','report.md']);
+  assert.equal(r.statement.includes('not a validation of accounting'),true);assert.equal(r.state.live.unchanged,true);assert.deepEqual(r.state.files.after,['fixture.json','provider-test.sqlite','report.json','report.md','run.lock']);
   // Tools exercised: a recorded result, a cut-off recording, an unrecorded request and a write.
   x=prepared();let n=0;r=await runTest({...x,send:async()=>++n===1?reply([call('get_market_evidence',{symbol:'028050',dataset:'daily_technicals'},1),call('get_company_research',{symbol:'028050',sections:['events']},2),call('get_market_evidence',{symbol:'028050',dataset:'order_book'},3),call('save_note',{symbol:'028050',text:'n'},4)]):reply([hold]),key:'sk-fixture-key-123',mode:'test'});
   assert.deepEqual(r.tools.calls.map(c=>c.served),['recorded','unavailable: recording cut off','unavailable: not recorded','not applied']);assert.ok(r.tools.notExercised.includes('compute'));assert.equal(r.cost.requests,2);
@@ -133,4 +138,35 @@ test('condensing goes through the same meter as the review',async()=>{
   const meter=new Meter(),log=[];const t=controlledTransport({send:async()=>reply([{type:'message',content:[{type:'output_text',text:'{"digest":"d"}'}]}]),guard,meter,log});
   const {AiClient}=require('../electron/ai-client.cjs');await new AiClient('sk-fixture-key-123',t).compact({items:[]},{openaiModel:'gpt-6-luna',reasoningEffort:'none'}).catch(()=>{});
   assert.equal(log[0].kind,'compact');assert.equal(meter.entries.length,1);
+});
+
+// Review of 222a950: one run per folder, claimed before anything is sent; reservations on record before each request.
+test('two runs started together: one is refused before it sends anything',async()=>{
+  const x=prepared();let sent=0,release;const slow=()=>{sent++;return new Promise(r=>{release=()=>r(reply([hold]));});};
+  const first=runTest({...x,send:slow,key:'sk-fixture-key-123',mode:'test'});const second=runTest({...x,send:slow,key:'sk-fixture-key-123',mode:'test'});
+  await assert.rejects(second,/ISOLATED_RUN_EXISTS/);await new Promise(r=>setImmediate(r));release();const r=await first;assert.equal(sent,1,'only the run that claimed the folder sent');assert.equal(r.cost.requests,1);
+});
+test('a run that dies after sending, before its usage arrives, leaves its reservation on record and the folder refused',async()=>{
+  const x=prepared();let seen=null;
+  // The provider never answers: the process is as it would be if it died here.
+  void runTest({...x,send:async()=>{const db=new DatabaseSync(path.join(x.dir,'provider-test.sqlite'),{readOnly:true});seen=db.prepare('SELECT status,payload FROM requests').all();db.close();return new Promise(()=>{});},key:'sk-fixture-key-123',mode:'test'});
+  for(let i=0;i<50&&!seen;i++)await new Promise(r=>setTimeout(r,10));
+  assert.equal(seen.length,1);assert.equal(seen[0].status,'reserved','written before the request was sent');assert.ok(JSON.parse(seen[0].payload).reservedMicro>0);
+  await assert.rejects(runTest({...x,send:async()=>reply([hold]),key:'sk-fixture-key-123',mode:'test'}),e=>e.message==='ISOLATED_RUN_EXISTS'&&/did not finish; 1 request\(s\) reserved, \$0\.\d+ committed, 1 of unknown cost/.test(e.detail));
+});
+// Review of 222a950, P2: unavailable position memory fails validation closed; a verified empty history does not.
+const plan={horizon:'swing',thesis:'recovery',invalidation:'falls below 90',stopPrice:90,targetPrice:null,horizonDays:60,confidence:'medium',portfolioImpact:{weightBeforePct:0,weightAfterPct:5,related:[],relatedBeforePct:0,relatedAfterPct:5,equityReliable:true,why:'small'},evidence:[{claim:'orders rose',source:'release',verified:true}],valuation:null,uncertainty:null};
+const reopen={type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Buy',symbol:'028050',quantity:1,credit:'none',loanDate:'',explanation:'Buy again.',reversal:null,plan,complexity:{score:10,reason:'r'},strategyCheck:[],execution:null})}]};
+test('unavailable position memory is reported and fails validation closed; a recorded exit holds back an unexplained reopening',async()=>{
+  // Unavailable: an outcome filled before the cutoff with no version recorded by then.
+  const {file,cut}=source({exit:true});const db=new DatabaseSync(file);db.prepare('INSERT INTO trade_outcomes VALUES(?,?)').run('C',JSON.stringify({id:'C',source:'broker',accountKey:'acct',symbol:'028050',side:'Buy',status:'Filled',quantity:1,averagePrice:100,timestamp:cut-DAY,updatedAt:cut+DAY}));db.close();
+  let x=prepared({file});let r=await runTest({...x,send:async()=>reply([reopen]),key:'sk-fixture-key-123',mode:'test'});
+  assert.equal(r.acceptance.providerAccepted,true,'the provider accepted the request');assert.equal(r.acceptance.finalResponseParsedAndValidated,false,'never reported as validated');
+  assert.equal(r.acceptance.failure.code,'VALIDATION_STATE_INVALID');assert.equal(r.acceptance.failure.side,'local');assert.match(r.acceptance.validationLimits[0],/position memory unavailable/);
+  // Available, with the exit two days earlier: the same reopening is held back for its missing reversal explanation.
+  x=prepared({exit:true});r=await runTest({...x,send:async()=>reply([reopen]),key:'sk-fixture-key-123',mode:'test'});
+  assert.equal(r.acceptance.localGuard?.withheld,'reversal');assert.match(r.acceptance.localGuard.note,/not a provider rejection/);assert.deepEqual(r.acceptance.validationLimits,[]);
+  // A fixture with neither a list nor the unavailable mark is refused before anything is claimed.
+  x=prepared();const f=JSON.parse(fs.readFileSync(path.join(x.dir,'fixture.json'),'utf8'));delete f.context.positionMemory;const {digest:_,...rest}=f;fs.writeFileSync(path.join(x.dir,'fixture.json'),JSON.stringify({...rest,digest:F.digest(rest)}));
+  await assert.rejects(runTest({...x,send:async()=>reply([hold]),key:'sk-fixture-key-123',mode:'test'}),/FIXTURE_INVALID/);assert.equal(fs.existsSync(path.join(x.dir,'run.lock')),false);
 });
