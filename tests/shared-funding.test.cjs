@@ -195,3 +195,36 @@ test('review P1-3: balances of another account or environment never fund a check
   // A matching account and environment still pass.
   assert.equal(await account().buyKR(1),'Accepted');
 });
+
+// Stage 1 review (6420091): a price increase judged against the effective price; input age measured after the reads.
+test('review P1: raising a buy above its effective price needs trading on, even when its reservation already covers it',async()=>{
+  // The review's case: limit ₩1,000, revised to ₩500, trading stopped, then ₩900: refused, nothing sent.
+  let a=account();assert.equal(await a.buyKR(100,1000),'Accepted');const id=a.kr.orders()[0].id;await a.kr.revise(id,{price:500});a.kr.stop();
+  await assert.rejects(a.kr.revise(id,{price:900}),/DISABLED_OR_EXPIRED/);assert.deepEqual(a.s.revisions.map(r=>r.price),[500]);
+  // A genuine reduction and a cancellation while stopped still go through.
+  await a.kr.revise(id,{price:400});await a.kr.revise(id,{cancel:true});assert.deepEqual(a.s.revisions.map(r=>r.cancel?'cancel':r.price),[500,400,'cancel']);
+  assert.equal(a.committed().krw,100000,'the original ₩1,000 limit stays reserved');
+  // Trading on: ₩500 → ₩900 is sent, the existing ₩100,000 reservation already covering it.
+  a=account();assert.equal(await a.buyKR(100,1000),'Accepted');const k=a.kr.orders()[0].id;await a.kr.revise(k,{price:500});await a.kr.revise(k,{price:900});
+  assert.deepEqual(a.s.revisions.map(r=>r.price),[500,900]);assert.equal(a.committed().krw,100000);
+});
+test('review P2: balances and the rate are aged after every read, so a slow read cannot pass old inputs',async()=>{
+  // The U.S. read takes three minutes (the ledger's clock moves on); balances keep the time they were read.
+  const slow=a=>{let offset=0;a.ledger.clock=()=>Date.now()+offset;const fresh=a.ledger.fresh;a.ledger.fresh=async m=>{const b=await fresh(m);if(m==='US')offset+=180000;return b;};};
+  // A submission whose own balance was read before a three-minute read of the other market.
+  let a=account();slow(a);assert.equal(await a.buyKR(100),'FUNDING_BALANCE_STALE');assert.equal(a.s.posts.length,0);
+  // A revision whose Korean balance aged during the U.S. read.
+  a=account();assert.equal(await a.buyKR(10,50000),'Accepted');const id=a.kr.orders()[0].id;slow(a);
+  await assert.rejects(a.kr.revise(id,{price:60000}),/FUNDING_BALANCE_STALE/);assert.equal(a.s.revisions.length,0);
+  // A revision whose balances are both read last (fresh), but whose rate dates from before the three-minute read:
+  // FX_STALE, since a U.S. commitment is involved; nothing sent.
+  a=account();assert.equal(await a.buyUS(1),'Accepted');assert.equal(await a.buyKR(10,50000),'Accepted');const k=a.kr.orders()[0].id;
+  let offset=0;a.ledger.clock=()=>Date.now()+offset;const f=a.ledger.fresh,rateAt=Date.now();
+  a.ledger.fresh=async m=>{const b=await f(m);if(m==='KR')offset+=180000;return {...b,timestamp:new Date(Date.now()+offset).toISOString(),...(b.fx?{fx:{usdKRW:1300,timestamp:rateAt}}:{})};};
+  a.ledger.fxSource=()=>({usdKRW:1300,timestamp:rateAt});const before=a.s.revisions.length;
+  await assert.rejects(a.kr.revise(k,{price:60000}),/FX_STALE/);assert.equal(a.s.revisions.length,before);
+  // The review's direct case: inputs() measured after the reads.
+  a=account();let t=Date.now();a.ledger.clock=()=>t;const own={...a.s.kr,timestamp:new Date(t).toISOString()};
+  a.ledger.fresh=async()=>{t+=180000;return {...a.s.us,timestamp:own.timestamp,fx:{usdKRW:1300,timestamp:Date.parse(own.timestamp)}};};
+  await assert.rejects(a.ledger.inputs('KR',own,{account:'acct',environment:'mock'}),/FUNDING_BALANCE_STALE/);
+});
