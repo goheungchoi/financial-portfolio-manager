@@ -47,6 +47,7 @@ class PerformanceHistory {
     const today=seoulDate(this.clock());
     if(typeof account!=='string'||!account||!value||!isDay(value.day)||value.day>today||!['KR','US'].includes(value.market)||!Number.isFinite(value.amount)||value.amount===0||Math.abs(value.amount)>1e12||typeof(value.note??'')!=='string'||String(value.note??'').length>200)throw new Error('INVALID_FLOW');
     const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{}),...(value.transfer?{transfer:true}:{}),
+      ...(Array.isArray(value.pendingIds)&&value.pendingIds.length?{pendingIds:value.pendingIds.slice(0,40).map(String)}:{}),
       ...(value.transfer&&value.awaitingExchange?{awaitingExchange:true}:{}),...(value.transfer&&value.source==='exchange'?{source:'exchange'}:{}),
       // When the money moved, if known (release review 2026-11-05, P1): after one balance reading and by the next. A flow
       // entered by hand has only its date. createdAt and confirmedAt say when it was recorded, never when it happened.

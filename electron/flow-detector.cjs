@@ -14,7 +14,7 @@
 // - anything else is recorded as a detected flow once it has stood for HOLD_MS (up to MAX_HOLD_MS while it could
 //   still be the settlement of U.S. buys whose funding is unknown). Detected flows count in returns and wait for the
 //   user to confirm or remove them.
-const {seoulDate}=require('./kis-activity.cjs');
+const {seoulDate}=require('./kis-activity.cjs');const {randomUUID}=require('node:crypto');
 const THRESHOLD_KRW=10000;
 // Settlement evidence lasts a day: KIS takes the payment at settlement, so an older record would only hide a withdrawal.
 const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=10;
@@ -79,11 +79,12 @@ const spanOf=parts=>{const after=parts.map(x=>x.after);return {occurredAfter:aft
 // flow before the day's baseline and one after it are told apart. Changes in both directions (a partial reversal) are
 // one flow of the net amount whose window covers all of them: when it happened is then only known that widely. The
 // amounts always sum to the held amount.
+const idsOf=parts=>parts.map(x=>x.id).filter(Boolean);
 function piecesOf(m,q,fx){const parts=q.parts?.length?q.parts:[{amount:q.amount,after:q.after??null,by:q.since}];
-  if(parts.some(x=>Math.sign(x.amount)!==Math.sign(q.amount)))return [{amount:q.amount,...spanOf(parts),mixed:true}];
+  if(parts.some(x=>Math.sign(x.amount)!==Math.sign(q.amount)))return [{amount:q.amount,...spanOf(parts),pendingIds:idsOf(parts),mixed:true}];
   const merged=[];for(const x of parts){const last=merged[merged.length-1];if(last&&(!big(m,x.amount,fx)||!big(m,last.amount,fx)))merged[merged.length-1]={amount:last.amount+x.amount,parts:[...last.parts,x]};else merged.push({amount:x.amount,parts:[x]});}
   if(merged.length>1&&!big(m,merged[0].amount,fx)){const [a,b]=merged.splice(0,2);merged.unshift({amount:a.amount+b.amount,parts:[...a.parts,...b.parts]});}
-  const out=merged.map(g=>({amount:round(m,g.amount),...spanOf(g.parts)}));out[out.length-1].amount=round(m,q.amount-out.slice(0,-1).reduce((n,x)=>n+x.amount,0));return out;}
+  const out=merged.map(g=>({amount:round(m,g.amount),...spanOf(g.parts),pendingIds:idsOf(g.parts)}));out[out.length-1].amount=round(m,q.amount-out.slice(0,-1).reduce((n,x)=>n+x.amount,0));return out;}
 const label=market=>market==='US'?'U.S.':'Korean';
 const money=(market,amount)=>market==='US'?`$${Math.abs(amount).toFixed(2)}`:`₩${Math.abs(Math.round(amount)).toLocaleString('en-US')}`;
 class FlowDetector {
@@ -99,9 +100,9 @@ class FlowDetector {
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
     // A change held since before parts were kept: when its later additions happened is unknown, so its one part spans
     // from before its first change to the last reading.
-    for(const [m,q] of Object.entries(state.pending))if(q&&!Array.isArray(q.parts))state.pending[m]={...q,parts:[{amount:q.amount,after:q.after??null,by:prev?.at??q.since}]};
+    for(const [m,q] of Object.entries(state.pending))if(q&&!Array.isArray(q.parts))state.pending[m]={...q,parts:[{id:randomUUID(),amount:q.amount,after:q.after??null,by:prev?.at??q.since}]};
     // A later change in a held market: added to it as a part of its own, in the window since the previous reading.
-    const add=(held,m,amount)=>{held.amount=round(m,held.amount+amount);held.parts=[...held.parts,{amount:round(m,amount),after:prev.at??null,by:now.at}];};
+    const add=(held,m,amount)=>{held.amount=round(m,held.amount+amount);held.parts=[...held.parts,{id:randomUUID(),amount:round(m,amount),after:prev.at??null,by:now.at}];};
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...now,...state}));
     // A Korean reading of another basis (for example before KRW committed to unsettled U.S. buys was netted out): start
     // again, dropping changes held on the old basis. A U.S. reading of another basis starts the U.S. comparison here,
@@ -144,8 +145,24 @@ class FlowDetector {
     for(const market of ['KR','US']){const amount=u[market],held=state.pending[market];if(!amount||!held&&!big(market,amount,fx))continue;
       const mark=usStart&&market==='KR'?{usUnseen:true}:{};
       if(held){Object.assign(held,{funding:held.funding||u.usTraded,...mark});add(held,market,amount);}
-      else state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark};}
+      else state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{id:randomUUID(),amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark};}
     const found=this.resolve(account,state,now,prev,fx);save();return found;
+  }
+  // Money moved since the day's baseline for the loss checks: the recorded flows (PerformanceHistory.flowsSince) and,
+  // at once, the changes still held here (independent accounting review of 162d7c9, P1: a deposit held for two hours
+  // hid a loss). A held change is unresolved, like a detected flow, never a confirmed deposit or withdrawal, and is
+  // placed against the baseline by each part's own window. A part already recorded as a flow (its id is in the flow's
+  // pendingIds) is not counted again. A Korean or U.S. change that may be one leg of a transfer between the markets is
+  // money moving for that market either way, so it counts the same.
+  flowsSince(account,market,since){
+    const recorded=this.performance.flowsSince(account,market,since);const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);
+    const q=row?JSON.parse(row.payload).pending?.[market]:null;if(!q||!recorded)return recorded;
+    const done=new Set(this.performance.flows(account).flatMap(f=>f.pendingIds??[]));
+    const parts=(Array.isArray(q.parts)&&q.parts.length?q.parts:[{amount:q.amount,after:q.after??null,by:q.since}]).filter(x=>!x.id||!done.has(x.id));
+    const day=Number.isFinite(since)?null:seoulDate(this.clock());let after=0,unsure=0;
+    for(const x of parts){if(day!=null){if(seoulDate(x.by)===day)after+=x.amount;continue;}
+      if(x.by<=since)continue;if(Number.isFinite(x.after)&&x.after>=since)after+=x.amount;else unsure+=x.amount;}
+    return {...recorded,unresolved:(recorded.unresolved??0)+after,uncertain:{confirmed:recorded.uncertain?.confirmed??0,unresolved:(recorded.uncertain?.unresolved??0)+unsure},held:{after,uncertain:unsure,parts:parts.map(x=>x.id??null)}};
   }
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
@@ -164,7 +181,7 @@ class FlowDetector {
       const prior=!funding&&settling?this.recordedTransfer(account,kr,us,now.at):null;
       if(prior){this.performance.markExchanged(account,prior.map(f=>f.id),{at:now.at,KRW:kr,USD:us});
         note('Currency exchange matched',`${money('KR',kr)} exchanged into ${money('US',us)} completes the transfer between markets recorded on ${prior[0].day}; it is not counted again.`);}
-      else out.push(...[['KR',kr],['US',us]].map(([market,amount])=>this.performance.addFlow(account,{day,market,amount,transfer:true,...window,...(funding?{awaitingExchange:true}:{source:'exchange'}),
+      else out.push(...[['KR',kr],['US',us]].map(([market,amount])=>this.performance.addFlow(account,{day,market,amount,transfer:true,...window,pendingIds:idsOf((market==='KR'?p.KR:p.US).parts??[]),...(funding?{awaitingExchange:true}:{source:'exchange'}),
         note:funding?`Transfer between markets: ${amount<0?'out of':'into'} the ${market==='US'?'U.S.':'Korean'} account (integrated-margin funding of a U.S. buy).`:`Transfer between markets: ${amount<0?'out of':'into'} the ${market==='US'?'U.S.':'Korean'} account (currency exchange).`})));
       delete p.KR;delete p.US;}
     // A fall in Korean or U.S. cash matching the outstanding payment for U.S. buys that settled while their funding was
@@ -178,7 +195,7 @@ class FlowDetector {
       if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
       const unseen=q.usUnseen?' The U.S. balance could not be compared first, so a move to or from the U.S. account cannot be ruled out.':'';
       const pieces=piecesOf(m,q,fx);
-      pieces.forEach((x,i)=>out.push(this.performance.addFlow(account,{day:seoulDate(x.occurredBy),market:m,amount:x.amount,detected:true,occurredAfter:x.occurredAfter,occurredBy:x.occurredBy,
+      pieces.forEach((x,i)=>out.push(this.performance.addFlow(account,{day:seoulDate(x.occurredBy),market:m,amount:x.amount,detected:true,occurredAfter:x.occurredAfter,occurredBy:x.occurredBy,pendingIds:x.pendingIds,
         note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen} Confirm or remove.`})));delete p[m];}
     return out;
   }
