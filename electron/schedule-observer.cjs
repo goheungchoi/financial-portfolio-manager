@@ -46,7 +46,8 @@ function decisionChanges(prev,next){
 class ScheduleObserver {
   constructor(db,{clock=Date.now,settings=DEFAULTS}={}){this.db=db;this.clock=clock;this.settings={...DEFAULTS,...settings};this.base=null;this.lastReview=null;
     db.exec('CREATE TABLE IF NOT EXISTS schedule_observations(id TEXT PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL)');}
-  save(kind,payload){const id=randomUUID();this.db.prepare('INSERT INTO schedule_observations VALUES(?,?,?,?)').run(id,payload.at,kind,JSON.stringify(payload));return id;}
+  // tag(): the price-alert rules in force (automation's alertTag), saved on every row (audit 2026-11-04, Stage 5).
+  save(kind,payload){const id=randomUUID();let alerts=null;try{alerts=this.tag?.()??null;}catch{}this.db.prepare('INSERT INTO schedule_observations VALUES(?,?,?,?)').run(id,payload.at,kind,JSON.stringify({...payload,...(alerts?{alerts}:{})}));return id;}
   // A proposed run: records why, how long since the last one, and makes this state the new baseline.
   run(state,why){const at=state.at;const elapsed=this.base?Math.round((at-this.base.at)/60000):null;const id=this.save('proposed-run',{at,reasons:why,minutesSinceLast:elapsed,backstop:why.some(r=>r.rule==='backstop'),settings:this.settings});this.base=state;this.lastRunAt=at;return id;}
   // Periodic check against live state. Returns the reasons when the proposed scheduler would run now.
