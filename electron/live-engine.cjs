@@ -1,15 +1,19 @@
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');
-const {validateLoss,lossStatus}=require('./loss-policy.cjs');
+const {validateLoss,lossStatus}=require('./loss-policy.cjs');const {FundingLedger}=require('./funding-ledger.cjs');
 class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
     this.market=options.market??'KR';this.day=this.market==='US'?require('./kis-overseas.cjs').localDate:seoulDate;this.validSymbol=symbol=>this.market==='US'?/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(symbol):/^\d{6}$/.test(symbol);this.validPrice=price=>Number.isFinite(price)&&price>=1&&(this.market==='US'?Math.abs(price*100-Math.round(price*100))<1e-7:Number.isSafeInteger(price));
     this.db=db;this.broker=broker;this.getConnection=getConnection;this.enabled=false;this.autoEnabled=false;this.busy=false;
     db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_orders(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,day TEXT NOT NULL,seenAt INTEGER NOT NULL,payload TEXT NOT NULL);');
+    // A revision whose reply was lost to a restart stays unconfirmed, its higher price still committed, until history shows it.
+    try{for(const r of db.prepare('SELECT payload FROM live_intents').all()){const o=JSON.parse(r.payload);if(o.pendingRevision&&String(o.accountKey??'').endsWith(':US')===(this.market==='US')){const {pendingRevision:p,...rest}=o;this.writeOrder({...rest,trackingStopped:{at:Date.now(),reason:'restart during a revision'},unconfirmed:{from:p.from,cancel:p.cancel,...(p.cancel?{}:{price:p.price})}});}}}catch{}
   }
   identity(){const connection=this.getConnection();if(!connection.snapshot?.accountKey)throw new Error('KIS_NOT_CONNECTED');return connection.snapshot.accountKey;}
   policy(){const key=this.identity();const row=this.db.prepare('SELECT payload FROM live_policy WHERE accountKey=?').get(key);return row?JSON.parse(row.payload):null;}
   orders(){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT payload FROM live_intents WHERE accountKey=? ORDER BY rowid DESC').all(key).map(row=>JSON.parse(row.payload));}
-  save(order){this.db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,order.accountKey,JSON.stringify(order));}
+  // The order and its funding commitment (electron/funding-ledger.cjs) are written in one transaction.
+  save(order){this.db.exec('SAVEPOINT order_save');try{this.writeOrder(order);this.funding?.track(order);this.db.exec('RELEASE order_save');}catch(error){this.db.exec('ROLLBACK TO order_save');this.db.exec('RELEASE order_save');throw error;}}
+  writeOrder(order){this.db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,order.accountKey,JSON.stringify(order));}
   configure(value,confirmation) {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');
     const connection=this.getConnection();const key=this.identity();
@@ -105,6 +109,9 @@ class LiveEngine {
       // U.S. buys may draw on KRW through integrated margin, capped at real cash (buying-power.cjs).
       const available=this.market==='US'&&this.buyingPower?this.buyingPower(prepared.balance).usd:Math.min(prepared.balance.cash,Number.isFinite(prepared.balance.settledCash)?prepared.balance.settledCash:prepared.balance.cash);
       if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
+      // Both markets' buys share one funding ledger: checked under its lock against fresh balances, and reserved
+      // durably before anything is sent. Sales are never held back here.
+      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy')await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance});
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
@@ -232,14 +239,24 @@ class LiveEngine {
       if(order.session&&!/regular/.test(order.session))throw new Error('FEATURE_UNAVAILABLE');
       if(!cancel&&!this.validPrice(price))throw new Error('INVALID_ORDER');
       const remaining=order.quantity-(order.filled??0);if(remaining<1)throw new Error('ORDER_NOT_OPEN');const from=order.currentBrokerOrderId??order.brokerOrderId;
-      const result=await this.broker.request('revise-order',{command:{originalOrderId:from,organization:order.currentOrganization??order.organization??'',symbol:order.symbol,side:order.side,quantity:remaining,price,cancel}});
+      // A higher price on a buy is checked and reserved first; the marker is written before the request, so a reply
+      // lost to a crash or a timeout leaves the revision unconfirmed and the higher price committed.
+      if(!cancel&&this.funding&&order.side==='Buy'&&price>Math.max(order.limitPrice,order.currentPrice??0)){await this.funding.admitRevision({order,market:this.market,price,balance:null});}
+      order={...order,pendingRevision:{at:Date.now(),from,cancel,...(cancel?{}:{price})}};this.save(order);
+      let result;try{result=await this.broker.request('revise-order',{command:{originalOrderId:from,organization:order.currentOrganization??order.organization??'',symbol:order.symbol,side:order.side,quantity:remaining,price,cancel}});}
+      catch(error){if(error.message==='BROKER_REJECTED'){const {pendingRevision:_,...rest}=order;order=rest;this.save(order);}throw error;}
+      {const {pendingRevision:_,...rest}=order;order=rest;}
       order={...order,brokerOrderIds:[...new Set([order.brokerOrderId,...(order.brokerOrderIds??[]),result.brokerOrderId])],currentBrokerOrderId:result.brokerOrderId,...(result.organization?{currentOrganization:result.organization}:{}),
         ...(cancel?{cancelRequestedAt:Date.now()}:{currentPrice:price}),revisions:[...(order.revisions??[]),{at:Date.now(),from,to:result.brokerOrderId,...(cancel?{cancel:true}:{price})}]};
       this.save(order);return order;}
-    catch(error){if(order&&error.message==='ORDER_UNCERTAIN'){order={...order,trackingStopped:{at:Date.now(),reason:'KIS did not confirm a '+(cancel?'cancellation':'revision')},unconfirmed:{from:order.currentBrokerOrderId??order.brokerOrderId,cancel,...(cancel?{}:{price})}};this.save(order);}throw error;}
+    catch(error){if(order?.pendingRevision&&error.message!=='BROKER_REJECTED'){const {pendingRevision:p,...rest}=order;order={...rest,trackingStopped:{at:Date.now(),reason:'KIS did not confirm a '+(cancel?'cancellation':'revision')},unconfirmed:{from:p.from,cancel,...(cancel?{}:{price})}};this.save(order);}
+      else if(order&&error.message==='ORDER_UNCERTAIN'){order={...order,trackingStopped:{at:Date.now(),reason:'KIS did not confirm a '+(cancel?'cancellation':'revision')},unconfirmed:{from:order.currentBrokerOrderId??order.brokerOrderId,cancel,...(cancel?{}:{price})}};this.save(order);}throw error;}
     finally{this.busy=false;}
   }
-  async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
+  async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);
+    // Automatic U.S. buys can draw on the KRW pool through integrated margin: blocked unless a separate-pool regime is
+    // verified (Stage 1 of the 2026-11-05 settlement design). Sales and manual orders are unaffected.
+    if(this.market==='US'&&order?.side==='Buy'&&this.funding&&this.funding.regime()!=='separate')throw new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED');if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');
     const report=await this.broker.request('orders',{startDate:order.day,endDate:order.day});const match=report.orders.find(row=>row.orderId===brokerOrderId);
