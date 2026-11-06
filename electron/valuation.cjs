@@ -392,13 +392,15 @@ class InFlight {
   // Otherwise it is a candidate (candidates: usd and ids), which the flow detector weighs against the observed change.
   // A reconciliation already reversed when the interval is read made no payment (stage 2b.5 review, P1): its change and
   // its reopening are both changes without cash, so it is never a timing candidate.
-  explained(account,{afterId=null,since=null,from=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
-    const events=this.evidence.events(account),reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target));
-    for(const e of events){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;const s=side.get(e.pieceId)==='Sell'?1:-1;
+  // Stage 3 (performance corrections): until bounds the interval's end (events after it are left out, and a reversal
+  // after it does not count yet); sides keeps only the pieces of those sides (the recorded low series moves with buys).
+  explained(account,{afterId=null,since=null,from=null,until=null,sides=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
+    const events=this.evidence.events(account).filter(e=>until==null||e.at<=until),reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target));
+    for(const e of events){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;if(sides&&!sides.includes(side.get(e.pieceId)))continue;const s=side.get(e.pieceId)==='Sell'?1:-1;
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
       else if(e.kind==='reconciliation'){const outside=reversed.has(e.id)||e.explanation==='rounding'||e.reclassified||typeof e.settledOn==='string'&&start!=null&&e.settledOn<start;if(outside)c-=s*e.cents;else cand.push({id:e.id,usd:-s*e.cents/100,settledOn:e.settledOn??null});}
       else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;}
-    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100])),candidates:{usd:Math.round(cand.reduce((n,x)=>n+x.usd,0)*100)/100,ids:cand.map(x=>x.id),items:cand.map(x=>({id:x.id,usd:x.usd}))}};}
+    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100])),candidates:{usd:Math.round(cand.reduce((n,x)=>n+x.usd,0)*100)/100,ids:cand.map(x=>x.id),items:cand.map(x=>({id:x.id,usd:x.usd,settledOn:x.settledOn}))}};}
   explainedSince(account,since){return this.explained(account,{since}).usd;}
 }
 // One market's net equity for the daily loss and new-exposure checks (the engines' netEquityOf), from the same value()
