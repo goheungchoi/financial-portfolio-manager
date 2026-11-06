@@ -14,18 +14,27 @@ function buildDigest(a,now=Date.now()){
   if(['us','both'].includes(a.config.scope))add('U.S.','USD',a.usLive?.getState().loss);
   // Without an active trading session there is no loss baseline; fall back to recorded daily account values.
   if(!markets.length&&a.config.scope!=='paper')for(const row of a.accountValues?.(day)??[])if((row.market==='KR'&&a.config.scope!=='us')||(row.market==='US'&&a.config.scope!=='kis'))add(row.label,row.currency,{baseline:row.baseline,equity:row.equity});
+  // Stage 3.4: the day as the performance series sees it, per market in scope: its return, a range in the one bounded
+  // case, or unavailable with the reason (never zero); accounting corrections apart, as not investment return.
+  const inScope=row=>a.config.scope!=='paper'&&((row.market==='KR'&&a.config.scope!=='us')||(row.market==='US'&&a.config.scope!=='kis'));
+  const performance=(a.performanceToday?.(day)??[]).filter(inScope);
+  const pctOf=v=>`${v>=0?'+':''}${(v*100).toFixed(2)}%`;
+  const returnText=p=>p.dailyReturn!=null?pctOf(p.dailyReturn):p.returnRange?`${pctOf(p.returnRange.low)} to ${pctOf(p.returnRange.high)} (range: one uncertain U.S. obligation)`:'unavailable';
+  const perfLines=performance.length?[`Investment return today: ${performance.map(p=>`${p.label} ${returnText(p)}${p.correction?` · accounting correction ${signed(p.correction,p.currency)} (not investment return)`:''}${p.settlement?.length&&p.dailyReturn!=null?' · not verified (settlement-affected)':''}`).join(' · ')}`,
+    ...performance.filter(p=>p.unavailable?.length).map(p=>`${p.label} return unavailable: ${String(p.unavailable[0]).slice(0,160)}`)]:[];
   const orders=[...a.paper.orders(),...(a.live?.orders()??[]),...(a.usLive?.orders()??[])].filter(row=>row.status!=='Ready'&&onDay(row.createdAt));
   const count=statuses=>orders.filter(row=>statuses.includes(row.status)).length;
   const summary={total:orders.length,filled:count(['Filled']),partial:count(['Partially filled']),rejected:count(['Rejected','Risk stopped']),uncertain:count(['Uncertain','Cancellation uncertain']),open:count(['Pending','Accepted','Submitting'])};
   const usage=a.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
   const guardrails=a.guardrails.eventsOn(day).map(event=>event.kind),failedReviews=a.guardrails.failuresOn(day);
   const lines=[`Daily digest ${day}`,
-    markets.length?markets.map(m=>`${m.label} ${money(m.equity,m.currency)} (${signed(m.change,m.currency)}, ${m.changePct>=0?'+':''}${m.changePct.toFixed(2)}% today)`).join(' · '):'No account valuation for the selected scope today.',
+    markets.length?markets.map(m=>`${m.label} ${money(m.equity,m.currency)} (${signed(m.change,m.currency)}, ${m.changePct>=0?'+':''}${m.changePct.toFixed(2)}% value change today)`).join(' · '):'No account valuation for the selected scope today.',
+    ...perfLines,
     `${reviews.length} reviews (${decisions.Buy} Buy, ${decisions.Sell} Sell, ${decisions.Hold} Hold)${failedReviews?`, ${failedReviews} failed`:''}`,
     `Orders: ${summary.total} submitted, ${summary.filled} filled${summary.partial?`, ${summary.partial} partly filled`:''}${summary.open?`, ${summary.open} open`:''}${summary.rejected?`, ${summary.rejected} rejected`:''}${summary.uncertain?`, ${summary.uncertain} need reconciliation`:''}`,
     `AI: ${usage.calls} calls, $${(usage.reservedMicro/1e6).toFixed(2)} accounted`,
     `Guardrails: ${guardrails.length?[...new Set(guardrails)].join(', '):'none triggered'}`];
-  return {day,generatedAt:now,markets,reviews:reviews.length,decisions,failedReviews,orders:summary,ai:{calls:usage.calls,usd:usage.reservedMicro/1e6},guardrails,text:lines.join('\n')};
+  return {day,generatedAt:now,markets,performance,reviews:reviews.length,decisions,failedReviews,orders:summary,ai:{calls:usage.calls,usd:usage.reservedMicro/1e6},guardrails,text:lines.join('\n')};
 }
 class DailyDigest {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS daily_digests(day TEXT PRIMARY KEY,payload TEXT NOT NULL)');}

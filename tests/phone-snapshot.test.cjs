@@ -67,7 +67,7 @@ test('the digest falls back to recorded account values when no trading session i
   const {buildDigest}=require('../electron/daily-digest.cjs');const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE reviews(id TEXT,payload TEXT);CREATE TABLE ai_usage(day TEXT,calls INTEGER,reservedMicro INTEGER)');
   const a={db,config:{scope:'kis'},paper:{orders:()=>[]},live:{getState:()=>({loss:null}),orders:()=>[]},usLive:null,guardrails:{eventsOn:()=>[],failuresOn:()=>0},
     accountValues:()=>[{market:'KR',currency:'KRW',label:'Korea',equity:10288754,baseline:10291800},{market:'US',currency:'USD',label:'U.S.',equity:100,baseline:100}]};
-  const d=buildDigest(a);assert.equal(d.markets.length,1,'U.S. is outside the Korea scope');assert.match(d.text,/Korea ₩10,288,754 \(-₩3,046, -0\.03% today\)/);
+  const d=buildDigest(a);assert.equal(d.markets.length,1,'U.S. is outside the Korea scope');assert.match(d.text,/Korea ₩10,288,754 \(-₩3,046, -0\.03% value change today\)/);
   assert.match(buildDigest({...a,accountValues:()=>[]}).text,/No account valuation/);
 });
 test('a phone snapshot labels a one-market value of a two-market account, and an estimate, so neither reads as the portfolio',()=>{

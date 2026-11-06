@@ -48,7 +48,9 @@ const signedMoney=(v:number,fmt:(v:number)=>string)=>(v>0?'+':v<0?'−':'')+fmt(
 // Account value: a line with a soft area, the day's high-low band, the start level, and the period high and low.
 // Account value, not investment return: the hover gives the change in value since the first day and, when money moved
 // in or out, how much of it was deposits less withdrawals and how much investment P/L (audit 2026-11-04, Stage 2).
-export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows:{day:string;value:number;high:number;low:number;flow?:number}[];fmt:(v:number)=>string;currency?:string;height?:number;marks?:boolean}){
+// Stage 3.4: investment P/L over the hovered range is the sum of the days' P/L, which leaves accounting corrections out;
+// a day without a P/L makes it unavailable. It is never read from the value change less deposits.
+export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows:{day:string;value:number;high:number;low:number;flow?:number;pnl?:number|null;correction?:number}[];fmt:(v:number)=>string;currency?:string;height?:number;marks?:boolean}){
   const [ref,w]=useWidth();const grad=useId();const s=scale(w,rows.length,rows.flatMap(r=>[r.low,r.high,r.value]),{h:height});const H=s.h;const {hover,move,leave}=useHover(rows.length,s,false);
   const step=s.ticks.length>1?s.ticks[1]-s.ticks[0]:Math.abs(s.hi-s.lo);const start=rows[0].value,last=rows.at(-1)!;
   const line=rows.map((r,i)=>(i?'L':'M')+s.x(i).toFixed(1)+','+s.y(r.value).toFixed(1)).join('');
@@ -56,7 +58,8 @@ export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows
   const hiI=rows.reduce((b,r,i)=>r.value>rows[b].value?i:b,0),loI=rows.reduce((b,r,i)=>r.value<rows[b].value?i:b,0);const up=last.value>=start;
   const h=hover==null?null:rows[hover];
   return <Frame boxRef={ref} label={`Account value from ${rows[0].day} to ${last.day}: ${fmt(start)} to ${fmt(last.value)}`} days={rows.map(r=>r.day)} s={s} fmt={v=>axisMoney(v,step,currency)} hover={hover} move={move} leave={leave}
-    tip={h&&<><b>{shortDay(h.day,true)}</b><span>{fmt(h.value)}</span><span className={h.value>=start?'positive':'negative'}>Account value change {signedMoney(h.value-start,fmt)} since {shortDay(rows[0].day)}</span>{(()=>{const moved=rows.slice(1,hover!+1).reduce((n,r)=>n+(r.flow??0),0);return Math.abs(moved)>0.005?<span className="muted">Net deposits {signedMoney(moved,fmt)} · investment P/L {signedMoney(h.value-start-moved,fmt)}</span>:null;})()}{h.high>h.low&&<span className="muted">Day range {fmt(h.low)} – {fmt(h.high)}</span>}</>}>
+    tip={h&&<><b>{shortDay(h.day,true)}</b><span>{fmt(h.value)}</span><span className={h.value>=start?'positive':'negative'}>Account value change {signedMoney(h.value-start,fmt)} since {shortDay(rows[0].day)}</span>{(()=>{const span=rows.slice(1,hover!+1),moved=span.reduce((n,r)=>n+(r.flow??0),0),corr=span.reduce((n,r)=>n+(r.correction??0),0),missing=span.filter(r=>r.pnl==null).length,pnl=span.reduce((n,r)=>n+(r.pnl??0),0);if(!span.length)return null;
+      return <>{Math.abs(moved)>0.005&&<span className="muted">Net deposits {signedMoney(moved,fmt)}</span>}{Math.abs(corr)>0.005&&<span className="muted">Accounting corrections {signedMoney(corr,fmt)} (not investment P/L)</span>}<span className="muted">{missing?`Investment P/L unavailable: ${missing} day${missing>1?'s':''} without a P/L`:`Investment P/L ${signedMoney(pnl,fmt)}`}</span></>;})()}{h.high>h.low&&<span className="muted">Day range {fmt(h.low)} – {fmt(h.high)}</span>}</>}>
     <defs><linearGradient id={grad} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--perf-portfolio)" stopOpacity=".22"/><stop offset="100%" stopColor="var(--perf-portfolio)" stopOpacity="0"/></linearGradient></defs>
     <path d={`${line}L${s.x(rows.length-1)},${H-B}L${s.x(0)},${H-B}Z`} fill={`url(#${grad})`}/>
     {band&&<polygon className="perf-band" points={band}/>}
@@ -69,36 +72,40 @@ export function ValueChart({rows,fmt,currency='KRW',height=260,marks=true}:{rows
   </Frame>;
 }
 // Cumulative time-weighted return against the benchmark, both rebased to the first day of the window.
-export function ReturnChart({rows,benchmark}:{rows:{day:string;portfolio:number;benchmark:number|null}[];benchmark:string}){
-  const [ref,w]=useWidth();const pv=rows.map(r=>r.portfolio*100),bv=rows.map(r=>r.benchmark==null?null:r.benchmark*100);
-  const s=scale(w,rows.length,[...pv,...bv.filter((v):v is number=>v!=null)],{includeZero:true});const {hover,move,leave}=useHover(rows.length,s,false);const step=s.ticks.length>1?s.ticks[1]-s.ticks[0]:1;
+// Stage 3.4: portfolio null from the day the time-weighted chain breaks (a day without a return); the line stops there
+// and the chart says why, rather than carrying the last value forward as a zero return.
+export function ReturnChart({rows,benchmark,brokenFrom=null}:{rows:{day:string;portfolio:number|null;benchmark:number|null}[];benchmark:string;brokenFrom?:string|null}){
+  const [ref,w]=useWidth();const pv=rows.map(r=>r.portfolio==null?null:r.portfolio*100),bv=rows.map(r=>r.benchmark==null?null:r.benchmark*100);
+  const s=scale(w,rows.length,[...pv.filter((v):v is number=>v!=null),...bv.filter((v):v is number=>v!=null),0],{includeZero:true});const {hover,move,leave}=useHover(rows.length,s,false);const step=s.ticks.length>1?s.ticks[1]-s.ticks[0]:1;
   const path=(vals:(number|null)[])=>vals.map((v,i)=>v==null?null:`${s.x(i).toFixed(1)},${s.y(v).toFixed(1)}`).filter(Boolean).map((p,i)=>(i?'L':'M')+p).join('');
-  const last=rows.length-1,pe=pv[last],be=bv[last];const gap=be!=null&&Math.abs(s.y(pe)-s.y(be))<14?(pe>=be!?-8:8):0;const h=hover==null?null:hover;
-  const fmt=(v:number|null)=>v==null?'—':`${v>0?'+':''}${v.toFixed(2)}%`;
-  return <Frame boxRef={ref} label={`Cumulative return since ${rows[0].day}: portfolio ${fmt(pe)}, ${benchmark} ${fmt(be)}`} days={rows.map(r=>r.day)} s={s} fmt={v=>pctLabel(v,step)} hover={hover} move={move} leave={leave}
-    legend={<div className="perf-legend"><span><i className="swatch portfolio"/>Portfolio (time-weighted)</span>{bv.some(v=>v!=null)&&<span><i className="swatch benchmark"/>{benchmark}</span>}</div>}
-    tip={h!=null&&<><b>{shortDay(rows[h].day,true)}</b><span><i className="swatch portfolio"/>Portfolio {fmt(pv[h])}</span><span><i className="swatch benchmark"/>{benchmark} {fmt(bv[h])}</span>{bv[h]!=null&&<span className={pv[h]>=bv[h]!?'positive':'negative'}>{pv[h]>=bv[h]!?'Ahead':'Behind'} by {Math.abs(pv[h]-bv[h]!).toFixed(2)} pts</span>}</>}>
+  const last=rows.length-1,lp=pv.reduce<number>((k,v,i)=>v==null?k:i,0),pe=pv[lp]??0,be=bv[last];const gap=be!=null&&lp===last&&Math.abs(s.y(pe)-s.y(be))<14?(pe>=be!?-8:8):0;const h=hover==null?null:hover;
+  const fmt=(v:number|null)=>v==null?'—':`${v>0?'+':''}${v.toFixed(2)}%`;const pf=(v:number|null)=>v==null?'unavailable':fmt(v);
+  return <Frame boxRef={ref} label={`Cumulative return since ${rows[0].day}: portfolio ${pf(pv[last])}, ${benchmark} ${fmt(be)}`} days={rows.map(r=>r.day)} s={s} fmt={v=>pctLabel(v,step)} hover={hover} move={move} leave={leave}
+    legend={<div className="perf-legend"><span><i className="swatch portfolio"/>Portfolio (time-weighted)</span>{bv.some(v=>v!=null)&&<span><i className="swatch benchmark"/>{benchmark}</span>}{brokenFrom&&<span className="muted">Portfolio return unavailable from {shortDay(brokenFrom)}: a day without a return</span>}</div>}
+    tip={h!=null&&<><b>{shortDay(rows[h].day,true)}</b><span><i className="swatch portfolio"/>Portfolio {pf(pv[h])}</span><span><i className="swatch benchmark"/>{benchmark} {fmt(bv[h])}</span>{bv[h]!=null&&pv[h]!=null&&<span className={pv[h]!>=bv[h]!?'positive':'negative'}>{pv[h]!>=bv[h]!?'Ahead':'Behind'} by {Math.abs(pv[h]!-bv[h]!).toFixed(2)} pts</span>}</>}>
     <line className="perf-zero" x1={L} x2={s.w-R} y1={s.y(0)} y2={s.y(0)}/>
     {bv.some(v=>v!=null)&&<path className="perf-line benchmark" d={path(bv)}/>}<path className="perf-line portfolio" d={path(pv)}/>
     {be!=null&&<><circle className="perf-dot benchmark" cx={s.x(last)} cy={s.y(be)} r="3.5"/><End x={s.x(last)} y={s.y(be)-gap} text={fmt(be)}/></>}
-    <circle className="perf-dot portfolio" cx={s.x(last)} cy={s.y(pe)} r="4"/><End x={s.x(last)} y={s.y(pe)+gap} text={fmt(pe)}/>
-    {h!=null&&<><circle className="perf-dot portfolio" cx={s.x(h)} cy={s.y(pv[h])} r="4.5"/>{bv[h]!=null&&<circle className="perf-dot benchmark" cx={s.x(h)} cy={s.y(bv[h]!)} r="4"/>}</>}
+    <circle className="perf-dot portfolio" cx={s.x(lp)} cy={s.y(pe)} r="4"/><End x={s.x(lp)} y={s.y(pe)+gap} text={fmt(pe)}/>
+    {h!=null&&<>{pv[h]!=null&&<circle className="perf-dot portfolio" cx={s.x(h)} cy={s.y(pv[h]!)} r="4.5"/>}{bv[h]!=null&&<circle className="perf-dot benchmark" cx={s.x(h)} cy={s.y(bv[h]!)} r="4"/>}</>}
   </Frame>;
 }
 // Daily P/L after deposits and withdrawals: bars from zero, rounded at the data end; the best and worst days are labelled.
-export function PnlChart({rows,fmt,currency='KRW'}:{rows:{day:string;pnl:number|null;returnPct:number|null;pnlRange?:{low:number;high:number}}[];fmt:(v:number)=>string;currency?:string}){
+// Stage 3.4: a day without a P/L is marked and explained (no bar, not counted), and an accounting correction is shown
+// apart from the day's P/L.
+export function PnlChart({rows,fmt,currency='KRW'}:{rows:{day:string;pnl:number|null;returnPct:number|null;pnlRange?:{low:number;high:number};unavailable?:string[];correction?:number;returnRangePct?:{low:number;high:number}}[];fmt:(v:number)=>string;currency?:string}){
   const [ref,w]=useWidth();const vals=rows.map(r=>r.pnl??0);const span=Math.max(...vals,0)-Math.min(...vals,0);const s=scale(w,rows.length,[...vals,Math.max(...vals,0)+span*0.1,Math.min(...vals,0)-span*0.1],{bars:true,includeZero:true});const {hover,move,leave}=useHover(rows.length,s,true);
   const step=s.ticks.length>1?s.ticks[1]-s.ticks[0]:1;const slot=(s.w-L-R)/Math.max(1,rows.length);const bw=Math.max(2,Math.min(16,slot*0.7));
   const best=vals.indexOf(Math.max(...vals)),worst=vals.indexOf(Math.min(...vals));const h=hover==null?null:rows[hover];
-  const up=vals.filter(v=>v>0).length,down=vals.filter(v=>v<0).length,total=vals.reduce((a,b)=>a+b,0);
+  const up=vals.filter(v=>v>0).length,down=vals.filter(v=>v<0).length,total=vals.reduce((a,b)=>a+b,0),missing=rows.filter(r=>r.pnl==null).length;
   const bar=(v:number,i:number)=>{const y0=s.y(0),y1=s.y(v),r=Math.min(3,bw/2),x0=s.x(i)-bw/2,hgt=Math.abs(y1-y0);if(hgt<1)return null;
     // Only the end away from zero is rounded.
     const d=v>0?`M${x0},${y0}V${y1+r}Q${x0},${y1} ${x0+r},${y1}H${x0+bw-r}Q${x0+bw},${y1} ${x0+bw},${y1+r}V${y0}Z`:`M${x0},${y0}V${y1-r}Q${x0},${y1} ${x0+r},${y1}H${x0+bw-r}Q${x0+bw},${y1} ${x0+bw},${y1-r}V${y0}Z`;
     return <path key={i} className={`perf-bar ${v>0?'up':'down'} ${hover!=null&&hover!==i?'dim':''}`} d={d}/>;};
   return <Frame boxRef={ref} label={`Daily profit and loss from ${rows[0].day} to ${rows.at(-1)!.day}: ${up} up days, ${down} down days`} days={rows.map(r=>r.day)} s={s} fmt={v=>axisMoney(v,step,currency)} hover={hover} move={move} leave={leave}
-    legend={<div className="perf-legend"><span><i className="swatch up"/>{up} up days</span><span><i className="swatch down"/>{down} down days</span><span className="muted">Net {signedMoney(total,fmt)}</span></div>}
-    tip={h&&<><b>{shortDay(h.day,true)}</b><span className={(h.pnl??0)>=0?'positive':'negative'}>{h.pnl==null?'—':signedMoney(h.pnl,fmt)}</span>{h.pnlRange&&<span className="muted">Provisional: {signedMoney(h.pnlRange.low,fmt)} to {signedMoney(h.pnlRange.high,fmt)} (the valuation range changed)</span>}{h.returnPct!=null&&<span className="muted">{h.returnPct>0?'+':''}{h.returnPct.toFixed(2)}% on the day</span>}</>}>
-    {vals.map(bar)}<line className="perf-zero" x1={L} x2={s.w-R} y1={s.y(0)} y2={s.y(0)}/>
+    legend={<div className="perf-legend"><span><i className="swatch up"/>{up} up days</span><span><i className="swatch down"/>{down} down days</span>{missing>0&&<span><i className="swatch unavailable"/>{missing} without a P/L</span>}<span className="muted">Net {signedMoney(total,fmt)}{missing?' (days with a P/L)':''}</span></div>}
+    tip={h&&<><b>{shortDay(h.day,true)}</b><span className={(h.pnl??0)>=0?'positive':'negative'}>{h.pnl==null?'No P/L for this day':signedMoney(h.pnl,fmt)}</span>{h.unavailable?.length&&<span className="muted">{h.unavailable[0]}</span>}{h.returnRangePct&&<span className="muted">Return range {h.returnRangePct.low.toFixed(2)}% to {h.returnRangePct.high.toFixed(2)}%</span>}{h.correction?<span className="muted">Accounting correction {signedMoney(h.correction,fmt)} (not investment P/L)</span>:null}{h.pnlRange&&<span className="muted">Provisional: {signedMoney(h.pnlRange.low,fmt)} to {signedMoney(h.pnlRange.high,fmt)} (the valuation range changed)</span>}{h.returnPct!=null&&<span className="muted">{h.returnPct>0?'+':''}{h.returnPct.toFixed(2)}% on the day</span>}</>}>
+    {vals.map(bar)}{rows.map((r,i)=>r.pnl==null?<rect key={'u'+i} className="perf-bar unavailable" x={s.x(i)-bw/2} y={s.y(0)-6} width={bw} height={12} rx={2}/>:null)}<line className="perf-zero" x1={L} x2={s.w-R} y1={s.y(0)} y2={s.y(0)}/>
     {vals[best]>0&&<text className="perf-mark-text" x={Math.min(Math.max(s.x(best),L+30),s.w-R-30)} y={s.y(vals[best])-8} textAnchor="middle">{axisMoney(vals[best],step/10,currency)}</text>}
     {vals[worst]<0&&<text className="perf-mark-text" x={Math.min(Math.max(s.x(worst),L+30),s.w-R-30)} y={s.y(vals[worst])+16} textAnchor="middle">{axisMoney(vals[worst],step/10,currency)}</text>}
   </Frame>;

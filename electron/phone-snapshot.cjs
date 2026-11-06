@@ -25,7 +25,10 @@ function portfolioFigures({portfolio,daily=[],intraday=[],previousClose=()=>null
   const cash=(portfolio?.cash?.KRW??0)+(portfolio?.cash?.USD??0)*(portfolio?.fx?.usdKRW??0);
   const movers=(portfolio?.rows??[]).map(r=>{const prev=previousClose(r.symbol);const day=prev>0&&r.price>0?(r.price/prev-1)*100:null;const total=r.cost>0?(r.price/r.cost-1)*100:null;return {symbol:r.symbol,name:r.name||r.symbol,day,total,weight:equity>0&&r.valueKRW!=null?r.valueKRW/equity*100:null};})
     .filter(m=>m.day!=null||m.total!=null).sort((a,b)=>Math.abs(b.day??b.total)-Math.abs(a.day??a.total)).slice(0,4);
-  const fields=[{name:partial?'Portfolio (Korea only)':estimate?'Portfolio (estimate)':'Portfolio',value:equity==null?'n/a':(amounts?won(equity)+' · ':'')+pct(todayPct)+' today',inline:true},
+  // Stage 3.4: when today's recorded day is settlement-affected (an accounting correction, no return, a restatement),
+  // the change is labelled a value change, not performance.
+  const affected=(daily.find(p=>p.day===today)?.settlement??[]).length>0;
+  const fields=[{name:partial?'Portfolio (Korea only)':estimate?'Portfolio (estimate)':'Portfolio',value:equity==null?'n/a':(amounts?won(equity)+' · ':'')+pct(todayPct)+(affected?' value change today (settlement-affected, not a return)':' today'),inline:true},
     {name:'Cash',value:equity>0?(amounts?won(cash)+' · ':'')+(cash/equity*100).toFixed(1)+'%':'n/a',inline:true}];
   if(movers.length)fields.push({name:'Holdings',value:movers.map(m=>`${clip(m.name,22)} ${m.day!=null?pct(m.day)+' today':pct(m.total)+' total'}${m.weight!=null?` · ${m.weight.toFixed(0)}%`:''}`).join('\n'),inline:false});
   // Chart lines: won values, or percent from the first point when amounts are hidden.
