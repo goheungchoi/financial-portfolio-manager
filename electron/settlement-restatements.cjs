@@ -28,15 +28,21 @@ class SettlementRestatements {
   }
   records(account){return this.db.prepare('SELECT payload FROM valuation_settlement_approvals WHERE account=? ORDER BY rowid').all(account).map(r=>JSON.parse(r.payload));}
   candidates(account,rows=this.performance.history(account)){
-    const events=this.inFlight.evidence.events(account),timing=this.corrections.resolved(account),review=this.inFlight.evidence.underReview(account);
+    const events=this.inFlight.evidence.events(account),review=this.inFlight.evidence.underReview(account);
     const out=[];
     for(const r of this.reconciliation.active(account)){
       if(r.side!=='Buy'||r.explanation==='rounding')continue;
+      // U.S.-cash payments only (stage 3.3 review of ca1aa11, P1). A buy paid from Korean cash moves money between the
+      // markets: the U.S. value is not misstated the same way, and restating it would turn the transfer into a U.S.
+      // gain. KRW-routed and unknown-route payments stay unavailable until the cross-market accounting exists.
+      if(r.route!=='USD')continue;
       const end=rows.findIndex(d=>d.at>=r.confirmedAt);if(end<1)continue;
-      const flow=r.effects?.flows?.original,res=timing.filter(t=>t.candidate===r.id).at(-1);
+      const flow=r.effects?.flows?.original;
       let interval=null,source=null;
+      // Two sources (stage 3.3 review of ca1aa11): a reclassified flow's recorded interval, or the audited settlement
+      // date. A detector timing entry "paid in this interval" is not one: its reading interval always contains the
+      // reconciliation it was weighed against, so it can never place a payment before day R.
       if(flow&&Number.isFinite(flow.occurredAfter)&&Number.isFinite(flow.occurredBy)){interval=[flow.occurredAfter,flow.occurredBy];source='reclassified flow';}
-      else if(res?.paidHere&&Number.isFinite(res.entry?.after)&&Number.isFinite(res.entry?.by)){interval=[res.entry.after,res.entry.by];source='confirmed payment interval';}
       else if(r.settledOn){
         // Use the New York calendar date, including DST, rather than Seoul midnight.
         interval=paymentDateInterval(r.settledOn);source='audited settlement date';
