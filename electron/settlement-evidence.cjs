@@ -95,7 +95,7 @@ class SettlementEvidence{
         if(n!==g.count||n>1||g.state==='uncertain'){if(g.state==='single'&&(n!==g.count||n>1))g.state='correction-ambiguous';g.count=Math.max(g.count,n);g.members=list;}
         else if(g.state==='single'&&!same(g.versions.at(-1).fields,list[0]))this.addVersion(g,list[0]);
         g.lastSeen=now;this.putGroup(g);if(g.state!==was)this.event(account,'k-state',{groupId:id,from:was,to:g.state});}
-      return {groups:byKey.size,missing:missingNow.length};});}
+      this.noteReview(account);return {groups:byKey.size,missing:missingNow.length};});}
   // Reduces the active allocations of an order by cents, latest first: each is marked reversed, and replaced by one for
   // what is left of it. Returns what was released, per evidence version and piece, so it can be restored.
   reduceAllocations(account,orderId,c,reason){const out=[];let left=c;
@@ -127,21 +127,27 @@ class SettlementEvidence{
   // Citations of one row together never exceed what it says (CITATION_EXCEEDS_ROW).
   cite({account,groupId,version,orderId,side,cents:c,rule}){const id='C'+hash([account,groupId,version,orderId,c,this.clock()]);const row={id,account,groupId,version,orderId:String(orderId),side,cents:c,rule,at:this.clock()};
     return this.tx(()=>{const v=this.version(groupId,version);if(!v)throw fail('CITATION_TARGET_UNKNOWN');
-      if(this.citations(account).filter(x=>x.groupId===groupId).reduce((n,x)=>n+x.cents,0)+c>v.amountCents)throw fail('CITATION_EXCEEDS_ROW');this.db.prepare('INSERT INTO settlement_citations VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'citation',row);return id;});}
+      if(this.citations(account).filter(x=>x.groupId===groupId).reduce((n,x)=>n+x.cents,0)+c>v.amountCents)throw fail('CITATION_EXCEEDS_ROW');this.db.prepare('INSERT INTO settlement_citations VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'citation',row);this.noteReview(account);return id;});}
   // Active citations (a reversed reconciliation's citation no longer covers anything); all: every one, for the record.
   citations(account,{all=false}={}){return this.db.prepare('SELECT payload FROM settlement_citations WHERE account=?').all(account).map(r=>JSON.parse(r.payload)).filter(c=>all||!c.reversedBy);}
-  reverseCitation(account,id,by){const r=this.db.prepare('SELECT payload FROM settlement_citations WHERE id=?').get(id);if(!r)return;this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(r.payload),reversedBy:by}),id);this.event(account,'citation-reversed',{id,by});}
+  reverseCitation(account,id,by){const r=this.db.prepare('SELECT payload FROM settlement_citations WHERE id=?').get(id);if(!r)return;this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(r.payload),reversedBy:by}),id);this.event(account,'citation-reversed',{id,by});this.noteReview(account);}
   // Re-confirms a citation against the group's current version (or another group), after review. Confirming against a
   // possible correction is the manual link that makes it a row of its own (v3.1 §2); an ambiguous group or one with
   // several rows cannot be confirmed.
   confirm(id,{groupId,version}){return this.tx(()=>{const r=this.db.prepare('SELECT account,payload FROM settlement_citations WHERE id=?').get(id);if(!r)throw fail('CITATION_UNKNOWN');
     const g=this.kGroups(r.account).find(x=>x.id===groupId);if(!g||!g.versions.some(v=>v.version===version))throw fail('CITATION_TARGET_UNKNOWN');if(g.state==='correction-ambiguous'||g.state==='uncertain'||g.count!==1)throw fail('CITATION_TARGET_AMBIGUOUS');
     if(g.state==='possible correction'){g.state='single';g.linkedManually={citationId:id,at:this.clock()};this.putGroup(g);this.event(r.account,'k-linked-manually',{groupId,citationId:id});}
-    const row={...JSON.parse(r.payload),groupId,version,confirmedAt:this.clock()};this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify(row),id);this.event(r.account,'citation-confirmed',{id,groupId,version});return row;});}
+    const row={...JSON.parse(r.payload),groupId,version,confirmedAt:this.clock()};this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify(row),id);this.event(r.account,'citation-confirmed',{id,groupId,version});this.noteReview(r.account);return row;});}
   // Citations whose K row no longer holds: the amount not covered counts as unresolved again. All citations of one row
   // are checked together against its current version (review of 4b534c1, P1: $60 and $40 each compared with a row
   // corrected to $97 stayed covered): the shortfall goes under review, newest citations first. A row that is not
   // independent evidence puts every citation of it under review.
+  // Stage 3.2 review (P2): every change of the coverage under review is an event (review-changed: before and after),
+  // so a row that goes missing and returns between two recorded readings still leaves its trace. It is derived from the
+  // K rows, the citations and the trade-history gaps, so it is noted after each of them changes; unchanged, nothing.
+  noteReview(account){const now=this.underReview(account).map(r=>({citationId:r.citationId,orderId:String(r.orderId),side:r.side,usd:r.usd,reason:r.reason})).sort((a,b)=>a.citationId<b.citationId?-1:a.citationId>b.citationId?1:0);
+    const last=this.db.prepare("SELECT payload FROM settlement_events WHERE account=? AND kind='review-changed' ORDER BY id DESC LIMIT 1").get(account),before=last?JSON.parse(last.payload).after??[]:[];
+    if(JSON.stringify(before)!==JSON.stringify(now))this.event(account,'review-changed',{before,after:now});return now;}
   underReview(account){const out=[];const groups=new Map(this.kGroups(account).map(g=>[g.id,g])),byRow=new Map();
     for(const c of this.citations(account)){if(!byRow.has(c.groupId))byRow.set(c.groupId,[]);byRow.get(c.groupId).push(c);}
     for(const [groupId,list] of byRow){const g=groups.get(groupId),total=list.reduce((n,c)=>n+c.cents,0);let reason=null,short=0;

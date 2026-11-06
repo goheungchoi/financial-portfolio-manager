@@ -54,14 +54,15 @@ class SettlementCorrections{
 // true value anything from that low bound to X above it, so the day's return depends on a state nobody knows.
 // - U1 A day is affected when an uncertain buy piece was open at the previous day's last reading, at any reading of the
 //   day (recorded with each day: performance record, InFlight.snapshot), or was made uncertain by a ledger change in
-//   between (opened unresolved, flagged, overdue). Affected days have no return and no P/L, with the reason. Resolution
+//   between (opened unresolved, flagged, overdue, or any change of the coverage under review: stage 3.2 review, P2). Affected days have no return and no P/L, with the reason. Resolution
 //   does not restore them: what past returns display changes only through stage 3.3's approval.
 // - U2 A misstatement window: a reconciliation whose payment is not known to fall on its own day may have been counted
 //   while its obligation was still open, from the earliest day the payment can have been made (its U.S. settlement date,
 //   the reclassified flow's day, or else the piece's opening) to the reconciliation's day. Every day of it is unavailable.
 // - U3 The one bounded case: one fixed obligation (a single uncertain buy piece, open with the same amount at both
 //   readings and in every reading between, no ledger change to it, no other correction that day), a known existence
-//   window (its fill time known, and the day ends before its earliest possible U.S. settlement, so no payment can have
+//   window (its order's placement time known, and the day ends before the earliest U.S. settlement of a fill executed
+//   then or later; the time the app saw the fill is not evidence of execution: stage 3.2 review, P1), so no payment can have
 //   fallen in the day), no partial payment and no route change. Its return is a range: the piece real (the recorded
 //   value) or not real (X more at both ends). Only in the U.S. series: in the combined series the funding route and FX
 //   exposure are not bounded.
@@ -92,12 +93,13 @@ class SettlementUncertainty{
       const evs=events.filter(e=>e.at>prev.at&&e.at<=cur.at);
       for(const e of evs){if(e.kind==='piece-opened'&&e.side==='Buy'&&(e.why||e.pretracking))add({pid:e.pieceId,side:'Buy',usd:e.usd,why:e.why??'awaiting verification'});
         else if(e.kind==='flag')for(const pid of e.pieces??[]){if(side.get(pid)==='Buy')add({pid,side:'Buy',usd:amount.get(pid)??null,why:e.why});}
-        else if(e.kind==='overdue'&&side.get(e.pieceId)==='Buy')add({pid:e.pieceId,side:'Buy',usd:e.usd,why:'overdue'});}
+        else if(e.kind==='overdue'&&side.get(e.pieceId)==='Buy')add({pid:e.pieceId,side:'Buy',usd:e.usd,why:'overdue'});
+        else if(e.kind==='review-changed')for(const x of [...(e.before??[]),...(e.after??[])]){if(x.side==='Buy')add({pid:'review:'+x.citationId,side:'Buy',usd:x.usd,why:'under review',review:true});}}
       if(!affected.size)continue;
       // U3: the one bounded case.
       if(affected.size===1){const [[pid,list]]=affected,a=before.filter(x=>x.pid===pid),b=buys(s.last.pieces).filter(x=>x.pid===pid),amounts=new Set(list.map(x=>x.usd));
         const touched=evs.some(e=>e.pieceId===pid||(e.pieces??[]).includes(pid));const one=a[0];
-        if(one&&!one.review&&a.length===1&&b.length===1&&amounts.size===1&&b[0].usd===one.usd&&!touched&&Number.isFinite(one.filledAt)&&cur.at<earliestPayment(one.filledAt)){at(day).bounded={pieceId:pid,usd:one.usd,why:one.why};continue;}}
+        if(one&&!one.review&&a.length===1&&b.length===1&&amounts.size===1&&b[0].usd===one.usd&&!touched&&Number.isFinite(one.placedAt)&&cur.at<earliestPayment(one.placedAt)){at(day).bounded={pieceId:pid,usd:one.usd,why:one.why};continue;}}
       const list=[...affected.values()].map(l=>l.find(x=>x.usd!=null)??l[0]);
       mark(day,`uncertain U.S. buy obligations this day: ${list.slice(0,3).map(describe).join(', ')}${list.length>3?` and ${list.length-3} more`:''}; the return depends on whether they were real, so it is unavailable (it stays so after they are resolved, until a historical correction is approved)`);}
     // U2: misstatement windows.
