@@ -89,10 +89,14 @@ class PerformanceHistory {
   // provisional scenario, not proof that none happened) or 'include' (the other scenario).
   // adjustments: versioned valuation corrections (electron/valuation-corrections.cjs), each {day, market, amount} in
   // its market's currency; the recorded values are never changed, the series is computed with them.
+  // corrections (stage 3.1, electron/performance-corrections.cjs, set by main): each recorded day's accounting correction
+  // in U.S. dollars (the settlement ledger's cash-free changes of the low basis). It is not investment P/L: P/L and the
+  // daily return leave it out; a day whose correction depends on unknown payment timing has no return.
   series(account,kind,{unresolved='exclude',adjustments=this.adjustments?.(account)??[]}={}){
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
     const history=this.history(account),flows=this.flows(account).filter(f=>unresolved==='include'||!f.detected);let previous=null,index=1,lastFx=null;const points=[];
+    let corrections=new Map();if(kind!=='KRW'&&this.corrections)try{corrections=this.corrections(account,history)??new Map();}catch{corrections=new Map();}
     for(const row of history){
       lastFx=row.fx??lastFx;const recorded=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(recorded))continue;
       const adj=adjustments.filter(a=>a.day===row.day&&(kind==='COMBINED'||a.currency===kind)).reduce((n,a)=>n+(kind==='COMBINED'&&a.currency==='USD'?(lastFx==null?NaN:a.amount*lastFx):a.amount),0);const value=recorded+adj;
@@ -101,7 +105,12 @@ class PerformanceHistory {
       const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
       // The valuation range narrowing or widening that day (bounds above): P/L is a range, never an inferred flow.
       const range=row.valuation?.ranges?.[kind]??null,narrowed=range?.narrowed??0,widened=range?.widened??0;
-      const netFlow=flow+skipped,base=previous?previous.value+netFlow:null;const dailyReturn=base>0&&Number.isFinite(base)?value/base-1:null;
+      const netFlow=flow+skipped,base=previous?previous.value+netFlow:null;
+      // The day's correction in the series' currency (U.S. dollars at the day's rate in the combined series), and what
+      // could not be told: the possible corrections of unknown timing give the P/L a range, and the return is unavailable.
+      const cx=previous?corrections.get(row.day):null,rate=kind==='COMBINED'?lastFx:1,conv=v=>v*(rate??NaN);
+      const correction=cx?.items?.length?conv(cx.usd):0,unknownC=cx?.unknown?.length?cx.items.filter(i=>i.usd==null).map(i=>conv(i.possibleUSD??0)):[];
+      const dailyReturn=unknownC.length?null:base>0&&Number.isFinite(base)?(value-correction)/base-1:null;
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
       const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
@@ -109,8 +118,11 @@ class PerformanceHistory {
       const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
       const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
       const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
-      const pnl=previous?value-previous.value-netFlow:null;
-      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),flow:netFlow,dailyReturn,index,pnl,...(pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{}),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
+      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length?null:known;
+      const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
+        :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
+      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
+        ...(unknownC.length?{unavailable:cx.unknown}:{}),dailyReturn,index,pnl,...ranged,high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
     }
     return points;
   }
@@ -124,9 +136,10 @@ class PerformanceHistory {
       const target=days==null?points[0].day:days==='ytd'?end.day.slice(0,4)+'-01-01':shift(end.day,days);
       const start=[...points].reverse().find(p=>p.day<=target)??points[0];const partial=start.day>target&&days!=null;
       if(start.day===end.day)return {label,start:start.day,end:end.day,partial,twr:null,gain:null,flows:0,benchmark:null};
-      const flows=points.filter(p=>p.day>start.day&&p.day<=end.day).reduce((sum,p)=>sum+p.flow,0);
-      const from=closeOn(start.day),to=closeOn(end.day);
-      return {label,start:start.day,end:end.day,partial,twr:end.index/start.index-1,gain:end.value-start.value-flows,flows,benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
+      const inside=points.filter(p=>p.day>start.day&&p.day<=end.day),flows=inside.reduce((sum,p)=>sum+p.flow,0),corrections=inside.reduce((sum,p)=>sum+(p.correction??0),0);
+      const from=closeOn(start.day),to=closeOn(end.day),unavailable=inside.filter(p=>p.unavailable).map(p=>`${p.day}: ${p.unavailable.join('; ')}`);
+      return {label,start:start.day,end:end.day,partial,twr:unavailable.length?null:end.index/start.index-1,gain:unavailable.length?null:end.value-start.value-flows-corrections,flows,
+        ...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
     const open=unresolved==='exclude'?this.movements(account).filter(f=>f.category==='unresolved'&&f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind)):[];
