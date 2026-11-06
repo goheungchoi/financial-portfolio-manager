@@ -35,8 +35,13 @@ class PerformanceHistory {
     const holdings=market=>(state.rows??[]).filter(r=>r.market===market&&Number.isFinite(r.quantity)&&Number.isFinite(r.price)).slice(0,80).map(r=>({symbol:r.symbol,name:r.name??r.symbol,quantity:r.quantity,value:r.quantity*r.price,cost:Number.isFinite(r.cost)?r.quantity*r.cost:null}));
     const band=(old,equity,cash,market)=>({equity,cash,open:old?.open??equity,high:Math.max(old?.high??equity,equity),low:Math.min(old?.low??equity,equity),positions:holdings(market)});
     const combined=equityKRW??prior.equityKRW??null;
+    // Stage 3.2: the settlement tracker's uncertainty at this reading (settlement hook, set by main): last, this reading's
+    // snapshot; seen, every uncertain piece of any reading that day (by id and amount); a failed read is kept as such.
+    const settlement=this.settlement?(()=>{let snap=null,error=null;try{snap=this.settlement(account);if(!snap||!Array.isArray(snap.pieces))throw new Error('SNAPSHOT_INVALID');}catch(e){error=String(e?.message??e).slice(0,80);}
+      const seen=[...(prior.settlement?.seen??[])];for(const p of snap?.pieces??[])if(!seen.some(s=>s.pid===p.pid&&s.usd===p.usd&&s.side===p.side))seen.push(p);
+      return {last:snap,seen,...(error||prior.settlement?.error?{error:error??prior.settlement.error}:{})};})():null;
     const row={day,at:this.clock(),...(state.valuation?{valuation:bounds(state.valuation,prior.valuation??this.lastValuation(account,day))}:{}),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
-      equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined)};
+      equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined),...(settlement?{settlement}:{})};
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
   }
   // The last valuation recorded before day (yesterday's last reading): where today's resolution is measured from.
@@ -112,7 +117,14 @@ class PerformanceHistory {
       // could not be told: the possible corrections of unknown timing give the P/L a range, and the return is unavailable.
       const cx=previous?corrections.get(row.day):null,rate=kind==='COMBINED'?lastFx:1,conv=v=>v*(rate??NaN);
       const correction=cx?.items?.length?conv(cx.usd):0,unknownC=cx?.unknown?.length?cx.items.filter(i=>i.usd==null).map(i=>conv(i.possibleUSD??0)):[];const lost=Boolean(failed&&previous);
-      const dailyReturn=unknownC.length||lost?null:base>0&&Number.isFinite(base)?(value-correction)/base-1:null;
+      // Stage 3.2: a day affected by an uncertain obligation or a misstatement window is unavailable (blocked); the one
+      // bounded case is a range in the U.S. series and unavailable in the combined one (its funding route and FX exposure
+      // are not bounded).
+      const blocked=[...(previous?cx?.unavailable??[]:[])];let bounded=previous&&cx?.bounded&&!blocked.length&&!unknownC.length&&!lost?cx.bounded:null;
+      if(bounded&&kind!=='USD'){blocked.push(`an uncertain U.S. buy obligation of $${Number(bounded.usd).toFixed(2)}: its funding route and FX exposure are not bounded in this series, so the return is unavailable`);bounded=null;}
+      const states=bounded&&base>0&&Number.isFinite(base)?{real:(value-correction)/base-1,notReal:(value+bounded.usd-correction)/(base+bounded.usd)-1}:null;if(bounded&&!states){blocked.push('an uncertain U.S. buy obligation on a day with no base value');bounded=null;}
+      const out=Boolean(unknownC.length||lost||blocked.length);
+      const dailyReturn=out||bounded?null:base>0&&Number.isFinite(base)?(value-correction)/base-1:null;
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
       const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
@@ -120,11 +132,13 @@ class PerformanceHistory {
       const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
       const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
       const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
-      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost?null:known;
+      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost||blocked.length?null:known;
       const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
         :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
       points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
-        ...(unknownC.length||lost?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[])]}:{}),dailyReturn,index,pnl,...(lost?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
+        ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
+        ...(bounded?{bounded:{pieceId:bounded.pieceId,usd:bounded.usd,states,returnRange:{low:Math.min(states.real,states.notReal),high:Math.max(states.real,states.notReal)},label:`one uncertain obligation of $${Number(bounded.usd).toFixed(2)}: the return is a range (real, or not real)`}}:{}),
+        dailyReturn,index,pnl,...(lost||blocked.length?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
     }
     return points;
   }
@@ -140,8 +154,14 @@ class PerformanceHistory {
       if(start.day===end.day)return {label,start:start.day,end:end.day,partial,twr:null,gain:null,flows:0,benchmark:null};
       const inside=points.filter(p=>p.day>start.day&&p.day<=end.day),flows=inside.reduce((sum,p)=>sum+p.flow,0),corrections=inside.reduce((sum,p)=>sum+(p.correction??0),0);
       const from=closeOn(start.day),to=closeOn(end.day),unavailable=inside.filter(p=>p.unavailable).map(p=>`${p.day}: ${p.unavailable.join('; ')}`);
-      return {label,start:start.day,end:end.day,partial,twr:unavailable.length?null:end.index/start.index-1,gain:unavailable.length?null:end.value-start.value-flows-corrections,flows,
-        ...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
+      // Stage 3.2 (U3): bounded days chain each state separately, for one obligation only; two or more have no
+      // consistent set of states, so the period is unavailable.
+      const pieces=[...new Set(inside.filter(p=>p.bounded).map(p=>p.bounded.pieceId))];
+      if(!unavailable.length&&pieces.length>1)unavailable.push(`${pieces.length} uncertain obligations in the period: no consistent range`);
+      const chain=state=>inside.reduce((n,p)=>n*(1+(p.bounded?p.bounded.states[state]:p.dailyReturn??0)),1)-1;
+      const twrRange=!unavailable.length&&pieces.length?(([a,b])=>({low:Math.min(a,b),high:Math.max(a,b)}))([chain('real'),chain('notReal')]):null;
+      return {label,start:start.day,end:end.day,partial,twr:unavailable.length||pieces.length?null:end.index/start.index-1,gain:unavailable.length?null:end.value-start.value-flows-corrections,flows,
+        ...(twrRange?{twrRange}:{}),...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
     const open=unresolved==='exclude'?this.movements(account).filter(f=>f.category==='unresolved'&&f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind)):[];

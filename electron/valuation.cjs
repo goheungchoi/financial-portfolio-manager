@@ -375,6 +375,12 @@ class InFlight {
       pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},
       review:{buysUSD:sum('Buy',f=>String(f.pid??'').startsWith('review:')),sellsUSD:sum('Sell',f=>String(f.pid??'').startsWith('review:'))},open:st.open};}
   current(account){return this.withReview(account,this.state(account));}
+  // Stage 3.2: what is uncertain at this reading, recorded with each day's value (performance record). started: when
+  // tracking began (null before); pieces: every open piece marked unresolved and every coverage under review, by side,
+  // with its amount, why, and the fill time when known; totals: the unresolved and under-review totals by side.
+  snapshot(account){const st=this.state(account),t=this.withReview(account,st);
+    const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,review:String(f.pid??'').startsWith('review:'),filledAt:Number.isFinite(f.filledAt)?f.filledAt:null}));
+    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review}};}
   // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
   // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,
   // conflict pieces opened or reduced, reconciliations resolving pieces and reversals reopening them. These are
