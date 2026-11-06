@@ -398,9 +398,12 @@ app.whenReady().then(async () => {
   const reconciliation=new (require('./settlement-reconciliation.cjs').Reconciliation)(store.db,{inFlight,funding:fundingLedger,performance,loss:()=>{const out={};for(const [m,e] of [['KR',live],['US',usLive]]){try{out[m]=e?.currentLoss()??null;}catch{out[m]=null;}}return out;}});
   const settlementPanel=new (require('./settlement-panel.cjs').SettlementPanel)({inFlight,reconciliation,flowDetector,costs});
   // The accounting-correction component of the performance series (stage 3.1): cash-free settlement changes of the U.S.
-  // low basis, kept out of P/L and returns; a day of unknown payment timing has no return.
-  const settlementCorrections=new (require('./performance-corrections.cjs').SettlementCorrections)(store.db,{inFlight,reconciliation});
+  // low basis, kept out of P/L and returns; a day of unknown payment timing has no return. Stage 3.2: each recorded day
+  // keeps the tracker's uncertainty, and a day affected by an uncertain obligation or a misstatement window has no
+  // return unless it is the one bounded case.
+  const settlementCorrections=require('./performance-corrections.cjs').performanceCorrections(store.db,{inFlight,reconciliation});
   performance.corrections=(account,rows)=>settlementCorrections.byDay(account,rows);
+  performance.settlement=account=>inFlight.snapshot(account);
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
     if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
     // The tracker's own changes to the U.S. basis (reconciliations, late pre-tracking fills, corrections, coverage under
