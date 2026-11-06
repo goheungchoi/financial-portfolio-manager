@@ -383,7 +383,9 @@ class InFlight {
   // with its amount, why, and the fill time when known; totals: the unresolved and under-review totals by side.
   snapshot(account){const st=this.state(account),t=this.withReview(account,st);
     const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,review:String(f.pid??'').startsWith('review:'),filledAt:Number.isFinite(f.filledAt)?f.filledAt:null,placedAt:Number.isFinite(f.placedAt)?f.placedAt:null}));
-    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review}};}
+    // open (stage 3.4 review, CN5): every U.S. buy still counted as an obligation, resolved or not. A payment made while
+    // one is open shows as a loss until it is matched or reconciled, so those days are not verified.
+    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review},open:{buysUSD:t.buysUSD,buys:t.open.filter(f=>f.side==='Buy').length}};}
   // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
   // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,
   // conflict pieces opened or reduced, reconciliations resolving pieces and reversals reopening them. These are

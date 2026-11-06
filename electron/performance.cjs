@@ -39,7 +39,9 @@ class PerformanceHistory {
     // snapshot; seen, every uncertain piece of any reading that day (by id and amount); a failed read is kept as such.
     const settlement=this.settlement?(()=>{let snap=null,error=null;try{snap=this.settlement(account);if(!snap||!Array.isArray(snap.pieces))throw new Error('SNAPSHOT_INVALID');}catch(e){error=String(e?.message??e).slice(0,80);}
       const seen=[...(prior.settlement?.seen??[])];for(const p of snap?.pieces??[])if(!seen.some(s=>s.pid===p.pid&&s.usd===p.usd&&s.side===p.side))seen.push(p);
-      return {last:snap,seen,...(error||prior.settlement?.error?{error:error??prior.settlement.error}:{})};})():null;
+      // The most U.S. buy obligation open at any reading of the day (stage 3.4 review, CN5); unknown when a reading lacks it.
+      const openMax=Math.max(prior.settlement?.openBuysMaxUSD??0,snap?.open?.buysUSD??0),openUnknown=Boolean(prior.settlement?.openUnknown||snap&&!snap.open);
+      return {last:snap,seen,openBuysMaxUSD:openMax,...(openUnknown?{openUnknown:true}:{}),...(error||prior.settlement?.error?{error:error??prior.settlement.error}:{})};})():null;
     const row={day,at:this.clock(),...(state.valuation?{valuation:bounds(state.valuation,prior.valuation??this.lastValuation(account,day))}:{}),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
       equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined),...(settlement?{settlement}:{})};
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
@@ -137,8 +139,10 @@ class PerformanceHistory {
       const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
         :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
       // Stage 3.4: how the settlement treatment touched the day (consumers label such days and never call them verified).
-      const settlement=[...(cx?.items?.length?['corrected']:[]),...(historical?['restated']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[]),...(bounded?['bounded']:[])];
-      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
+      // pending (stage 3.4 review, CN5): U.S. buys awaiting settlement evidence during the day; a payment made meanwhile is
+      // counted twice until it is matched or reconciled, so the day's return is shown but not verified.
+      const settlement=[...(previous&&cx?.pending?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(historical?['restated']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[]),...(bounded?['bounded']:[])];
+      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
         ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
         ...(bounded?{bounded:{pieceId:bounded.pieceId,usd:bounded.usd,states,returnRange:{low:Math.min(states.real,states.notReal),high:Math.max(states.real,states.notReal)},label:`one uncertain obligation of $${Number(bounded.usd).toFixed(2)}: the return is a range (real, or not real)`}}:{}),
         dailyReturn,index,pnl,...(lost||blocked.length?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
@@ -175,7 +179,7 @@ class PerformanceHistory {
   }
 }
 // Stage 3.4: the days of a window the settlement treatment touched, by kind; null when none.
-function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)).length;const out={corrected:n('corrected'),restated:n('restated'),unavailable:n('unavailable'),bounded:n('bounded')};return Object.values(out).some(Boolean)?out:null;}
+function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)).length;const out={pending:n('pending'),corrected:n('corrected'),restated:n('restated'),unavailable:n('unavailable'),bounded:n('bounded')};return Object.values(out).some(Boolean)?out:null;}
 // Risk and attribution for the points from a start day: peak, trough, drawdowns, volatility, best and worst days,
 // daily P/L and the change in each holding's unrealized P/L.
 // Stage 3.4: an unavailable day (or a bounded one, which has no single return) breaks the time-weighted chain. The
@@ -197,7 +201,8 @@ function analyze(points,from){
   const corrections=days.reduce((a,p)=>a+(p.correction??0),0);
   return {from:first.day,to:last.day,days:pts.length,startValue:first.value,endValue:last.value,twrPct:gaps.length?null:r2((last.index/first.index-1)*100),gain:blocked.length?null:last.value-first.value-days.reduce((a,p)=>a+p.flow,0)-corrections,
     ...(corrections?{corrections}:{}),...(affected(days)?{settlementAffected:affected(days)}:{}),returnDays:rets.length,unavailableDays:blocked.map(p=>({day:p.day,reasons:p.unavailable})),...(gaps.length?{chainBrokenFrom:firstGap}:{}),
-    peak:{value:peak.value,day:peak.day},trough:{value:trough.value,day:trough.day},intradayHigh:{value:high.high,day:high.day},intradayLow:{value:low.low,day:low.day},
+    // Values on restated days include the approved overlay (stage 3.4 review): flagged, never called recorded values.
+    peak:{value:peak.value,day:peak.day,...(peak.restated?{restated:peak.restated}:{})},trough:{value:trough.value,day:trough.day,...(trough.restated?{restated:trough.restated}:{})},intradayHigh:{value:high.high,day:high.day},intradayLow:{value:low.low,day:low.day},
     maxDrawdownPct:gaps.length?null:r2(maxDd*100),currentDrawdownPct:gaps.length?null:r2(drawdown.at(-1).drawdownPct),volatilityPct:sd==null?null:r2(sd*Math.sqrt(252)*100),
     bestDay:best?{day:best.day,returnPct:r2(best.dailyReturn*100),pnl:best.pnl}:null,worstDay:worst?{day:worst.day,returnPct:r2(worst.dailyReturn*100),pnl:worst.pnl}:null,
     positiveDaysPct:rets.length?r2(rets.filter(v=>v>0).length/rets.length*100):null,unrealized:last.unrealized,cashSharePct:last.cash!=null&&last.value>0?r2(last.cash/last.value*100):null,
@@ -237,6 +242,7 @@ function returnReliability({unconfirmed=[],checking=[],uncertainKRW=0,settlement
     ...(uncertainKRW>0?[`funding of ₩${Math.round(uncertainKRW).toLocaleString('en-US')} of unsettled U.S. buys is not yet known, so Korean value may be understated`]:[]),
     ...(settlement?.unavailable?[`${settlement.unavailable} recorded day${settlement.unavailable>1?'s have':' has'} no return (a U.S. settlement obligation that may not have been real, or a payment that may have been counted twice); returns spanning ${settlement.unavailable>1?'them':'it'} are unavailable, not zero`]:[]),
     ...(settlement?.bounded?[`${settlement.bounded} day${settlement.bounded>1?'s have':' has'} only a return range (one uncertain U.S. obligation)`]:[]),
+    ...(settlement?.pending?[`${settlement.pending} day${settlement.pending>1?'s':''} had U.S. buys awaiting settlement evidence: a payment made then is counted twice until it is matched or reconciled, so ${settlement.pending>1?'those returns are':'that return is'} not verified`]:[]),
     ...(settlement?.corrected?[`${settlement.corrected} day${settlement.corrected>1?'s include':' includes'} accounting corrections, kept out of returns`]:[]),
     ...(settlement?.restated?[`${settlement.restated} day${settlement.restated>1?'s are':' is'} restated by a historical correction you approved`]:[])];
   return reasons.length?{reliable:false,reasons}:{reliable:true};
