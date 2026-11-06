@@ -120,13 +120,15 @@ class SettlementUncertainty{
       mark(day,`uncertain U.S. buy obligations this day: ${list.slice(0,3).map(describe).join(', ')}${list.length>3?` and ${list.length-3} more`:''}; the return depends on whether they were real, so it is unavailable (it stays so after they are resolved, until a historical correction is approved)`);}
     // U2: misstatement windows.
     const reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target)),records=new Map((this.reconciliation?.active(account)??[]).map(r=>[r.id,r]));
-    for(const e of events){if(e.kind!=='reconciliation'||side.get(e.pieceId)!=='Buy'||reversed.has(e.id)||e.explanation==='rounding'||approved.some(a=>a.id===e.id))continue;
+    for(const e of events){if(e.kind!=='reconciliation'||side.get(e.pieceId)!=='Buy'||reversed.has(e.id)||e.explanation==='rounding')continue;const ap=approved.find(a=>a.id===e.id);
       const r=days.findIndex(d=>d.at>=e.at);if(r<1)continue;
       if((corrections.get(days[r].day)?.items??[]).some(x=>x.kind==='reconciliation paid that day'&&x.reconciliationId===e.id))continue;
       const flowDay=e.reclassified?records.get(e.id)?.effects?.flows?.original?.day:null;
       const start=typeof e.settledOn==='string'?seoulMidnight(e.settledOn):typeof flowDay==='string'?seoulMidnight(flowDay):opened.get(e.pieceId)??-Infinity;
       let d0=days.findIndex(d=>d.at>=start);d0=d0<0?r:Math.max(1,Math.min(d0,r));
-      for(let k=d0;k<=r;k++)mark(days[k].day,`a payment of ${money(e.cents/100)} (reconciliation ${String(e.id).slice(0,10)}) may have been counted while its obligation was still open, between ${days[d0].day} and ${days[r].day} (a misstatement window): the return is unavailable until a historical correction is approved`);}
+      // An approved restatement releases only the days it restates, D..R (stage 3.3 review, P1); the rest of the window
+      // stays unavailable.
+      for(let k=d0;k<=r;k++)if(!(ap&&days[k].day>=ap.paymentDay&&days[k].day<=ap.resolutionDay))mark(days[k].day,`a payment of ${money(e.cents/100)} (reconciliation ${String(e.id).slice(0,10)}) may have been counted while its obligation was still open, between ${days[d0].day} and ${days[r].day} (a misstatement window): the return is unavailable until a historical correction is approved`);}
     // U3 needs the day to have nothing else: any other reason, or any correction, leaves it unavailable.
     for(const [day,d] of out)if(d.bounded&&(d.unavailable.length||(corrections.get(day)?.items??[]).length)){mark(day,`an uncertain U.S. buy obligation of ${money(d.bounded.usd)} (${d.bounded.why??'unresolved'}) with other changes the same day: the return is unavailable`);d.bounded=null;}
     return out;}

@@ -13,7 +13,10 @@ function paymentDateInterval(day){
     return Date.parse(d+'T00:00:00'+zone);
   };
   const next=new Date(Date.parse(day+'T12:00:00Z')+86400000).toISOString().slice(0,10);
-  return [midnight(day),midnight(next)-1];
+  // Stage 3.3 review (P1): the date does not show whether KIS debited before New York midnight. The debit can fall
+  // anywhere on that date in Seoul or in New York, so the interval runs from Seoul midnight (the earlier clock, as
+  // stage 3.2's misstatement window) to the end of the New York day.
+  return [Date.parse(day+'T00:00:00+09:00'),midnight(next)-1];
 }
 class SettlementRestatements {
   constructor(db,{inFlight,reconciliation,performance,corrections,clock=Date.now}){
@@ -50,7 +53,9 @@ class SettlementRestatements {
       const citations=this.inFlight.evidence.citations(account).filter(c=>String(c.orderId)===String(r.orderId));
       const groups=this.inFlight.evidence.kGroups(account).filter(g=>citations.some(c=>c.groupId===g.id)).map(({lastSeen,firstSeen,...g})=>g);
       const reviewEvents=events.filter(e=>e.kind==='review-changed'&&[...(e.before??[]),...(e.after??[])].some(x=>String(x.orderId)===String(r.orderId)));
-      const fingerprint=hash({core,record:r,rows:rows.slice(start-1,end+1),citations,groups,reviewEvents});
+      // Rows D-1..R-1 only (stage 3.3 review, P1): day R's row is rewritten by every later reading that day, and its
+      // value is not part of the overlay; its interval starts at R-1's last reading, which is included.
+      const fingerprint=hash({core,record:r,rows:rows.slice(start-1,end),citations,groups,reviewEvents});
       out.push({...core,id:r.id,fingerprint,label:'if approved',adjustments:days.map(day=>({day,market:'US',currency:'USD',amount:usd}))});
     }
     return out;
@@ -64,7 +69,12 @@ class SettlementRestatements {
     const before=summarize();let after;
     this.db.exec('SAVEPOINT historical_preview');try{this.insert(account,'preview:'+randomUUID(),candidate,{by:'preview'},null);after=summarize();}
     finally{this.db.exec('ROLLBACK TO historical_preview');this.db.exec('RELEASE historical_preview');}
-    const binding=hash({account,candidate,before,after,records:this.records(account),events:this.inFlight.evidence.events(account)});
+    // Bound to what the approval changes and rests on (stage 3.3 review, P2): the candidate with its evidence
+    // fingerprint, every day before R in each series before and after, R's correction, and the approvals so far.
+    // Today's live value and the periods ending today are shown, not bound, so a routine reading does not make the
+    // confirmation stale.
+    const historical=x=>Object.fromEntries(Object.entries(x).map(([k,v])=>[k,v.points.filter(p=>p.day<=candidate.resolutionDay).map(p=>p.day<candidate.resolutionDay?p:{day:p.day,correction:p.correction??0,correctionItems:p.correctionItems??[],unavailable:p.unavailable??[]})]));
+    const binding=hash({account,candidate,before:historical(before),after:historical(after),records:this.records(account)});
     return {account,candidate,before,after,binding,label:'if approved',written:false};
   }
   approve({account,candidateId,requestId,binding,approval}){
