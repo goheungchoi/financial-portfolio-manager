@@ -105,7 +105,7 @@ test('returns are marked unreliable while unconfirmed flows, unexplained cash ch
   assert.deepEqual(returnReliability({}),{reliable:true});
   const r=returnReliability({unconfirmed:[{day:'2026-10-28',amount:-81855,currency:'KRW'}],checking:[{amount:61.71,currency:'USD',since:'2026-10-27T18:45:30.000Z'}],uncertainKRW:712078});
   assert.equal(r.reliable,false);assert.deepEqual(r.reasons,['a detected withdrawal of ₩81,855 on 2026-10-28 is not confirmed; returns treat it as one','a cash change of +$61.71 since 2026-10-27 18:45 UTC is not yet explained; returns count it as gain or loss','funding of ₩712,078 of unsettled U.S. buys is not yet known, so Korean value may be understated']);
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(src,/returnReliability:reliability/,'given to reviews with the performance summary');assert.match(src,/returnReliability is separate from equityReliability/);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(src,/reviewPerformance\(s,\{unconfirmed:/,'given to reviews with the performance summary (stage 3.5: through performance.cjs reviewPerformance)');assert.match(require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','performance.cjs'),'utf8'),/returnReliability:reliability/);assert.match(src,/returnReliability is separate from equityReliability/);
 });
 // P2/P3: the startup skip applies in every scope (Korean equity always depends on the U.S. balance), and an old U.S.
 // error is forgotten when the connection resets.

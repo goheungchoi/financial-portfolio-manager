@@ -218,6 +218,16 @@ function reviewSummary(s){return {since:s.start,currency:s.kind,benchmark:s.benc
         settlement:(()=>{const pts=s.points.filter(p=>p.day>a.from);const corr=pts.filter(p=>p.correction).map(p=>({day:p.day,amount:Math.round(p.correction*100)/100}));const un=pts.filter(p=>p.unavailable).map(p=>({day:p.day,why:String(p.unavailable[0]).slice(0,200)}));const rest=pts.filter(p=>p.restated).length;
           return corr.length||un.length||rest?{accountingCorrections:corr.slice(-5),daysWithoutReturn:un.slice(-5),restatedDays:rest,label:'accounting corrections are not investment return; days without a return are unknown, not zero'}:undefined;})(),unrealizedPnl:a.unrealized==null?null:Math.round(a.unrealized),cashSharePct:a.cashSharePct,
         holdingContribution:top.length?{basis:'Change in unrealized P/L over the window',best:top.slice(0,3).map(c=>({symbol:c.symbol,change:Math.round(c.change),status:c.status})),worst:top.slice(-3).reverse().filter(c=>c.change<0).map(c=>({symbol:c.symbol,change:Math.round(c.change),status:c.status}))}:undefined};})()};}
+// The review context's performance for one market (main's automation.performanceSummary, stage 3.5: one function for main
+// and the stage 3 gate harness): the summary, the money changes not yet settled, and whether the returns measure market
+// performance (cash movements not yet reconciled and settlement-affected days make them unreliable).
+function reviewPerformance(s,{unconfirmed=[],checking=[],uncertainKRW=0}={}){
+  const reliability=returnReliability({unconfirmed,checking,uncertainKRW,settlement:(s.analytics?.['3M']??s.analytics?.All)?.settlementAffected??null});
+  return {...reviewSummary(s),...(unconfirmed.length?{unconfirmedFlows:unconfirmed}:{}),...(checking.length?{cashChangesBeingChecked:checking}:{}),returnReliability:reliability};}
+// Each market's day for the daily digest (main's automation.performanceToday): its return, or why it has none, its
+// accounting correction and its settlement treatment.
+function todayFigures(perf,account,day){return [['KR','KRW','Korea'],['US','USD','U.S.']].flatMap(([market,currency,label])=>{const p=perf.series(account,currency).find(x=>x.day===day);
+  return p?[{market,currency,label,dailyReturn:p.dailyReturn,pnl:p.pnl??null,correction:p.correction??0,unavailable:p.unavailable??null,returnRange:p.bounded?.returnRange??null,settlement:p.settlement??[]}]:[];});}
 function benchmarkFor(kind){return kind==='USD'?'SPX':'KOSPI';}
 // When a market's session for a trading day is over and its index readings are closes: 15:40 Seoul for Korean indexes,
 // 16:20 New York for U.S. ones (after the closing auctions and the VIX settle). An index row fetched before then is an
@@ -247,4 +257,4 @@ function returnReliability({unconfirmed=[],checking=[],uncertainKRW=0,settlement
     ...(settlement?.restated?[`${settlement.restated} day${settlement.restated>1?'s are':' is'} restated by a historical correction you approved`]:[])];
   return reasons.length?{reliable:false,reasons}:{reliable:true};
 }
-module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,reviewSummary,finishedRows,closedSince,sessionEnd,returnReliability};
+module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,reviewSummary,reviewPerformance,todayFigures,finishedRows,closedSince,sessionEnd,returnReliability};
