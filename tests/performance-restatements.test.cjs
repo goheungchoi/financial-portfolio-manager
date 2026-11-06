@@ -39,16 +39,19 @@ function example({unknown=false,other=false}={}){
   const w=world();w.see([]);const a=order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([a]);
   w.us.price=600;w.record(); // 500 + 600 - 100 = 1000
   if(other)w.see([a,order('B',50)]);
-  w.nextDay();w.perf.addFlow('a',{day:'2026-11-03',market:'US',amount:500,note:'deposit'});w.us.cash=900;w.us.price=630;w.record(); // 1430
+  // Day 1 (D): the $100 payment falls from U.S. cash while the obligation is still counted. A real supported source
+  // (stage 3.3 review of ca1aa11): the flow detector's -$100 change, with its recorded interval, later reclassified as
+  // the payment. Without it (unknown), there is no evidenced payment interval.
+  const day0=w.perf.history('a')[0].at;w.nextDay();w.perf.addFlow('a',{day:'2026-11-03',market:'US',amount:500,note:'deposit'});
+  const paid=unknown?null:w.perf.addFlow('a',{day:'2026-11-03',market:'US',amount:-100,detected:true,note:'Detected',occurredAfter:day0+1,occurredBy:w.clock()});
+  w.us.cash=900;w.us.price=630;w.record(); // 1430
   w.nextDay();w.perf.addFlow('a',{day:'2026-11-04',market:'US',amount:-200,note:'withdrawal'});w.us.cash=700;w.us.price=616.7;w.record(); // 1216.70
-  w.nextDay();w.us.price=629.867;const rec=w.reconcile('A');w.record(); // 1329.867
-  // Use a known detector interval covering the actual payment, not a calendar guess.
-  if(!unknown){const rows=w.perf.history('a');w.sc.timing=()=>[{candidate:rec.id,paidHere:true,entry:{after:rows[0].at+1,by:rows[1].at-1}}];}
+  w.nextDay();w.us.price=629.867;const rec=w.reconcile('A',paid?{flowId:paid.id}:{});w.record(); // 1329.867
   return {w,rec,s:service(w)};
 }
 const approve=(s,p,id='approve1')=>s.approve({account:'a',candidateId:p.candidate.id,requestId:id,binding:p.binding,approval:{by:'reviewer',note:'Checked payment and historical values'}});
 test('T20/T24/T40: preview is read-only; explicit approval restates D..R-1 and removes the recovery correction together',()=>{
-  const {w,rec,s}=example();const before=JSON.stringify(w.perf.history('a'));const p=s.preview('a',rec.id);
+  const {w,rec,s}=example();const before=JSON.stringify(w.perf.history('a'));assert.equal(s.candidates('a')[0].source,'reclassified flow');const p=s.preview('a',rec.id);
   assert.equal(p.label,'if approved');assert.equal(s.records('a').length,0);assert.equal(JSON.stringify(w.perf.history('a')),before);
   const all=x=>x.periods.find(p=>p.label==='All');assert.equal(all(p.before.USD).twr,null);
   const pts=p.after.USD.points;close(pts[1].dailyReturn,.02);close(pts[2].dailyReturn,-.01);close(pts[3].dailyReturn,.01, 'day R');
@@ -76,7 +79,7 @@ test('calendar evidence must fit wholly inside a recorded interval; paid earlier
   const w=world();w.see([]);w.see([order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock()})]);w.record();
   w.nextDay();w.later(DAY);w.us.cash=400;w.record();w.nextDay();const r=w.reconcile('A',{settledOn:'2026-11-03'});w.record();const s=service(w);
   assert.equal(s.candidates('a')[0].source,'audited settlement date');const p=s.preview('a',r.id);assert.equal(p.after.USD.points.at(-1).correction,0);approve(s,p);
-  const x=example();x.w.sc.timing=()=>[{candidate:x.rec.id,paidHere:false,entry:{after:x.w.perf.history('a')[1].at,by:x.w.perf.history('a')[2].at}}];assert.deepEqual(x.s.candidates('a'),[]);
+  const x=example({unknown:true});x.w.sc.timing=()=>[{candidate:x.rec.id,paidHere:false,entry:{after:x.w.perf.history('a')[1].at,by:x.w.perf.history('a')[2].at}}];assert.deepEqual(x.s.candidates('a'),[]);
 });
 test('reclassified payment removes its negative correction as well as the reconciliation correction',()=>{
   const w=world();w.see([]);w.see([order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock()})]);w.record();w.nextDay();
@@ -86,9 +89,10 @@ test('reclassified payment removes its negative correction as well as the reconc
   assert.equal(p.after.USD.points[1].correction,undefined);close(p.after.USD.points[1].pnl,0);close(p.after.USD.points[2].pnl,0);close(p.after.USD.periods.find(x=>x.label==='All').twr,0);
 });
 test('overlapping partial approvals add amounts once; another open portion keeps uncertainty',()=>{
-  const w=world();w.see([]);w.see([order('A',100)]);w.record();w.nextDay();w.us.cash=400;w.record();w.nextDay();
-  const r1=w.reconcile('A',{cents:6000});const r2=w.reconcile('A',{cents:4000});w.record();const rows=w.perf.history('a');
-  w.sc.timing=()=>[r1,r2].map(r=>({candidate:r.id,paidHere:true,entry:{after:rows[0].at+1,by:rows[1].at-1}}));const s=service(w);
+  // Paid on settlement date 2026-11-03, wholly inside day 1's interval in both clocks (day 1 is recorded two days on).
+  const w=world();w.see([]);w.see([order('A',100)]);w.record();w.nextDay();w.later(DAY);w.us.cash=400;w.record();w.nextDay();
+  const r1=w.reconcile('A',{cents:6000,settledOn:'2026-11-03'});const r2=w.reconcile('A',{cents:4000,settledOn:'2026-11-03'});w.record();const s=service(w);
+  assert.deepEqual(s.candidates('a').map(c=>[c.id,c.source,c.usd]),[[r1.id,'audited settlement date',60],[r2.id,'audited settlement date',40]]);
   const p1=s.preview('a',r1.id);approve(s,p1,'part1');assert.equal(w.points()[1].dailyReturn,null);
   const p2=s.preview('a',r2.id);approve(s,p2,'part2');assert.equal(w.points()[1].adjustment,100);close(w.points()[1].dailyReturn,0);close(w.points()[2].dailyReturn,0);
   assert.throws(()=>s.preview('a',r1.id),/ALREADY_APPROVED/);assert.equal(s.records('a').length,2);

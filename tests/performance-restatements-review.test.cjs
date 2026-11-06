@@ -25,10 +25,10 @@ const approval={by:'reviewer',note:'checked'};
 // day 0 Seoul 11-02 14:0x; day 1 Seoul 11-04 05:00 (2026-11-03T20:00Z); day 2 Seoul 11-05 15:00 (2026-11-05T06:00Z),
 // whose interval wholly contains New York 2026-11-04; day 3 Seoul 11-06 (the reconciliation). Tests 2-3 record day 1
 // at Seoul 11-03 23:00 instead, so day 2's interval holds the whole settlement date in both clocks: an eligible candidate.
-function scenario({paidAt,day1=Date.parse('2026-11-03T20:00:00Z')}){const w=world();w.see([]);const A=order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock()});w.see([A]);w.record();
+function scenario({paidAt,day1=Date.parse('2026-11-03T20:00:00Z'),route='USD'}){const w=world();w.see([]);const A=order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock()});w.see([A]);w.record();
   w.at(paidAt);w.us.cash=400; // the payment: the cash falls, the tracker sees no reading that matches it
   w.at(day1);w.record();w.at(Date.parse('2026-11-05T06:00:00Z'));w.record();
-  w.at(Date.parse('2026-11-06T06:00:00Z'));const r=w.reconcile('A',{settledOn:'2026-11-04'});w.record();return {w,r};}
+  w.at(Date.parse('2026-11-06T06:00:00Z'));const r=w.reconcile('A',{settledOn:'2026-11-04',route});w.record();return {w,r};}
 
 test('Stage 3.3 review P1: an audited settlement date does not show whether the KIS debit fell before New York midnight; the candidate must not assume it',()=>{
   // KIS debits on the settlement date in Korean time: Seoul 2026-11-04 01:00 (2026-11-03T16:00Z) is the settlement
@@ -77,4 +77,19 @@ test('Stage 3.3 review: a change to the resolution day\'s correction after the p
   // Another fill from before tracking is first listed on day R: a cash-free change of R's basis.
   w.see([order('B',50,{createdAt:TRACKING-DAY,filledObservedAt:TRACKING-DAY})]);w.record();
   assert.throws(()=>w.s.approve({account:'a',candidateId:r.id,requestId:'q1',binding:p.binding,approval}),/PREVIEW_MISMATCH/);assert.equal(w.s.records('a').length,0);
+});
+test('Stage 3.3 review of ca1aa11, P1: a buy paid from Korean cash, or by an unknown route, gets no U.S. restatement; its days stay unavailable',()=>{
+  // The review's case: $100 paid from KRW on settlement date 2026-11-04; U.S. cash and every price unchanged.
+  const w=world();let krw=1000000;
+  const record=()=>{const timestamp=new Date(w.clock()).toISOString();
+    const v=value({korea:{cash:krw,settledCash:krw,holdings:[],timestamp},us:{cash:w.us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:1000}],timestamp},inFlight:w.f.current('a'),fx:{usdKRW:1300,timestamp},now:w.clock()});
+    w.perf.record('a',{totals:{USD:v.markets.US.equity.low,KRW:v.markets.KR.equity.low,equityKRW:v.combined.low},fx:{usdKRW:1300}});w.later(MIN);};
+  w.see([]);w.see([order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock()})]);record();
+  w.at(Date.parse('2026-11-03T14:00:00Z'));record();w.at(Date.parse('2026-11-04T12:00:00Z'));krw-=130000;w.at(Date.parse('2026-11-05T06:00:00Z'));record();
+  w.at(Date.parse('2026-11-06T06:00:00Z'));const r=w.reconcile('A',{settledOn:'2026-11-04',route:'KRW'});record();
+  assert.deepEqual(w.s.candidates('a'),[]);assert.throws(()=>w.s.preview('a',r.id),/HISTORICAL_TIMING_UNPROVEN/);
+  const pts=w.points();for(const d of pts.slice(2))assert.equal(d.dailyReturn,null,`${d.day} stays unavailable`);
+  // The same payment with the route unknown; and the eligible U.S.-cash case still gives a candidate.
+  const u=scenario({paidAt:Date.parse('2026-11-04T12:00:00Z'),day1:Date.parse('2026-11-03T14:00:00Z'),route:'unknown'});assert.deepEqual(u.w.s.candidates('a'),[]);
+  const usd=scenario({paidAt:Date.parse('2026-11-04T12:00:00Z'),day1:Date.parse('2026-11-03T14:00:00Z')});assert.equal(usd.w.s.candidates('a').length,1);
 });
