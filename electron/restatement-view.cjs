@@ -12,15 +12,24 @@ const SERIES=['USD','COMBINED','KRW'];
 const fail=code=>Object.assign(new Error(code),{code});
 const r6=v=>v==null||!Number.isFinite(v)?null:Math.round(v*1e6)/1e6;
 function day(p){return p?{day:p.day,value:p.value,dailyReturn:r6(p.dailyReturn),pnl:p.pnl==null?null:p.pnl,correction:p.correction??0,...(p.restated?{restated:p.restated}:{}),...(p.unavailable?{unavailable:p.unavailable}:{})}:null;}
-// The change over the restated span: from the day before the payment day to the resolution day, in one series.
+// The chained return from point a to point b (indexes), or null with reasons when a day between has no single return.
+function chain(pts,a,b){if(a<0||b<=a)return {twr:null};const blocked=pts.slice(a+1,b+1).filter(p=>p.unavailable||p.bounded);
+  return {twr:blocked.length?null:r6(pts[b].index/pts[a].index-1),...(blocked.length?{unavailable:blocked.map(p=>`${p.day}: ${(p.unavailable??['a return range']).join('; ')}`)}:{})};}
+// What the approval changes and its binding covers (stage 3.4 review, P2): the restated days D..R-1 and their chained
+// return from D-1, and the resolution day's accounting correction. Day R's own return and P/L depend on its value,
+// which later readings that day still change, so they are live figures (below), not part of this.
 function span(summary,candidate){const pts=summary.points,i=pts.findIndex(p=>p.day===candidate.paymentDay),j=pts.findIndex(p=>p.day===candidate.resolutionDay);
-  if(i<1||j<i)return {from:null,to:candidate.resolutionDay,twr:null,days:[]};const inside=pts.slice(i,j+1),blocked=inside.filter(p=>p.unavailable||p.bounded);
-  return {from:pts[i-1].day,to:pts[j].day,twr:blocked.length?null:r6(pts[j].index/pts[i-1].index-1),...(blocked.length?{unavailable:blocked.map(p=>`${p.day}: ${(p.unavailable??['a return range']).join('; ')}`)}:{}),days:inside.map(day)};}
+  if(i<1||j<=i)return {from:null,to:null,twr:null,days:[],resolution:null};const r=pts[j];
+  return {from:pts[i-1].day,to:pts[j-1].day,...chain(pts,i-1,j-1),days:pts.slice(i,j).map(day),resolution:{day:r.day,correction:r.correction??0,items:[...new Set((r.correctionItems??[]).map(x=>x.kind))]}};}
+// Day R's return and P/L, and the chained return through R: live while R's value can still change.
+function resolutionLive(summary,candidate){const pts=summary.points,i=pts.findIndex(p=>p.day===candidate.paymentDay),j=pts.findIndex(p=>p.day===candidate.resolutionDay);
+  if(j<0)return null;const r=pts[j];return {day:r.day,dailyReturn:r6(r.dailyReturn),pnl:r.pnl??null,...(r.unavailable?{unavailable:r.unavailable}:{}),through:{from:i>0?pts[i-1].day:null,...chain(pts,i-1,j)}};}
 function previewView(p){const c=p.candidate;
   const historical=Object.fromEntries(SERIES.map(k=>[k,{before:span(p.before[k],c),after:span(p.after[k],c)}]));
-  const live=Object.fromEntries(SERIES.map(k=>[k,['All','1M'].map(label=>{const b=p.before[k].periods.find(x=>x.label===label),a=p.after[k].periods.find(x=>x.label===label);return {label,start:a?.start??b?.start??null,end:a?.end??null,before:{twr:r6(b?.twr),gain:b?.gain??null},after:{twr:r6(a?.twr),gain:a?.gain??null}};})]));
+  const live=Object.fromEntries(SERIES.map(k=>[k,{resolutionDay:{before:resolutionLive(p.before[k],c),after:resolutionLive(p.after[k],c)},
+    periods:['All','1M'].map(label=>{const b=p.before[k].periods.find(x=>x.label===label),a=p.after[k].periods.find(x=>x.label===label);return {label,start:a?.start??b?.start??null,end:a?.end??null,before:{twr:r6(b?.twr),gain:b?.gain??null},after:{twr:r6(a?.twr),gain:a?.gain??null}};})}]));
   return {candidate:{id:c.id,usd:c.usd,paymentDay:c.paymentDay,resolutionDay:c.resolutionDay,days:c.days,source:c.source},binding:p.binding,written:p.written,label:p.label,historical,
-    live:{note:'Live figures end today and change with every reading. They are shown for context and are not part of what you approve.',series:live}};}
+    live:{note:'Live figures can still change with later readings: the resolution day\'s own return and P/L, and periods ending today. They are shown for context and are not part of what you approve.',series:live}};}
 // Each approval with whether it is in force, and why not.
 function records(restatements,account,rows){const current=new Map(restatements.candidates(account,rows).map(c=>[c.id,c])),seen=new Set();
   return restatements.records(account).map(r=>{const c=current.get(r.candidate.id);let status='active',reason=null;

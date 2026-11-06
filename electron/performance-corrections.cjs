@@ -59,7 +59,7 @@ class SettlementCorrections{
       d.usd=round(d.usd-removed);d.items.push({kind:'approved historical restatement',reconciliationId:a.id,usd:-removed});out.set(a.resolutionDay,d);
     }
     // Stage 3.2: unrelated uncertainty is never cleared by another piece's approval.
-    if(this.uncertainty)for(const [day,u] of this.uncertainty.byDay(account,rows,out,approved)){const d=out.get(day)??{usd:0,items:[],unknown:[]};if(u.unavailable.length)d.unavailable=u.unavailable;if(u.bounded)d.bounded=u.bounded;out.set(day,d);}
+    if(this.uncertainty)for(const [day,u] of this.uncertainty.byDay(account,rows,out,approved)){const d=out.get(day)??{usd:0,items:[],unknown:[]};if(u.unavailable.length)d.unavailable=u.unavailable;if(u.bounded)d.bounded=u.bounded;if(u.pending)d.pending=u.pending;out.set(day,d);}
     return out;}
 }
 // Stage 3.2: performance is unavailable unless bounded (design v3.3 §3; rules U1-U6 in stage3-spec.md). The recorded value
@@ -101,6 +101,11 @@ class SettlementUncertainty{
       if(!s){mark(day,'the settlement tracker\'s uncertainty was not recorded for this day');continue;}
       if(s.error||!s.last){mark(day,`the settlement tracker could not be read when this day was recorded (${s.error??'no reading'})`);continue;}
       let before=[];if(prev.at>=started){if(!p||p.error||!p.last){mark(day,'the settlement tracker\'s uncertainty was not recorded at the previous day\'s last reading');continue;}before=buys(p.last.pieces);}
+      // CN5 (stage 3.4 review): any U.S. buy obligation open at the previous day's last reading, at a reading of the day, or
+      // opened between them. A payment made meanwhile is counted twice until matched or reconciled: the day is pending.
+      {const prevOpen=prev.at>=started?(p.last.open?p.last.open.buysUSD:null):0,opened=events.some(e=>e.kind==='piece-opened'&&e.side==='Buy'&&e.at>prev.at&&e.at<=cur.at);
+        const unknownOpen=prevOpen==null||s.openUnknown||!s.last.open,usd=Math.max(prevOpen??0,s.openBuysMaxUSD??0);
+        if(usd>0.005||opened||unknownOpen)at(day).pending={usd:Math.round(usd*100)/100,...(unknownOpen?{unknown:true}:{})};}
       // U1: every uncertain buy piece of the interval, with each amount it had.
       const affected=new Map(),add=x=>{const l=affected.get(x.pid)??[];l.push(x);affected.set(x.pid,l);};for(const x of [...before,...buys(s.seen)])add(x);
       const evs=events.filter(e=>e.at>prev.at&&e.at<=cur.at);

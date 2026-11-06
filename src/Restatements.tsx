@@ -7,14 +7,16 @@ import {toast} from './Toast';
 // by an explicit approval of its current preview, with a note; a stale preview is replaced by a fresh one that needs
 // another confirmation. Approval history shows which approvals are in force.
 type Day={day:string;value:number;dailyReturn:number|null;pnl:number|null;correction:number;restated?:number;unavailable?:string[]};
-type Span={from:string|null;to:string;twr:number|null;unavailable?:string[];days:Day[]};
-type Live={label:string;start:string|null;end:string|null;before:{twr:number|null;gain:number|null};after:{twr:number|null;gain:number|null}};
+type Span={from:string|null;to:string|null;twr:number|null;unavailable?:string[];days:Day[];resolution:{day:string;correction:number;items:string[]}|null};
+type Period={label:string;start:string|null;end:string|null;before:{twr:number|null;gain:number|null};after:{twr:number|null;gain:number|null}};
+type RDay={day:string;dailyReturn:number|null;pnl:number|null;unavailable?:string[];through:{from:string|null;twr:number|null}}|null;
+type Live={resolutionDay:{before:RDay;after:RDay};periods:Period[]};
 type Candidate={id:string;usd:number;paymentDay:string;resolutionDay:string;days:string[];source:string;label?:string};
-export type RestatementPreview={candidate:Candidate;binding:string;written:boolean;label:string;historical:Record<string,{before:Span;after:Span}>;live:{note:string;series:Record<string,Live[]>}};
+export type RestatementPreview={candidate:Candidate;binding:string;written:boolean;label:string;historical:Record<string,{before:Span;after:Span}>;live:{note:string;series:Record<string,Live>}};
 type Record_={id:string;version:number;status:'active'|'inactive';reason:string|null;approvedAt:number;approval:{by:string|null;note:string|null};candidate:Candidate};
 export type RestatementState={candidates:Candidate[];records:Record_[];unsupported:{id:string;usd:number;route:string;reason:string}[]};
 export type RestatementReply={ok:boolean;error?:string;data?:any;preview?:RestatementPreview|null;restatements:RestatementState|null};
-type Point={day:string;correction?:number;correctionItems?:{kind:string;usd:number|null}[];unavailable?:string[];restated?:number};
+type Point={day:string;correction?:number;correctionItems?:{kind:string;usd:number|null}[];unavailable?:string[];restated?:number;settlement?:string[]};
 const usd=(v:number)=>`${v<0?'−':v>0?'+':''}$${Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const pct=(v:number|null)=>v==null?'Unavailable':`${v>0?'+':''}${(v*100).toFixed(2)}%`;
 const SOURCE:Record<string,string>={'reclassified flow':'payment seen as a detected cash change','audited settlement date':'audited settlement date'};
@@ -23,12 +25,13 @@ const ERR:Record<string,string>={PREVIEW_MISMATCH:'The figures changed since thi
 const rid=()=>crypto.randomUUID();
 // The selected series' corrections and days without a return, kept apart from the returns above.
 export function SettlementEffects({points,money}:{points:Point[];money:(v:number)=>string}){
-  const corrected=points.filter(p=>p.correction),missing=points.filter(p=>p.unavailable?.length),restated=points.filter(p=>p.restated);
-  if(!corrected.length&&!missing.length&&!restated.length)return null;
+  const corrected=points.filter(p=>p.correction),missing=points.filter(p=>p.unavailable?.length),restated=points.filter(p=>p.restated),pending=points.filter(p=>p.settlement?.includes('pending')&&!p.unavailable);
+  if(!corrected.length&&!missing.length&&!restated.length&&!pending.length)return null;
   return <>{corrected.length>0&&<Row block title="Accounting corrections" hint="Settlement bookkeeping, not investment return. Kept out of returns and P/L."><span>{corrected.length} day{corrected.length>1?'s':''}</span></Row>}
     {corrected.length>0&&<Note summary={`Corrections by day · ${corrected.length}`}><table className="compact-table" aria-label="Accounting corrections"><thead><tr><th>Day</th><th>Correction</th><th>What</th></tr></thead><tbody>{corrected.map(p=><tr key={p.day}><td>{p.day}</td><td>{money(p.correction!)}</td><td>{[...new Set((p.correctionItems??[]).map(i=>i.kind))].join(', ')||'settlement change'}</td></tr>)}</tbody></table></Note>}
     {missing.length>0&&<Row block title="Days without a return" hint="Unknown, not zero: returns, drawdowns and gains spanning them are unavailable."><span className="role-tag unverified">{missing.length} day{missing.length>1?'s':''}</span></Row>}
     {missing.length>0&&<Note summary={`Why · ${missing.length}`}><ul aria-label="Days without a return">{missing.map(p=><li key={p.day}><b>{p.day}</b> {p.unavailable![0]}{p.unavailable!.length>1?` (+${p.unavailable!.length-1} more)`:''}</li>)}</ul></Note>}
+    {pending.length>0&&<Row block title="Returns not yet verified" hint="U.S. buys were awaiting settlement evidence: a payment then counts twice until it is matched or reconciled."><span className="role-tag unverified">{pending.length} day{pending.length>1?'s':''}</span></Row>}
     {restated.length>0&&<Row block title="Restated days" hint="Changed by a historical correction you approved."><span>{restated.length} day{restated.length>1?'s':''}</span></Row>}</>;
 }
 const won=(v:number)=>`${v<0?'−':v>0?'+':''}₩${Math.round(Math.abs(v)).toLocaleString('ko-KR')}`;
@@ -36,7 +39,8 @@ function SpanTable({label,h,krw=false}:{label:string;h:{before:Span;after:Span};
   const before=new Map(h.before.days.map(d=>[d.day,d]));
   return <table className="compact-table" aria-label={`${label} historical change`}><thead><tr><th>{label}</th><th>Return before</th><th>If approved</th><th>P/L before</th><th>If approved</th></tr></thead><tbody>
     {h.after.days.map(d=>{const b=before.get(d.day);return <tr key={d.day}><td>{d.day}</td><td title={b?.unavailable?.[0]}>{pct(b?.dailyReturn??null)}</td><td title={d.unavailable?.[0]}>{pct(d.dailyReturn)}</td><td>{m(b?.pnl)}</td><td>{m(d.pnl)}</td></tr>;})}
-    <tr><td><b>{h.after.from} → {h.after.to}</b></td><td>{pct(h.before.twr)}</td><td><b>{pct(h.after.twr)}</b></td><td/><td/></tr></tbody></table>;
+    <tr><td><b>{h.after.from} → {h.after.to}</b></td><td>{pct(h.before.twr)}</td><td><b>{pct(h.after.twr)}</b></td><td/><td/></tr>
+    {h.after.resolution&&<tr><td>{h.after.resolution.day} correction</td><td colSpan={2} className="muted">Accounting correction, not investment return</td><td>{m(h.before.resolution?.correction??0)}</td><td>{m(h.after.resolution.correction)}</td></tr>}</tbody></table>;
 }
 export function Restatements({onChanged}:{onChanged?:()=>void}={}){
   const [state,setState]=useState<RestatementState|null>(null);const [preview,setPreview]=useState<RestatementPreview|null>(null);const [note,setNote]=useState('');const [request,setRequest]=useState(rid());const [busy,setBusy]=useState(false);const [stale,setStale]=useState(false);
@@ -61,7 +65,11 @@ export function Restatements({onChanged}:{onChanged?:()=>void}={}){
       <SpanTable label="All markets (KRW)" h={preview.historical.COMBINED} krw/>
       <small className="muted">Korea is unchanged. Recorded values are not edited; the restatement is a versioned overlay with your approval.</small>
       <div className="restatement-live" aria-label="Live figures"><b>Live figures, not part of the approval</b><small className="muted"> {preview.live.note}</small>
-        <table className="compact-table"><thead><tr><th>Period</th><th>Return now</th><th>If approved</th></tr></thead><tbody>{preview.live.series.USD.map(l=><tr key={l.label}><td>U.S. {l.label}</td><td>{pct(l.before.twr)}</td><td>{pct(l.after.twr)}</td></tr>)}</tbody></table></div>
+        <table className="compact-table"><thead><tr><th>U.S.</th><th>Now</th><th>If approved</th></tr></thead><tbody>
+          {(()=>{const r=preview.live.series.USD.resolutionDay;return r.after?<><tr><td>{r.after.day} return</td><td title={r.before?.unavailable?.[0]}>{pct(r.before?.dailyReturn??null)}</td><td title={r.after.unavailable?.[0]}>{pct(r.after.dailyReturn)}</td></tr>
+            <tr><td>{r.after.day} P/L</td><td>{r.before?.pnl==null?'Unavailable':usd(r.before.pnl)}</td><td>{r.after.pnl==null?'Unavailable':usd(r.after.pnl)}</td></tr>
+            <tr><td>{r.after.through.from} → {r.after.day}</td><td>{pct(r.before?.through.twr??null)}</td><td>{pct(r.after.through.twr)}</td></tr></>:null;})()}
+          {preview.live.series.USD.periods.map(l=><tr key={l.label}><td>{l.label} period</td><td>{pct(l.before.twr)}</td><td>{pct(l.after.twr)}</td></tr>)}</tbody></table></div>
       <label className="restatement-note">Approval note<textarea aria-label="Approval note" maxLength={500} value={note} onChange={e=>setNote(e.target.value)} placeholder="What you checked"/></label>
       <div className="actions"><button className="primary" disabled={busy||!note.trim()} onClick={()=>void approve()}>Approve restatement</button><button disabled={busy} onClick={()=>{show(null);setStale(false);}}>Cancel</button></div>
     </div>}
