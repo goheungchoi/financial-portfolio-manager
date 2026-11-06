@@ -162,6 +162,9 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
 // orders: the U.S. engine's.
 const MAX_DAYS=7,PAIR_DAYS=4,TOLERANCE=0.95,BOUND=12,EVIDENCE_KEPT=60,DAY=86400000;
 // When an order filled: when the app saw it filled, or failing that when it was placed.
+// When the order was placed (the app creates it before submitting it): a fill cannot have executed earlier. Unlike the
+// fill time, which can be when the app first saw the fill (stage 3.2 review, P1), it bounds the execution from below.
+const placedTime=o=>{const t=Number.isFinite(o.createdAt)?o.createdAt:Date.parse(o.createdAt??'');return Number.isFinite(t)?t:null;};
 const fillTime=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.isFinite(o.createdAt)?o.createdAt:Date.parse(o.createdAt??'');
 // Why a fill may already be covered by what KIS reports awaiting settlement.
 const REPORTED=['reported before seen','reported total moved by an unmatched amount'];
@@ -175,7 +178,7 @@ class InFlight {
   static amountOf(o){const net=o.resultCosts?.netCash;return Number.isFinite(net)?{cents:Math.abs(cents(net)),basis:'net'}:{cents:cents(o.filled*o.fillPrice),basis:'gross'};}
   // A fill from before tracking started: an open piece awaiting verification, whatever its age (bootstrap B1).
   static early(o,id,a,now){const t=fillTime(o);
-    return {id,side:o.side,usd:a.cents/100,basis:a.basis,at:now,filledAt:Number.isFinite(t)?t:null,pretracking:true,unresolved:{why:'awaiting verification',at:now}};}
+    return {id,side:o.side,usd:a.cents/100,basis:a.basis,at:now,filledAt:Number.isFinite(t)?t:null,placedAt:placedTime(o),pretracking:true,unresolved:{why:'awaiting verification',at:now}};}
   // Every distinct set of the given fills whose total an amount matches within the tolerance either way (fills with equal
   // amounts are different sets), each oldest first; over: more than BOUND fills, so none is considered.
   static sets(open,amount){if(!(amount>0)||!open.length)return {sets:[],over:false};if(open.length>BOUND)return {sets:[],over:true};
@@ -229,7 +232,7 @@ class InFlight {
       // Saved before cumulative amounts were kept: only the quantity, so the earlier amount is taken at the current average.
       if(typeof was==='number')was={filled:was,cents:Math.round(a.cents*Math.min(was,o.filled)/o.filled),basis:a.basis};
       if(was&&o.filled<was.filled)continue;st.seen[id]={filled:o.filled,...a};const delta=a.cents-(was?.cents??0);
-      if(o.filled>(was?.filled??0)&&delta>0)fresh.push({id,side:o.side,usd:delta/100,basis:a.basis,at:now});else if(delta||was&&was.basis!==a.basis)adjust(id,o.side,delta,a.basis);}
+      if(o.filled>(was?.filled??0)&&delta>0)fresh.push({id,side:o.side,usd:delta/100,basis:a.basis,at:now,placedAt:placedTime(o)});else if(delta||was&&was.basis!==a.basis)adjust(id,o.side,delta,a.basis);}
     let movement=moved;const KEY={Buy:'buys',Sell:'sells'},delta=side=>reported[KEY[side]]-st.observed[KEY[side]];
     const settled=new Set(),live=side=>st.open.filter(f=>f.side===side&&!settled.has(f));
     // Fills cash or a reported total may settle: not one marked paid before it was seen, which only a reconciliation (or
@@ -379,7 +382,7 @@ class InFlight {
   // tracking began (null before); pieces: every open piece marked unresolved and every coverage under review, by side,
   // with its amount, why, and the fill time when known; totals: the unresolved and under-review totals by side.
   snapshot(account){const st=this.state(account),t=this.withReview(account,st);
-    const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,review:String(f.pid??'').startsWith('review:'),filledAt:Number.isFinite(f.filledAt)?f.filledAt:null}));
+    const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,review:String(f.pid??'').startsWith('review:'),filledAt:Number.isFinite(f.filledAt)?f.filledAt:null,placedAt:Number.isFinite(f.placedAt)?f.placedAt:null}));
     return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review}};}
   // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
   // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,

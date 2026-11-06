@@ -183,7 +183,7 @@ class TradingCosts{
   importHistory(account,ranges,now=Date.now()){
     const {ownerAccount}=require('./tax-profile.cjs');const owner=ownerAccount(account);let added=0;const incomplete=[];
     // A complete range's rows are also the settlement evidence ledger's K rows (supporting evidence only, stage 2b.2).
-    for(const r of ranges){if(r.complete){added+=this.importTrades(account,r.rows,now,{start:r.start,end:r.end});this.evidence.importK({account,environment:'live',market:'US'},{start:r.start,end:r.end},r.rows,now);}else incomplete.push({start:r.start,end:r.end,reason:r.reason});this.gaps.record(owner,r,now);}
+    for(const r of ranges){if(r.complete){added+=this.importTrades(account,r.rows,now,{start:r.start,end:r.end});this.evidence.importK({account,environment:'live',market:'US'},{start:r.start,end:r.end},r.rows,now);}else incomplete.push({start:r.start,end:r.end,reason:r.reason});this.gaps.record(owner,r,now);this.evidence.noteReview(account);}
     return {added,incomplete};
   }
   // Reads and imports an account's trade history as a job (electron/trade-history.cjs readRanges): plan() gives the

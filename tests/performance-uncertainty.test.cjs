@@ -158,3 +158,28 @@ test('U4: days recorded before tracking started are not tracked, with or without
   const w=world();delete w.perf.settlement;w.record();w.nextDay();w.us.price=1010;w.record();w.perf.settlement=a=>w.f.snapshot(a);w.nextDay();w.see([]);w.us.price=1020;w.record();
   const [,d1,d2]=w.points();close(d1.dailyReturn,10/1500);close(d2.dailyReturn,10/1510);assert.equal(d2.unavailable,undefined);
 });
+test('U3 (stage 3.2 review, P1): the bounded case needs the order\'s placement time; when the app first saw the fill is not evidence of execution',()=>{
+  // Placed (and filled) Monday 2026-11-02, first seen Friday: payable from Tuesday, so the weekend is not bounded.
+  const w=world(FRI);w.see([]);w.see([order('A',100,{createdAt:Date.parse('2026-11-02T15:00:00Z'),day:'2026-11-02',filledObservedAt:FILL})]);w.record();w.nextDay();w.us.price=1010;w.record();
+  assert.equal(w.perf.history('a')[0].settlement.last.pieces[0].placedAt,Date.parse('2026-11-02T15:00:00Z'));
+  const [,p]=w.points();assert.equal(p.bounded,undefined);assert.equal(p.dailyReturn,null);assert.match(p.unavailable.join(';'),UNCERTAIN);assert.equal(w.all().twrRange,undefined);
+});
+test('U1 (stage 3.2 review, P2): coverage that goes under review and returns between two recordings still affects the day',()=>{
+  const w=world();w.see([]);w.see([order('A',100)]);const scope={account:'a',environment:'live',market:'US'},win={start:'2026-11-01',end:'2026-11-01'};
+  const row={ticker:'TA',side:'Buy',tradeDate:'2026-11-01',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementDate:'2026-11-02',exchangeRate:1300};
+  w.f.evidence.importK(scope,win,[row]);const g=w.f.evidence.kGroups('a')[0];w.reconcile('A',{settledOn:'2026-11-01',citation:{groupId:g.id,version:1}});w.record();
+  w.nextDay();w.f.evidence.importK(scope,win,[]);assert.equal(w.f.current('a').review.buysUSD,100);w.later(MIN);w.f.evidence.importK(scope,win,[row]);assert.equal(w.f.current('a').review.buysUSD,0);
+  w.f.evidence.importK(scope,win,[row]);const changes=w.f.evidence.events('a').filter(e=>e.kind==='review-changed');
+  assert.deepEqual(changes.map(e=>[e.before.length,e.after.length]),[[0,1],[1,0]],'each change once; an unchanged import notes nothing');
+  w.us.price=1010;w.record();const [,p]=w.points();assert.equal(p.dailyReturn,null);assert.equal(p.pnl,null);assert.match(p.unavailable.join(';'),/\$100\.00 \(coverage under review\)/);
+});
+test('U1 (stage 3.2 review, P2): a trade-history gap over a cited row, opened and closed between two recordings, affects the day',()=>{
+  const {TradingCosts}=require('../electron/trading-costs.cjs');const w=world();w.db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');
+  const costs=new TradingCosts(w.db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});costs.evidence.clock=w.clock;
+  const row={ticker:'TA',side:'Buy',tradeDate:'2026-11-01',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementKRW:130000,feesUSD:0,settlementDate:'2026-11-02',exchangeRate:1300},R={start:'2026-11-01',end:'2026-11-01'};
+  w.see([]);w.see([order('A',100)]);costs.importHistory('a',[{...R,complete:true,rows:[row]}],w.clock());const g=w.f.evidence.kGroups('a')[0];w.reconcile('A',{settledOn:'2026-11-01',citation:{groupId:g.id,version:1}});w.record();
+  w.nextDay();costs.importHistory('a',[{...R,complete:false,reason:'INVALID_RESPONSE',rows:[]}],w.clock());assert.equal(w.f.current('a').review.buysUSD,100);
+  w.later(MIN);costs.importHistory('a',[{...R,complete:true,rows:[row]}],w.clock());assert.equal(w.f.current('a').review.buysUSD,0);
+  assert.deepEqual(w.f.evidence.events('a').filter(e=>e.kind==='review-changed').map(e=>[e.at>w.perf.history('a')[0].at,e.before.length,e.after.length]),[[true,0,1],[true,1,0]],'the gap opening and closing are each noted when they happen');
+  w.us.price=1010;w.record();const [,p]=w.points();assert.equal(p.dailyReturn,null);assert.match(p.unavailable.join(';'),/\$100\.00 \(coverage under review\)/);
+});
