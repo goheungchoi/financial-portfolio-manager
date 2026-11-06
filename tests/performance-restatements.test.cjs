@@ -29,8 +29,9 @@ const UNCERTAIN=/uncertain U\.S\. buy obligations this day: \$100\.00 \(awaiting
 const {SettlementRestatements}=require('../electron/valuation-corrections.cjs');
 test('a settlement date includes the complete New York day across both clock changes',()=>{
   const {paymentDateInterval}=require('../electron/settlement-restatements.cjs');
-  assert.deepEqual(paymentDateInterval('2026-11-01'),[Date.parse('2026-11-01T04:00:00Z'),Date.parse('2026-11-02T05:00:00Z')-1]);
-  assert.deepEqual(paymentDateInterval('2026-03-08'),[Date.parse('2026-03-08T05:00:00Z'),Date.parse('2026-03-09T04:00:00Z')-1]);
+  // From Seoul midnight of the date (stage 3.3 review, P1) to the end of the New York day, across both clock changes.
+  assert.deepEqual(paymentDateInterval('2026-11-01'),[Date.parse('2026-10-31T15:00:00Z'),Date.parse('2026-11-02T05:00:00Z')-1]);
+  assert.deepEqual(paymentDateInterval('2026-03-08'),[Date.parse('2026-03-07T15:00:00Z'),Date.parse('2026-03-09T04:00:00Z')-1]);
 });
 function service(w){return new SettlementRestatements(w.db,{inFlight:w.f,reconciliation:w.rec,performance:w.perf,corrections:w.sc,clock:w.clock});}
 function example({unknown=false,other=false}={}){
