@@ -404,6 +404,8 @@ app.whenReady().then(async () => {
   const settlementCorrections=require('./performance-corrections.cjs').performanceCorrections(store.db,{inFlight,reconciliation});
   performance.corrections=(account,rows)=>settlementCorrections.byDay(account,rows);
   performance.settlement=account=>inFlight.snapshot(account);
+  // Stage 3.3 backend; Stage 3.4 will expose preview and explicit approval in the UI.
+  performance.restatements=new (require('./valuation-corrections.cjs').SettlementRestatements)(store.db,{inFlight,reconciliation,performance,corrections:settlementCorrections});
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
     if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
     // The tracker's own changes to the U.S. basis (reconciliations, late pre-tracking fills, corrections, coverage under

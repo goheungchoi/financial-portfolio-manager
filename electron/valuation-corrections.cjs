@@ -33,4 +33,4 @@ class ValuationCorrections {
     this.db.prepare('INSERT INTO valuation_adjustments VALUES(?,?,?)').run(record.id,account,JSON.stringify(record));return record;
   }
 }
-module.exports={ValuationCorrections,validate};
+module.exports={ValuationCorrections,validate,SettlementRestatements:require('./settlement-restatements.cjs').SettlementRestatements};
