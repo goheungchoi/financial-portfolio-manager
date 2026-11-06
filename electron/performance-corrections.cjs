@@ -11,8 +11,10 @@
 //   (the same classification the flow detector uses). Sales move only the high bound: no correction in the low series.
 // - C3 The other reconciliations (candidates) by their payment's timing: inside the interval (its U.S. settlement date
 //   wholly inside, or resolved "paid in this interval" for a reading interval inside it): 0, the payment and the
-//   resolution net out; earlier (resolved "paid earlier" for a reading interval starting at or after the day's start):
-//   +X; otherwise unknown: the day's correction cannot be told, and its return is unavailable.
+//   resolution net out; before the day: +X, only with evidence that places the payment before the day's start
+//   ("paid earlier" means before that reading interval began, so it proves this only when the reading interval began
+//   at or before the previous day's last reading: stage 3.1 review, P1); otherwise unknown: the day's correction
+//   cannot be told, and its return is unavailable.
 // - C4 A detected flow reclassified as a reconciliation's payment: its settlement part is a correction on the flow's
 //   day (neither P/L nor a flow), while the reconciliation is in force.
 const DAY=86400000;
@@ -22,8 +24,10 @@ class SettlementCorrections{
   // inFlight: the U.S. settlement tracker (its ledger and explained); reconciliation: the audited records (reclassified
   // flows); timing(account): the flow detector's resolved timing (flow_watch timingResolved).
   constructor(db,{inFlight,reconciliation=null,timing=null}={}){if(!inFlight)throw new Error('CORRECTIONS_NEED_TRACKER');this.db=db;this.inFlight=inFlight;this.reconciliation=reconciliation;this.timing=timing;}
+  // Resolved timing; none before the flow detector has stored anything. A read that fails is an error, never "none".
   resolved(account){if(this.timing)return this.timing(account)??[];
-    try{const r=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);return r?JSON.parse(r.payload).timingResolved??[]:[];}catch{return [];}}
+    if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='flow_watch'").get())return [];
+    const r=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);return r?JSON.parse(r.payload).timingResolved??[]:[];}
   // rows: the recorded days in order ({day, at}). Returns Map day -> {usd, items, unknown}: usd the known correction
   // (U.S. dollars, the low series), items what makes it, unknown the reasons it cannot be told (empty when known).
   byDay(account,rows){const out=new Map(),resolved=this.resolved(account),days=rows.filter(r=>Number.isFinite(r.at));
@@ -35,7 +39,7 @@ class SettlementCorrections{
       for(const c of x.candidates.items){const res=resolved.filter(r=>r.candidate===c.id).at(-1)??null,win=res?.entry;
         const inside=(a,b)=>Number.isFinite(a)&&Number.isFinite(b)&&a>=prev&&b<=at;
         if(res&&res.paidHere&&inside(win?.after,win?.by)){add(day,0,{kind:'reconciliation paid that day',reconciliationId:c.id});continue;}
-        if(res&&!res.paidHere&&Number.isFinite(win?.after)&&win.after>=prev){add(day,c.usd,{kind:'reconciliation paid earlier',reconciliationId:c.id});continue;}
+        if(res&&!res.paidHere&&Number.isFinite(win?.after)&&win.after<=prev){add(day,c.usd,{kind:'reconciliation paid before the day',reconciliationId:c.id});continue;}
         if(!res&&typeof c.settledOn==='string'&&nyDay(prev)<c.settledOn&&nyDay(at)>c.settledOn){add(day,0,{kind:'reconciliation paid that day',reconciliationId:c.id,settledOn:c.settledOn});continue;}
         unknown(day,`whether reconciliation ${String(c.id).slice(0,10)} was paid on this day or earlier is not known`,{kind:'reconciliation of unknown payment timing',reconciliationId:c.id,possibleUSD:round(c.usd)});}}
     // C4: reclassified settlement cash on the flow's day (the first recorded day on or after it), records in force only.
