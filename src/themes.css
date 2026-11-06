@@ -156,3 +156,9 @@ main.chart-window{margin:0 auto;max-width:1180px;padding:20px 24px}main.chart-wi
 .company-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:18px 0 10px}
 .company-tile{display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--control);min-width:0}.company-tile small{font-size:11px;color:var(--muted)}.company-tile b{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}.company-tile b.muted{color:var(--muted);font-weight:400}.company-tile span{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:1000px){.company-quote{grid-template-columns:minmax(0,1fr)}.company-ranges{justify-self:start}.company-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Stage 3.4: days without a return and settlement labels */
+.perf-bar.unavailable{fill:none;stroke:var(--muted);stroke-dasharray:2 2;stroke-width:1}.swatch.unavailable{background:transparent;border:1px dashed var(--muted)}
+.role-tag.unverified{background:rgba(214,160,60,.16);color:#b98a2c;text-transform:none}.role-tag.inactive{background:var(--control);color:var(--muted);text-transform:none}.role-tag.active{background:var(--active);color:var(--accent);text-transform:none}
+.restatement-preview{display:grid;gap:10px;margin:8px 0 4px}.restatement-preview table{width:100%}.restatement-live{opacity:.85;border-left:3px solid var(--control);padding-left:10px}
+.restatement-note{display:grid;gap:4px;font-weight:600}.restatement-note textarea{width:100%;min-height:56px;font-weight:400}

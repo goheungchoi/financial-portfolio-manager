@@ -284,6 +284,46 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await run('document.querySelector(`[aria-label="Account performance"]`).scrollIntoView({block:"start"})');await wait(200);await capture('performance-returns');
       await run('document.querySelector(`[aria-label^="Remove flow"]`).click()');await until('!document.querySelector(`[aria-label="Recorded flows"]`)','Flow not removed');
     });
+    await check('Stage 3.4: settlement corrections stay apart from performance; a restatement needs a fresh preview and an explicit approval',async()=>{
+      // A U.S. settlement history built with the real tracker on the fixture database (synchronous, so no app reading
+      // interleaves): a $100 buy paid on its settlement date S while still counted, reconciled two days later.
+      const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
+      const {InFlight,value}=require('../electron/valuation.cjs');const {FundingLedger}=require('../electron/funding-ledger.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');const {Reconciliation}=require('../electron/settlement-reconciliation.cjs');
+      const acct='ui-regression-fixture',S=new Date(Date.now()-10*86400000).toISOString().slice(0,10),B=Date.parse(new Date(Date.parse(S+'T00:00:00Z')-2*86400000).toISOString().slice(0,10)+'T05:00:00Z');
+      let t=B;const clock=()=>t;db.prepare('DELETE FROM inflight_settlement WHERE account=?').run(acct);
+      const f=new InFlight(db,clock),perf=new PerformanceHistory(db,clock);perf.settlement=a=>f.snapshot(a);const rec=new Reconciliation(db,{inFlight:f,funding:new FundingLedger(db,{clock}),performance:perf,clock,who:{user:'fixture',session:'fixture'}});
+      const us={cash:500,price:1000};const U=()=>({accountKey:acct+':US',environment:'mock',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
+      const A={id:'stage34-A',symbol:'NASD:TA',side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'mock',accountKey:acct+':US',market:'US',day:S,createdAt:B+60000,filledObservedAt:B+60000};
+      const see=list=>{f.observe(acct,{us:U(),orders:list,fx:1300});t+=60000;};
+      const record=()=>{const v=value({us:U(),inFlight:f.current(acct),fx:{usdKRW:1300,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity.low;perf.record(acct,{totals:{USD:v,KRW:10000000,equityKRW:10000000+v*1300},fx:{usdKRW:1300}});t+=60000;};
+      see([]);see([A]);record();t=B+33*3600000;us.price=1010;record();t=B+55*3600000;us.cash=400;t=B+73*3600000;us.price=1020;record();t=B+97*3600000;
+      const q={requestId:'stage34-r1',account:acct,pieceId:f.current(acct).open.find(p=>p.id==='stage34-A').pid,cents:10000,explanation:'settled',route:'USD',kisReference:'KIS-FIXTURE',note:'desktop fixture',settledOn:S};const pv=rec.preview(q);rec.confirm({...q,stateVersion:pv.stateVersion,binding:pv.binding});record();
+      const approvals=()=>db.prepare('SELECT COUNT(*) n FROM valuation_settlement_approvals WHERE account=?').get(acct).n;
+      // Home: the trend says the return is unavailable and is not presented as verified.
+      await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"]`)?.textContent.includes("Investment return unavailable")','the Home trend should say the return is unavailable');
+      assert.ok(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Not verified")'),'Home tags settlement-affected performance');
+      // Performance, U.S. series: unavailable (not a number), corrections and days without a return apart.
+      await navigate('Performance');await run(`(()=>{const s=document.querySelector('[aria-label="Performance series"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'USD');s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+      await until('Array.from(document.querySelectorAll(`[aria-label="Period returns"] tbody tr`)).find(r=>r.cells[0].textContent.startsWith("All"))?.textContent.includes("Unavailable")','the All period is unavailable, not a number');
+      assert.ok(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Not verified")'));
+      assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`)?.textContent.includes("Days without a return")'),'days without a return are listed');
+      assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`).textContent.includes("Accounting corrections")'),'corrections are listed apart');
+      for(const label of ['Daily P/L','Drawdown']){await run(`Array.from(document.querySelectorAll('[aria-label="Chart"] button')).find(b=>b.textContent===${JSON.stringify(label)}).click()`);await wait(150);}
+      assert.ok(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Drawdown is unavailable from")'),'the drawdown chart is not drawn across the gap');
+      await until('Boolean(document.querySelector(`[aria-label^="Preview restatement"]`))','the candidate is offered');
+      await run('document.querySelector(`[aria-label^="Preview restatement"]`).click()');
+      await until('document.querySelector(`[aria-label="Restatement preview"]`)?.textContent.includes("Historical change you approve")','the preview is shown');
+      assert.ok(await run('document.querySelector(`[aria-label="Live figures"]`).textContent.includes("not part of the approval")'),'live figures are apart');assert.equal(approvals(),0,'a preview writes nothing');
+      await run('document.querySelector(`[aria-label="Restatement preview"]`).scrollIntoView({block:"center"})');await wait(150);await capture('stage34-restatement-preview');
+      // Stale: a deposit on the payment day after the preview. The approval is refused, the preview refreshed, nothing applied.
+      const D=(await run('window.portfolio.getRestatements()')).restatements.candidates[0].paymentDay;await run(`window.portfolio.addCashFlow({day:${JSON.stringify(D)},market:'US',amount:5,note:'late deposit'})`);
+      await run('(()=>{const el=document.querySelector(`[aria-label="Approval note"]`);Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(el,"Checked the KIS statement");el.dispatchEvent(new Event("input",{bubbles:true}));})()');
+      await click('Approve restatement');await until('document.querySelector(`[aria-label="Restatement preview"] .notice`)?.textContent.includes("refreshed preview")','a stale preview is refreshed');assert.equal(approvals(),0,'nothing applied on a stale confirmation');
+      await click('Approve restatement');await until('document.querySelector(`[aria-label="Historical restatements"]`)?.textContent.includes("Approval history")','the approval is recorded');assert.equal(approvals(),1);
+      await run('document.querySelector(`[aria-label="Historical restatements"] details`).open=true');assert.ok(await run('document.querySelector(`[aria-label="Approval history"]`).textContent.includes("In force")'));
+      const by=JSON.parse(db.prepare('SELECT payload FROM valuation_settlement_approvals WHERE account=?').get(acct).payload).approval.by;assert.ok(/this computer/.test(by)&&by!=='fixture','the approver is the main process identity: '+by);
+      await run('document.querySelector(`[aria-label="Historical restatements"]`).scrollIntoView({block:"center"})');await wait(150);await capture('stage34-restatement-approved');db.close();
+    });
     await check('Learning scoreboard scores past decisions against KOSPI',async()=>{
       await navigate('Journal');await click('Scoreboard');await until('Boolean(document.querySelector(`[aria-label="Decision scores by horizon"]`))','Scoreboard missing');
       await until('document.querySelectorAll(".score-bar").length>=2','Decision bars missing (opening the scoreboard fetches prices)');
