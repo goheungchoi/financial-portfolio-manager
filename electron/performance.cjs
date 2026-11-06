@@ -96,7 +96,9 @@ class PerformanceHistory {
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
     const history=this.history(account),flows=this.flows(account).filter(f=>unresolved==='include'||!f.detected);let previous=null,index=1,lastFx=null;const points=[];
-    let corrections=new Map();if(kind!=='KRW'&&this.corrections)try{corrections=this.corrections(account,history)??new Map();}catch{corrections=new Map();}
+    // A correction read that fails is never taken as "no corrections" (stage 3.1 review, P2): every day of the U.S. and
+    // combined series then has no return and no P/L, with the reason.
+    let corrections=new Map(),failed=null;if(kind!=='KRW'&&this.corrections)try{corrections=this.corrections(account,history);if(!(corrections instanceof Map))throw new Error('CORRECTIONS_INVALID');}catch(e){corrections=new Map();failed=`settlement corrections could not be read (${String(e?.message??e).slice(0,80)})`;}
     for(const row of history){
       lastFx=row.fx??lastFx;const recorded=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(recorded))continue;
       const adj=adjustments.filter(a=>a.day===row.day&&(kind==='COMBINED'||a.currency===kind)).reduce((n,a)=>n+(kind==='COMBINED'&&a.currency==='USD'?(lastFx==null?NaN:a.amount*lastFx):a.amount),0);const value=recorded+adj;
@@ -109,8 +111,8 @@ class PerformanceHistory {
       // The day's correction in the series' currency (U.S. dollars at the day's rate in the combined series), and what
       // could not be told: the possible corrections of unknown timing give the P/L a range, and the return is unavailable.
       const cx=previous?corrections.get(row.day):null,rate=kind==='COMBINED'?lastFx:1,conv=v=>v*(rate??NaN);
-      const correction=cx?.items?.length?conv(cx.usd):0,unknownC=cx?.unknown?.length?cx.items.filter(i=>i.usd==null).map(i=>conv(i.possibleUSD??0)):[];
-      const dailyReturn=unknownC.length?null:base>0&&Number.isFinite(base)?(value-correction)/base-1:null;
+      const correction=cx?.items?.length?conv(cx.usd):0,unknownC=cx?.unknown?.length?cx.items.filter(i=>i.usd==null).map(i=>conv(i.possibleUSD??0)):[];const lost=Boolean(failed&&previous);
+      const dailyReturn=unknownC.length||lost?null:base>0&&Number.isFinite(base)?(value-correction)/base-1:null;
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
       const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
@@ -118,11 +120,11 @@ class PerformanceHistory {
       const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
       const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
       const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
-      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length?null:known;
+      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost?null:known;
       const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
         :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
       points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
-        ...(unknownC.length?{unavailable:cx.unknown}:{}),dailyReturn,index,pnl,...ranged,high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
+        ...(unknownC.length||lost?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[])]}:{}),dailyReturn,index,pnl,...(lost?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
     }
     return points;
   }

@@ -91,12 +91,24 @@ test('C1/C7: events belong to the first recorded day whose last reading follows 
   // Valuation corrections (approved adjustments) still apply on top (C8).
   w.perf.adjustments=()=>[{day:d2.day,market:'US',currency:'USD',amount:5}];const [,,a2]=w.points();assert.equal(a2.adjustment,5);assert.equal(a2.correction,100);
 });
-test('C3: a timing resolved "paid earlier" for a reading inside the day is a +$100 correction; one whose reading straddles the day boundary stays unknown',()=>{
-  // The reading interval starts after day 0's last reading.
-  const w=started();w.nextDay();w.detect();w.later(MIN);w.us.price=1010;const r=w.reconcile('A');w.later(MIN);w.detect();const [e]=w.fd.timing('a');assert.ok(e.after>=w.perf.history('a')[0].at);
-  w.fd.resolveTiming('a',e.id,{reconciliationId:r.id,paidHere:false});w.record();const [,p]=w.points();assert.equal(p.correction,100);close(p.pnl,10);close(p.dailyReturn,10/1400);
-  // The reading interval began before day 0's last reading: the payment may have been on day 1 or before; unknown.
+test('C3 (review of 093b44f, P1): "paid earlier" places the payment before the day only when the reading it was resolved for began at or before the previous day\'s last reading',()=>{
+  // The reading interval began after day 0's last reading: the payment may have been on day 1 before that reading.
+  // Unknown; no loss is reported (the reviewer's case: paid after yesterday's close, before today's detector interval).
+  const w=started();w.nextDay();w.us.cash=400;w.detect();w.later(MIN);w.us.price=1010;const r=w.reconcile('A');w.later(MIN);w.detect();const [e]=w.fd.timing('a');assert.ok(e.after>w.perf.history('a')[0].at);
+  w.fd.resolveTiming('a',e.id,{reconciliationId:r.id,paidHere:false});w.record();const [,p]=w.points();
+  assert.equal(p.dailyReturn,null);assert.equal(p.pnl,null);assert.match(p.unavailable[0],/is not known/);assert.equal(w.summary().periods.find(x=>x.label==='All').twr,null);
+  // The reading interval began at or before day 0's last reading: "earlier" is before the day. A +$100 correction.
   const x=world();x.see([]);x.see([order('A',100)]);x.detect();x.later(MIN);x.record();x.nextDay();x.us.price=1010;const q=x.reconcile('A');x.later(MIN);x.detect();const [g]=x.fd.timing('a');
-  assert.ok(g.after<x.perf.history('a')[0].at,'straddles the boundary');x.fd.resolveTiming('a',g.id,{reconciliationId:q.id,paidHere:false});x.record();const [,y]=x.points();
-  assert.equal(y.dailyReturn,null);assert.match(y.unavailable[0],/is not known/);
+  assert.ok(g.after<=x.perf.history('a')[0].at,'the reading began before the day');x.fd.resolveTiming('a',g.id,{reconciliationId:q.id,paidHere:false});x.record();const [,y]=x.points();
+  assert.equal(y.correction,100);assert.deepEqual(y.correctionItems.map(i=>i.kind),['reconciliation paid before the day']);close(y.pnl,10);close(y.dailyReturn,10/1400);
+});
+test('C9 (review of 093b44f, P2): a correction read that fails, or returns something unreadable, leaves every U.S. and combined return unavailable with the reason; never zero',()=>{
+  const w=started();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();w.nextDay();w.us.price=1010;w.record();
+  for(const broken of [()=>{throw new Error('disk I/O error');},()=>null,()=>({})]){w.perf.corrections=broken;
+    for(const kind of ['USD','COMBINED']){const [,d1,d2]=w.points(kind);for(const d of [d1,d2]){assert.equal(d.dailyReturn,null,kind);assert.equal(d.pnl,null,kind);assert.match(d.unavailable[0],/settlement corrections could not be read/);assert.equal(d.pnlRange,undefined);}
+      const all=w.summary(kind).periods.find(x=>x.label==='All');assert.equal(all.twr,null);assert.equal(all.gain,null);}
+    assert.notEqual(w.points('KRW')[1].dailyReturn,null,'the Korean series reads no U.S. correction');}
+  // A corrupt stored timing record is an error too, not "no timing".
+  const x=world();x.see([]);x.see([order('A',100)]);x.record();x.nextDay();x.detect();x.reconcile('A',{settledOn:'2026-11-01'});x.record();
+  x.db.prepare("UPDATE flow_watch SET payload='{' WHERE account='a'").run();const [,d]=x.points();assert.equal(d.dailyReturn,null);assert.match(d.unavailable[0],/could not be read/);
 });
