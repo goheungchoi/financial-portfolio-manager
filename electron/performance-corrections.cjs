@@ -32,7 +32,7 @@ class SettlementCorrections{
   // (U.S. dollars, the low series), items what makes it, unknown the reasons it cannot be told (empty when known).
   byDay(account,rows){const out=new Map(),resolved=this.resolved(account),days=rows.filter(r=>Number.isFinite(r.at));
     const add=(day,usd,item)=>{const d=out.get(day)??{usd:0,items:[],unknown:[]};d.usd=round(d.usd+usd);d.items.push({...item,usd:round(usd)});out.set(day,d);};
-    const unknown=(day,reason,item)=>{const d=out.get(day)??{usd:0,items:[],unknown:[]};d.unknown.push(reason);d.items.push({...item,usd:null});out.set(day,d);};
+    const unknown=(day,reason,item)=>{const d=out.get(day)??{usd:0,items:[],unknown:[]};d.unknown.push(reason);d.items.push({...item,reason,usd:null});out.set(day,d);};
     for(let i=1;i<days.length;i++){const prev=days[i-1].at,at=days[i].at,day=days[i].day;
       const x=this.inFlight.explained(account,{since:prev,from:prev,until:at,sides:['Buy']});
       if(Math.abs(x.usd)>=0.005)add(day,x.usd,{kind:'basis change',note:'settlement ledger change with no cash in the day: pre-tracking fill, conflict, reconciliation of an earlier or no payment, or reversal'});
@@ -45,8 +45,21 @@ class SettlementCorrections{
     // C4: reclassified settlement cash on the flow's day (the first recorded day on or after it), records in force only.
     for(const r of this.reconciliation?.active(account)??[]){const fl=r.effects?.flows;if(!fl?.original||r.side!=='Buy')continue;
       const row=days.find(d=>d.day>=fl.original.day);if(row&&days.indexOf(row)>0)add(row.day,fl.settlementCents/100,{kind:'payment reclassified from a detected flow',reconciliationId:r.id,flowId:fl.original.id});}
-    // Stage 3.2: days whose return is unavailable unless bounded (SettlementUncertainty below), merged into the same map.
-    if(this.uncertainty)for(const [day,u] of this.uncertainty.byDay(account,rows,out)){const d=out.get(day)??{usd:0,items:[],unknown:[]};if(u.unavailable.length)d.unavailable=u.unavailable;if(u.bounded)d.bounded=u.bounded;out.set(day,d);}
+    const approved=this.approvals?.(account,rows)??[];
+    // Apply the historical value overlay and remove only its matching correction.
+    // The payment-day negative correction exists only for reclassified flows.
+    for(const a of approved){
+      for(const day of a.days){const d=out.get(day)??{usd:0,items:[],unknown:[]};d.adjustmentUSD=(d.adjustmentUSD??0)+a.usd;out.set(day,d);}
+      for(const [day,d] of out){const removed=d.items.filter(i=>i.reconciliationId===a.id&&i.kind==='payment reclassified from a detected flow');for(const i of removed)d.usd=round(d.usd-i.usd);d.items=d.items.filter(i=>!removed.includes(i));}
+      const d=out.get(a.resolutionDay)??{usd:0,items:[],unknown:[]};
+      const unknownItems=d.items.filter(i=>i.reconciliationId===a.id&&i.usd==null);
+      const removed=unknownItems.length?0:a.usd;
+      d.unknown=d.unknown.filter(reason=>!unknownItems.some(i=>i.reason===reason));
+      d.items=d.items.filter(i=>!unknownItems.includes(i));
+      d.usd=round(d.usd-removed);d.items.push({kind:'approved historical restatement',reconciliationId:a.id,usd:-removed});out.set(a.resolutionDay,d);
+    }
+    // Stage 3.2: unrelated uncertainty is never cleared by another piece's approval.
+    if(this.uncertainty)for(const [day,u] of this.uncertainty.byDay(account,rows,out,approved)){const d=out.get(day)??{usd:0,items:[],unknown:[]};if(u.unavailable.length)d.unavailable=u.unavailable;if(u.bounded)d.bounded=u.bounded;out.set(day,d);}
     return out;}
 }
 // Stage 3.2: performance is unavailable unless bounded (design v3.3 §3; rules U1-U6 in stage3-spec.md). The recorded value
@@ -77,7 +90,7 @@ class SettlementUncertainty{
   constructor(db,{inFlight,reconciliation=null}={}){if(!inFlight)throw new Error('UNCERTAINTY_NEEDS_TRACKER');this.db=db;this.inFlight=inFlight;this.reconciliation=reconciliation;}
   // rows: the recorded days in order (with their settlement snapshots); corrections: SettlementCorrections' map for the
   // same rows (which reconciliations were paid on their own day). Returns Map day -> {unavailable: reasons, bounded}.
-  byDay(account,rows,corrections=new Map()){const out=new Map(),days=rows.filter(r=>Number.isFinite(r.at)),started=this.inFlight.state(account).startedAt;
+  byDay(account,rows,corrections=new Map(),approved=[]){const out=new Map(),days=rows.filter(r=>Number.isFinite(r.at)),started=this.inFlight.state(account).startedAt;
     const at=day=>{const d=out.get(day)??{unavailable:[],bounded:null};out.set(day,d);return d;},mark=(day,why)=>{const d=at(day);if(!d.unavailable.includes(why))d.unavailable.push(why);};
     if(!Number.isFinite(started))return out;
     const events=this.inFlight.evidence.events(account),side=new Map(),opened=new Map(),amount=new Map();
@@ -95,6 +108,9 @@ class SettlementUncertainty{
         else if(e.kind==='flag')for(const pid of e.pieces??[]){if(side.get(pid)==='Buy')add({pid,side:'Buy',usd:amount.get(pid)??null,why:e.why});}
         else if(e.kind==='overdue'&&side.get(e.pieceId)==='Buy')add({pid:e.pieceId,side:'Buy',usd:e.usd,why:'overdue'});
         else if(e.kind==='review-changed')for(const x of [...(e.before??[]),...(e.after??[])]){if(x.side==='Buy')add({pid:'review:'+x.citationId,side:'Buy',usd:x.usd,why:'under review',review:true});}}
+      for(const [pid] of affected){const approvals=approved.filter(a=>a.pieceId===pid&&day>=a.paymentDay&&day<=a.resolutionDay);
+        const original=amount.get(pid),covered=approvals.reduce((n,a)=>n+a.usd,0);
+        if(original>0&&covered>=original-0.000001&&!this.inFlight.current(account).open.some(p=>p.pid===pid))affected.delete(pid);}
       if(!affected.size)continue;
       // U3: the one bounded case.
       if(affected.size===1){const [[pid,list]]=affected,a=before.filter(x=>x.pid===pid),b=buys(s.last.pieces).filter(x=>x.pid===pid),amounts=new Set(list.map(x=>x.usd));
@@ -104,7 +120,7 @@ class SettlementUncertainty{
       mark(day,`uncertain U.S. buy obligations this day: ${list.slice(0,3).map(describe).join(', ')}${list.length>3?` and ${list.length-3} more`:''}; the return depends on whether they were real, so it is unavailable (it stays so after they are resolved, until a historical correction is approved)`);}
     // U2: misstatement windows.
     const reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target)),records=new Map((this.reconciliation?.active(account)??[]).map(r=>[r.id,r]));
-    for(const e of events){if(e.kind!=='reconciliation'||side.get(e.pieceId)!=='Buy'||reversed.has(e.id)||e.explanation==='rounding')continue;
+    for(const e of events){if(e.kind!=='reconciliation'||side.get(e.pieceId)!=='Buy'||reversed.has(e.id)||e.explanation==='rounding'||approved.some(a=>a.id===e.id))continue;
       const r=days.findIndex(d=>d.at>=e.at);if(r<1)continue;
       if((corrections.get(days[r].day)?.items??[]).some(x=>x.kind==='reconciliation paid that day'&&x.reconciliationId===e.id))continue;
       const flowDay=e.reclassified?records.get(e.id)?.effects?.flows?.original?.day:null;
