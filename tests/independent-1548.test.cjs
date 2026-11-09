@@ -106,3 +106,65 @@ test('R3: a configured today-flow reader returning nothing or a non-number is un
   w.engine.flowsToday=()=>500;w.balance.reportedTotal=10500;assert.equal(w.engine.currentLoss().loss,0,'a deposit is not gain');
   delete w.engine.flowsToday;w.balance.reportedTotal=10000;assert.equal(w.engine.currentLoss().loss,0);assert.equal(w.engine.currentLoss().unavailable,undefined);
 });
+
+// R4 (round 2): whether a submission is automatic belongs to that call; a competing call refused as busy cannot change it.
+// A gate that pauses one step of the first submission until released.
+function gate(){let release,entered;const paused=new Promise(r=>release=r),reached=new Promise(r=>entered=r);return {release,reached,wait:async()=>{entered();await paused;}};}
+function pauseFunds(w){const g=gate(),real=w.engine.funding.admit.bind(w.engine.funding);w.engine.funding.admit=async a=>{await g.wait();return real(a);};return g;}
+test('R4: an overlapping automatic call refused as busy cannot switch off the first one\'s final approval check (unclassified)',async()=>{
+  const w=withMaster(world({funding:true}));w.engine.enableAuto('ENABLE AUTO MOCK');const g=pauseFunds(w);
+  const p=w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000}),p2=w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});
+  const first=w.engine.autoSubmit(p.id);await g.reached;
+  await assert.rejects(w.engine.autoSubmit(p2.id),/KIS_ORDER_BUSY/);assert.equal('submittingAutomatically' in w.engine,false,'no engine-wide mode exists to be cleared');
+  w.db.exec('DELETE FROM securities');g.release();const r=await first;
+  assert.equal(r.reason,'APPROVAL_REQUIRED');assert.equal(w.places(),0,'nothing sent');const o=w.engine.orders().find(x=>x.id===p.id);assert.equal(o.status,'Ready');assert.equal(o.requiresApproval,true);
+  assert.equal(w.engine.funding.commitments('audit').krw,0,'its reservation is released as unsent');
+});
+test('R4: the same overlap with a leveraged policy changed to approval-only while the first waits',async()=>{
+  const w=withMaster(world({funding:true}),[['122630','KODEX Leverage','KODEX Leverage','KOSPI','etf']]);const x=w.engine.exposure;x.setOverride('122630',2);x.savePolicy('audit',{leveragedEtps:{enabled:true,auto:true,maxPctOfEquity:100}});
+  w.engine.enableAuto('ENABLE AUTO MOCK');const g=pauseFunds(w);
+  const p=w.engine.propose({symbol:'122630',side:'Buy',quantity:1,limitPrice:1000}),p2=w.engine.propose({symbol:'122630',side:'Buy',quantity:1,limitPrice:1000});
+  const first=w.engine.autoSubmit(p.id);await g.reached;await assert.rejects(w.engine.autoSubmit(p2.id),/KIS_ORDER_BUSY/);
+  x.savePolicy('audit',{leveragedEtps:{auto:false}});g.release();const r=await first;
+  assert.equal(r.reason,'APPROVAL_REQUIRED');assert.equal(w.places(),0);assert.equal(w.engine.funding.commitments('audit').krw,0);
+});
+test('R4: an automatic extended-session order still waits for approval under an overlap at prepare-order',async()=>{
+  const w=withMaster(world());w.engine.enableAuto('ENABLE AUTO MOCK');const g=gate(),request=w.engine.broker.request;
+  w.engine.broker.request=async(op,payload)=>{if(op==='prepare-order'){const r=await request(op,payload);await g.wait();return {...r,session:{id:'pre-market',regular:false,approval:true}};}return request(op,payload);};
+  const p=w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000}),p2=w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});
+  const first=w.engine.autoSubmit(p.id);await g.reached;await assert.rejects(w.engine.autoSubmit(p2.id),/KIS_ORDER_BUSY/);g.release();
+  const r=await first;assert.equal(r.reason,'APPROVAL_REQUIRED');assert.equal(w.places(),0);assert.equal(w.engine.orders().find(x=>x.id===p.id).status,'Ready');
+});
+test('R4: a manual submission stays manual through an overlapping automatic call; it is your approval and is sent',async()=>{
+  const w=withMaster(world({funding:true}));w.engine.enableAuto('ENABLE AUTO MOCK');const g=pauseFunds(w);
+  const p=w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000}),p2=w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});
+  const manual=w.engine.submit(p.id,'PLACE MOCK ORDER');await g.reached;await assert.rejects(w.engine.autoSubmit(p2.id),/KIS_ORDER_BUSY/);
+  w.db.exec('DELETE FROM securities');g.release();const r=await manual;assert.equal(r.status,'Accepted');assert.equal(w.places(),1);
+  // The refused automatic one, retried after the order above is reconciled, is held as an automatic order must be.
+  w.engine.writeOrder({...w.engine.orders().find(x=>x.id===p.id),status:'Filled',filled:1});
+  const again=await w.engine.autoSubmit(p2.id);assert.equal(again.reason,'APPROVAL_REQUIRED');assert.equal(w.places(),1);
+});
+
+// The late-basis decision (round 2): with a loss limit on, automatic new exposure stays restricted for the rest of the day.
+function lateDay(limits={}){const w=world({net:()=>({low:1000,high:1000,version:'net-test'}),limits});w.setDay('2030-01-11');w.engine.netEquityOf=failing;w.engine.observeBalance(w.balance);
+  w.engine.netEquityOf=()=>({low:950,high:950,version:'net-test'});w.engine.observeBalance(w.balance);assert.ok(w.engine.policy().baselineLate);return w;}
+test('late basis: the loss since it is shown and new exposure stays restricted for the day; the next day clears it; no limit restricts nothing',()=>{
+  const w=lateDay();let l=w.engine.currentLoss();assert.equal(l.loss,0,'still measured');assert.equal(l.restrictedForDay,true);assert.ok(l.reasons.some(r=>/rest of the day/.test(r)));
+  w.engine.netEquityOf=()=>({low:1000,high:1000,version:'net-test'});assert.equal(w.engine.currentLoss().restrictedForDay,true,'a later gain does not lift it');
+  w.setDay('2030-01-12');w.engine.observeBalance(w.balance);l=w.engine.currentLoss();assert.equal(l.restrictedForDay,undefined);assert.equal(l.late,undefined);
+  const off=lateDay({lossLimit:{mode:'off',value:0}});assert.equal(off.engine.currentLoss().late,true);assert.equal(off.engine.currentLoss().restrictedForDay,undefined,'a deliberately disabled limit is its own policy');
+});
+test('late basis: automatic raises are held, lower prices still go; automation blocks conditional buys but not sales',async()=>{
+  const w=lateDay();w.engine.save({id:'o1',accountKey:'audit',market:'KR',environment:'mock',symbol:'005930',side:'Buy',quantity:1,limitPrice:1000,notional:1000,filled:0,status:'Accepted',brokerOrderId:'1',day:w.engine.day(),createdAt:Date.now()});
+  await assert.rejects(w.engine.revise('o1',{price:1100}),/DAILY_LOSS_RESTRICTED/);await w.engine.revise('o1',{price:900});assert.equal(w.calls.filter(c=>c.op==='revise-order').length,1);
+  const {Automation}=require('../electron/automation.cjs'),{PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'Audit',price:1000}],()=>[]),{},()=>{});let proposed=0;
+  a.configure({scope:'kis',autoSubmit:true,conditionalOrders:true,conditionalAutoSubmit:true,lossAction:'review'});
+  a.marketQuotes=()=>[{symbol:'005930',price:1000,timestamp:Date.now()}];a.placementPrice=async()=>({price:1000});const loss=w.engine.currentLoss();
+  a.live={market:'KR',identity:()=>'audit',autoEnabled:true,enabled:true,getState:()=>({loss}),orders:()=>[],
+    context:async()=>({marketSession:{open:true},quotes:a.marketQuotes(),positions:{'005930':{quantity:5}},equity:100000,cash:100000}),propose:()=>({id:'p'+(++proposed),status:'Ready'}),autoSubmit:async id=>({id,status:'Accepted'})};
+  assert.deepEqual(a.emergencyState().lateMarkets,['KR']);assert.deepEqual(a.emergencyState().unavailableMarkets,[]);
+  const arm=side=>{const r=a.desk.setOrder(a.watchScope(),{action:'add',symbol:'005930',side,quantity:1,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:2000}],combine:'all',purpose:side==='Buy'?'entry':'stop_loss',expiresInHours:1,reason:'test'},{config:a.config,universe:['005930'],quotes:a.marketQuotes()});return a.desk.orders(a.watchScope()).find(x=>x.id===r.id);};
+  const buy=await a.fireConditional(arm('Buy'));assert.equal(proposed,0,'no automatic buy, though the loss-limit response is review');assert.match(JSON.stringify(buy??a.desk.recentOrders(a.watchScope(),5)),/rest of the day/);
+  await a.fireConditional(arm('Sell'));assert.equal(proposed,1,'a protective sale is not held back');
+});
