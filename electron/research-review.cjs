@@ -5,8 +5,11 @@ function refusal(args,symbols){
   if(!symbols.includes(symbol))return `${symbol||'The symbol'} is not in this review's universe, so it has no quotes or price data here. Use get_company_research for company facts, or update_watchlist to add it to the next review's universe.`;
   return 'Invalid request: pass exactly symbol and dataset.';
 }
-// Up to three research rounds of up to four tool requests each; the fourth request must answer.
-const ROUNDS=4,MAX_CALLS=4;
+// Up to three research rounds of up to four tool requests each; the fourth request must answer. A round with more
+// requests than its allowance (the instructions say four) runs the first four and answers each of the rest as not run,
+// so the model can ask again; a batch over HARD_MAX_CALLS is refused as malformed (1.5.48 audit, A5).
+const ROUNDS=4,MAX_CALLS=4,HARD_MAX_CALLS=12;
+const protocolError=(rule,extra={})=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule,...extra}});
 // Before every model call the complete request is measured as it will be sent. Older results are condensed or become
 // references first; if the latest round is still too large, its results are bounded again to the space left (whole
 // parts kept, the rest named so the agent can ask for them), and then become references. A request that still does not
@@ -39,6 +42,9 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   // Every tool result is kept whole for this review (as section result-N of get_context_detail), so whatever bounding
   // cuts or leaves out can be read in full, by path, continuing from each reply's next.from. The meter counts what was asked, read and sent.
   const store=require('./review-context.cjs').resultStore(detail),meter=require('./research-meter.cjs').createMeter();
+  // What research tools changed before the review ended (desk orders, triggers, notes, the watch and the interval): a
+  // review that fails afterwards reports these apart from its result, never as "nothing happened" (1.5.48 audit, A5).
+  const changes=[];const applied=(name,value)=>{if(value&&typeof value==='object'&&['rejected','unavailable','error'].includes(value.status))return;changes.push({tool:name,status:typeof value?.status==='string'?value.status.slice(0,30):'applied',...(value?.id?{id:String(value.id).slice(0,60)}:{})});};
   const done=()=>meter.summary(watched);
   let perCall=16000;const answer=(call,value,keep=true,runCache=false)=>{const sent=keep?store.keep(call.callId,value,perCall):require('./review-context.cjs').bound(value,perCall);
     meter.call(call.name,call.args,value,sent,{runCache});continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(sent)});};
@@ -63,19 +69,24 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
       }
       const {continuation:_,...final}=result;return {...final,usage,metrics:done()};
     }
-    if(!evidence||round===ROUNDS-1||result.toolCalls.length>MAX_CALLS||!Array.isArray(result.continuation))throw new Error('INVALID_AI_RESPONSE');
+    const tools=[...new Set(result.toolCalls.map(c=>String(c.name).slice(0,40)))].slice(0,8);
+    if(!evidence)throw protocolError('a tool request in a review without research',{round:round+1,toolCount:result.toolCalls.length,tools});
+    if(round===ROUNDS-1)throw protocolError('a tool request on the final round',{round:round+1,toolCount:result.toolCalls.length,tools});
+    if(result.toolCalls.length>HARD_MAX_CALLS)throw protocolError(`more tool requests at once than the ceiling of ${HARD_MAX_CALLS}`,{round:round+1,toolCount:result.toolCalls.length,tools});
+    if(!Array.isArray(result.continuation))throw protocolError('a tool request without its conversation',{round:round+1});
     keepFrom=Array.isArray(continuation)?continuation.length:0;continuation=result.continuation;
+    const over=result.toolCalls.slice(MAX_CALLS);if(over.length)log('System','Research requests over the round limit',`${result.toolCalls.length} requests in round ${round+1}; the first ${MAX_CALLS} run, ${over.length} answered as not run (${over.map(c=>c.name).join(', ')}).`);
     // Before this round's results are added: older results are condensed or referenced first, then the space left
     // (below the follow-up limit, with room for the model's reply) is shared by the round's calls, at most 16 KB each.
     {const cf=require('./context-fit.cjs');const calls=Math.max(1,result.toolCalls.length);const fitted=await cf.fit(continuation,{keepFrom:continuation.length,compact,refs:store.refs(),targetBytes:cf.LIMIT*cf.TARGET-calls*8000});if(fitted.steps.length){continuation=fitted.items;log('System','Research context condensed',JSON.stringify(fitted.steps));}
       perCall=Math.max(1500,Math.min(16000,Math.floor((cf.LIMIT*cf.TARGET-cf.size(continuation))/calls)-200));}
-    for(const call of result.toolCalls){
+    for(const call of result.toolCalls.slice(0,MAX_CALLS)){
       // Summarized sections are read in full on request (review-context.cjs).
       if(call.name==='get_context_detail'){const section=String(call.args?.section??'');const value=store.read(call.args,Math.min(8000,perCall),call.callId);log('Tool','Context detail · '+section+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));answer(call,value,false);continue;}
-      if(call.name==='set_review_interval'&&setInterval){const value=await via('set_review_interval',setInterval)(call.args);log('Tool','Review interval updated',JSON.stringify(value));answer(call,value);continue;}
-      if(call.name==='set_review_watch'&&setWatch){const value=await via('set_review_watch',setWatch)(call.args);log('Tool','Review watch updated',JSON.stringify(value));answer(call,value);continue;}
+      if(call.name==='set_review_interval'&&setInterval){const value=await via('set_review_interval',setInterval)(call.args);log('Tool','Review interval updated',JSON.stringify(value));applied(call.name,value);answer(call,value);continue;}
+      if(call.name==='set_review_watch'&&setWatch){const value=await via('set_review_watch',setWatch)(call.args);log('Tool','Review watch updated',JSON.stringify(value));applied(call.name,value);answer(call,value);continue;}
       // Desk tools: formulas, triggers, notes and conditional orders. A refused request is answered, not fatal; a changed account still stops the review.
-      if(actions?.[call.name]){log('Agent','Desk request · '+call.name,JSON.stringify(call.args));let value;try{value=await via(call.name,actions[call.name])(call.args);}catch(error){if(error.message==='STALE_DECISION')throw error;value={status:'rejected',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DESK_REQUEST_FAILED'};}log('Tool','Desk result · '+call.name,JSON.stringify(value));answer(call,value);continue;}
+      if(actions?.[call.name]){log('Agent','Desk request · '+call.name,JSON.stringify(call.args));let value;try{value=await via(call.name,actions[call.name])(call.args);}catch(error){if(error.message==='STALE_DECISION')throw error;value={status:'rejected',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DESK_REQUEST_FAILED'};}log('Tool','Desk result · '+call.name,JSON.stringify(value));applied(call.name,value);answer(call,value);continue;}
       if(discovery&&['screen_market','search_securities','update_watchlist','get_company_research','get_market_overview'].includes(call.name)&&discovery[call.name]){log('Agent','Discovery request',JSON.stringify(call.args));const key=call.name==='update_watchlist'?null:call.name+JSON.stringify(call.args);let value=key?cache.get(key):undefined;const reused=value!==undefined;if(!value){try{value=await via(call.name,discovery[call.name])(call.args);}catch(error){value={status:'unavailable',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DISCOVERY_FAILED'};}if(key)cache.set(key,value);}log('Tool','Discovery result',JSON.stringify(value));answer(call,value,true,reused);continue;}
       // A refusal names what was asked and why, so the agent can switch tools and the console shows the cause.
       if(call.name!=='get_market_evidence'||!validRequest(call.args,context.universe.map(row=>row.symbol))){const value={status:'rejected',request:call.args??null,reason:call.name==='get_market_evidence'?refusal(call.args,context.universe.map(row=>row.symbol)):'UNKNOWN_TOOL'};log('Tool','Request refused · '+call.name,JSON.stringify(value));answer(call,value);continue;}
@@ -84,8 +95,10 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
       if(!value){value=await via('get_market_evidence',args=>evidence.get(args,context))(call.args);cache.set(key,value);}
       log('Tool','Market data result',JSON.stringify(value));answer(call,value,true,reused);
     }
+    // The requests over the round's allowance, answered in their order after the ones that ran: nothing was done for them.
+    for(const call of over)continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify({status:'not_run',reason:`over this round's limit of ${MAX_CALLS} requests; nothing was done for it. Ask again in the next round if it is still needed.`})});
   }
   throw new Error('INVALID_AI_RESPONSE');
-  }catch(error){if(error&&typeof error==='object'&&!error.metrics)error.metrics=done();throw error;}
+  }catch(error){if(error&&typeof error==='object'){if(!error.metrics)error.metrics=done();if(changes.length&&!error.applied)error.applied=changes;}throw error;}
 }
-module.exports={researchReview,fitRequest,ROUNDS,MAX_CALLS};
+module.exports={researchReview,fitRequest,ROUNDS,MAX_CALLS,HARD_MAX_CALLS};

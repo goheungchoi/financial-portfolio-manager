@@ -5,6 +5,9 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const {InFlight,value,VERSION}=require('../electron/valuation.cjs');const {FundingLedger}=require('../electron/funding-ledger.cjs');
 const {PerformanceHistory}=require('../electron/performance.cjs');const {Reconciliation}=require('../electron/settlement-reconciliation.cjs');
 const {SettlementBaseline}=require('../electron/settlement-baseline.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');const {FlowDetector}=require('../electron/flow-detector.cjs');
+// Deterministic time (1.5.48 audit): the fixtures run around the engine's own Date.now() stamp, so Date.now runs from a
+// fixed midday in Seoul on D. A run late in the U.S. afternoon used to cross a Seoul day boundary and fail F5.
+{const realNow=Date.now,startReal=realNow(),FIXED=Date.parse('2026-11-05T03:00:00Z');Date.now=()=>FIXED+(realNow()-startReal);}
 const MIN=60000,HOUR=3600000,DAY=86400000,D='2026-11-05',SCOPE={account:'a',environment:'live',market:'US'},W={start:'2026-10-01',end:'2026-11-09'};
 const k=(extra={})=>({tradeDate:D,settlementDate:'2026-11-06',ticker:'TEST',side:'Buy',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementKRW:130000,feesUSD:0,exchangeRate:1300,...extra});
 const order=(id,extra={})=>({id,symbol:'NASD:'+(extra.ticker??'TEST'),side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'live',accountKey:'a:US',market:'US',day:D,createdAt:Date.parse('2026-11-01T15:00:00Z'),...extra});

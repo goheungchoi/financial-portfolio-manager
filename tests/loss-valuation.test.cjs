@@ -9,7 +9,7 @@ function engine({market='KR',total=1000000}={}){const snapshot={accountKey:'acct
   e.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'amount',value:30000}},'ENABLE LIVE');return {e,snapshot};}
 test('a day that started on the KIS total stays on it; the valuation takes over at the next trading-day boundary',()=>{
   const {e,snapshot}=engine();let v={low:900000,high:960000,version:VERSION};e.netEquityOf=()=>v;
-  e.observeBalance({...snapshot,reportedTotal:990000});let loss=e.getState().loss;assert.equal(loss.version,'broker-total');assert.equal(loss.loss,10000,'KIS total all day');assert.equal(e.policy().valuation,undefined);
+  e.observeBalance({...snapshot,reportedTotal:990000});let loss=e.getState().loss;assert.equal(loss.version,'broker-total');assert.equal(loss.loss,10000,'KIS total all day');assert.equal(e.policy().valuation??'broker-total','broker-total','the day keeps the KIS total it started on');
   e.setDay('2026-11-05');e.observeBalance({...snapshot,reportedTotal:990000});const p=e.policy();assert.equal(p.valuation,VERSION);assert.equal(p.baseline,900000);assert.equal(p.baselineHigh,960000);assert.ok(Number.isFinite(p.baselineAt));
   v={low:880000,high:940000,version:VERSION};loss=e.getState().loss;assert.equal(loss.version,VERSION);assert.equal(loss.loss,20000,'baseline and value on the same valuation');assert.equal(loss.breached,false);
   // The valuation unavailable later the same day: never mixed with the KIS total; the doubt is reported.

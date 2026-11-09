@@ -222,18 +222,29 @@ class AiClient {
       const response=await this.measured('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(75000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'portfolio-review-v1',max_output_tokens:selected.maxOutput,...(options.research?{tools:reviewTools(context),parallel_tool_calls:true,tool_choice:options.final?'none':'auto'}:{}),reasoning:{effort:selected.effort},instructions:REVIEW_INSTRUCTIONS,input,text:{format:{type:'json_schema',name:'portfolio_decision',strict:true,schema:decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length))}}})});
       if(!response.ok){const e=await require('./ai-errors.cjs').responseError(response);if(e.message==='AI_CONTEXT_LIMIT'){const z=this.lastRequestSizes??{};e.detail={limit:'model context window',wireBytes:z.totalBytes,limitBytes:'model',largest:[`input:${z.inputBytes}`,`instructions:${z.instructionsBytes}`,`tools:${z.toolsBytes}`]};}throw e;}
       const text=await response.text();if(text.length>100000)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
-      if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
+      if(body.status!=='completed')throw body.incomplete_details?.reason==='max_output_tokens'?new Error('AI_OUTPUT_LIMIT'):Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'an incomplete response',status:String(body.status??'missing').slice(0,30),reason:String(body.incomplete_details?.reason??'').slice(0,40)}});
       if((body.output??[]).some(i=>(i.content??[]).some(c=>c.type==='refusal')))throw new Error('AI_REFUSED');
       const calls=(body.output??[]).filter(item=>item.type==='function_call');
       if(calls.length){
-        if(!options.research||options.final||calls.length>require('./research-review.cjs').MAX_CALLS||calls.some(call=>![...'get_market_evidence set_review_watch set_review_interval get_context_detail'.split(' '),...(context.discovery?.enabled?[...require('./discovery.cjs').TOOL_NAMES,'get_company_research','get_market_overview']:[]),...deskTools(context).map(t=>t.name)].includes(call.name)||typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>(call.name==='save_assessment'?6000:2000)))throw new Error('INVALID_AI_RESPONSE');
-        return {toolCalls:calls.map(call=>({name:call.name,callId:call.call_id,args:JSON.parse(call.arguments)})),continuation:[...input,...body.output],usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model};
+        // The bounded tool protocol (1.5.48 audit, A5): a well-formed batch of offered tools comes back whole, up to a hard
+        // ceiling; the research loop runs the round's allowance and answers the rest as not run (research-review.cjs). Each
+        // refusal names its rule, the tool count and the tools (names only), never the arguments or the portfolio.
+        const offered=[...'get_market_evidence set_review_watch set_review_interval get_context_detail'.split(' '),...(context.discovery?.enabled?[...require('./discovery.cjs').TOOL_NAMES,'get_company_research','get_market_overview']:[]),...deskTools(context).map(t=>t.name)];
+        const names=calls.map(call=>String(call.name).slice(0,40)),invalid=rule=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule,toolCount:calls.length,tools:[...new Set(names)].slice(0,8),status:body.status}});
+        if(!options.research)throw invalid('a tool request in a review without research');
+        if(options.final)throw invalid('a tool request on the final round');
+        if(calls.length>require('./research-review.cjs').HARD_MAX_CALLS)throw invalid(`more tool requests at once than the ceiling of ${require('./research-review.cjs').HARD_MAX_CALLS}`);
+        if(calls.some(call=>!offered.includes(call.name)))throw invalid('a tool that was not offered');
+        if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>(call.name==='save_assessment'?6000:2000)))throw invalid('a malformed or oversized tool request');
+        let toolCalls;try{toolCalls=calls.map(call=>({name:call.name,callId:call.call_id,args:JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments that are not valid JSON');}
+        return {toolCalls,continuation:[...input,...body.output],usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       // Validation reads the authoritative state the app sends beside the prompt (options.validation: the position memory
       // before any compression), never the shaped prompt, where position memory can be a reference (release review
       // 2026-11-05, P1). Without it, the prompt's memory is used only when it is the full list; anything else fails.
-      const memory=validationMemory(context,options);const decision=validateDecision(JSON.parse(output),context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
+      let raw;try{raw=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:output.trim()?'a decision that is not valid JSON':'no decision and no tool request',status:body.status}});}
+      const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {decision,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error.detail)safe.detail=error.detail;throw safe;}
