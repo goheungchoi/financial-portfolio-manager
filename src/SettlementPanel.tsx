@@ -32,36 +32,50 @@ const rid=()=>crypto.randomUUID();
 const call=(name:string,...args:unknown[])=>window.portfolio?window.portfolio.settlementAction(name,...args):Promise.resolve({ok:false,error:'NOT_CONNECTED',state:null} as SettlementReply);
 
 export function SettlementPanel(){
-  const [state,setState]=useState<SettlementState|null>(null);const [busy,setBusy]=useState('');const [open,setOpen]=useState<string|null>(null);
+  const [state,setState]=useState<SettlementState|null>(null);const [busy,setBusy]=useState('');const [open,setOpen]=useState<string|null>(null);const [review,setReview]=useState(false);
   const load=useCallback(async()=>{const r=await call('get');if(r.state!==undefined)setState(r.state);},[]);
   useEffect(()=>{void load();const t=setInterval(()=>void load(),30000);return()=>clearInterval(t);},[load]);
   const run=async(key:string,name:string,...args:unknown[])=>{setBusy(key);try{const r=await call(name,...args);if(r.state)setState(r.state);if(!r.ok)toast(message(r),'error');return r;}finally{setBusy('');}};
   if(!state)return null;
   const s=state.summary,quiet=!state.pieces.length&&!state.reconciliations.length&&!state.timing.length&&!state.funding.length;
   const line=quiet?'Nothing to reconcile.':[s.unresolved.buysUSD>0.005&&`${usd(s.unresolved.buysUSD)} of buys unresolved`,s.unresolved.sellsUSD>0.005&&`${usd(s.unresolved.sellsUSD)} of sales unresolved`,(s.overdue.buysUSD+s.overdue.sellsUSD)>0.005&&`${usd(s.overdue.buysUSD+s.overdue.sellsUSD)} overdue`,s.fundingRetainedUSD>0.005&&`${usd(s.fundingRetainedUSD)} of buy funding still committed`,s.timingOpen>0&&`${s.timingOpen} timing to confirm`].filter(Boolean).join(' · ')||'Fills settling normally.';
+  // 1.5.48 UI: by default one line (how many trades need their settlement confirmed and their signed total) and one
+  // Review button; the trades, timings, retained funding and records open under it. Nothing here is hidden when it
+  // needs you: the line names every unresolved amount.
+  const need=state.pieces.filter(p=>p.why||p.overdue||p.pretracking),total=need.reduce((n,p)=>n+p.signedUSD,0),reserved=state.funding.reduce((n,f)=>n+f.retainedUSD,0);
+  const headline=need.length?`${need.length} older trade${need.length===1?' needs':'s need'} settlement confirmation · ${signed(total)}`:reserved>0.005?`${usd(reserved)} of buy funding still reserved`:state.pieces.length?`${state.pieces.length} trade${state.pieces.length===1?'':'s'} settling normally`:quiet?'Nothing to reconcile.':'Fills settling normally.';
+  const hasDetail=!quiet;
   return <section className="trade-card settlement-panel" id="settlements" aria-label="U.S. settlements">
-    <div className="section-head"><div><h2>Settlements</h2><small>{line}</small></div></div>
-    {state.pieces.length>0&&<ul className="settlement-list" aria-label="Open settlement pieces">{state.pieces.map(p=><li key={p.pieceId}><PieceRow piece={p} busy={busy} open={open===p.pieceId} onOpen={()=>setOpen(open===p.pieceId?null:p.pieceId)}
+    <div className="section-head"><div><h2>Settlements</h2><small aria-label="Settlement summary">{headline}</small>{hasDetail&&line!=='Fills settling normally.'&&<small className="muted">{line}</small>}</div>{hasDetail&&<button className={review?'':'primary'} aria-expanded={review} onClick={()=>setReview(!review)}>{review?'Close':'Review'}</button>}</div>
+    {review&&<>{state.pieces.length>0&&<ul className="settlement-list" aria-label="Open settlement pieces">{state.pieces.map(p=><li key={p.pieceId}><PieceRow piece={p} busy={busy} open={open===p.pieceId} onOpen={()=>setOpen(open===p.pieceId?null:p.pieceId)}
       onCheck={async()=>{const r=await run('check:'+p.pieceId,'check-again',p.pieceId);if(r.ok)toast(r.data?.busy?'A check of this order is already running.':r.data?.skipped?`Waiting after a failed read; try after ${when(r.data.nextAt)}.`:r.data?.done?'KIS trade history read for this order.':'The check stopped; it resumes where it stopped next time.');}}/>
       {open===p.pieceId&&p.reconcilable&&<ReconcileForm piece={p} flows={state.detectedFlows} onDone={()=>{setOpen(null);void load();}} onState={setState}/>}</li>)}</ul>}
     {state.timing.length>0&&<TimingList entries={state.timing} busy={busy} onResolve={async(entry,reconciliationId,paidHere)=>{const r=await run('timing:'+entry+reconciliationId,'resolve-timing',entry,{reconciliationId,paidHere});if(r.ok)toast(r.data?.flow?`Recorded a detected flow of ${signed(r.data.flow.amount)} to confirm or remove in Performance.`:'Timing recorded.');}}/>}
-    {state.funding.length>0&&<div className="settlement-records" aria-label="Funding still committed"><h3>Funding still committed</h3><ul className="settlement-list">{state.funding.map(f=><li key={f.orderId}><div className="settlement-line"><span className="settlement-title"><b>Buy {f.symbol??f.orderId}</b> · {f.reason}</span><strong className="neg">{usd(f.retainedUSD)}</strong></div><small className="muted">{f.detail} Reconciliation{f.reconciliationIds.length===1?'':'s'} {f.reconciliationIds.map(short).join(', ')}.</small></li>)}</ul></div>}
-    {state.reconciliations.length>0&&<RecordList records={state.reconciliations} onState={setState} onDone={()=>void load()}/>}
+    {state.funding.length>0&&<div className="settlement-records" aria-label="Funding still committed"><h3>Funds still reserved</h3><p className="muted small-line">This money is reserved, not spent: it stays set aside for these buys because their payment or final fills are not verified yet, so it is not counted as available here even though your broker shows it as cash.</p><ul className="settlement-list">{state.funding.map(f=><li key={f.orderId}><div className="settlement-line"><span className="settlement-title"><b>Buy {f.symbol??f.orderId}</b> · {f.reason}</span><strong className="neg">{usd(f.retainedUSD)}</strong></div><small className="muted">{f.detail} Reconciliation{f.reconciliationIds.length===1?'':'s'} {f.reconciliationIds.map(short).join(', ')}.</small></li>)}</ul></div>}
+    {state.reconciliations.length>0&&<RecordList records={state.reconciliations} onState={setState} onDone={()=>void load()}/>}</>}
     <Note summary="How settlements are reconciled">A U.S. fill stays in flight until KIS figures show it. One the app cannot match is unresolved: buys lower equity's low bound and buying capacity, sales leave their proceeds out of the high bound. Reconcile a piece only with a KIS reference; the preview shows every effect before anything is written, and a reconciliation can be reversed. KIS settled-trade records are shown as supporting evidence only. Check again reads this order's KIS trade history once, within a page and time limit; it never starts an AI review.</Note>
   </section>;
 }
 
+// What a trade's state means, in plain words (the raw state and evidence are under "Evidence and what is unknown").
+function plainWhy(p:SettlementPiece){const w=p.why??'';const what=p.side==='Buy'?'payment':'proceeds';
+  if(p.overdue)return `No settlement seen yet; its ${what} needs confirming with your KIS records.`;
+  if(p.pretracking||/verification/.test(w))return `Bought or sold before the app started tracking; its ${what} is not confirmed yet.`;
+  if(/review/.test(w))return 'The KIS record it was matched to changed; it needs checking again.';
+  if(/conflict/.test(w))return 'KIS figures disagree with the app\'s record of this trade.';
+  if(/short|ambiguous|reported|unmatched/.test(w))return `KIS figures could not be matched to this trade exactly; its ${what} needs confirming.`;
+  return w?`Settling (${w}).`:'Settling normally.';}
 function PieceRow({piece:p,busy,open,onOpen,onCheck}:{piece:SettlementPiece;busy:string;open:boolean;onOpen():void;onCheck():void}){
   const k=p.evidence.k,c=p.check;
   const checkLine=c.running?'Checking KIS trade history…':c.job?.nextAt?`Last check failed${c.job.code?` (${c.job.code})`:''}; next try after ${when(c.job.nextAt)}`:c.job?.unread.length?`Check stopped (${(c.job.stopped??'').toLowerCase()}); ${c.job.unread.length} range${c.job.unread.length===1?'':'s'} left`:c.last?.done?`Checked ${when(c.last.at)}: ${c.last.read?.every(r=>r.complete)?'read completely':'some dates could not be read completely'}`:null;
   return <div className={`settlement-piece state-${p.state.replace(/\s/g,'-')}`}>
-    <div className="settlement-line"><span className="settlement-title"><b>{p.side} {p.symbol??p.orderId}</b>{p.shares!=null&&<> · {p.shares} sh</>}{p.orderNumber&&<small> · KIS order {p.orderNumber}</small>}</span>
+    <div className="settlement-line"><span className="settlement-title"><b>{p.side} {p.symbol??p.orderId}</b>{p.shares!=null&&<> · {p.shares} sh</>}{p.filledAt?<small> · filled {new Date(p.filledAt).toLocaleDateString()}</small>:null}</span>
       <strong className={p.signedUSD<0?'neg':'pos'} title={p.side==='Buy'?'Payment for the buy':'Proceeds of the sale'}>{signed(p.signedUSD)}</strong>
-      <span className={`state-pill ${p.overdue?'warn':''}`}>{p.overdue?'overdue':p.state}</span>
+      {p.overdue&&<span className="state-pill warn">overdue</span>}
       <span className="settlement-actions"><button disabled={busy==='check:'+p.pieceId||c.running} onClick={onCheck}>Check again</button>{p.reconcilable&&<button className={open?'':'primary'} onClick={onOpen}>{open?'Close':'Reconcile'}</button>}</span></div>
-    <small className="muted">{p.why??'settling'}{p.since?` since ${when(p.since)}`:''}{p.basis?` · ${p.basis} amount`:''}{checkLine?` · ${checkLine}`:''}</small>
+    <small className="muted">{plainWhy(p)}{checkLine?` · ${checkLine}`:''}</small>
     <Note summary="Evidence and what is unknown"><ul className="settlement-facts">
-      <li>Filled {when(p.filledAt)}{p.pretracking?' (before tracking started)':''} · piece {short(p.pieceId)}</li>
+      <li>Filled {when(p.filledAt)}{p.pretracking?' (before tracking started)':''} · piece {short(p.pieceId)}{p.orderNumber?` · KIS order ${p.orderNumber}`:''} · state {p.state}{p.why?` (${p.why})`:''}{p.since?` since ${when(p.since)}`:''}{p.basis?` · ${p.basis} amount`:''}</li>
       <li>KIS settled record: {k.state==='linked'?`${usd(k.settlementUSD??null)}${k.settlementDate?`, settles ${k.settlementDate}`:''} (version ${k.version}; supporting only)`:k.state==='uncertain'?`possible match, not certain: ${k.reason}`:'none found'}</li>
       {p.evidence.allocatedUSD!=null&&<li>Evidence allocated: {usd(p.evidence.allocatedUSD)}{p.evidence.reconciledUSD>0?` · reconciled: ${usd(p.evidence.reconciledUSD)}`:''}</li>}
       {p.evidence.standby.map(x=><li key={x.id}>Standby evidence {usd(x.usd)}{x.promotedUSD?` (${usd(x.promotedUSD)} promoted)`:''}</li>)}

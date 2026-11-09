@@ -56,8 +56,8 @@ test('P2/P3: every reconciliation by its id with its signed amount, and the timi
 });
 test('P4: the Home summary shows only when unresolved amounts affect equity or buying capacity, or timing is open',()=>{
   const w=world();assert.equal(w.view().home,null,'nothing open');
-  w.open(order('A'));const h=w.view().home;assert.equal(h.title,'U.S. settlements to reconcile');assert.equal(h.detail,'$100.00 lowers equity and buying capacity');assert.equal(h.tone,'warning');
-  const x=world();x.open(order('S',{side:'Sell',resultCosts:{netCash:80},costEstimate:undefined,fillPrice:80,limitPrice:80}));assert.deepEqual(x.view().home,{title:'U.S. settlements to reconcile',detail:'$80.00 of sale proceeds not counted',tone:'info'});
+  w.open(order('A'));const h=w.view().home;assert.equal(h.title,'1 older U.S. trade needs settlement confirmation (−$100.00)','1.5.48: the title counts the trades and their signed total');assert.equal(h.detail,'$100.00 lowers equity and buying capacity');assert.equal(h.tone,'warning');
+  const x=world();x.open(order('S',{side:'Sell',resultCosts:{netCash:80},costEstimate:undefined,fillPrice:80,limitPrice:80}));assert.deepEqual(x.view().home,{title:'1 older U.S. trade needs settlement confirmation (+$80.00)',detail:'$80.00 of sale proceeds not counted',tone:'info'});
   // Reconciled with a settlement date before the interval: nothing open, no timing: hidden.
   w.later(MIN);w.reconcile({pieceId:w.pid('A'),settledOn:'2026-11-01'});w.detect();assert.equal(w.view().home,null);
   // A fill in flight but not unresolved (settling normally) is not a Home row either.
@@ -154,7 +154,7 @@ test('R2 (review of 9ef95fe, P2): funding still committed after a reconciliation
   const w=world();w.open(order('A'));w.later(MIN);w.reconcile({pieceId:w.pid('A'),route:'unknown',settledOn:'2026-11-01'});w.detect();
   const v=w.view();assert.equal(v.pieces.length,0);assert.equal(w.funding.commitments('a').usd,100);
   assert.deepEqual(v.funding.map(f=>[f.orderId,f.retainedUSD,f.reason]),[['A',100,'route unknown']]);assert.equal(v.summary.fundingRetainedUSD,100);
-  assert.deepEqual(v.home,{title:'U.S. settlements to reconcile',detail:'$100.00 of buy funding still committed after reconciliation',tone:'warning'});
+  assert.deepEqual(v.home,{title:'$100.00 of U.S. buy funding still reserved',detail:'$100.00 of buy funding still committed after reconciliation',tone:'warning'});
   // A named route releases it: nothing retained, no row.
   const n=world();n.open(order('A'));n.later(MIN);n.reconcile({pieceId:n.pid('A'),settledOn:'2026-11-01'});n.detect();assert.deepEqual(n.view().funding,[]);assert.equal(n.view().home,null);
   // The estimate ($101 at the fill price) above the $100 reconciled: the $1 difference stays committed and is shown.
