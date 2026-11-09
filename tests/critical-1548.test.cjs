@@ -188,3 +188,16 @@ test('B1: a buy of a product the security master cannot classify waits for appro
   // Through the engine: the proposal carries the approval requirement, so automatic submission waits.
   const w=world();w.engine.exposure=x;const p=w.engine.propose({symbol:'252670',side:'Buy',quantity:1,limitPrice:1000});assert.equal(p.requiresApproval,true);assert.equal(p.product.kind,'unclassified');
 });
+test('B2: combined values on days without an exchange rate stay numbers; a restatement on such a day is unavailable, never NaN',()=>{
+  const {PerformanceHistory,reviewSummary}=require('../electron/performance.cjs');const db=new DatabaseSync(':memory:');let t=Date.parse('2026-11-02T05:00:00Z');const p=new PerformanceHistory(db,()=>t);
+  // Korea-only days first (no rate recorded), as on a profile before the U.S. account loaded, then a day with a rate.
+  for(const [krw,fx] of [[1000,null],[1010,null],[1020,1300]]){p.record('a',{totals:{KRW:krw,USD:fx?0:null,equityKRW:krw},...(fx?{fx:{usdKRW:fx}}:{})});t+=86400000;}
+  p.corrections=()=>new Map();const s=p.summary('a','COMBINED',null);
+  assert.ok(s.points.every(x=>Number.isFinite(x.value)),'no NaN value');close2(s.points[1].dailyReturn,0.01);assert.ok(Number.isFinite(s.periods.find(x=>x.label==='All').gain));
+  assert.ok(reviewSummary(s).timeWeightedReturns.every(r=>r.returnPct==null||Number.isFinite(r.returnPct)),'nor in the review context');
+  // An approved restatement of $10 on the second (rate-less) day: that day is unavailable with the reason, not NaN.
+  const day=s.points[1].day;p.corrections=()=>new Map([[day,{usd:0,items:[],unknown:[],adjustmentUSD:10}]]);const q=p.series('a','COMBINED');
+  assert.ok(q.every(x=>Number.isFinite(x.value)));assert.equal(q[1].dailyReturn,null);assert.match(q[1].unavailable.join(';'),/no exchange rate/);
+  assert.equal(p.series('a','USD').length,1,'the U.S. series has only the day with a U.S. value');
+});
+function close2(a,b){assert.ok(Math.abs(a-b)<1e-9,`${a} vs ${b}`);}
