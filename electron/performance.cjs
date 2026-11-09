@@ -108,7 +108,11 @@ class PerformanceHistory {
     let corrections=new Map(),failed=null;if(kind!=='KRW'&&this.corrections)try{corrections=this.corrections(account,history);if(!(corrections instanceof Map))throw new Error('CORRECTIONS_INVALID');}catch(e){corrections=new Map();failed=`settlement corrections could not be read (${String(e?.message??e).slice(0,80)})`;}
     for(const row of history){
       lastFx=row.fx??lastFx;const recorded=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(recorded))continue;
-      const historical=kind==='KRW'?0:(corrections.get(row.day)?.adjustmentUSD??0)*(kind==='COMBINED'?(lastFx??NaN):1);
+      // The approved restatement on this day, converted at the day's rate in the combined series (1.5.48 review, B2: with
+      // no restatement, 0 times a missing rate made every combined value NaN until a rate was recorded). A restatement on a
+      // day without a rate cannot be converted: the day is unavailable, never NaN.
+      const restatedUSD=kind==='KRW'?0:corrections.get(row.day)?.adjustmentUSD??0,noRate=Boolean(restatedUSD)&&kind==='COMBINED'&&!Number.isFinite(lastFx);
+      const historical=!restatedUSD||noRate?0:restatedUSD*(kind==='COMBINED'?lastFx:1);
       const adj=historical+adjustments.filter(a=>a.day===row.day&&(kind==='COMBINED'||a.currency===kind)).reduce((n,a)=>n+(kind==='COMBINED'&&a.currency==='USD'?(lastFx==null?NaN:a.amount*lastFx):a.amount),0);const value=recorded+adj;
       const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
       // Flows recorded on days without a valuation are folded into the next valued day.
@@ -123,7 +127,7 @@ class PerformanceHistory {
       // Stage 3.2: a day affected by an uncertain obligation or a misstatement window is unavailable (blocked); the one
       // bounded case is a range in the U.S. series and unavailable in the combined one (its funding route and FX exposure
       // are not bounded).
-      const blocked=[...(previous?cx?.unavailable??[]:[])];let bounded=previous&&cx?.bounded&&!blocked.length&&!unknownC.length&&!lost?cx.bounded:null;
+      const blocked=[...(previous?cx?.unavailable??[]:[]),...(noRate?['an approved restatement on this day cannot be converted: no exchange rate is recorded for it']:[])];let bounded=previous&&cx?.bounded&&!blocked.length&&!unknownC.length&&!lost?cx.bounded:null;
       if(bounded&&kind!=='USD'){blocked.push(`an uncertain U.S. buy obligation of $${Number(bounded.usd).toFixed(2)}: its funding route and FX exposure are not bounded in this series, so the return is unavailable`);bounded=null;}
       const states=bounded&&base>0&&Number.isFinite(base)?{real:(value-correction)/base-1,notReal:(value+bounded.usd-correction)/(base+bounded.usd)-1}:null;if(bounded&&!states){blocked.push('an uncertain U.S. buy obligation on a day with no base value');bounded=null;}
       const out=Boolean(unknownC.length||lost||blocked.length);
