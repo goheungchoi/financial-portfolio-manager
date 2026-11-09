@@ -776,6 +776,7 @@ class Automation {
   // A refused revision usually means the order just filled or closed: its status is read now. An unclear reply pauses
   // the order until history shows what happened (electron/live-engine.cjs). Another order being sent just waits.
   async trackFailed(engine,o,error){const code=/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'REVISE_FAILED';if(code==='KIS_ORDER_BUSY')return;
+    if(code==='APPROVAL_REQUIRED'){this.noteTrack(o,'a higher price now needs your approval under the product rules; it stays at its price');return;}
     if(code==='SESSION_CLOSED'||code==='FEATURE_UNAVAILABLE'){this.noteTrack(o,code==='SESSION_CLOSED'?'KIS revises it only in the regular session; it stays at its price':'this session cannot be revised; it stays at its price');return;}
     this.log(o.id,'System','Order not revised',`${o.side} ${o.symbol}: ${code==='ORDER_UNCERTAIN'?'KIS did not confirm the change; the order waits until its history shows what happened':code==='BROKER_REJECTED'?'KIS refused the change (it may have just filled); checking its status':code}.`);
     if(code==='BROKER_REJECTED')try{await engine.reconcile();}catch{}}

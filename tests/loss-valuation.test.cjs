@@ -13,7 +13,7 @@ test('a day that started on the KIS total stays on it; the valuation takes over 
   e.setDay('2026-11-05');e.observeBalance({...snapshot,reportedTotal:990000});const p=e.policy();assert.equal(p.valuation,VERSION);assert.equal(p.baseline,900000);assert.equal(p.baselineHigh,960000);assert.ok(Number.isFinite(p.baselineAt));
   v={low:880000,high:940000,version:VERSION};loss=e.getState().loss;assert.equal(loss.version,VERSION);assert.equal(loss.loss,20000,'baseline and value on the same valuation');assert.equal(loss.breached,false);
   // The valuation unavailable later the same day: never mixed with the KIS total; the doubt is reported.
-  e.netEquityOf=()=>null;loss=e.getState().loss;assert.equal(loss.breached,false);assert.match(loss.reasons[0],/not available now/);
+  e.netEquityOf=()=>null;loss=e.getState().loss;assert.equal(loss.breached,false);assert.equal(loss.unavailable,true);assert.match(loss.reasons[0],/the account valuation is not available \(nothing returned\)/,'the actual reason (1.5.48 review, R1)');
 });
 test('a breach under every scenario is a breach; under some only it is ambiguous and claims no loss',()=>{
   const {e,snapshot}=engine();e.setDay('2026-11-05');let v={low:1000000,high:1000000,version:VERSION};e.netEquityOf=()=>v;e.observeBalance(snapshot);

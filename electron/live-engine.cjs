@@ -27,11 +27,13 @@ class LiveEngine {
     // The day's loss basis is not an editable limit (1.5.48 audit, A3): editing limits, stopping and starting keep the
     // same day's baseline with its valuation version, bounds, time, peak and settlement snapshot as they are. A day
     // without one takes it from the account valuation, as observeBalance does at a day boundary, with its snapshot.
+    // A valuation that cannot be read leaves the day pending (1.5.48 review, R1); a day already pending stays so, or
+    // takes a late basis, labelled as such, when the valuation reads again. Neither is ever KIS's total.
     const existing=this.policy(),today=this.day(),same=existing?.day===today&&Number.isFinite(existing.baseline);
-    const basis=same?Object.fromEntries(Object.entries(existing).filter(([k])=>!LIMIT_FIELDS.has(k))):(v=>({day:today,baseline:v.low,baselineHigh:v.high,valuation:v.version,baselineAt:Date.now(),dayPeakEquity:v.low}))(this.lossValue(this.riskBalance?.accountKey===key?this.riskBalance:connection.snapshot));
-    const baseline=basis.baseline;const policy={...basis,...value,...caps,anyStock:value.symbols.length===0,lossLimit,maxDailyLossKRW:lossLimit.mode==='off'?null:Math.max(1,Math.round(lossLimit.mode==='percent'?(baseline+this.integratedFunding(connection.snapshot))*lossLimit.value/100:lossLimit.value)),day:today,baseline,dayPeakEquity:basis.dayPeakEquity??baseline};
+    const basis=same?Object.fromEntries(Object.entries(existing).filter(([k])=>!LIMIT_FIELDS.has(k))):this.basisFrom(this.riskBalance?.accountKey===key?this.riskBalance:connection.snapshot,existing?.day===today?existing.baselinePending??null:null);
+    const baseline=basis.baseline,known=Number.isFinite(baseline);const policy={...basis,...value,...caps,anyStock:value.symbols.length===0,lossLimit,maxDailyLossKRW:lossLimit.mode==='off'?null:lossLimit.mode==='percent'&&!known?null:Math.max(1,Math.round(lossLimit.mode==='percent'?(baseline+this.integratedFunding(connection.snapshot))*lossLimit.value/100:lossLimit.value)),day:today,baseline,dayPeakEquity:basis.dayPeakEquity??baseline};
     if(!value.lossLimit&&value.maxDailyLossKRW==null)delete policy.maxDailyLossKRW;
-    this.writePolicy(key,policy);if(!same)this.takeBaseline(key,policy);this.enabled=true;return this.getState();
+    this.writePolicy(key,policy);if(!same&&known)this.takeBaseline(key,policy);this.enabled=true;return this.getState();
   }
   writePolicy(key,policy){this.db.prepare('INSERT INTO live_policy VALUES(?,?) ON CONFLICT(accountKey) DO UPDATE SET payload=excluded.payload').run(key,JSON.stringify(policy));}
   // A new day's baseline and its settlement snapshot (stage 2b.4, electron/settlement-baseline.cjs). A snapshot that cannot
@@ -44,11 +46,17 @@ class LiveEngine {
   stop(){this.enabled=false;this.autoEnabled=false;return this.getState();}
   enableAuto(confirmation){const environment=this.getConnection().snapshot?.environment;if(!this.enabled||confirmation!==(environment==='live'?'ENABLE AUTO LIVE':'ENABLE AUTO MOCK'))throw new Error('ACTIVATION_REQUIRED');this.autoEnabled=true;return this.getState();}
   getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;return {httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null};}
-  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day();const v=policy.day===today?(policy.valuation&&policy.valuation!=='broker-total'?this.lossValue(snapshot):{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version:'broker-total'}):this.lossValue(snapshot);
-    const {baselineSnapshot:_,...carried}=policy;
-    const next=policy.day===today?{...policy,dayPeakEquity:Math.max(policy.dayPeakEquity??policy.baseline,v.version===(policy.valuation??'broker-total')?v.low:policy.baseline)}:{...carried,day:today,baseline:v.low,baselineHigh:v.high,valuation:v.version,baselineAt:Date.now(),dayPeakEquity:v.low};this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),this.identity());
-    // Stage 2b.4: the settlement tracker's pieces are saved with a new day's baseline (electron/settlement-baseline.cjs).
-    if(policy.day!==today)this.takeBaseline(this.identity(),next);}
+  // A new day takes its basis from the valuation, or is pending when it cannot be read (1.5.48 review, R1). A pending day
+  // takes a late basis at the first reading that succeeds; a known day's peak moves only on readings of its own version.
+  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day(),key=this.identity();
+    const write=next=>this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),key);
+    const {baselineSnapshot:_s,baselinePending:pending,baselineLate:_l,...carried}=policy;
+    if(policy.day!==today||!Number.isFinite(policy.baseline)){const basis=this.basisFrom(snapshot,policy.day===today?pending??{since:Date.now(),reason:'the day\'s opening value was not recorded'}:null);
+      const next={...carried,...basis};write(next);
+      // Stage 2b.4: the settlement tracker's pieces are saved with a day's baseline (electron/settlement-baseline.cjs).
+      if(Number.isFinite(next.baseline))this.takeBaseline(key,next);return;}
+    const version=policy.valuation??'broker-total',v=version==='broker-total'?{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version}:this.lossValue(snapshot);
+    if(!v.unavailable&&v.version===version&&Number.isFinite(v.low)&&v.low>(policy.dayPeakEquity??policy.baseline))write({...policy,dayPeakEquity:v.low});}
   async context(supplied=null) {
     const executionEnabled=this.enabled;const configured=this.policy();
     const extra=this.market==='KR'?[...new Set((await this.extraSymbols?.())??[])].filter(symbol=>/^\d{6}$/.test(symbol)&&!(configured?.symbols??[]).includes(symbol)).slice(0,20):[];
@@ -84,7 +92,9 @@ class LiveEngine {
     const CP=require('./credit-paths.cjs');const path=CP.pathStatus(credit?.kind,{approved:this.creditApproved?.()===true});if(!path.executable)throw Object.assign(new Error('CREDIT_PATH_UNVERIFIED'),{detail:path.reason});
     CP.check(balance,{symbol:command.symbol,side:command.side,quantity:command.quantity,credit},this.orders());
     let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null});}
-    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:gate.requiresApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||Boolean(gate?.requiresApproval)||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
+    // A short cover reduces exposure: the product approval of a buy does not apply to it (1.5.48 review, R2).
+    const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
+    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
   async submit(id,confirmation) {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;
@@ -116,8 +126,11 @@ class LiveEngine {
       this.observeBalance(prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
-      if(this.exposure)this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:accountBase,holdings:prepared.balance.holdings});
       if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
+      // The product and credit rules as they are now (1.5.48 review, R2): an approval they require now holds an automatic
+      // submission, whatever the proposal recorded. Checked here and again after the funds are admitted.
+      const approvalNow=()=>this.approvalNow(order,prepared.balance,accountBase);
+      if(this.submittingAutomatically){const why=approvalNow();if(why)this.holdForApproval(order,why);}else approvalNow();
       if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/accountBase*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
       if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
       if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(order.symbol)??null})};}
@@ -132,6 +145,8 @@ class LiveEngine {
       // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
       // been sent, so the reservation is released.
       {const stopped=this.notSendable(order,policy);if(stopped){this.funding?.release(order,'stopped before sending: '+stopped);throw new Error(stopped);}}
+      if(this.submittingAutomatically){let why;try{why=approvalNow();}catch(error){this.funding?.release(order,'stopped before sending: '+error.message);throw error;}
+        if(why){this.funding?.release(order,'stopped before sending: approval required');this.holdForApproval(order,why);}}
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
@@ -140,6 +155,19 @@ class LiveEngine {
       this.save(order);return order;
     }finally{this.busy=false;}
   }
+  // Why the current product and credit rules require your approval for an order, or null; their refusals throw.
+  // Protective orders (sales, repayments, short covers) never need it (1.5.48 review, R2). Synchronous.
+  approvalNow(order,balance,base){const why=[];let product=null;
+    if(this.exposure&&order.credit?.kind!=='cover'){const g=this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:base,holdings:balance.holdings});
+      if(g.requiresApproval){product=g.product??null;why.push(g.product?.kind==='unclassified'?'the security master cannot classify this product now':`the ${g.product?.kind??'product'} rule requires your approval now`);}}
+    if(order.credit&&['margin-buy','short'].includes(order.credit.kind)){const CP=require('./credit-paths.cjs');
+      if(!CP.pathStatus(order.credit.kind,{approved:this.creditApproved?.()===true}).automatic)why.push('this credit path requires your approval');
+      else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
+    return why.length?{why:why.join('; '),product}:null;}
+  // Keeps an automatic order Ready for your approval, with why, and stops this submission. Nothing has been sent.
+  holdForApproval(order,{why,product}){const {session:_,...rest}=order;
+    this.writeOrder({...rest,requiresApproval:true,approvalReason:why,...(product&&product.kind!=='standard'?{product}:{}),reason:'APPROVAL_REQUIRED'});
+    throw new Error('PRODUCT_APPROVAL_REQUIRED');}
   // Why an order may not be sent now, or null: trading stopped, another account connected, expired, or no longer allowed
   // by the current limits. Synchronous, so nothing can change between this check and the send.
   notSendable(order,policy){
@@ -151,7 +179,7 @@ class LiveEngine {
   // order listed as open may already be filled, so its exposure is unknown rather than additional.
   // The day's starting value plus that day's deposits less withdrawals, so a deposit neither hides a loss nor a
   // withdrawal looks like one. flowsToday is supplied by the app (performance history) in this market's currency.
-  adjustedBaseline(policy){const f=this.flows(policy);return policy.baseline+(f.unavailable?0:f.confirmed);}
+  adjustedBaseline(policy){if(!Number.isFinite(policy.baseline))return null;const f=this.flows(policy);return policy.baseline+(f.unavailable?0:f.confirmed);}
   // Money moved since the day's baseline was taken (flowsSince, set by the app): confirmed (recorded or confirmed by
   // you) and unresolved (detected, awaiting you). Only confirmed flows adjust the baseline; unresolved ones are a
   // scenario in lossOf. Without flowsSince, flowsToday counts as confirmed.
@@ -164,15 +192,30 @@ class LiveEngine {
       const pair=x=>x==null||fin(x.low)&&fin(x.high),num=x=>x==null||fin(Number(x));
       if(!f||!fin(f.confirmed)||!num(f.unresolved)||!num(f.uncertain?.confirmed)||!num(f.uncertain?.unresolved)||!pair(f.timing)||!pair(f.range))return {unavailable:'deposits and withdrawals since the day\'s baseline could not be read (an unreadable result)'};
       return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0,uncertain:{confirmed:Number(f.uncertain?.confirmed)||0,unresolved:Number(f.uncertain?.unresolved)||0},...(f.timing?{timing:{low:f.timing.low,high:f.timing.high}}:{}),...(f.range?{range:{low:f.range.low,high:f.range.high}}:{})};}
+    // Only a finite number is a successful read: nothing returned (null or undefined) is not "no money moved"
+    // (1.5.48 review, R3).
     if(this.flowsToday){let n;try{n=this.flowsToday();}catch(e){return {unavailable:`today's deposits and withdrawals could not be read (${code(e)})`};}
-      if(n!=null&&!fin(Number(n)))return {unavailable:'today\'s deposits and withdrawals could not be read (an unreadable result)'};return {...none,confirmed:Number(n)||0};}
+      if(typeof n!=='number'||!fin(n))return {unavailable:`today's deposits and withdrawals could not be read (${n==null?'nothing returned':'an unreadable result'})`};return {...none,confirmed:n};}
     return none;}
   // The value the daily loss is measured on (audit 2026-11-04, Stage 2): the account valuation's net equity for this
   // market (netEquityOf, set by the app: {low, high, version}), or KIS's total when that is unavailable. A day's baseline
   // and its current value always use the same version: the baseline records its version when the day starts, and a
   // day that started on KIS's total stays on it, so the switch comes at the next trading-day boundary (this.day: the
   // Seoul date for Korea, the New York date for the U.S., which covers the overnight session).
-  lossValue(snapshot){let v=null;try{v=this.netEquityOf?.(snapshot)??null;}catch{}const l=v?.loss??v;return l&&Number.isFinite(l.low)&&Number.isFinite(l.high)?{low:l.low,high:l.high,version:v.version}:{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version:'broker-total'};}
+  // KIS's total is the basis only for an engine with no valuation configured. A configured valuation that throws, returns
+  // nothing or returns something unreadable is unavailable ({unavailable: reason}), never silently KIS's total (1.5.48
+  // review, R1): a day cannot start on a different basis than the one configured.
+  lossValue(snapshot){if(!this.netEquityOf)return {low:snapshot.reportedTotal,high:snapshot.reportedTotal,version:'broker-total'};
+    let v;try{v=this.netEquityOf(snapshot);}catch(e){return {unavailable:`the account valuation could not be read (${/^[A-Z_]{3,40}$/.test(e?.message??'')?e.message:'READ_FAILED'})`};}
+    if(v==null)return {unavailable:'the account valuation is not available (nothing returned)'};
+    const l=v.loss??v;if(!Number.isFinite(l?.low)||!Number.isFinite(l?.high)||l.low>l.high||typeof v.version!=='string'||!v.version||v.version==='broker-total')return {unavailable:'the account valuation could not be read (an unreadable result)'};
+    return {low:l.low,high:l.high,version:v.version};}
+  // A day's loss basis from a valuation reading. Unreadable: the day is pending (baseline null, with the reason and when
+  // it began), never KIS's total. A basis taken after the day's first reading failed is late: it is labelled with when the
+  // opening failed, and the loss is measured from it, not from the day's opening (lossOf).
+  basisFrom(snapshot,pending=null){const v=this.lossValue(snapshot),day=this.day();
+    if(v.unavailable)return {day,baseline:null,baselineHigh:null,valuation:null,baselineAt:null,dayPeakEquity:null,baselinePending:{since:pending?.since??Date.now(),reason:v.unavailable}};
+    return {day,baseline:v.low,baselineHigh:v.high,valuation:v.version,baselineAt:Date.now(),dayPeakEquity:v.low,...(pending?{baselineLate:{openingFailedAt:pending.since,reason:pending.reason}}:{})};}
   // The day's loss under each defensible scenario: the low bounds, the high bounds, and with unresolved money changes
   // counted. A breach under every scenario is a breach; under some only it is ambiguous: reported with the scenarios,
   // and new buys are restricted as a breach would restrict them (automation.cjs), without claiming a loss. Deposits,
@@ -192,14 +235,19 @@ class LiveEngine {
   currentLoss(){const policy=this.policy(),connection=this.getConnection().snapshot,snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;
     return policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null;}
   lossOf(policy,snapshot){
-    const limit=policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW};const version=policy.valuation??'broker-total';const f=this.flows(policy);
+    const limit=policy.lossLimit??{mode:'amount',value:policy.maxDailyLossKRW};
+    // A pending day has no basis to measure from (1.5.48 review, R1): unavailable, with why, and new buys are restricted.
+    if(!Number.isFinite(policy.baseline)){const why=`the day's opening value could not be read${policy.baselinePending?.reason?` (${policy.baselinePending.reason})`:''}`;
+      return {policy:limit,baseline:null,equity:null,loss:null,lossPct:null,limitKRW:limit.mode==='amount'?limit.value:null,breached:false,ambiguous:limit.mode!=='off',unavailable:limit.mode!=='off',version:null,pending:true,
+        reasons:limit.mode==='off'?[`no daily loss is measured: ${why}`]:[`the daily loss cannot be checked: ${why}`,'new buys are restricted until it can be checked']};}
+    const version=policy.valuation??'broker-total';const f=this.flows(policy);
     // A reconciliation or correction moves the baseline with the value (stage 2b.4); of unknown payment timing, both
     // scenarios are kept: adjusted (paid before the baseline) and not adjusted (paid after it).
     const s0=version==='broker-total'?null:this.settlement(policy),adj=s0?.certain??{low:0,high:0},alt=s0?.withUnknown??null;
     const v=version==='broker-total'?{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version}:this.lossValue(snapshot);
     // Anything the check needs that cannot be read makes it unavailable (1.5.48 audit, A3/A4): never a zero adjustment,
     // never a baseline of one valuation against a value of another. New buys are restricted (automation.cjs).
-    const missing=[...(f.unavailable?[f.unavailable]:[]),...(s0?.unavailable?[s0.unavailable]:[]),...(v.version!==version?[`the valuation this day started on (${version}) is not available now`]:[])];
+    const missing=[...(f.unavailable?[f.unavailable]:[]),...(s0?.unavailable?[s0.unavailable]:[]),...(v.unavailable?[v.unavailable]:v.version!==version?[`the valuation this day started on (${version}) is not available now`]:[])];
     if(missing.length&&limit.mode!=='off')return {policy:limit,baseline:policy.baseline,equity:null,loss:null,lossPct:null,limitKRW:limit.mode==='percent'?policy.baseline*limit.value/100:limit.value,breached:false,ambiguous:true,unavailable:true,version,
       reasons:[`the daily loss cannot be checked: ${missing.join('; ')}`,'new buys are restricted until it can be checked']};
     // Flows whose side of the baseline cannot be told (same-day entries with only a date, a detection straddling the
@@ -221,8 +269,10 @@ class LiveEngine {
     const all=scenarios.every(x=>x.breached),any=scenarios.some(x=>x.breached);
     const settled=s0&&(adj.low||adj.high||alt)?{settlement:{adjustment:adj,...(alt?{ifPaidBeforeBaseline:alt,assumption:'not adjusted: paid after the baseline'}:{}),items:s0.items}}:{};
     const note=s0&&(adj.low||adj.high)?[`baseline adjusted for settlement corrections: low ${adj.low>=0?'+':''}${adj.low.toFixed(2)}, high ${adj.high>=0?'+':''}${adj.high.toFixed(2)}`]:[];
-    const reasons=[...(any&&!all?[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]:[]),...note];
-    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(reasons.length?{reasons}:{}),...settled};
+    // A late basis (R1): the loss is measured from when the valuation read again, not from the day's opening, and says so.
+    const late=policy.baselineLate?[`measured since ${new Date(policy.baselineAt).toLocaleTimeString()}, not since the day's opening: the opening value could not be read (${policy.baselineLate.reason}), so a loss before then is not included`]:[];
+    const reasons=[...(any&&!all?[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]:[]),...note,...late];
+    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(late.length?{late:true}:{}),...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(reasons.length?{reasons}:{}),...settled};
   }
   // The equity new exposure is measured against: KIS's total, or the account valuation's low bound when lower (it nets
   // liabilities KIS's total does not, such as KRW committed to U.S. buys). Not delayed to a day boundary.
@@ -368,12 +418,14 @@ class LiveEngine {
     let base;try{base=this.exposureBase(balance,{buy:true})+this.integratedFunding(balance);}catch(error){return error.message;}
     const held=balance.holdings?.find(row=>row.symbol===order.symbol)?.quantity??0;
     if(policy.maxCompanyPct!=null&&!(base>0&&(held+remaining)*price/base*100<=policy.maxCompanyPct))return 'CONCENTRATION_LIMIT';
-    if(this.exposure)try{this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings});}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
+    // Revisions are made by automatic tracking only: a product rule that requires your approval now holds the raise
+    // (1.5.48 review, R2); lower prices, sale revisions and cancellations never come here.
+    if(this.exposure)try{if(this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings}).requiresApproval)return 'APPROVAL_REQUIRED';}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
     return null;}
   async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);
     // Automatic U.S. buys can draw on the KRW pool through integrated margin: blocked unless a separate-pool regime is
     // verified (Stage 1 of the 2026-11-05 settlement design). Sales and manual orders are unaffected.
-    if(this.market==='US'&&order?.side==='Buy'&&this.funding&&this.funding.regime()!=='separate')throw new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED');if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
+    if(this.market==='US'&&order?.side==='Buy'&&this.funding&&this.funding.regime()!=='separate')throw new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED');if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};if(error.message==='PRODUCT_APPROVAL_REQUIRED')return this.orders().find(row=>row.id===id)??{...order,requiresApproval:true,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');
     const report=await this.broker.request('orders',{startDate:order.day,endDate:order.day});const match=report.orders.find(row=>row.orderId===brokerOrderId);
