@@ -151,6 +151,12 @@ class LiveEngine {
       {const stopped=this.notSendable(order,policy);if(stopped){this.funding?.release(order,'stopped before sending: '+stopped);throw new Error(stopped);}}
       if(automatic){let why;try{why=approvalNow();}catch(error){this.funding?.release(order,'stopped before sending: '+error.message);throw error;}
         if(why){this.funding?.release(order,'stopped before sending: approval required');this.holdForApproval(order,why);}}
+      // The daily-loss restriction at the send boundary (1.5.48 review round 3, R5): preparation and the funds check are
+      // asynchronous, and the loss inputs or the day (with a pending or late basis) can change during them. An automatic
+      // order that opens exposure is refused here, synchronously before Submitting, when the check is unavailable or the
+      // day is restricted; nothing is sent, its reservation is released, and the order stays Ready with the reason, so
+      // you can still approve it. Your manual submissions and protective orders (sales, repayments, covers) are not held.
+      if(automatic){const stop=this.lossRestriction(order);if(stop){this.funding?.release(order,'stopped before sending: '+stop);const {session:_,...rest}=order;this.writeOrder({...rest,reason:stop});throw new Error(stop);}}
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
@@ -168,6 +174,13 @@ class LiveEngine {
       if(!CP.pathStatus(order.credit.kind,{approved:this.creditApproved?.()===true}).automatic)why.push('this credit path requires your approval');
       else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
     return why.length?{why:why.join('; '),product}:null;}
+  // Why the daily-loss check holds an automatic order that opens exposure now, or null (1.5.48 review rounds 2-3): the
+  // check unavailable (including a pending day), unreadable, or the day restricted after a late basis. Orders that close
+  // or reduce exposure (by the position-effect rules of credit-paths.cjs), and a deliberately disabled limit, are never
+  // held. A known breach is automation's, under your loss-limit response. Synchronous.
+  lossRestriction(order){let opening=true;try{opening=require('./credit-paths.cjs').effectOf({side:order.side,credit:order.credit??null}).opening;}catch{}
+    if(!opening)return null;let l;try{l=this.currentLoss();}catch{return 'DAILY_LOSS_RESTRICTED';}
+    if(!l)return 'DAILY_LOSS_RESTRICTED';return l.unavailable||l.restrictedForDay?'DAILY_LOSS_RESTRICTED':null;}
   // Keeps an automatic order Ready for your approval, with why, and stops this submission. Nothing has been sent.
   holdForApproval(order,{why,product}){const {session:_,...rest}=order;
     this.writeOrder({...rest,requiresApproval:true,approvalReason:why,...(product&&product.kind!=='standard'?{product}:{}),reason:'APPROVAL_REQUIRED'});
@@ -421,7 +434,7 @@ class LiveEngine {
     if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)return 'ORDER_SIZE_LIMIT';
     // A raise is new exposure: held while the daily loss cannot be checked or the day's basis was taken late (1.5.48
     // review round 2). These restrict automatic buys whatever the loss-limit response; a known breach is automation's.
-    {let l=null;try{l=this.currentLoss();}catch{}if(!l||l.unavailable||l.restrictedForDay)return 'DAILY_LOSS_RESTRICTED';}
+    {const stop=this.lossRestriction({side:'Buy',credit:order.credit});if(stop)return stop;}
     const turnover=this.orders().filter(row=>row.id!==order.id&&row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
     if(policy.maxDailyTurnoverKRW!=null&&turnover+notional>policy.maxDailyTurnoverKRW)return 'DAILY_TURNOVER_LIMIT';
     const current=this.getConnection().snapshot,balance=this.riskBalance?.accountKey===current?.accountKey?this.riskBalance:current;if(!balance)return 'KIS_NOT_CONNECTED';

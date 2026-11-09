@@ -168,3 +168,51 @@ test('late basis: automatic raises are held, lower prices still go; automation b
   const buy=await a.fireConditional(arm('Buy'));assert.equal(proposed,0,'no automatic buy, though the loss-limit response is review');assert.match(JSON.stringify(buy??a.desk.recentOrders(a.watchScope(),5)),/rest of the day/);
   await a.fireConditional(arm('Sell'));assert.equal(proposed,1,'a protective sale is not held back');
 });
+
+// R5 (round 3): the daily-loss restriction is rechecked at the send boundary, after every asynchronous step, for an
+// automatic order that opens exposure.
+function r5(){const w=world({funding:true,net:()=>({low:10000,high:10000,version:'net-test'})});w.engine.enableAuto('ENABLE AUTO MOCK');assert.equal(w.engine.currentLoss().unavailable,undefined);return w;}
+const buy=w=>w.engine.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});
+function refusedUnsent(w,id,result){assert.equal(w.places(),0,'place-order was not called');const o=w.engine.orders().find(x=>x.id===id);assert.equal(o.status,'Ready','still yours to approve');assert.equal(o.reason,'DAILY_LOSS_RESTRICTED');assert.equal(w.engine.funding.commitments('audit').krw,0,'released as unsent');}
+test('R5: loss data unreadable during the funds check: refused at the send boundary, nothing sent, funds released',async()=>{
+  const w=r5(),p=buy(w),real=w.engine.funding.admit.bind(w.engine.funding);w.engine.funding.admit=async a=>{const r=await real(a);w.engine.flowsSince=()=>{throw new Error('READ_FAILED');};return r;};
+  await assert.rejects(w.engine.autoSubmit(p.id),/DAILY_LOSS_RESTRICTED/);refusedUnsent(w,p.id);assert.equal(w.engine.currentLoss().unavailable,true);
+});
+test('R5: prepare-order crossing into a day with a late basis: refused; a pending day under prepare-order too',async()=>{
+  const w=r5(),p=buy(w),request=w.engine.broker.request;
+  w.engine.broker.request=async(op,payload)=>{if(op==='prepare-order'){w.setDay('2030-01-11');w.engine.netEquityOf=failing;w.engine.observeBalance(w.balance);w.engine.netEquityOf=()=>({low:10000,high:10000,version:'net-test'});}return request(op,payload);};
+  await assert.rejects(w.engine.autoSubmit(p.id),/DAILY_LOSS_RESTRICTED/);assert.equal(w.engine.currentLoss().restrictedForDay,true);assert.equal(w.places(),0);assert.equal(w.engine.funding.commitments('audit').krw,0);
+  // Still failing when prepare-order returns: the day stays pending, and the order is refused the same way.
+  const v=r5(),q=buy(v),rq=v.engine.broker.request;v.engine.broker.request=async(op,payload)=>{if(op==='prepare-order'){v.setDay('2030-01-11');v.engine.netEquityOf=failing;}return rq(op,payload);};
+  // (the new-exposure base itself is unreadable then, so the earlier A4 refusal may come first: either way, nothing is sent)
+  await assert.rejects(v.engine.autoSubmit(q.id),/DAILY_LOSS_RESTRICTED|RISK_DATA_UNAVAILABLE/);assert.equal(v.places(),0);assert.equal(v.engine.funding.commitments('audit').krw,0);
+});
+test('R5: a change after automation\'s early check (during placement pricing, before autoSubmit) is refused by the engine',async()=>{
+  const w=r5(),p=buy(w);w.engine.flowsSince=()=>({confirmed:Number.NaN,unresolved:0});
+  await assert.rejects(w.engine.autoSubmit(p.id),/DAILY_LOSS_RESTRICTED/);refusedUnsent(w,p.id);
+});
+test('R5: unchanged inputs still send; manual submissions, sales and covers are not held; a disabled limit is its own policy',async()=>{
+  const ok=r5(),p=buy(ok);assert.equal((await ok.engine.autoSubmit(p.id)).status,'Accepted');assert.equal(ok.places(),1);
+  // Manual: your confirmation is the authorization, even while the check is unavailable.
+  const m=r5(),q=buy(m);m.engine.flowsSince=()=>{throw new Error('READ_FAILED');};assert.equal((await m.engine.submit(q.id,'PLACE MOCK ORDER')).status,'Accepted');
+  // A protective sale while the day is restricted.
+  const s=r5();s.balance.holdings=[{symbol:'005930',name:'Samsung',quantity:2,cost:900,price:1000,marketValue:2000}];const sale=s.engine.propose({symbol:'005930',side:'Sell',quantity:1,limitPrice:1000});
+  s.engine.flowsSince=()=>{throw new Error('READ_FAILED');};assert.equal((await s.engine.autoSubmit(sale.id)).status,'Accepted');
+  // The position-effect rules: a cover closes, a short opens; a plain sale closes.
+  assert.equal(s.engine.lossRestriction({side:'Buy',credit:{kind:'cover'}}),null);assert.equal(s.engine.lossRestriction({side:'Sell',credit:{kind:'short'}}),'DAILY_LOSS_RESTRICTED');
+  assert.equal(s.engine.lossRestriction({side:'Sell',credit:{kind:'margin-sell'}}),null);assert.equal(s.engine.lossRestriction({side:'Sell'}),null);assert.equal(s.engine.lossRestriction({side:'Buy',credit:{kind:'margin-buy'}}),'DAILY_LOSS_RESTRICTED');
+  // No loss limit: a late day restricts nothing at the send boundary.
+  const off=lateDay({lossLimit:{mode:'off',value:0}});off.engine.funding=new FundingLedger(off.db,{fresh:async m=>m==='KR'?{...off.balance,timestamp:new Date().toISOString()}:null});off.engine.funding.init();off.engine.enableAuto('ENABLE AUTO MOCK');assert.equal(off.engine.currentLoss().late,true);
+  assert.equal((await off.engine.autoSubmit(buy(off).id)).status,'Accepted');
+});
+test('R5: restart and next day: the restriction follows the saved day; the slot of a refused automatic order is released',async()=>{
+  const db=new DatabaseSync(':memory:');const w=world({db,funding:true,net:()=>({low:10000,high:10000,version:'net-test'})});w.setDay('2030-01-11');w.engine.netEquityOf=failing;w.engine.observeBalance(w.balance);
+  // Restart on the pending day; the valuation reads again (a late basis): the new engine refuses an automatic buy; the next day with a readable valuation sends.
+  const e2=new LiveEngine(db,w.engine.broker,()=>({status:'connected',snapshot:w.balance}));let day='2030-01-11';e2.day=()=>day;e2.netEquityOf=()=>({low:10000,high:10000,version:'net-test'});e2.funding=w.engine.funding;e2.configure({symbols:[],maxOrderKRW:5000,lossLimit:{mode:'amount',value:30}},'ENABLE MOCK');e2.enableAuto('ENABLE AUTO MOCK');
+  const p=e2.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});await assert.rejects(e2.autoSubmit(p.id),/DAILY_LOSS_RESTRICTED/);assert.equal(w.places(),0);
+  // The automatic-order slot follows the unsent outcome.
+  const {Automation}=require('../electron/automation.cjs'),{PaperEngine}=require('../electron/paper-engine.cjs');const adb=new DatabaseSync(':memory:');const a=new Automation(adb,new PaperEngine(adb,[{symbol:'005930',name:'Audit',price:1000}],()=>[]),{},()=>{});
+  const slot=a.guardrails.reserveSlot({cap:1,source:'review',ref:p.id});assert.ok(slot);a.settleAutoSlot(slot,e2.orders().find(x=>x.id===p.id));assert.equal(a.guardrails.autoOrdersToday(),0,'released: nothing was sent');
+  day='2030-01-12';e2.netEquityOf=()=>({low:10000,high:10000,version:'net-test'});e2.observeBalance(w.balance);const q=e2.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});
+  assert.equal((await e2.autoSubmit(q.id)).status,'Accepted');assert.equal(w.places(),1);
+});
