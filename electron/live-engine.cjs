@@ -96,7 +96,11 @@ class LiveEngine {
     const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
     const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
   }
-  async submit(id,confirmation) {
+  // Your submission (the confirmation phrase is your approval). Automatic submissions go through autoSubmit; whether a
+  // submission is automatic belongs to that call alone (1.5.48 review, R4): a competing call refused as busy cannot
+  // change it, so its approval checks always apply.
+  submit(id,confirmation){return this.send(id,confirmation,{automatic:false});}
+  async send(id,confirmation,{automatic}) {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;
     try {
       let order=this.orders().find(row=>row.id===id);if(!order)throw new Error('UNKNOWN_ORDER');
@@ -120,7 +124,7 @@ class LiveEngine {
       // Extended sessions: U.S. pre- and after-market orders always wait for your approval, and every extended-session order is
       // capped at a smaller share of equity. Nothing has been sent to KIS yet, so the order simply stays Ready.
       if(prepared.session&&!prepared.session.regular){
-        if(prepared.session.approval&&this.submittingAutomatically)throw new Error('EXTENDED_APPROVAL_REQUIRED');
+        if(prepared.session.approval&&automatic)throw new Error('EXTENDED_APPROVAL_REQUIRED');
         const pct=this.extendedMaxOrderPct?.()??5;if(order.notional>accountBase*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
         order={...order,session:prepared.session.id};}
       this.observeBalance(prepared.balance);
@@ -130,7 +134,7 @@ class LiveEngine {
       // The product and credit rules as they are now (1.5.48 review, R2): an approval they require now holds an automatic
       // submission, whatever the proposal recorded. Checked here and again after the funds are admitted.
       const approvalNow=()=>this.approvalNow(order,prepared.balance,accountBase);
-      if(this.submittingAutomatically){const why=approvalNow();if(why)this.holdForApproval(order,why);}else approvalNow();
+      if(automatic){const why=approvalNow();if(why)this.holdForApproval(order,why);}else approvalNow();
       if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/accountBase*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
       if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
       if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(order.symbol)??null})};}
@@ -145,7 +149,7 @@ class LiveEngine {
       // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
       // been sent, so the reservation is released.
       {const stopped=this.notSendable(order,policy);if(stopped){this.funding?.release(order,'stopped before sending: '+stopped);throw new Error(stopped);}}
-      if(this.submittingAutomatically){let why;try{why=approvalNow();}catch(error){this.funding?.release(order,'stopped before sending: '+error.message);throw error;}
+      if(automatic){let why;try{why=approvalNow();}catch(error){this.funding?.release(order,'stopped before sending: '+error.message);throw error;}
         if(why){this.funding?.release(order,'stopped before sending: approval required');this.holdForApproval(order,why);}}
       order={...order,status:'Submitting'};this.save(order);
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
@@ -270,9 +274,12 @@ class LiveEngine {
     const settled=s0&&(adj.low||adj.high||alt)?{settlement:{adjustment:adj,...(alt?{ifPaidBeforeBaseline:alt,assumption:'not adjusted: paid after the baseline'}:{}),items:s0.items}}:{};
     const note=s0&&(adj.low||adj.high)?[`baseline adjusted for settlement corrections: low ${adj.low>=0?'+':''}${adj.low.toFixed(2)}, high ${adj.high>=0?'+':''}${adj.high.toFixed(2)}`]:[];
     // A late basis (R1): the loss is measured from when the valuation read again, not from the day's opening, and says so.
-    const late=policy.baselineLate?[`measured since ${new Date(policy.baselineAt).toLocaleTimeString()}, not since the day's opening: the opening value could not be read (${policy.baselineLate.reason}), so a loss before then is not included`]:[];
+    // With a loss limit on, a late basis cannot show whether the limit was crossed before it, so automatic new exposure
+    // stays restricted for the rest of that day (1.5.48 review round 2, your decision); the loss since it is still shown
+    // and a breach after it is a breach. Protective reductions are not affected. No limit set: nothing to restrict.
+    const late=policy.baselineLate?[`measured since ${new Date(policy.baselineAt).toLocaleTimeString()}, not since the day's opening: the opening value could not be read (${policy.baselineLate.reason}), so a loss before then is not included`,...(limit.mode!=='off'?['automatic new buys stay restricted for the rest of the day']:[])]:[];
     const reasons=[...(any&&!all?[`breached only with ${scenarios.filter(x=>x.breached).map(x=>x.name).join(' and ')}`]:[]),...note,...late];
-    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(late.length?{late:true}:{}),...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(reasons.length?{reasons}:{}),...settled};
+    return {...scenarios[0],breached:all,ambiguous:any&&!all,version,...(late.length?{late:true,...(limit.mode!=='off'?{restrictedForDay:true}:{})}:{}),...(scenarios.length>1?{scenarios:scenarios.map(x=>({name:x.name,loss:x.loss,breached:x.breached}))}:{}),...(reasons.length?{reasons}:{}),...settled};
   }
   // The equity new exposure is measured against: KIS's total, or the account valuation's low bound when lower (it nets
   // liabilities KIS's total does not, such as KRW committed to U.S. buys). Not delayed to a day boundary.
@@ -412,6 +419,9 @@ class LiveEngine {
     let policy=null;try{policy=this.policy();}catch{}if(!policy||policy.day!==this.day())return 'DAILY_SESSION_SETUP_REQUIRED';
     if(!policy.anyStock&&!policy.symbols.includes(order.symbol))return 'INSTRUMENT_NOT_ALLOWED';
     if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)return 'ORDER_SIZE_LIMIT';
+    // A raise is new exposure: held while the daily loss cannot be checked or the day's basis was taken late (1.5.48
+    // review round 2). These restrict automatic buys whatever the loss-limit response; a known breach is automation's.
+    {let l=null;try{l=this.currentLoss();}catch{}if(!l||l.unavailable||l.restrictedForDay)return 'DAILY_LOSS_RESTRICTED';}
     const turnover=this.orders().filter(row=>row.id!==order.id&&row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
     if(policy.maxDailyTurnoverKRW!=null&&turnover+notional>policy.maxDailyTurnoverKRW)return 'DAILY_TURNOVER_LIMIT';
     const current=this.getConnection().snapshot,balance=this.riskBalance?.accountKey===current?.accountKey?this.riskBalance:current;if(!balance)return 'KIS_NOT_CONNECTED';
@@ -425,7 +435,7 @@ class LiveEngine {
   async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);
     // Automatic U.S. buys can draw on the KRW pool through integrated margin: blocked unless a separate-pool regime is
     // verified (Stage 1 of the 2026-11-05 settlement design). Sales and manual orders are unaffected.
-    if(this.market==='US'&&order?.side==='Buy'&&this.funding&&this.funding.regime()!=='separate')throw new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED');if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};this.submittingAutomatically=true;try{return await this.submit(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER');}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};if(error.message==='PRODUCT_APPROVAL_REQUIRED')return this.orders().find(row=>row.id===id)??{...order,requiresApproval:true,reason:'APPROVAL_REQUIRED'};throw error;}finally{this.submittingAutomatically=false;}}
+    if(this.market==='US'&&order?.side==='Buy'&&this.funding&&this.funding.regime()!=='separate')throw new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED');if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};try{return await this.send(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER',{automatic:true});}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};if(error.message==='PRODUCT_APPROVAL_REQUIRED')return this.orders().find(row=>row.id===id)??{...order,requiresApproval:true,reason:'APPROVAL_REQUIRED'};throw error;}}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');
     const report=await this.broker.request('orders',{startDate:order.day,endDate:order.day});const match=report.orders.find(row=>row.orderId===brokerOrderId);
