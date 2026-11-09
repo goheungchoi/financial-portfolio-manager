@@ -105,11 +105,14 @@ test('the U.S. engine sends revisions as us-revise-order',()=>{
   const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usBroker=\{request:\(operation,payload\)=>kisService\.request\(operation==='live-context'\?'us-context':'us-'\+operation,payload\)\}/);
   const worker=require('node:fs').readFileSync(require.resolve('../electron/kis-worker.cjs'),'utf8');assert.match(worker,/operation==='us-revise-order'/);assert.match(worker,/operation==='revise-order'/);
 });
-test('after an unclear reply, history settles it: the asked-for revision is adopted, nothing happened resumes, anything else is your takeover',async()=>{
+test('after an unclear reply, history settles it: the asked-for revision is adopted, a listing without it settles nothing, anything else is your takeover',async()=>{
   const mk=()=>{const t=engine({revise:()=>{throw new Error('ORDER_UNCERTAIN');}});t.add();return t;};
   const a=mk();await assert.rejects(a.e.revise('o1',{price:279.5}));a.history.orders=[row('B1',{quantity:3,remaining:0}),row('X9',{originalOrderId:'B1',kind:'revision',quantity:3,remaining:3,orderPrice:279.5})];
   await a.e.reconcile();let o=a.e.orders()[0];assert.equal(o.handsOff,undefined,'the revision it asked for went through');assert.equal(o.trackingStopped,undefined);assert.deepEqual(o.brokerOrderIds,['B1','X9']);assert.equal(o.currentBrokerOrderId,'X9');
-  const b=mk();await assert.rejects(b.e.revise('o1',{price:279.5}));b.history.orders=[row('B1',{quantity:3,remaining:3})];await b.e.reconcile();o=b.e.orders()[0];assert.equal(o.trackingStopped,undefined,'nothing happened: tracking resumes');assert.equal(o.handsOff,undefined);
+  const b=mk();await assert.rejects(b.e.revise('o1',{price:279.5}));b.history.orders=[row('B1',{quantity:3,remaining:3})];await b.e.reconcile();o=b.e.orders()[0];
+  // Changed by the 1.5.48 audit (A2): a listing that shows only the original is not evidence the revision failed (it may be
+  // delayed or incomplete, U8), so the request stays unconfirmed and tracking stays stopped. It used to resume here.
+  assert.ok(o.trackingStopped,'a listing without the revision settles nothing');assert.equal(o.unconfirmed.price,279.5);assert.equal(o.handsOff,undefined);
   const c=mk();await assert.rejects(c.e.revise('o1',{price:279.5}));c.history.orders=[row('B1',{quantity:3,remaining:0}),row('Y1',{originalOrderId:'B1',kind:'revision',quantity:3,remaining:3,orderPrice:275})];await c.e.reconcile();o=c.e.orders()[0];assert.ok(o.handsOff,'a different price: you changed it');
   const d=mk();await assert.rejects(d.e.revise('o1',{cancel:true}));d.history.orders=[row('B1',{quantity:3,remaining:0}),row('C1',{originalOrderId:'B1',kind:'cancel',quantity:3,status:'Canceled'})];await d.e.reconcile();o=d.e.orders()[0];assert.equal(o.status,'Canceled');assert.equal(o.handsOff,undefined,'its own cancellation');
 });
