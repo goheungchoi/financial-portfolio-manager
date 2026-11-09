@@ -425,7 +425,8 @@ class Automation {
       try{await this.attachOrderBooks(context);}catch{}
       // The account valuation (electron/valuation.cjs, set by main) is the equity reviews reason from: its low bound, and
       // when it is an estimate, how much it may understate and why. Without both markets in it the engines' figure stays.
-      if(context.environment==='kis-combined'){const c=(()=>{try{return this.valuation?.()?.combined??null;}catch{return null;}})();
+      // A valuation that cannot be read is said so (1.5.48 audit, A4): the equity is then KIS's total, not a net figure.
+      if(context.environment==='kis-combined'){const c=(()=>{try{return this.valuation?.()?.combined??null;}catch{context.equityUncertainty={...(context.equityUncertainty??{}),reasons:[...(context.equityUncertainty?.reasons??[]),'the account valuation could not be read; equity is the KIS total, which may overstate it']};return null;}})();
         if(c&&c.low!=null&&c.scope.length===2){context.equity=Math.round(c.low);if(!c.exact)context.equityUncertainty={...(context.equityUncertainty??{}),understatedUpToKRW:Math.round(c.high-c.low),reasons:[...new Set([...(context.equityUncertainty?.reasons??[]),...c.reasons])].slice(0,6),basis:'estimated net equity: the low bound'};}}
       // Whether total equity can be trusted for weights: unconfirmed order status, an uncertain settlement or a missing market.
       if(context.environment!=='local-paper'){const reasons=[];if(context.orderReconciliation)reasons.push('open order status unconfirmed');

@@ -64,6 +64,10 @@ class Exposure {
   // Checks an order against the policy. Returns {product, requiresApproval} or throws a policy error code.
   check({account,symbol,side,notional,equity,holdings,name=null}){
     const policy=this.policy(account),product=this.classify(symbol,name);
+    // A buy of a product the security master cannot classify (no row, no name: the master is missing, unreadable or
+    // incomplete) is not assumed standard (1.5.48 review, B1): it could be a leveraged or inverse product, so it waits for
+    // your approval instead of passing the leveraged opt-in and cap automatically.
+    if(side!=='Sell'&&product.source==='Unknown product')return {product:{...product,kind:'unclassified'},requiresApproval:true};
     if(product.kind==='standard'||side==='Sell')return {product,requiresApproval:false};
     const p=policy.leveragedEtps;if(!p.enabled)throw new Error('LEVERAGED_NOT_ENABLED');
     const current=this.summary(holdings,equity).leveragedValue;

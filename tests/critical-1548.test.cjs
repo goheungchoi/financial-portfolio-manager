@@ -177,3 +177,14 @@ test('A5: repeated format failures back off automatic reviews, persistently and 
   // The detail names the rule.
   assert.match(require('../electron/ai-errors.cjs').detail('INVALID_AI_RESPONSE','Decision',err),/Rule: a tool request on the final round \(1 tool request: get_context_detail\), round 4\./);
 });
+test('B1: a buy of a product the security master cannot classify waits for approval instead of passing as standard; a sale does not',()=>{
+  const {Exposure}=require('../electron/exposure.cjs');const db=new DatabaseSync(':memory:');const x=new Exposure(db);
+  // No securities table at all (the master was never loaded or cannot be read), and no name.
+  const buy=x.check({account:'a',symbol:'252670',side:'Buy',notional:1000,equity:100000,holdings:[]});assert.equal(buy.requiresApproval,true);assert.equal(buy.product.kind,'unclassified');
+  assert.equal(x.check({account:'a',symbol:'252670',side:'Sell',notional:1000,equity:100000,holdings:[]}).requiresApproval,false);
+  // A classified standard stock is unchanged.
+  db.exec('CREATE TABLE securities(symbol TEXT PRIMARY KEY,name TEXT,englishName TEXT,market TEXT,type TEXT)');db.prepare('INSERT INTO securities VALUES(?,?,?,?,?)').run('005930','삼성전자','Samsung Electronics','KOSPI','stock');
+  assert.deepEqual([x.check({account:'a',symbol:'005930',side:'Buy',notional:1000,equity:100000,holdings:[]}).requiresApproval,x.classify('005930').kind],[false,'standard']);
+  // Through the engine: the proposal carries the approval requirement, so automatic submission waits.
+  const w=world();w.engine.exposure=x;const p=w.engine.propose({symbol:'252670',side:'Buy',quantity:1,limitPrice:1000});assert.equal(p.requiresApproval,true);assert.equal(p.product.kind,'unclassified');
+});
