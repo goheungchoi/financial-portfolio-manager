@@ -79,7 +79,7 @@ test('A3: a new day takes its baseline from the valuation with its snapshot; a b
   // Configured on a day with no policy yet: the same valuation, not KIS's 1,300.
   day='2030-01-11';w.engine.configure({symbols:[],lossLimit:{mode:'amount',value:30}},'ENABLE MOCK');p=w.engine.policy();assert.deepEqual([p.day,p.baseline,p.valuation],['2030-01-11',950,'audit-net']);assert.equal(taken.length,2);
   // The valuation unavailable later that day: unavailable, not a comparison with KIS's total.
-  w.engine.netEquityOf=()=>{throw new Error('VALUATION_FAILED');};const l=w.engine.lossOf(p,w.balance);assert.equal(l.unavailable,true);assert.equal(l.loss,null);assert.equal(l.ambiguous,true);assert.match(l.reasons[0],/audit-net\) is not available now/);
+  w.engine.netEquityOf=()=>{throw new Error('VALUATION_FAILED');};const l=w.engine.lossOf(p,w.balance);assert.equal(l.unavailable,true);assert.equal(l.loss,null);assert.equal(l.ambiguous,true);assert.match(l.reasons[0],/the account valuation could not be read \(VALUATION_FAILED\)/);
   // A settlement-adjusted baseline survives an edit too.
   const s=lossWorld();s.engine.settlementAdjustments=()=>({certain:{low:100,high:100},items:[]});s.engine.netEquityOf=()=>({low:1060,high:1060,version:'audit-net'});
   assert.equal(s.engine.lossOf(s.engine.policy(),s.balance).loss,40);s.engine.configure({symbols:[],lossLimit:{mode:'amount',value:30}},'ENABLE MOCK');assert.equal(s.engine.lossOf(s.engine.policy(),s.balance).breached,true);

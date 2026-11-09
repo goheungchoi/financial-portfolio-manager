@@ -307,7 +307,9 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       // Home: the trend says the return is unavailable and is not presented as verified.
       await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"]`)?.textContent.includes("Investment return unavailable")','the Home trend should say the return is unavailable');
       // 1.5.48 UI: one sentence, not stacked labels.
-      assert.ok(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("while older trades are being checked")'),'Home says why in one sentence');
+      // 1.5.48 review: the note gives the actual reason recorded for the day, not a presumed one.
+      const note=await run('document.querySelector(`[aria-label="Account trend"] .trend-note`).textContent');assert.match(note,/^Investment return unavailable: \S.{10,}\.$/,'Home says why in one sentence');
+      assert.ok(!/older trades are being checked/.test(note),'no presumed cause');assert.ok((await run('document.querySelector(`[aria-label="Account trend"] .trend-note`).title')).includes(note.replace(/^Investment return unavailable: /,'').replace(/( \(\d+ days affected\))?\.$/,'')),'the shown reason is the recorded one');
       assert.equal(await run('document.querySelectorAll(`[aria-label="Account trend"] .trend-note`).length'),1);assert.ok(!(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Not verified")')),'no isolated badge');
       await capture('stage1548-home-trend');
       // Performance, U.S. series: unavailable (not a number), corrections and days without a return apart.
