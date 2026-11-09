@@ -91,7 +91,7 @@ class Reconciliation{
   // A market's daily-loss check as a preview shows it: the verdict, the loss and limit, the baseline adjustment for
   // settlement corrections (and the other one when timing is unknown) and every scenario.
   static lossSummary(l){if(!l)return null;const r=v=>Number.isFinite(v)?Math.round(v*100)/100:null;
-    return {breached:Boolean(l.breached),ambiguous:Boolean(l.ambiguous),loss:r(l.loss),limit:r(l.limitKRW),baseline:r(l.baseline),equity:r(l.equity),
+    return {breached:Boolean(l.breached),ambiguous:Boolean(l.ambiguous),...(l.unavailable?{unavailable:true,reasons:(l.reasons??[]).slice(0,3).map(x=>String(x).slice(0,240))}:{}),loss:r(l.loss),limit:r(l.limitKRW),baseline:r(l.baseline),equity:r(l.equity),
       adjustment:l.settlement?.adjustment?{low:r(l.settlement.adjustment.low),high:r(l.settlement.adjustment.high)}:null,
       ifPaidBeforeBaseline:l.settlement?.ifPaidBeforeBaseline?{low:r(l.settlement.ifPaidBeforeBaseline.low),high:r(l.settlement.ifPaidBeforeBaseline.high)}:null,
       scenarios:(l.scenarios??[]).map(x=>({name:x.name,loss:r(x.loss),breached:Boolean(x.breached)})),reasons:l.reasons??[]};}
