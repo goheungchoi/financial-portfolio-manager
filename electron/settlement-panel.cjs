@@ -96,7 +96,7 @@ class SettlementPanel{
       fundingRetainedUSD:usd(funding.reduce((n,f)=>n+cents(f.retainedUSD),0))};
     // Detected U.S. flows a reconciliation may name as its payment (R8).
     const detectedFlows=(this.reconciliation?.performance?.flows(account)??[]).filter(f=>f.market==='US'&&f.detected&&!f.transfer).map(f=>({id:f.id,day:f.day,amountUSD:f.amount}));
-    return {account,environment,pieces,reconciliations,timing:entries,funding,detectedFlows,summary,home:SettlementPanel.home(summary)};}
+    return {account,environment,pieces,reconciliations,timing:entries,funding,detectedFlows,summary,home:SettlementPanel.home(summary,pieces)};}
   // P8: U.S. buy funding still committed after a reconciliation.
   fundingRetained(account,t,records,reversals,byId){const f=this.reconciliation?.funding;if(!f)return [];
     const active=records.filter(r=>r.kind==='reconciliation'&&r.side==='Buy'&&!reversals.has(r.id)),orders=[...new Set(active.map(r=>String(r.orderId)))];if(!orders.length)return [];
@@ -111,11 +111,14 @@ class SettlementPanel{
     return out;}
   // P4: the Home row, or null. Buys unresolved lower equity's low bound and buying capacity; sales unresolved leave
   // their proceeds out of the high bound only.
-  static home(s){const buys=s.unresolved.buysUSD,sells=s.unresolved.sellsUSD,over=s.overdue.buysUSD+s.overdue.sellsUSD,kept=s.fundingRetainedUSD??0;const parts=[];
+  // 1.5.48 UI: the title says what needs doing in plain words (how many trades need their settlement confirmed, and
+  // their signed total); the detail keeps what each amount does.
+  static home(s,pieces=[]){const buys=s.unresolved.buysUSD,sells=s.unresolved.sellsUSD,over=s.overdue.buysUSD+s.overdue.sellsUSD,kept=s.fundingRetainedUSD??0;const parts=[];
+    const need=pieces.filter(p=>p.why||p.overdue||p.pretracking),total=Math.round(need.reduce((n,p)=>n+(Number(p.signedUSD)||0),0)*100)/100;
     if(buys>0.005)parts.push(`${money(buys)} lowers equity and buying capacity`);if(sells>0.005)parts.push(`${money(sells)} of sale proceeds not counted`);
     if(kept>0.005)parts.push(`${money(kept)} of buy funding still committed after reconciliation`);
     if(s.timingOpen)parts.push(`${s.timingOpen} payment timing${s.timingOpen===1?'':'s'} to confirm (${signedMoney(s.timingRange.low)} to ${signedMoney(s.timingRange.high)})`);
-    if(!parts.length)return null;return {title:'U.S. settlements to reconcile',detail:parts.join(' · ')+(over>0.005?` · ${money(over)} overdue`:''),tone:over>0.005||buys>0.005||kept>0.005?'warning':'info'};}
+    if(!parts.length)return null;return {title:need.length?`${need.length} older U.S. trade${need.length===1?' needs':'s need'} settlement confirmation (${signedMoney(total)})`:kept>0.005?`${money(kept)} of U.S. buy funding still reserved`:'U.S. payment timing to confirm',detail:parts.join(' · ')+(over>0.005?` · ${money(over)} overdue`:''),tone:over>0.005||buys>0.005||kept>0.005?'warning':'info'};}
   // P5: Check again for the order of a piece. fetch(start,end,{maxPages}) is one KIS trade-history read (live,
   // read-only). Returns the job's outcome and the check's state; {busy:true} while a run for that order is under way.
   async checkAgain(account,pieceId,{orders=[],fetch,environment,today}){

@@ -176,7 +176,12 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     });
     await check('Review failures display actionable diagnostics and status has no Settings button',async()=>{
       decisionFailure=true;await run("window.portfolio.configureRuntime({scope:'paper',provider:'openai',enabled:false,maxCallsPerDay:200,maxUSDPerDay:100})");await navigate('Engine settings');await wait(2200);await click('Run portfolio review');await until('document.querySelector("main").textContent.includes("unavailable to this API project")','Safe diagnosis missing');
-      const state=await run('window.portfolio.getRuntime()');assert.equal(state.lastError,'AI_MODEL_UNAVAILABLE');assert.match(state.lastErrorDetail,/AI research and decision/);assert.equal(await run('Array.from(document.querySelectorAll(".runtime-pulse button")).some(b=>b.textContent==="Settings")'),false);await capture('review-error-details');decisionFailure=false;
+      const state=await run('window.portfolio.getRuntime()');assert.equal(state.lastError,'AI_MODEL_UNAVAILABLE');assert.match(state.lastErrorDetail,/AI research and decision/);assert.equal(await run('Array.from(document.querySelectorAll(".runtime-pulse button")).some(b=>b.textContent==="Settings")'),false);await capture('review-error-details');
+      // 1.5.48 UI: on Home, one current error with its time and what happens next; the full diagnostic is collapsed.
+      await navigate('Home');await until('Boolean(document.querySelector(`[aria-label="Last review error"]`))','the error line on Home');
+      assert.match(await run('document.querySelector(`[aria-label="Last review error"] p`).textContent'),/^Last review failed at \d\d:\d\d.*(tries again|nothing retries automatically|paused)/);
+      assert.equal(await run('document.querySelector(`[aria-label="Last review error"] details`).open'),false,'details collapsed by default');
+      await run('document.querySelector(`[aria-label="Last review error"]`).scrollIntoView({block:"center"})');await capture('stage1548-error-state');decisionFailure=false;
     });
     await check('Holdings open the selected company; allocation segments show keyboard-accessible detail; replay runs offline',async()=>{
       overseas.holdings=[{symbol:'NASD:TEST',name:'Test holding',quantity:2,price:90,cost:100}];overseas.reportedTotal=180;await run('window.portfolio.refreshPortfolio()');await navigate('Holdings');await until('Boolean(document.querySelector(`[aria-label="View Test holding charts"]`))','Company link missing');await run('document.querySelector(`[aria-label="View Test holding charts"]`).click()');await until('document.querySelector("h1").textContent==="Charts"&&document.querySelector(`[aria-label="Company stock code"]`)?.value==="NASD:TEST"','Chart symbol not selected');await until('Boolean(document.querySelector(".company-tiles"))','Company data missing');await run('Array.from(document.querySelectorAll("details")).find(d=>d.querySelector("summary")?.textContent.includes("Paper replay")).open=true');await click('Run offline replay');await until('document.querySelector("main").textContent.includes("Later holdout")','Replay missing');
@@ -301,11 +306,14 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const approvals=()=>db.prepare('SELECT COUNT(*) n FROM valuation_settlement_approvals WHERE account=?').get(acct).n;
       // Home: the trend says the return is unavailable and is not presented as verified.
       await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"]`)?.textContent.includes("Investment return unavailable")','the Home trend should say the return is unavailable');
-      assert.ok(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Not verified")'),'Home tags settlement-affected performance');
+      // 1.5.48 UI: one sentence, not stacked labels.
+      assert.ok(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("while older trades are being checked")'),'Home says why in one sentence');
+      assert.equal(await run('document.querySelectorAll(`[aria-label="Account trend"] .trend-note`).length'),1);assert.ok(!(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Not verified")')),'no isolated badge');
+      await capture('stage1548-home-trend');
       // Performance, U.S. series: unavailable (not a number), corrections and days without a return apart.
       await navigate('Performance');await run(`(()=>{const s=document.querySelector('[aria-label="Performance series"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'USD');s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
       await until('Array.from(document.querySelectorAll(`[aria-label="Period returns"] tbody tr`)).find(r=>r.cells[0].textContent.startsWith("All"))?.textContent.includes("Unavailable")','the All period is unavailable, not a number');
-      assert.ok(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Not verified")'));
+      assert.ok(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Estimate")'));assert.ok(await run('Boolean(document.querySelector(`[aria-label="Return labels"]`))'),'the labels are explained');
       assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`)?.textContent.includes("Days without a return")'),'days without a return are listed');
       assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`).textContent.includes("Accounting corrections")'),'corrections are listed apart');
       for(const label of ['Daily P/L','Drawdown']){await run(`Array.from(document.querySelectorAll('[aria-label="Chart"] button')).find(b=>b.textContent===${JSON.stringify(label)}).click()`);await wait(150);}
