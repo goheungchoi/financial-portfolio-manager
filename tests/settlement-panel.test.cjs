@@ -12,7 +12,7 @@ function kis(all){const calls=[];const client=new OverseasClient({overseasIdenti
   const d=v=>`${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}`;const rows=all.filter(r=>d(r.trad_dt)>=d(params.ERLM_STRT_DT)&&d(r.trad_dt)<=d(params.ERLM_END_DT));const page=params.CTX_AREA_NK100?Number(params.CTX_AREA_NK100.slice(1)):0,more=page+1<rows.length;
   return {body:{output1:rows.slice(page,page+1),ctx_area_fk100:more?'f':'',ctx_area_nk100:more?'p'+(page+1):''},continuation:more?'M':''};}});return {fetch:(a,b,o)=>client.trades(a,b,o),calls};}
 function world(){const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');let t=Date.parse('2026-11-06T03:00:00Z');const clock=()=>t;
-  const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock),rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
+  const f=new InFlight(db,clock,{settleDays:null}/* age rule off until S3/S4 removes these tests */),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock),rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
   const fd=new FlowDetector(db,perf,clock),costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});costs.save({...DEFAULT_COSTS,taxYear:2026,annualRealizedKRW:0});
   const panel=new SettlementPanel({inFlight:f,reconciliation:rec,flowDetector:fd,costs,clock});const us={cash:500};let seq=0,orders=[];
   const snap=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:[],reportedTotal:us.cash,timestamp:new Date(t).toISOString()});
@@ -100,13 +100,14 @@ test('T5 (P5): a rate limit and a restart during a window: the job\'s state is k
   await assert.rejects(w.panel.checkAgain('a','nope',{orders:w.orders(),fetch:ok,environment:'live',today:TODAY}),/PIECE_NOT_OPEN/);
   await assert.rejects(w.panel.checkAgain('a',w.pid('A'),{orders:[],fetch:ok,environment:'live',today:TODAY}),/ORDER_UNKNOWN/);
 });
-test('P6: overdue is noted once by the tracker, with one notification',()=>{
-  const w=world();const O=order('O',{createdAt:w.clock()-10*DAY,day:'2026-10-27'});w.see([]);const r=w.f.observe('a',{us:{accountKey:'a:US',environment:'live',cash:500,pendingSaleProceeds:0,holdings:[],timestamp:new Date(w.clock()).toISOString()},orders:[O],fx:1300});
-  assert.deepEqual(r.newlyOverdue.map(p=>[p.orderId,p.side,p.usd]),[['O','Buy',100]]);assert.ok(r.notes.some(n=>/no settlement evidence after 7 days/.test(n)));
-  const sent=[];w.panel.overdueNotice('a',r.newlyOverdue,(id,m)=>sent.push([id,m]));w.panel.overdueNotice('a',r.newlyOverdue,(id,m)=>sent.push([id,m]));
-  assert.equal(sent.length,1);assert.match(sent[0][1],/U\.S\. settlement overdue: Buy O \(\$100\.00\)/);
-  w.later(MIN);const again=w.f.observe('a',{us:{accountKey:'a:US',environment:'live',cash:500,pendingSaleProceeds:0,holdings:[],timestamp:new Date(w.clock()).toISOString()},orders:[O],fx:1300});assert.deepEqual(again.newlyOverdue,[],'noted once');assert.equal(again.overdue.buysUSD,100,'still overdue');
-  const p=w.panel.view('a',{orders:[O]}).pieces[0];assert.equal(p.overdue,true);assert.ok(p.unknown.some(u=>/before tracking started/.test(u)));assert.ok(p.unknown.some(u=>/after 7 days/.test(u)));
+// S1a: the overdue state is gone (a fill is settled by age after 3 business days), so the tracker reports no overdue
+// piece and the panel's overdue notice has nothing to send. The notice itself goes with the panel in S4.
+test('P6 (S1a): nothing becomes overdue; with the age rule an old fill is settled by age and no overdue notice is sent',()=>{
+  const w=world();const O=order('O',{createdAt:w.clock()-10*DAY,day:'2026-10-27'});w.see([]);
+  const f=new (require('../electron/valuation.cjs').InFlight)(w.db??w.f.db,w.clock);
+  const r=f.observe('a',{us:{accountKey:'a:US',environment:'live',cash:500,pendingSaleProceeds:0,holdings:[],timestamp:new Date(w.clock()).toISOString()},orders:[O],fx:1300});
+  assert.deepEqual(r.newlyOverdue,[]);assert.equal(r.overdue.buysUSD,0);assert.ok(!r.notes.some(n=>/no settlement evidence after/.test(n)));
+  const sent=[];w.panel.overdueNotice('a',r.newlyOverdue,(id,m)=>sent.push([id,m]));assert.equal(sent.length,0);
 });
 test('P7: syncHistory with a key keeps the check apart from the account\'s tax job, and an exact plan reads dates of gaps not yet due',async()=>{
   const w=world();w.costs.gaps.record('a',{start:'2026-11-05',end:'2026-11-05',complete:false,reason:'PAGE_LIMIT'},w.clock());const seen=[];

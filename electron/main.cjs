@@ -384,7 +384,11 @@ app.whenReady().then(async () => {
   // The broker's own balance figures, kept when they change (electron/broker-raw.cjs), for reconciliation.
   const brokerBalances=new (require('./broker-raw.cjs').BrokerBalances)(store.db);
   // U.S. fills KIS does not reflect yet (electron/valuation.cjs InFlight), decided at each U.S. balance reading.
-  const inFlight=new (require('./valuation.cjs').InFlight)(store.db);inFlightOf=account=>{try{return inFlight.current(account);}catch{return null;}};
+  const inFlight=new (require('./valuation.cjs').InFlight)(store.db);
+  // S1a: a U.S. order settled by evidence or by age releases its funding commitment's filled part (one transaction).
+  // S1b: a failing reading leaves one System line with its error code, at most once a minute per kind.
+  const readingFailed=require('./reading-failures.cjs').readingFailures((title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message));
+  inFlight.onSettled=(account,{orderId,why})=>{const market=fundingLedger.row(String(orderId))?.market;if(market==='US')fundingLedger.releaseSettled({orderId,why});};inFlightOf=account=>{try{return inFlight.current(account);}catch{return null;}};
   // The U.S. daily-loss baseline and settlement corrections (electron/settlement-baseline.cjs, stage 2b.4): the tracker's
   // pieces are saved with each day's baseline, and reconciliations or corrections after it move the baseline with the value.
   const settlementBaseline=new (require('./settlement-baseline.cjs').SettlementBaseline)(store.db,{inFlight});
@@ -407,7 +411,9 @@ app.whenReady().then(async () => {
   // Stage 3.3 backend; Stage 3.4 will expose preview and explicit approval in the UI.
   performance.restatements=new (require('./valuation-corrections.cjs').SettlementRestatements)(store.db,{inFlight,reconciliation,performance,corrections:settlementCorrections});
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
-    if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch{}}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
+    if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch(e){readingFailed('U.S. settlement tracking',e);}}
+    // S1b: Korean filled buys release their funding by age (3 Korean business days after the order's day).
+    try{for(const x of fundingLedger.releaseAgedKR(s.accountKey))automation.log(require('node:crypto').randomUUID(),'System','Korean settlement',`Buy ${x.orderId}: settled by age, 3 Korean business days after its trade date ${x.tradeDay}; its funding is released`);}catch(e){readingFailed('Korean settlement',e);}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
     // The tracker's own changes to the U.S. basis (reconciliations, late pre-tracking fills, corrections, coverage under
     // review) are explained, never flows (stage 2b.4).
     for(const flow of flowDetector.observe(s.accountKey,{usExplained:range=>inFlight.explained(s.accountKey,range),usReview:inFlightOf(s.accountKey)?.review??null,krCash:kr,provisionalKRW:funding.uncertainKRW,unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'?(f=>usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0)-(f?.buysUSD??0)+(f?.sellsUSD??0))(inFlightOf(s.accountKey)):null,fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
@@ -607,7 +613,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
   ipcMain.handle('scout:run',async event=>{authorize(event);try{await automation.scout();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.scoutError??'SCOUT_FAILED',state:runtimeState()};}});
-  ipcMain.handle('runtime:dry-run-estimate',event=>{authorize(event);return automation.dryRunEstimate();});
+  ipcMain.handle('runtime:dry-run-estimate',(event,options)=>{authorize(event);return automation.dryRunEstimate({model:options?.model==='claude-opus-5-5'?'claude-opus-5-5':null});});
   ipcMain.handle('runtime:dry-run',async(event,mode,options)=>{authorize(event);try{const record=await automation.dryRun(mode,options&&typeof options==='object'?{model:options.model??null}:{});return {ok:true,record,state:runtimeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DRY_RUN_FAILED',state:runtimeState()};}});
   ipcMain.handle('runtime:background-ai',(event,paused)=>{authorize(event);try{automation.setBackgroundPaused(paused);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error.message,state:runtimeState()};}});
   ipcMain.handle('runtime:review',async event=>{authorize(event);try{await automation.review();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.',state:runtimeState()};}});

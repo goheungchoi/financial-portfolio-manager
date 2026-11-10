@@ -252,13 +252,13 @@ test('contract: random purchase lifecycles conserve equity and log every allocat
         if(step===b.fill+b.lag)a.s.orders=[...a.s.orders,buy(b.id,b.usd)];
         if(step===b.fill+3&&b.mode!=='cash'){if(b.mode==='krw'){a.s.kr.cash-=b.usd*1300;a.s.kr.settledCash-=b.usd*1300;krw(a.s,b.usd,-1);}else{a.s.us.cash-=b.usd;a.s.us.unsettled.buyKRW-=b.usd*1300;}}}
       if(rnd()<0.2)a.restart();a.read();const m=a.mark();assert.ok(m.low<=e0+1,`case ${c} step ${step}: ${m.low} > ${e0} ${JSON.stringify(buys)}`);assert.ok(m.high>=m.low-1);assert.ok(!(m.exact&&m.inFlight.unresolved.buysUSD>0),'unresolved is never exact');}
-    // Time alone changes nothing (independent accounting review of 162d7c9): eight more days with no broker change leave
-    // the value where it was. Everything settles back exactly, unless amounts alone could not tie a fill to its
-    // settlement (a payment seen before its order; a new report netted against another's settlement in one reading):
-    // such a fill stays in flight, unresolved and then overdue, never exact, until reconciled.
-    const settledLow=a.mark().low;a.later(8*DAY);a.read();const end=a.mark();assert.equal(end.low,settledLow,`case ${c}: no change from time alone`);
-    const left=a.state().open;assert.ok(left.every(f=>f.unresolved&&f.overdueAt),`case ${c}: anything left is unresolved and overdue`);if(left.length)leftover++;
-    if(!left.length){assert.equal(end.low,e0,`case ${c}: settled`);assert.equal(end.exact,true);}else{assert.equal(end.exact,false);assert.equal(end.low,e0-Math.round(left.reduce((n,f)=>n+f.usd,0)*1300));}
+    // Settlement by age (S1a, replacing "time alone changes nothing"): what amounts alone could not tie to its settlement
+    // (a payment seen before its order; a new report netted against another's settlement in one reading) is settled
+    // after 3 U.S. business days. Eight more days with no broker change: nothing is left in flight, the value is the
+    // start value again, exact, and the rise is the amount that was still open.
+    const settledLow=a.mark().low,before=a.state().open.filter(f=>f.side==='Buy').reduce((n,f)=>n+f.usd,0);if(before>0)leftover++;
+    a.later(8*DAY);a.read();const end=a.mark();assert.equal(a.state().open.length,0,`case ${c}: everything settles by age`);assert.equal(end.exact,true,`case ${c}: exact`);
+    assert.ok(Math.abs(end.low-e0)<=1,`case ${c}: back to the start value`);assert.ok(Math.abs(end.low-settledLow-Math.round(before*1300))<=1,`case ${c}: the rise is what was open`);
     const allocated=a.state().evidence.flatMap(e=>e.allocated.map(x=>x.id));assert.equal(new Set(allocated).size,allocated.length,`case ${c}: no fill allocated twice`);}
-  t.diagnostic(`${leftover} of 150 lifecycles leave a fill overdue for reconciliation`);
+  t.diagnostic(`${leftover} of 150 lifecycles needed the age rule to settle a fill`);
 });

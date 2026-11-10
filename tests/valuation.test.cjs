@@ -101,6 +101,7 @@ test('U.S. fills in flight are decided by evidence: the RDDT gap, cash already m
   const old={...buy(),createdAt:t-10*86400000};f=fresh();const o1=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[old],fx:1335});assert.equal(o1.buysUSD,97.66,'ten days old: still awaiting verification');assert.equal(o1.open[0].unresolved.why,'awaiting verification');assert.equal(o1.pretracking.count,1);
   f=fresh();const first=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[{...buy(),createdAt:t-3600000}],fx:1335});assert.equal(first.buysUSD,97.66);assert.equal(first.unresolved.buysUSD,97.66);
   f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});
-  t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});assert.equal(late.buysUSD,97.66,'still owed');assert.equal(late.overdue.buysUSD,97.66);assert.match(late.notes[0],/no settlement evidence after 7 days/);
+  // S1a: past 3 U.S. business days with no evidence it is settled by age, once (it replaces the overdue state).
+  t+=(MAX_DAYS+1)*86400000;const late=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});assert.equal(late.buysUSD,0,'settled by age');assert.equal(late.overdue.buysUSD,0);assert.match(late.notes.join('|'),/settled by age, 3 U\.S\. business days/);
   assert.equal(f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335}).notes.length,0,'noted once');
 });

@@ -28,7 +28,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   setBackgroundAi: paused => ipcRenderer.invoke('runtime:background-ai', paused),
   dryRun: (mode, options) => ipcRenderer.invoke('runtime:dry-run', mode, options),
   getRuntimeHistory: () => ipcRenderer.invoke('runtime:history'),
-  dryRunEstimate: () => ipcRenderer.invoke('runtime:dry-run-estimate'),
+  dryRunEstimate: model => ipcRenderer.invoke('runtime:dry-run-estimate', model === 'claude-opus-5-5' ? { model } : undefined),
   runScout: () => ipcRenderer.invoke('scout:run'),
   importProviders: () => ipcRenderer.invoke('runtime:providers'),
   refreshNews: () => ipcRenderer.invoke('runtime:news'),

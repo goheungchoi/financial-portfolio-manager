@@ -42,6 +42,9 @@ class SettlementCorrections{
         if(res&&!res.paidHere&&Number.isFinite(win?.after)&&win.after<=prev){add(day,c.usd,{kind:'reconciliation paid before the day',reconciliationId:c.id});continue;}
         if(!res&&typeof c.settledOn==='string'&&nyDay(prev)<c.settledOn&&nyDay(at)>c.settledOn){add(day,0,{kind:'reconciliation paid that day',reconciliationId:c.id,settledOn:c.settledOn});continue;}
         unknown(day,`whether reconciliation ${String(c.id).slice(0,10)} was paid on this day or earlier is not known`,{kind:'reconciliation of unknown payment timing',reconciliationId:c.id,possibleUSD:round(c.usd)});}}
+    // S2b: what of the corrections is still open at each day's last reading (InFlight.openCorrections), on every day.
+    const paidAfter=new Set([...out.values()].flatMap(d=>d.items.filter(i=>i.kind==='reconciliation paid that day').map(i=>i.reconciliationId)));
+    if(typeof this.inFlight.openCorrections==='function')for(const r of days){const v=this.inFlight.openCorrections(account,{until:r.at,paidAfter});if(Math.abs(v)>=0.005){const d=out.get(r.day)??{usd:0,items:[],unknown:[]};d.openUSD=v;out.set(r.day,d);}}
     // C4: reclassified settlement cash on the flow's day (the first recorded day on or after it), records in force only.
     for(const r of this.reconciliation?.active(account)??[]){const fl=r.effects?.flows;if(!fl?.original||r.side!=='Buy')continue;
       const row=days.find(d=>d.day>=fl.original.day);if(row&&days.indexOf(row)>0)add(row.day,fl.settlementCents/100,{kind:'payment reclassified from a detected flow',reconciliationId:r.id,flowId:fl.original.id});}
@@ -86,11 +89,18 @@ const addDays=(day,n)=>new Date(Date.parse(day+'T00:00:00Z')+n*DAY).toISOString(
 // after its New York trade date. Holidays only delay settlement, so this is never later than the real one.
 function earliestPayment(filledAt){let d=nyDay(filledAt);do d=addDays(d,1);while([0,6].includes(new Date(d+'T00:00:00Z').getUTCDay()));return seoulMidnight(d);}
 const money=v=>`$${Number(v).toFixed(2)}`;
+// Settlement simplification S2 (design section 3, D3), the default: no day is unavailable for a settlement reason. A day
+// whose interval had a U.S. buy in flight (open at the previous day's last reading, seen during the day, opened, flagged
+// or overdue in between, or coverage under review) shows its return with the estimate tag (pending) while any of those
+// pieces is still open, and plainly once they closed (by evidence or by age, at most 3 business days). There are no
+// misstatement windows (U2) and no bounded ranges (U3): a closed piece's change is a correction (C2), and restatements
+// are off. U4 stays: a day the tracker's state was not recorded for, or could not be read, has no return.
+// strict: the stage 3.2 rules (U1-U6) above, only for the tests of the restatement code S4 removes.
 class SettlementUncertainty{
-  constructor(db,{inFlight,reconciliation=null}={}){if(!inFlight)throw new Error('UNCERTAINTY_NEEDS_TRACKER');this.db=db;this.inFlight=inFlight;this.reconciliation=reconciliation;}
+  constructor(db,{inFlight,reconciliation=null,strict=false}={}){if(!inFlight)throw new Error('UNCERTAINTY_NEEDS_TRACKER');this.db=db;this.inFlight=inFlight;this.reconciliation=reconciliation;this.strict=strict;}
   // rows: the recorded days in order (with their settlement snapshots); corrections: SettlementCorrections' map for the
   // same rows (which reconciliations were paid on their own day). Returns Map day -> {unavailable: reasons, bounded}.
-  byDay(account,rows,corrections=new Map(),approved=[]){const out=new Map(),days=rows.filter(r=>Number.isFinite(r.at)),started=this.inFlight.state(account).startedAt;
+  byDay(account,rows,corrections=new Map(),approved=[]){if(!this.strict)return this.estimates(account,rows);const out=new Map(),days=rows.filter(r=>Number.isFinite(r.at)),started=this.inFlight.state(account).startedAt;
     const at=day=>{const d=out.get(day)??{unavailable:[],bounded:null};out.set(day,d);return d;},mark=(day,why)=>{const d=at(day);if(!d.unavailable.includes(why))d.unavailable.push(why);};
     if(!Number.isFinite(started))return out;
     const events=this.inFlight.evidence.events(account),side=new Map(),opened=new Map(),amount=new Map();
@@ -137,7 +147,28 @@ class SettlementUncertainty{
     // U3 needs the day to have nothing else: any other reason, or any correction, leaves it unavailable.
     for(const [day,d] of out)if(d.bounded&&(d.unavailable.length||(corrections.get(day)?.items??[]).length)){mark(day,`an uncertain U.S. buy obligation of ${money(d.bounded.usd)} (${d.bounded.why??'unresolved'}) with other changes the same day: the return is unavailable`);d.bounded=null;}
     return out;}
+  // S2: Map day -> {unavailable (U4 only), pending (the estimate tag, while a piece of the day is open)}.
+  estimates(account,rows){const out=new Map(),days=rows.filter(r=>Number.isFinite(r.at)),started=this.inFlight.state(account).startedAt;if(!Number.isFinite(started))return out;
+    const at=day=>{const d=out.get(day)??{unavailable:[],bounded:null};out.set(day,d);return d;},mark=(day,why)=>{const d=at(day);if(!d.unavailable.includes(why))d.unavailable.push(why);};
+    const now=this.inFlight.current(account),openNow=new Set((now.open??[]).filter(p=>p.side==='Buy').map(p=>p.pid)),reviewNow=(now.review?.buysUSD??0)>0.005;
+    const events=this.inFlight.evidence.events(account),side=new Map(),opened=new Map();for(const e of events)if(e.kind==='piece-opened'){side.set(e.pieceId,e.side);if(!opened.has(e.pieceId))opened.set(e.pieceId,e.at);}
+    const buys=list=>(list??[]).filter(p=>p.side==='Buy');
+    for(let i=1;i<days.length;i++){const prev=days[i-1],cur=days[i],day=cur.day;if(cur.at<started)continue;const s=cur.settlement,p=prev.settlement;
+      if(!s){mark(day,'the settlement tracker\'s uncertainty was not recorded for this day');continue;}
+      if(s.error||!s.last){mark(day,`the settlement tracker could not be read when this day was recorded (${s.error??'no reading'})`);continue;}
+      if(prev.at>=started&&(!p||p.error||!p.last)){mark(day,'the settlement tracker\'s uncertainty was not recorded at the previous day\'s last reading');continue;}
+      const before=prev.at>=started?buys(p.last.pieces):[];
+      const pids=new Set([...before,...buys(s.seen),...buys(s.last.pieces)].map(x=>x.pid).filter(Boolean));for(const pid of [...(prev.at>=started?p.last.open?.pids??[]:[]),...(s.openPids??[]),...(s.last.open?.pids??[])])pids.add(pid);let review=[...before,...buys(s.seen)].some(x=>x.review);
+      for(const e of events){if(!(e.at>prev.at&&e.at<=cur.at))continue;if(e.kind==='piece-opened'&&e.side==='Buy')pids.add(e.pieceId);else if(e.kind==='flag')for(const pid of e.pieces??[]){if(side.get(pid)==='Buy')pids.add(pid);}
+        else if(e.kind==='overdue'&&side.get(e.pieceId)==='Buy')pids.add(e.pieceId);else if(e.kind==='review-changed'&&[...(e.before??[]),...(e.after??[])].some(x=>x.side==='Buy'))review=true;}
+      // Not known which buys were open (a day recorded before the snapshot named them, with buys open by amount, or one
+      // without the open totals): an estimate while any buy opened by then is still open.
+      const named=Array.isArray(s.last.open?.pids)&&(prev.at<started||Array.isArray(p.last.open?.pids)),openByAmount=(s.openBuysMaxUSD??0)>0.005||prev.at>=started&&(p.last.open?.buysUSD??0)>0.005;
+      const unknownOpen=Boolean(s.openUnknown||!s.last.open||prev.at>=started&&!p.last.open||!named&&openByAmount);
+      const still=[...pids].filter(pid=>openNow.has(pid)),open=still.length>0||review&&reviewNow||unknownOpen&&[...openNow].some(pid=>(opened.get(pid)??Infinity)<=cur.at);
+      if(open){const usd=(now.open??[]).filter(x=>x.side==='Buy'&&(still.includes(x.pid)||unknownOpen&&(opened.get(x.pid)??Infinity)<=cur.at)).reduce((n,x)=>n+(x.usd??0),0);at(day).pending={usd:Math.round(usd*100)/100,estimate:true,...(unknownOpen?{unknown:true}:{})};}}
+    return out;}
 }
 // The performance correction hook as the app wires it: the 3.1 correction component with the 3.2 uncertainty rules.
-function performanceCorrections(db,{inFlight,reconciliation=null,timing=null}={}){const c=new SettlementCorrections(db,{inFlight,reconciliation,timing});c.uncertainty=new SettlementUncertainty(db,{inFlight,reconciliation});return c;}
+function performanceCorrections(db,{inFlight,reconciliation=null,timing=null,strict=false}={}){const c=new SettlementCorrections(db,{inFlight,reconciliation,timing});c.uncertainty=new SettlementUncertainty(db,{inFlight,reconciliation,strict});return c;}
 module.exports={SettlementCorrections,SettlementUncertainty,performanceCorrections,earliestPayment};

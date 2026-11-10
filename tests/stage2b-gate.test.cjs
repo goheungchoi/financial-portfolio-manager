@@ -23,7 +23,7 @@ function world({file=':memory:',start=Date.now()-6*HOUR}={}){const db=new Databa
   const U=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:us.holdings,...(us.unsettled?{unsettled:us.unsettled}:{}),reportedTotal:us.cash+us.holdings.reduce((n,h)=>n+h.quantity*h.price,0),fx:fx(),timestamp:new Date(t).toISOString()});
   // Free funds: the ledger's own inputs (fresh balances, KIS's reported unsettled U.S. total, the rate), read from the
   // fixture balances through the hooks main.cjs gives it (stage 2b.6 review: reportedKRW was fixed at zero).
-  const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock,fresh:async m=>m==='KR'?K():U(),fx}),perf=new PerformanceHistory(db,clock),fd=new FlowDetector(db,perf,clock),sb=new SettlementBaseline(db,{inFlight:f,clock});
+  const f=new InFlight(db,clock,{settleDays:null}/* age rule off until S3/S4 removes these tests */),funding=new FundingLedger(db,{clock,fresh:async m=>m==='KR'?K():U(),fx}),perf=new PerformanceHistory(db,clock),fd=new FlowDetector(db,perf,clock),sb=new SettlementBaseline(db,{inFlight:f,clock});
   // main.cjs marketValue: the Korean value nets the U.S. side's funding, so each engine reads both balances.
   const mv=market=>()=>marketValue(market,{korea:K(),us:U(),fx:fx(),inFlight:f.current('a'),now:t});
   const engine=(market,snap)=>{const e=new LiveEngine(db,{request:async()=>({balance:snap(),quotes:[],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot:snap()}),{market});e.day=()=>day;e.netEquityOf=mv(market);
@@ -145,7 +145,7 @@ test('T39 (restated under the Stage 1 funding rules, v3.3 §2): the worked examp
 });
 test('T4 (tracker side): a fill whose dates are in an incomplete history window stays unresolved; its KIS row is not linked and the panel names the gap; a complete read restores the link (A1 off: still supporting only)',()=>{
   const {TradingCosts}=require('../electron/trading-costs.cjs');const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');
-  let t=Date.parse('2026-11-05T20:00:00Z');const clock=()=>t;const f=new InFlight(db,clock),costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});
+  let t=Date.parse('2026-11-05T20:00:00Z');const clock=()=>t;const f=new InFlight(db,clock,{settleDays:null}/* age rule off until S3/S4 removes these tests */),costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});
   const panel=new SettlementPanel({inFlight:f,costs,clock});const o={id:'A',symbol:'NASD:TEST',side:'Buy',filled:1,fillPrice:100,resultCosts:{netCash:-100},environment:'live',day:'2026-11-05',createdAt:Date.parse('2026-11-05T15:00:00Z')};
   const us=()=>({timestamp:new Date(t).toISOString(),environment:'live',cash:500});f.observe('a',{us:us(),orders:[],fx:1300});t+=MIN;f.observe('a',{us:us(),orders:[o],fx:1300});t+=MIN;
   const row={tradeDate:'2026-11-05',settlementDate:'2026-11-06',ticker:'TEST',side:'Buy',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementKRW:130000,feesUSD:0,exchangeRate:1300};const W={start:'2026-11-01',end:'2026-11-06'};

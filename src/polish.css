@@ -528,3 +528,24 @@ table.discover-table{table-layout:auto}
 .settlement-form .form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 .settlement-preview{margin-top:8px}
 .settlement-preview tr.changed td{font-weight:600}
+/* F3 (1.5.50): the deposits and withdrawals table and its form, layout only. */
+.flows-table{width:100%;table-layout:auto;border-collapse:collapse}
+.flows-table th,.flows-table td{padding:8px 0 8px 16px;text-align:left;vertical-align:top}
+.flows-table th:first-child,.flows-table td:first-child{padding-left:0}
+.flows-table .flow-day{white-space:nowrap;width:1%;min-width:88px}
+.flows-table .flow-account{white-space:nowrap;width:1%;min-width:64px}
+.flows-table .flow-amount{white-space:nowrap;width:1%;min-width:120px;text-align:right;font-variant-numeric:tabular-nums}
+.flows-table .flow-note{width:auto;overflow-wrap:anywhere}
+.flows-table .flow-note .role-tag{margin-right:6px;white-space:nowrap}
+.flows-table .flow-actions{white-space:nowrap;width:1%;text-align:right}
+.flows-table .flow-actions button+button{margin-left:6px}
+.flow-form{margin-bottom:12px}
+.flow-form-actions{margin:0;padding:0;justify-content:flex-start}
+.flow-form-actions>button:first-child{margin-left:0}
+/* J1/J2 (1.5.50): the Journal tabs' warning mark and the decision facts row. */
+.journal-tabs button[data-warn]::before{content:'⚠ ';color:var(--warn,#d9a441)}
+.decision-facts{display:flex;flex-wrap:wrap;gap:8px 20px;margin:10px 0 4px}
+.decision-fact{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
+.decision-fact small{color:var(--muted);font-size:11px}
+.decision-fact span{overflow-wrap:anywhere}
+.decision-more{margin-top:8px}

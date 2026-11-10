@@ -47,8 +47,8 @@ test('C3: a reconciliation of unknown payment timing leaves the day\'s return an
 test('T24 (correction part) and C2: a reconciliation of a payment made before the day is a correction of +$100: out of P/L and return',()=>{
   // Paid before tracking started (settlement date before the interval): the value rises $100 with no cash.
   const w=started();w.nextDay();w.us.price=1010;w.reconcile('A',{settledOn:'2026-11-01'});w.record();
-  const [,p]=w.points();assert.equal(p.correction,100);assert.equal(p.correctionLabel,'accounting correction, not investment return');close(p.pnl,10);close(p.dailyReturn,10/1400);
-  const all=w.summary().periods.find(x=>x.label==='All');close(all.gain,10,'gain leaves the correction out');assert.equal(all.corrections,100);close(all.twr,10/1400);
+  const [,p]=w.points();assert.equal(p.correction,100);assert.equal(p.correctionLabel,'accounting correction, not investment return');close(p.pnl,10);close(p.dailyReturn,10/1500 /* S2b: base without the open correction */);
+  const all=w.summary().periods.find(x=>x.label==='All');close(all.gain,10,'gain leaves the correction out');assert.equal(all.corrections,100);close(all.twr,10/1500 /* S2b: base without the open correction */);
   // A rounding remainder (no payment) is a basis change too.
   const x=world();x.see([]);x.see([order('A',100.4,{resultCosts:{netCash:-100.4},costEstimate:{netCash:-100.4}})]);x.record();x.nextDay();x.reconcile('A',{cents:10000,settledOn:'2026-11-01'});x.later(MIN);x.reconcile('A',{explanation:'rounding',cents:40,route:undefined});x.record();
   assert.equal(x.points()[1].correction,100.4);close(x.points()[1].dailyReturn,0);
@@ -100,7 +100,7 @@ test('C3 (review of 093b44f, P1): "paid earlier" places the payment before the d
   // The reading interval began at or before day 0's last reading: "earlier" is before the day. A +$100 correction.
   const x=world();x.see([]);x.see([order('A',100)]);x.detect();x.later(MIN);x.record();x.nextDay();x.us.price=1010;const q=x.reconcile('A');x.later(MIN);x.detect();const [g]=x.fd.timing('a');
   assert.ok(g.after<=x.perf.history('a')[0].at,'the reading began before the day');x.fd.resolveTiming('a',g.id,{reconciliationId:q.id,paidHere:false});x.record();const [,y]=x.points();
-  assert.equal(y.correction,100);assert.deepEqual(y.correctionItems.map(i=>i.kind),['reconciliation paid before the day']);close(y.pnl,10);close(y.dailyReturn,10/1400);
+  assert.equal(y.correction,100);assert.deepEqual(y.correctionItems.map(i=>i.kind),['reconciliation paid before the day']);close(y.pnl,10);close(y.dailyReturn,10/1500 /* S2b: base without the open correction */);
 });
 test('C9 (review of 093b44f, P2): a correction read that fails, or returns something unreadable, leaves every U.S. and combined return unavailable with the reason; never zero',()=>{
   const w=started();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();w.nextDay();w.us.price=1010;w.record();

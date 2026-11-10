@@ -81,7 +81,14 @@ test('checking inputs reports the assembled snapshot and keeps the full inputs f
   db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('a','2026-10-23',JSON.stringify({reviewId:'r1',model:'gpt-6-sol',status:'completed',accountedMicro:60000,timestamp:1}));
   db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('b','2026-10-23',JSON.stringify({reviewId:'r1',model:'gpt-6-sol',status:'completed',accountedMicro:40000,timestamp:2}));
   db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('c','2026-10-23',JSON.stringify({reviewId:'r2',model:'gpt-6-sol',status:'completed',accountedMicro:80000,timestamp:3,kind:'shadow'}));
-  const e=automation.dryRunEstimate();assert.equal(e.estimateUSD,0.1,'one review of two requests; shadow calls excluded');assert.deepEqual(e.requests,{min:2,max:2});assert.equal(e.today.maxCalls,automation.config.maxCallsPerDay);assert.match(e.note,/same daily AI limits/);
+  // Release gate R1: a Claude dry run has its own estimate: none before any Claude review, measured after one completed.
+  const c0=automation.dryRunEstimate({model:'claude-opus-5-5'});assert.equal(c0.model,'claude-opus-5-5');assert.equal(c0.vendor,'Anthropic');assert.equal(c0.ran,false);assert.equal(c0.estimateUSD,null);assert.equal(c0.requests,null);
+  db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('d','2026-10-23',JSON.stringify({reviewId:'r3',model:'claude-opus-5-5',status:'failed',accountedMicro:0,timestamp:4}));
+  const c1=automation.dryRunEstimate({model:'claude-opus-5-5'});assert.equal(c1.ran,true,'a Claude review ran');assert.equal(c1.estimateUSD,null,'but none completed: still no estimate');
+  db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run('e','2026-10-23',JSON.stringify({reviewId:'r4',model:'claude-opus-5-5',status:'completed',accountedMicro:420000,timestamp:5}));
+  const c2=automation.dryRunEstimate({model:'claude-opus-5-5'});assert.equal(c2.estimateUSD,0.42,'its measured cost');assert.equal(c2.basis,'1 recent claude-opus-5-5 review');
+  assert.equal(automation.dryRunEstimate({model:'gpt-unknown'}).model,automation.config.openaiModel,'any other override is the configured model');
+  const e=automation.dryRunEstimate();assert.equal(e.vendor,'OpenAI');assert.equal(e.estimateUSD,0.1,'one review of two requests; shadow calls excluded; Claude calls excluded');assert.deepEqual(e.requests,{min:2,max:2});assert.equal(e.today.maxCalls,automation.config.maxCallsPerDay);assert.match(e.note,/same daily AI limits/);
 });
 // 1.5.37 validation: the dry run did not log Review size and kept only tool titles containing "request", so detail
 // reads and condensing could not be checked afterwards.

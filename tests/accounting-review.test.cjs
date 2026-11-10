@@ -8,7 +8,7 @@ const HOUR=3600000,DAY=86400000,at=s=>Date.parse(s),fx={usdKRW:1300};
 // (with an empty Korean balance, so the combined value covers both markets and can be exact).
 function account(start='2026-11-05T14:00:00Z'){let t=at(start);const db=new DatabaseSync(':memory:');let f=new InFlight(db,()=>t);
   const read=(us,orders=[])=>{const s={pendingSaleProceeds:0,holdings:[],...us,timestamp:new Date(t).toISOString()};const r=f.observe('a',{us:s,orders,fx:1300});const korea={cash:0,settledCash:0,holdings:[],timestamp:s.timestamp};const v=value({korea,us:s,fx,inFlight:f.current('a'),now:t});return {r,v,us:v.markets.US};};
-  return {read,db,restart:()=>{f=new InFlight(db,()=>t);},later:ms=>{t+=ms;},now:()=>t,state:()=>f.state('a')};}
+  return {read,db,restart:()=>{f=new InFlight(db,()=>t);},later:ms=>{t+=ms;},now:()=>t,state:()=>f.state('a'),explained:range=>f.explained('a',range)};}
 const share=(usd,s='NYSE:X')=>({symbol:s,quantity:1,price:usd});const base=v=>LiveEngine.prototype.exposureBase.call({netEquityOf:()=>({low:v.markets.US.equity.low})},{reportedTotal:Infinity});
 
 // 1. The first reading does not assume settlement.
@@ -40,23 +40,28 @@ test('first launch: order history arriving after the balance is held to the same
   const a=account();a.read({cash:500,holdings:[share(100),share(50,'NYSE:Y')]},[]);a.later(60000);
   const late=[{id:'B',side:'Buy',filled:1,fillPrice:100,createdAt:a.now()-2*HOUR},{id:'H',side:'Buy',filled:1,fillPrice:50,createdAt:a.now()-10*DAY}];
   const {r,v}=a.read({cash:500,holdings:[share(100),share(50,'NYSE:Y')]},late);
-  assert.deepEqual(r.open.map(f=>[f.id,f.unresolved.why]),[['B','awaiting verification'],['H','awaiting verification']],'both stay in flight, the old one too (stage 2b S1)');
-  assert.equal(v.combined.low,(500+150-100-50)*1300);assert.equal(v.combined.exact,false);
+  // S1a: the recent one stays in flight, awaiting verification; the one filled ten days ago is settled by age.
+  assert.deepEqual(r.open.map(f=>[f.id,f.unresolved.why]),[['B','awaiting verification']]);assert.ok(r.notes.some(n=>/^Buy H .*settled by age/.test(n)));
+  assert.equal(v.combined.low,(500+150-100)*1300);assert.equal(v.combined.exact,false);
 });
 
-// 2. Time is not settlement evidence.
-test('seven days without broker change, weekend and restart included: no equity jump, no flow, not exact; noted once',()=>{
+// 2. Settlement by age (S1a; it replaces "time is not settlement evidence").
+test('ten days without broker change, weekend and restart included: settled by age after 3 business days, as a correction, no flow',()=>{
   // From Friday 2026-11-06 for ten days, the same balance every day.
   const a=account('2026-11-06T15:00:00Z');let t0=a.now();const db=a.db;const perf=new PerformanceHistory(db,()=>a.now());const det=new FlowDetector(db,perf,()=>a.now());
   const fill={id:'B',side:'Buy',filled:1,fillPrice:100,createdAt:t0,filledObservedAt:t0};const us={cash:500,holdings:[share(100)]};
   a.read(us,[]);a.later(60000);const lows=[],notes=[];
-  for(let d=0;d<10;d++){if(d===4)a.restart();const {r,v}=a.read(us,[fill]);lows.push(v.combined.low);notes.push(...r.notes);
-    det.observe('a',{krCash:1000000,usCash:us.cash-r.buysUSD+r.sellsUSD,fx:1300,orders:[{...fill,market:'US',symbol:'X',status:'Filled'}]});assert.equal(v.combined.exact,false,`day ${d}`);assert.equal(base(v),500);a.later(DAY);}
-  assert.ok(lows.every(l=>l===650000),'never rises: '+lows.join(','));assert.equal(notes.filter(n=>/no settlement evidence after 7 days/.test(n)).length,1,'noted once');
-  assert.equal(perf.flows('a').length,0,'no inferred flow');const {v}=a.read(us,[fill]);assert.ok(v.combined.reasons.some(x=>/overdue/.test(x)));
-  // The genuine settlement resolves it, once.
-  const done=a.read({cash:400,holdings:[share(100)]},[fill]);assert.equal(done.r.buysUSD,0);assert.equal(done.v.combined.low,650000);assert.equal(done.v.combined.exact,true);
-  assert.equal(a.state().evidence.filter(e=>e.allocated.some(x=>x.id==='B')).length,1);assert.equal(a.read({cash:400,holdings:[share(100)]},[fill]).r.buysUSD,0);
+  // Trade date Fri 11-06 (New York): business days Mon 9, Tue 10, Wed 11; the reading of Wed 11-11 (day 5) closes it.
+  const exact=[],bases=[];
+  for(let d=0;d<10;d++){if(d===4)a.restart();const {r,v}=a.read(us,[fill]);lows.push(v.combined.low);exact.push(v.combined.exact);notes.push(...r.notes);
+    det.observe('a',{usExplained:a.explained,krCash:1000000,usCash:us.cash-r.buysUSD+r.sellsUSD,fx:1300,orders:[{...fill,market:'US',symbol:'X',status:'Filled'}]});bases.push(base(v));a.later(DAY);}
+  assert.deepEqual(bases,[500,500,500,500,500,600,600,600,600,600],'the U.S. basis follows');
+  assert.deepEqual(lows,[650000,650000,650000,650000,650000,780000,780000,780000,780000,780000],'the obligation leaves the low bound on day 5: '+lows.join(','));
+  assert.deepEqual(exact,[false,false,false,false,false,true,true,true,true,true]);
+  assert.equal(notes.filter(n=>/settled by age, 3 U\.S\. business days after its trade date 2026-11-06/.test(n)).length,1,'noted once');
+  assert.equal(perf.flows('a').length,0,'no inferred flow: the age close is explained, not a deposit');
+  // The close is a cash-free basis change of +$100 (a buy leaving the obligation).
+  const ev=a.db.prepare("SELECT payload FROM settlement_events WHERE account='a' AND kind='piece-closed'").all().map(x=>JSON.parse(x.payload));assert.equal(ev.length,1);assert.equal(ev[0].why,'age');assert.equal(ev[0].side,'Buy');
 });
 
 // 3. Held cash changes count for the loss check at once.

@@ -19,7 +19,9 @@ function paymentDateInterval(day){
   return [Date.parse(day+'T00:00:00+09:00'),midnight(next)-1];
 }
 class SettlementRestatements {
-  constructor(db,{inFlight,reconciliation,performance,corrections,clock=Date.now}){
+  // enabled (S2: false): restatement discovery is off: no candidates, so no previews, approvals or approvals in force.
+  // Only the tests of this code, which S4 removes, turn it on.
+  constructor(db,{inFlight,reconciliation,performance,corrections,clock=Date.now,enabled=false}){this.enabled=enabled;
     Object.assign(this,{db,inFlight,reconciliation,performance,corrections,clock});
     db.exec(`CREATE TABLE IF NOT EXISTS valuation_settlement_approvals(id TEXT PRIMARY KEY,account TEXT NOT NULL,requestId TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(account,requestId));
       CREATE TRIGGER IF NOT EXISTS valuation_settlement_approvals_no_update BEFORE UPDATE ON valuation_settlement_approvals BEGIN SELECT RAISE(ABORT,'historical approvals are append-only'); END;
@@ -27,7 +29,7 @@ class SettlementRestatements {
     corrections.approvals=(account,rows)=>this.inForce(account,rows);
   }
   records(account){return this.db.prepare('SELECT payload FROM valuation_settlement_approvals WHERE account=? ORDER BY rowid').all(account).map(r=>JSON.parse(r.payload));}
-  candidates(account,rows=this.performance.history(account)){
+  candidates(account,rows=this.performance.history(account)){if(!this.enabled)return [];
     const events=this.inFlight.evidence.events(account),review=this.inFlight.evidence.underReview(account);
     const out=[];
     for(const r of this.reconciliation.active(account)){

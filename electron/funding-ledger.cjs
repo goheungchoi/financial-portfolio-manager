@@ -116,6 +116,30 @@ class FundingLedger {
     if(take>0){this.db.prepare('INSERT INTO funding_releases(id,orderId,account,cents,route,reconciliationId,at,reason,citationId) VALUES(?,?,?,?,?,?,?,?,?)').run(`${reconciliationId}:release`,String(orderId),row.account,take,route,reconciliationId,this.clock(),whole?'reconciled whole':'reconciled',citationId);
       this.event(String(orderId),{kind:'released by reconciliation',reconciliationId,route,cents:take,...(alignment?{alignmentCents:alignment}:{}),...(citationId?{citationId}:{})});}
     return {cents:take,alignmentCents:alignment,unreleasedCents:unreleased,...(unreleased?{reason:`the funding estimate exceeds the reconciled amount by $${(unreleased/100).toFixed(2)}; it stays committed (only a rounding difference of up to ${ALIGNMENT_MAX_CENTS} cent is aligned)`}:{}),committed:Boolean(row&&row.state!=='released'),filledCents:filled};}
+  // Settlement simplification S1a: a buy whose U.S. fill settled, by KIS evidence or by age (InFlight onSettled),
+  // releases the filled part not yet released. Recorded like a reconciliation's release (funding_releases is append-only;
+  // its reconciliationId is 'age:<orderId>' or 'evidence:<orderId>', never a real reconciliation's), with event
+  // 'released by age' or 'released by evidence'. The unfilled remainder of a live or cancelled order is not covered (U8).
+  // Nothing left to release (already released, a sale, no commitment) does nothing, so a repeat is harmless.
+  releaseSettled({orderId,why='age',at=this.clock()}){if(!['age','evidence'].includes(why))throw new Error('INVALID_RELEASE');const row=this.row(String(orderId));if(!row||row.state==='released')return {cents:0};
+    const left=Math.max(0,FundingLedger.filledCents(row)-this.releasedCents(orderId));if(!(left>0))return {cents:0};
+    const reconciliationId=`${why}:${orderId}`,n=this.db.prepare('SELECT COUNT(*) n FROM funding_releases WHERE reconciliationId=?').get(reconciliationId).n;
+    this.db.prepare('INSERT INTO funding_releases(id,orderId,account,cents,route,reconciliationId,at,reason,citationId) VALUES(?,?,?,?,?,?,?,?,?)').run(`${reconciliationId}:release${n?':'+(n+1):''}`,String(orderId),row.account,left,null,reconciliationId,at,why==='age'?'settled by age':'settled by evidence',null);
+    this.event(String(orderId),{kind:why==='age'?'released by age':'released by evidence',cents:left});return {cents:left};}
+  // Settlement simplification S1b: a Korean buy has no tracker piece, so its filled part is released by age here, at each
+  // balance reading: 3 Korean business days after its order's trade day (the Seoul date the engine records; else the
+  // Seoul date of acceptance or creation), from the KIS calendar (kr_calendar) with weekdays where it has no answer.
+  // The unfilled remainder stays committed (U8). One savepoint: all of a reading's releases or none. Returns them.
+  releaseAgedKR(account,{now=this.clock(),krOpen=null}={}){const B=require('./business-days.cjs');
+    let open=krOpen;if(!open){let cal=new Map();try{cal=new Map(this.db.prepare('SELECT day,open FROM kr_calendar').all().map(r=>[r.day,Boolean(r.open)]));}catch{}open=d=>cal.has(d)?cal.get(d):null;}
+    let orders=new Map();try{orders=new Map(this.db.prepare('SELECT payload FROM live_intents').all().map(r=>JSON.parse(r.payload)).map(o=>[String(o.id),o]));}catch{}
+    const due=[];for(const c of this.rows(account)){if(c.market!=='KR'||c.state==='released')continue;if(!(FundingLedger.filledCents(c)-this.releasedCents(c.orderId)>0))continue;
+      const o=orders.get(String(c.orderId)),at=Number.isFinite(o?.acceptedAt)?o.acceptedAt:o?.createdAt,tradeDay=/^\d{4}-\d{2}-\d{2}$/.test(o?.day??'')?o.day:Number.isFinite(at)?B.dateIn('KR',at):null;
+      if(tradeDay&&B.agedOut('KR',{tradeDay,now,krOpen:open}).aged)due.push({orderId:String(c.orderId),tradeDay});}
+    if(!due.length)return [];const out=[];this.db.exec('SAVEPOINT funding_kr_age');
+    try{for(const d of due){const r=this.releaseSettled({orderId:d.orderId,why:'age',at:now});if(r.cents)out.push({...d,cents:r.cents});}this.db.exec('RELEASE funding_kr_age');}
+    catch(e){this.db.exec('ROLLBACK TO funding_kr_age');this.db.exec('RELEASE funding_kr_age');throw e;}
+    return out;}
   // A reversed reconciliation: what it released counts again.
   reinstate({reconciliationId,by}){const rows=this.db.prepare('SELECT * FROM funding_releases WHERE reconciliationId=?').all(reconciliationId),net=rows.reduce((n,r)=>n+r.cents,0);if(!(net>0))return 0;const r=rows[0];
     this.db.prepare('INSERT INTO funding_releases(id,orderId,account,cents,route,reconciliationId,at,reason,citationId) VALUES(?,?,?,?,?,?,?,?,?)').run(`${reconciliationId}:reinstate`,r.orderId,r.account,-net,r.route,reconciliationId,this.clock(),`reversed by ${by}`,r.citationId??null);this.event(r.orderId,{kind:'reinstated by reversal',reconciliationId,by,cents:net});return net;}

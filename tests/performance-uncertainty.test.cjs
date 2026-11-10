@@ -1,185 +1,142 @@
-// Stage 3.2: performance is unavailable unless bounded (electron/performance-corrections.cjs SettlementUncertainty,
-// PerformanceHistory.series/summary; stage3-spec.md U1-U6; design v3.3 §3, T41 replaced).
+// Settlement simplification S2 (design section 3, decision D3; it replaces stage 3.2's "unavailable unless bounded",
+// rules U1-U3): no day is unavailable for a settlement reason. A day whose interval had a U.S. buy in flight shows its
+// return with the estimate tag (settlement 'pending') while that buy is still open, and plainly once it closed, by KIS
+// evidence or by age (3 U.S. business days). A piece's opening and its age close are accounting corrections (C2), never
+// return. U4 stays: a day the tracker's state was not recorded for, or could not be read, has no return.
+// (electron/performance-corrections.cjs SettlementUncertainty.estimates; PerformanceHistory.series/summary.)
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
 const {InFlight,value}=require('../electron/valuation.cjs');const {FundingLedger}=require('../electron/funding-ledger.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');
-const {Reconciliation}=require('../electron/settlement-reconciliation.cjs');const {performanceCorrections,earliestPayment}=require('../electron/performance-corrections.cjs');
+const {Reconciliation}=require('../electron/settlement-reconciliation.cjs');const {performanceCorrections}=require('../electron/performance-corrections.cjs');
 const MIN=60000,DAY=86400000,TRACKING=Date.parse('2026-11-02T05:00:00Z');
 const order=(id,usd,extra={})=>({id,symbol:'NASD:T'+id,side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:usd,limitPrice:usd,costEstimate:{netCash:-usd},resultCosts:{netCash:-usd},environment:'live',accountKey:'a:US',market:'US',day:'2026-11-01',createdAt:Date.parse('2026-11-01T15:00:00Z'),...extra});
 const close=(a,b,m)=>assert.ok(Math.abs(a-b)<1e-9,`${m??''} ${a} vs ${b}`);
-// As main wires it: the correction hook from performanceCorrections, and the tracker's snapshot recorded with each day.
+const estimate=p=>(p.settlement??[]).includes('pending');
+// As main wires it: the correction hook from performanceCorrections (S2 default), and the tracker's snapshot recorded with each day.
 function world(start=TRACKING){const db=new DatabaseSync(':memory:');let t=start;const clock=()=>t;let rate=1300;
   const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock);
   const rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
   const sc=performanceCorrections(db,{inFlight:f,reconciliation:rec});perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
   const us={cash:500,price:1000};let orders=[],seq=0;
   const U=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
-  const w={db,f,perf,rec,sc,us,clock,later:ms=>{t+=ms;},setRate:r=>{rate=r;},
-    see:(list=orders)=>{orders=list;f.observe('a',{us:U(),orders:list,fx:rate});t+=MIN;},
-    valueNow:()=>value({us:U(),inFlight:f.current('a'),fx:{usdKRW:rate,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity,
-    record:()=>{const v=w.valueNow().low;const row=perf.record('a',{totals:{USD:v,KRW:1000000,equityKRW:1000000+v*rate},fx:{usdKRW:rate}});t+=MIN;return row;},
+  const w={db,f,perf,rec,sc,us,clock,later:ms=>{t+=ms;},
+    see:(list=orders)=>{orders=list;const r=f.observe('a',{us:U(),orders:list,fx:rate});t+=MIN;return r;},
+    record:()=>{const v=value({us:U(),inFlight:f.current('a'),fx:{usdKRW:rate,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity.low;const row=perf.record('a',{totals:{USD:v,KRW:1000000,equityKRW:1000000+v*rate},fx:{usdKRW:rate}});t+=MIN;return row;},
     nextDay:()=>{t=Math.ceil((t-start)/DAY)*DAY+start;},
     pid:id=>f.current('a').open.find(p=>p.id===id)?.pid,
     reconcile:(id,extra={})=>{const q={requestId:'r'+(++seq),account:'a',pieceId:w.pid(id),cents:Math.round(f.current('a').open.find(p=>p.id===id).usd*100),explanation:'settled',route:'USD',kisReference:'KIS',note:'n',...extra};const p=rec.preview(q);return rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding});},
-    reverse:rid=>{const q={requestId:'v'+(++seq),account:'a',reconciliationId:rid,note:'wrong'};const p=rec.previewReversal(q);return rec.reverse({...q,stateVersion:p.stateVersion,binding:p.binding});},
-    points:(kind='USD')=>perf.series('a',kind),summary:(kind='USD')=>perf.summary('a',kind,null),all:(kind='USD')=>perf.summary('a',kind,null).periods.find(x=>x.label==='All')};
+    points:(kind='USD')=>perf.series('a',kind),all:(kind='USD')=>perf.summary('a',kind,null).periods.find(x=>x.label==='All')};
   return w;}
-// Day 0: tracking starts with a pre-tracking $100 buy (awaiting verification, an uncertain obligation): value 1,400.
+// Day 0: tracking starts with a pre-tracking $100 buy (awaiting verification): value 1,400.
 function started(){const w=world();w.see([]);w.see([order('A',100)]);w.record();assert.equal(w.points()[0].value,1400);return w;}
-const UNCERTAIN=/uncertain U\.S\. buy obligations this day: \$100\.00 \(awaiting verification\)/;
 
-test('T41 (a): while an uncertain buy obligation is open, the day and every period through it have no return and no P/L; a day without one is ordinary',()=>{
+test('S2: a day with a U.S. buy in flight has its return, tagged as an estimate while the buy is open; plain once it settled by age',()=>{
   const w=started();w.nextDay();w.us.price=1010;w.record();const [,d]=w.points();
-  assert.equal(d.dailyReturn,null);assert.equal(d.pnl,null);assert.equal(d.pnlRange,undefined);assert.match(d.unavailable.join(';'),UNCERTAIN);
-  const all=w.all();assert.equal(all.twr,null);assert.equal(all.gain,null);assert.equal(all.twrRange,undefined);assert.match(all.unavailable[0],UNCERTAIN);
-  // The tracker's uncertainty is recorded with each day: the piece, and the unresolved and under-review totals.
-  const row=w.perf.history('a')[1];assert.deepEqual(row.settlement.last.pieces.map(p=>[p.orderId,p.side,p.usd,p.why,p.review]),[['A','Buy',100,'awaiting verification',false]]);
-  assert.deepEqual(row.settlement.last.totals,{unresolved:{buysUSD:100,sellsUSD:0},review:{buysUSD:0,sellsUSD:0}});
-  assert.notEqual(w.points('KRW')[1].dailyReturn,null,'the Korean series is unaffected');
-  // A fill the app saw after tracking started is in flight, not uncertain: its days are ordinary.
+  assert.equal(d.unavailable,undefined,'never unavailable for settlement');close(d.dailyReturn,10/1500 /* S2b: base without the open correction */);close(d.pnl,10);assert.ok(estimate(d),'estimate while A is open');assert.equal(d.pendingObligation.usd,100);
+  const all=w.all();close(all.twr,10/1500 /* S2b: base without the open correction */);close(all.gain,10);assert.equal(all.unavailable,undefined);assert.equal(all.settlementAffected.pending,1);assert.equal(all.twrRange,undefined);
+  assert.equal(estimate(w.points('KRW')[1]),false,'the Korean series is unaffected');assert.ok(estimate(w.points('COMBINED')[1]),'the combined series shows the same estimate, with a return');assert.notEqual(w.points('COMBINED')[1].dailyReturn,null);
+  // The buy settles by age at a later reading (3 U.S. business days after it opened): its close is a correction of +$100.
+  let closedOn=null;for(let i=0;i<5&&!closedOn;i++){w.nextDay();const r=w.see();w.record();if(r.notes.some(n=>/settled by age/.test(n)))closedOn=w.points().at(-1).day;}
+  assert.ok(closedOn,'closed by age within the week');const c=w.points().find(p=>p.day===closedOn);
+  close(c.correction,100,'the close raises the low bound with no cash: a correction');close(c.dailyReturn,0,'no market move: a zero return, not +7%');assert.equal(c.unavailable,undefined);
+  // Every day is plain now: no piece of their interval is still open.
+  for(const p of w.points().slice(1))assert.equal(estimate(p),false,p.day);assert.equal(w.all().settlementAffected?.pending??0,0);close(w.all().twr,10/1500 /* S2b: base without the open correction */);close(w.all().gain,10);
+});
+test('S2: a fill seen after tracking started is an estimate while in flight, plain once KIS evidence settles it (a cash move, no correction)',()=>{
   const x=world();x.see([]);const B=order('B',100,{createdAt:x.clock(),filledObservedAt:x.clock(),day:'2026-11-02'});x.see([B]);x.record();x.nextDay();x.us.price=1010;x.see([B]);x.record();
-  const [,e]=x.points();assert.equal(e.unavailable,undefined);close(e.dailyReturn,10/1400);close(x.all().twr,10/1400);assert.deepEqual(x.perf.history('a')[1].settlement.last.pieces,[]);
+  const [,e]=x.points();assert.equal(e.unavailable,undefined);close(e.dailyReturn,10/1400);assert.ok(estimate(e));
+  x.nextDay();x.us.cash=400;x.see([B]);assert.equal(x.f.current('a').open.length,0,'settled by evidence');x.record();
+  const [,e1,e2]=x.points();assert.equal(estimate(e1),false);assert.equal(estimate(e2),false);assert.equal(e2.correction,undefined);close(e2.dailyReturn,0);close(x.all().twr,10/1400);
 });
-test('T41 (b): a settlement without timing evidence leaves the affected days unavailable; with a settlement date it is still not restated; the next day is ordinary',()=>{
-  for(const settledOn of [undefined,'2026-11-01']){const w=started();w.nextDay();w.us.price=1010;w.record();w.nextDay();w.reconcile('A',settledOn?{settledOn}:{});w.record();
-    const before=JSON.stringify(w.perf.history('a'));w.nextDay();w.us.price=1020;w.record();const [,d1,d2,d3]=w.points();
-    for(const d of [d1,d2]){assert.equal(d.dailyReturn,null,settledOn);assert.equal(d.pnl,null);assert.match(d.unavailable.join(';'),/misstatement window/);assert.match(d.unavailable.join(';'),UNCERTAIN,'open at the previous reading');assert.equal(d.pnlRange,undefined,'no range unless bounded');}
-    assert.match(d1.unavailable.join(';'),UNCERTAIN,'resolution does not restore the affected day');assert.match(d1.unavailable.join(';'),/stays so after they are resolved/);
-    if(settledOn){assert.equal(d2.correction,100,'the correction component is unchanged');}
-    else assert.match(d2.unavailable.join(';'),/was paid on this day or earlier is not known/);
-    // Day 3: nothing uncertain at either reading, no window: an ordinary return.
-    assert.equal(d3.unavailable,undefined);close(d3.dailyReturn,10/1510);close(d3.pnl,10);
-    assert.equal(w.all().twr,null);assert.equal(JSON.stringify(w.perf.history('a').slice(0,3)),before,'nothing recorded is rewritten');}
+test('S2: the former bounded case (a weekend with one fixed obligation) is an ordinary return with the estimate tag, in every series; no ranges',()=>{
+  const FRI=Date.parse('2026-11-06T16:00:00Z'),FILL=Date.parse('2026-11-06T15:00:00Z');const w=world(FRI);w.see([]);w.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'})]);w.record();
+  w.nextDay();w.us.price=1010;w.record();const [,d]=w.points();assert.equal(d.bounded,undefined);close(d.dailyReturn,10/1500 /* S2b: base without the open correction */);assert.ok(estimate(d));
+  assert.equal(w.all().twrRange,undefined);close(w.all().twr,10/1500 /* S2b: base without the open correction */);const c=w.points('COMBINED')[1];assert.equal(c.unavailable,undefined);assert.notEqual(c.dailyReturn,null);
+  // A second obligation the same day: still a return.
+  w.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'}),order('B',50,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'})]);w.nextDay();w.us.price=1020;w.record();
+  const m=w.points()[2];assert.equal(m.unavailable,undefined);assert.notEqual(m.dailyReturn,null);assert.ok(estimate(m));assert.notEqual(w.all().twr,null);
 });
-test('U1: a piece made uncertain and resolved between two recordings still affects the day (the ledger events between them)',()=>{
-  // A pre-tracking fill first listed on day 1 and reconciled as paid before tracking before day 1 is recorded: no
-  // snapshot holds it, the ledger does.
-  const w=world();w.see([]);w.record();w.nextDay();w.see([order('A',100)]);w.reconcile('A',{settledOn:'2026-11-01'});w.record();
-  assert.deepEqual(w.perf.history('a')[1].settlement.seen,[]);const [,d]=w.points();assert.equal(d.dailyReturn,null);assert.match(d.unavailable.join(';'),UNCERTAIN);
-});
-test('U1: coverage under review is an uncertain obligation; its totals are recorded with the day',()=>{
+test('S2: coverage under review, a flag or an overdue mark tag the day only while a piece of it is still open',()=>{
   const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();w.nextDay();
-  w.f.evidence.underReview=()=>[{orderId:'B',citationId:'C1',side:'Buy',usd:60,reason:'the row is missing from a later complete history window'}];w.us.price=1010;w.record();
-  const row=w.perf.history('a')[1];assert.deepEqual(row.settlement.last.totals.review,{buysUSD:60,sellsUSD:0});assert.ok(row.settlement.last.pieces.some(p=>p.review&&p.usd===60));
-  const [,d]=w.points();assert.equal(d.dailyReturn,null);assert.match(d.unavailable.join(';'),/\$60\.00 \(coverage under review\)/);
+  let review=[{orderId:'B',citationId:'C1',side:'Buy',usd:60,reason:'the row is missing from a later complete history window'}];w.f.evidence.underReview=()=>review;w.us.price=1010;w.record();
+  const [,d]=w.points();assert.equal(d.unavailable,undefined);assert.notEqual(d.dailyReturn,null,'a return, not unavailable');assert.ok(estimate(d));
+  // The review clears and B settles by evidence: the day is plain.
+  review=[];w.nextDay();w.us.cash=400;w.see([B]);w.record();assert.equal(estimate(w.points()[1]),false);
+  for(const kind of ['flag','overdue']){const x=world();x.see([]);const C=order('C',100,{createdAt:x.clock(),filledObservedAt:x.clock(),day:'2026-11-02'});x.see([C]);x.record();x.nextDay();
+    const pid=x.pid('C');x.f.evidence.event('a',kind,kind==='flag'?{pieces:[pid],why:'ambiguous evidence'}:{pieceId:pid,orderId:'C',usd:100});x.us.price=1010;x.record();
+    assert.ok(estimate(x.points()[1]),kind);assert.equal(x.points()[1].unavailable,undefined);x.us.cash=400;x.see([C]);assert.equal(estimate(x.points()[1]),false,kind+': settled, plain');}
 });
-test('U2: a misstatement window runs from the settlement date to the reconciliation day; a payment on the reconciliation\'s own day has none',()=>{
-  // A fill seen on day 0, settled on 2026-11-04 (U.S.), reconciled on day 3: days 2-3 unavailable, day 1 ordinary.
-  const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();
-  for(const p of [1010,1020])w.nextDay(),w.us.price=p,w.record();w.nextDay();const r=w.reconcile('B',{settledOn:'2026-11-04'});w.record();
-  const [,d1,d2,d3]=w.points();assert.equal(d1.unavailable,undefined);close(d1.dailyReturn,10/1400);
-  for(const d of [d2,d3]){assert.equal(d.dailyReturn,null);assert.match(d.unavailable.join(';'),new RegExp(`\\$100\\.00 \\(reconciliation ${r.id.slice(0,10)}\\).*between ${d2.day} and ${d3.day} \\(a misstatement window\\)`));}
-  // Without a settlement date the window starts at the piece's opening (day 1, the first day after it).
-  const y=world();y.see([]);const C=order('C',100,{createdAt:y.clock(),filledObservedAt:y.clock(),day:'2026-11-02'});y.see([C]);y.record();y.nextDay();y.us.price=1010;y.record();y.nextDay();y.reconcile('C');y.record();
-  const [,e1,e2]=y.points();for(const d of [e1,e2])assert.match(d.unavailable.join(';'),/misstatement window/);
-  // Paid within the reconciliation's own day (its settlement date wholly inside the interval): correction 0, no window.
-  const x=world();x.see([]);const D=order('D',100,{createdAt:x.clock(),filledObservedAt:x.clock(),day:'2026-11-02'});x.see([D]);x.record();x.nextDay();x.later(DAY);
-  x.us.cash=400;x.us.price=1010;x.reconcile('D',{settledOn:'2026-11-03'});x.record();const [,p]=x.points();
-  assert.deepEqual(p.correctionItems.map(i=>i.kind),['reconciliation paid that day']);assert.equal(p.unavailable,undefined);close(p.dailyReturn,10/1400);
-  // A rounding record makes no payment: no window.
-  const z=world();z.see([]);const E=order('E',0.4,{createdAt:z.clock(),filledObservedAt:z.clock(),day:'2026-11-02',resultCosts:{netCash:-0.4},costEstimate:{netCash:-0.4}});z.see([E]);z.record();z.nextDay();z.reconcile('E',{explanation:'rounding',route:undefined});z.record();
-  const [,q]=z.points();assert.equal(q.unavailable,undefined);close(q.correction,0.4);close(q.dailyReturn,0);
+test('S2: a reconciliation leaves no misstatement window; one with a settlement date is a correction on an available day',()=>{
+  const w=started();w.nextDay();w.us.price=1010;w.record();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();w.nextDay();w.us.price=1020;w.record();
+  const [,d1,d2,d3]=w.points();for(const d of [d1,d2,d3])assert.equal(d.unavailable,undefined,d.day);
+  assert.equal(d2.correction,100);close(d2.dailyReturn,0);close(d3.dailyReturn,10/1510);assert.equal(estimate(d1),false,'A is closed: plain');assert.notEqual(w.all().twr,null);
 });
-// The one bounded case: a fill on Friday 2026-11-06 (New York), pre-tracking, awaiting verification. Its U.S. settlement
-// cannot be paid before Monday 2026-11-09 (Seoul midnight: 2026-11-08T15:00Z), so the weekend days are bounded.
-const FRI=Date.parse('2026-11-06T16:00:00Z'),FILL=Date.parse('2026-11-06T15:00:00Z');
-const weekend=()=>{const w=world(FRI);w.see([]);w.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'})]);w.record();return w;};
-test('T41 (d), U3: the one bounded case shows its range; the combined series, a payable day and a second obligation do not',()=>{
-  assert.equal(earliestPayment(FILL),Date.parse('2026-11-08T15:00:00Z'));
-  const w=weekend();w.nextDay();w.us.price=1010;w.record();const [,d]=w.points();
-  assert.equal(d.unavailable,undefined);assert.equal(d.dailyReturn,null,'no single return');close(d.pnl,10,'the P/L is the same in both states');
-  close(d.bounded.states.real,10/1400,'real: the recorded value');close(d.bounded.states.notReal,10/1500,'not real: $100 more at both ends');
-  close(d.bounded.returnRange.low,10/1500);close(d.bounded.returnRange.high,10/1400);assert.match(d.bounded.label,/one uncertain obligation of \$100\.00/);
-  const all=w.all();assert.equal(all.twr,null);close(all.twrRange.low,10/1500);close(all.twrRange.high,10/1400);close(all.gain,10);
-  // The combined series: the funding route and FX exposure are not bounded.
-  const c=w.points('COMBINED')[1];assert.equal(c.dailyReturn,null);assert.equal(c.bounded,undefined);assert.match(c.unavailable[0],/funding route and FX exposure are not bounded/);assert.equal(w.all('COMBINED').twr,null);
-  // Monday: the settlement can have been paid that day; unavailable, and so is the period through it.
-  w.nextDay();w.us.price=1020;w.record();const m=w.points()[2];assert.equal(m.bounded,undefined);assert.equal(m.dailyReturn,null);assert.match(m.unavailable.join(';'),UNCERTAIN);
-  assert.equal(w.all().twr,null);assert.equal(w.all().twrRange,undefined);
-  // A second uncertain obligation the same day.
-  const x=weekend();x.nextDay();x.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'}),order('B',50,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'})]);x.record();
-  const [,e]=x.points();assert.equal(e.bounded,undefined);assert.equal(e.dailyReturn,null);assert.match(e.unavailable.join(';'),/\$100\.00 \(awaiting verification\), \$50\.00 \(awaiting verification\)/);
-  // A piece first listed during the day: not open at the previous day's last reading, so its existence window is not known.
-  const y=world(FRI);y.see([]);y.record();y.nextDay();y.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'})]);y.record();assert.equal(y.points()[1].bounded,undefined);assert.equal(y.points()[1].dailyReturn,null);
-  // A fill time not known: its existence window is not known.
-  const z=world(FRI);z.see([order('A',100,{createdAt:undefined,day:'2026-11-06'})]);z.record();z.nextDay();z.record();assert.equal(z.points()[1].bounded,undefined);assert.match(z.points()[1].unavailable.join(';'),UNCERTAIN);
+test('C3 stays until S3 removes reconciliation: a manual reconciliation with no payment timing at all leaves its day without a return',()=>{
+  // Manual reconciliation has never been used on the live account; S3 removes it with this rule.
+  const w=started();w.nextDay();w.us.price=1010;w.reconcile('A');w.record();const [,d]=w.points();assert.match(d.unavailable.join(';'),/was paid on this day or earlier is not known/);
 });
-test('U3: the bounded case needs the obligation unchanged and nothing else that day',()=>{
-  // The piece flagged during the day (a ledger change to it): unavailable.
-  const w=weekend();w.nextDay();const pid=w.pid('A');w.f.evidence.event('a','flag',{pieces:[pid],why:'ambiguous evidence'});w.record();
-  assert.equal(w.points()[1].bounded,undefined);assert.match(w.points()[1].unavailable.join(';'),/uncertain U\.S\. buy obligations this day/);
-  // A different amount at the day's readings (the piece corrected): unavailable.
-  const x=weekend();x.nextDay();const st=x.f.state('a');st.open[0].usd=90;x.f.save('a',st);x.record();assert.equal(x.points()[1].bounded,undefined);assert.equal(x.points()[1].dailyReturn,null);
-  // Another correction the same day (a rounding record of another fill): unavailable.
-  const y=world(FRI);y.see([]);y.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'})]);
-  y.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-11-06'}),order('E',0.4,{createdAt:y.clock(),filledObservedAt:y.clock(),day:'2026-11-06',resultCosts:{netCash:-0.4},costEstimate:{netCash:-0.4}})]);
-  y.record();y.nextDay();
-  y.reconcile('E',{explanation:'rounding',route:undefined});y.record();const [,p]=y.points();assert.equal(p.bounded,undefined);assert.match(p.unavailable.join(';'),/with other changes the same day/);
-});
-test('U3: a period with bounded days of two different obligations has no consistent range',()=>{
-  const db=new DatabaseSync(':memory:');let t=Date.parse('2026-11-02T05:00:00Z');const perf=new PerformanceHistory(db,()=>t);
-  for(const v of [1000,1010,1020]){perf.record('a',{totals:{USD:v,KRW:1,equityKRW:1}});t+=DAY;}const days=perf.history('a').map(r=>r.day);
-  perf.corrections=()=>new Map([[days[1],{usd:0,items:[],unknown:[],bounded:{pieceId:'A#1',usd:100}}],[days[2],{usd:0,items:[],unknown:[],bounded:{pieceId:'B#2',usd:50}}]]);
-  const s=perf.summary('a','USD',null),all=s.periods.find(x=>x.label==='All');assert.equal(all.twr,null);assert.equal(all.twrRange,undefined);assert.match(all.unavailable[0],/2 uncertain obligations in the period/);
-  // One obligation on both days chains each state.
-  perf.corrections=()=>new Map([[days[1],{usd:0,items:[],unknown:[],bounded:{pieceId:'A#1',usd:100}}],[days[2],{usd:0,items:[],unknown:[],bounded:{pieceId:'A#1',usd:100}}]]);
-  const one=perf.summary('a','USD',null).periods.find(x=>x.label==='All');close(one.twrRange.high,1020/1000-1);close(one.twrRange.low,(1110/1100)*(1120/1110)-1);
-});
-test('U4: after tracking starts, a day whose uncertainty was not recorded or could not be read is unavailable; before it nothing is tracked',()=>{
+test('U4: after tracking starts, a day whose tracker state was not recorded or could not be read is unavailable; before it nothing is tracked',()=>{
   const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();
   w.nextDay();w.perf.settlement=()=>{throw new Error('disk I/O error');};w.record();w.nextDay();w.perf.settlement=a=>w.f.snapshot(a);w.record();w.nextDay();delete w.perf.settlement;w.record();
   const [,d1,d2,d3]=w.points();assert.match(d1.unavailable[0],/could not be read when this day was recorded \(disk I\/O error\)/);assert.match(d2.unavailable[0],/not recorded at the previous day's last reading/);assert.match(d3.unavailable[0],/was not recorded for this day/);
-  // One failed reading during a day is kept for the day, even if a later one succeeds.
   const y=world();y.see([]);y.record();y.nextDay();y.perf.settlement=()=>null;y.record();y.perf.settlement=a=>y.f.snapshot(a);y.record();assert.match(y.points()[1].unavailable[0],/SNAPSHOT_INVALID/);
-  // Before tracking starts there is no tracker: those days are ordinary.
   const x=world();x.record();x.nextDay();x.us.price=1010;x.record();close(x.points()[1].dailyReturn,10/1500);
+  const z=world();delete z.perf.settlement;z.record();z.nextDay();z.us.price=1010;z.record();z.perf.settlement=a=>z.f.snapshot(a);z.nextDay();z.see([]);z.us.price=1020;z.record();
+  const [,e1,e2]=z.points();close(e1.dailyReturn,10/1500);close(e2.dailyReturn,10/1510);assert.equal(e2.unavailable,undefined);
 });
-test('3.1 examples under 3.2: the correction component is unchanged and the uncertain days have no return',()=>{
-  const w=started();w.nextDay();w.us.price=1010;w.reconcile('A',{settledOn:'2026-11-01'});w.record();const [,p]=w.points();
-  assert.equal(p.correction,100);assert.equal(p.correctionLabel,'accounting correction, not investment return');assert.equal(p.dailyReturn,null);assert.equal(p.pnl,null);
-  assert.match(p.unavailable.join(';'),UNCERTAIN);assert.match(p.unavailable.join(';'),/misstatement window/);
-  assert.deepEqual(w.points(),w.points(),'the derivation is stable');
+test('S2: restatements are off: no candidates, no previews, no approvals; the card is hidden; the stage 3.2 rules only on request',()=>{
+  const w=started();w.nextDay();w.us.price=1010;w.record();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();
+  const {SettlementRestatements}=require('../electron/valuation-corrections.cjs');const s=new SettlementRestatements(w.db,{inFlight:w.f,reconciliation:w.rec,performance:w.perf,corrections:w.sc,clock:w.clock});
+  assert.deepEqual(s.candidates('a'),[]);assert.throws(()=>s.preview('a','anything'),/HISTORICAL_TIMING_UNPROVEN/);assert.deepEqual(s.inForce('a',w.perf.history('a')),[]);
+  const fs=require('node:fs'),path=require('node:path'),src=f=>fs.readFileSync(path.join(__dirname,'..',f),'utf8');
+  assert.ok(!/<Restatements[\s/]/.test(src('src/AccountPerformance.tsx')),'the Restatements card is not rendered');assert.ok(!/enabled:true/.test(src('electron/main.cjs').match(/SettlementRestatements\)\([^\n]*/)[0]),'the app does not turn them on');
+  assert.ok(src('electron/main.cjs').includes('performanceCorrections(store.db,{inFlight,reconciliation})'),'the app uses the S2 default, not strict');
+  // strict: the stage 3.2 rules, for the tests of the code S4 removes.
+  const sc=performanceCorrections(w.db,{inFlight:w.f,reconciliation:w.rec,strict:true});w.perf.corrections=(a,rows)=>sc.byDay(a,rows);assert.ok(w.points().some(p=>p.unavailable?.some(x=>/misstatement window/.test(x))));
 });
-test('U1: a flag or an overdue mark between two recordings affects the day, even when the piece is resolved before the next one',()=>{
-  for(const kind of ['flag','overdue']){const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();w.nextDay();w.later(DAY);
-    const pid=w.pid('B');w.f.evidence.event('a',kind,kind==='flag'?{pieces:[pid],why:'ambiguous evidence'}:{pieceId:pid,orderId:'B',usd:100});w.us.cash=400;w.reconcile('B',{settledOn:'2026-11-03'});w.record();
-    const [,d]=w.points();assert.deepEqual(d.correctionItems.map(i=>i.kind),['reconciliation paid that day']);assert.equal(d.dailyReturn,null,kind);assert.match(d.unavailable.join(';'),new RegExp(`\\$100\\.00 \\(${kind==='flag'?'ambiguous evidence':'overdue'}\\)`));}
+
+// S2b (review of S2, finding 1-3): the return base leaves out the corrections still open; a day whose return cannot be
+// computed makes period figures unavailable, never a silent 0%; corrections that net to zero leave no estimate tag.
+test('S2b (a): the live shape: pre-tracking buys open as a correction on day 1 make the recorded value negative; returns use the base without them',()=>{
+  // Day 0 $560 with nothing pending; tracking then finds $697.07 of pre-tracking buys (value -$137.07); two days later they
+  // settle by age. The planner's figures: 11-10 -8.13 / 532.05, 11-11 -1.73 / 523.92 (here with this fixture's prices).
+  const w=world(Date.parse('2026-11-04T05:00:00Z'));w.us.cash=0;w.us.price=560;w.record();w.nextDay();
+  const old=Date.parse('2026-10-23T15:00:00Z');w.see([order('P',697.07,{createdAt:old,filledObservedAt:old,day:'2026-10-23'})]);w.record();
+  w.nextDay();w.us.price=551.87;w.record();w.nextDay();w.us.price=550.14;w.see();w.record();
+  const [,d1,d2,d3]=w.points();assert.equal(Math.round(d1.value*100)/100,-137.07);assert.equal(d1.correction,-697.07);close(d1.dailyReturn,0,'the opening is a correction, not a loss');
+  close(d2.pnl,-8.13);assert.equal(Math.round(d2.returnBase*100)/100,560);close(d2.dailyReturn,-8.13/560);assert.equal(d2.unavailable,undefined);
+  assert.equal(d3.correction,697.07,'settled by age: the matching correction');close(d3.dailyReturn,-1.73/551.87);
+  const all=w.all();close(all.twr,(1-8.13/560)*(1-1.73/551.87)-1);assert.equal(all.unavailable,undefined);
+  for(const p of [d1,d2,d3])assert.equal(w.points().find(x=>x.day===p.day).correctionOpen,undefined,'netted to zero: no estimate from corrections');assert.equal(all.settlementAffected?.corrected??0,0);
 });
-test('U2: a reversed reconciliation made no payment: no window; a reclassified flow\'s window starts on the flow\'s day',()=>{
-  const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();w.nextDay();w.us.price=1010;w.record();
-  w.nextDay();const r=w.reconcile('B',{settledOn:'2026-11-01'});w.record();assert.match(w.points()[2].unavailable.join(';'),/misstatement window/);
-  w.nextDay();w.reverse(r.id);w.record();const [,,d2]=w.points();assert.ok(!(d2.unavailable??[]).some(x=>/misstatement window/.test(x)),'a reversed record has no window');assert.equal(d2.correction,100);
-  // Reclassified: the payment fell as a detected flow on day 2; the window is days 2-3, day 1 ordinary.
-  const x=world();x.see([]);const C=order('C',100,{createdAt:x.clock(),filledObservedAt:x.clock(),day:'2026-11-02'});x.see([C]);x.record();x.nextDay();x.us.price=1010;x.record();
-  x.nextDay();x.us.cash=400;const at=x.clock();const flow=x.perf.addFlow('a',{day:require('../electron/kis-activity.cjs').seoulDate(at),market:'US',amount:-100,detected:true,note:'Detected',occurredAfter:at-MIN,occurredBy:at});x.record();
-  x.nextDay();x.reconcile('C',{flowId:flow.id});x.record();const [,e1,e2,e3]=x.points();
-  assert.equal(e1.unavailable,undefined);close(e1.dailyReturn,10/1400);for(const d of [e2,e3])assert.match(d.unavailable.join(';'),new RegExp(`between ${e2.day} and ${e3.day} \\(a misstatement window\\)`));
+test('S2b (b): a day whose starting value is still not positive has no return; the period has none either (never 0%), its gain stays',()=>{
+  const db=new DatabaseSync(':memory:');let t=Date.parse('2026-11-02T05:00:00Z');const perf=new PerformanceHistory(db,()=>t);
+  for(const v of [100,-20,-25,40]){perf.record('a',{totals:{USD:v,KRW:1,equityKRW:1}});t+=DAY;}
+  const pts=perf.series('a','USD');assert.equal(pts[2].dailyReturn,null);assert.deepEqual(pts[2].unavailable,["the day's starting value was not positive"]);close(pts[2].pnl,-5,'the P/L is still shown');
+  assert.equal(pts[3].dailyReturn,null,'from -25: not positive either');
+  const s=perf.summary('a','USD',null),all=s.periods.find(p=>p.label==='All');assert.equal(all.twr,null,'not a silent 0%');assert.match(all.unavailable.join(';'),/starting value was not positive/);close(all.gain,-60,'the gain stays');
+  assert.equal(s.analytics.All.maxDrawdownPct,null);assert.equal(s.analytics.All.currentDrawdownPct,null);
+  // A zero base with zero P/L (nothing invested, nothing gained) is a 0% day, not a missing one.
+  const db2=new DatabaseSync(':memory:');let u=Date.parse('2026-11-02T05:00:00Z');const p2=new PerformanceHistory(db2,()=>u);for(const v of [0,0,0]){p2.record('a',{totals:{USD:v,KRW:1,equityKRW:1}});u+=DAY;}
+  assert.deepEqual(p2.series('a','USD').slice(1).map(p=>[p.dailyReturn,p.unavailable]),[[0,undefined],[0,undefined]]);
 });
-test('U4: days recorded before tracking started are not tracked, with or without a snapshot',()=>{
-  const w=world();delete w.perf.settlement;w.record();w.nextDay();w.us.price=1010;w.record();w.perf.settlement=a=>w.f.snapshot(a);w.nextDay();w.see([]);w.us.price=1020;w.record();
-  const [,d1,d2]=w.points();close(d1.dailyReturn,10/1500);close(d2.dailyReturn,10/1510);assert.equal(d2.unavailable,undefined);
+test('S2b (a, hindsight): a pre-tracking buy later closed by KIS evidence was paid while tracked: it never lowered the base',()=>{
+  const w=started();w.nextDay();w.us.price=1010;w.record();assert.ok(Math.abs(w.points()[1].dailyReturn-10/1500)<1e-9,'while open: the base adds it back');
+  w.nextDay();w.us.cash=400;w.see();w.record();assert.equal(w.f.current('a').open.length,0,'closed by evidence');
+  close(w.points()[1].dailyReturn,10/1400,'in hindsight it was unpaid at day 0: the recorded base was right');
 });
-test('U3 (stage 3.2 review, P1): the bounded case needs the order\'s placement time; when the app first saw the fill is not evidence of execution',()=>{
-  // Placed (and filled) Monday 2026-11-02, first seen Friday: payable from Tuesday, so the weekend is not bounded.
-  const w=world(FRI);w.see([]);w.see([order('A',100,{createdAt:Date.parse('2026-11-02T15:00:00Z'),day:'2026-11-02',filledObservedAt:FILL})]);w.record();w.nextDay();w.us.price=1010;w.record();
-  assert.equal(w.perf.history('a')[0].settlement.last.pieces[0].placedAt,Date.parse('2026-11-02T15:00:00Z'));
-  const [,p]=w.points();assert.equal(p.bounded,undefined);assert.equal(p.dailyReturn,null);assert.match(p.unavailable.join(';'),UNCERTAIN);assert.equal(w.all().twrRange,undefined);
+test('S2b (c): corrections that do not net to zero keep their days an estimate; corrections that net to zero do not',()=>{
+  // +$100 from a reconciliation with no opening correction (paid before tracking, settlement date known): not netted.
+  const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();w.nextDay();w.us.price=1010;w.reconcile('B',{settledOn:'2026-11-01'});w.record();
+  const p=w.points()[1];assert.ok(p.correctionOpen,'not netted');assert.equal(w.all().settlementAffected.corrected,1);
 });
-test('U1 (stage 3.2 review, P2): coverage that goes under review and returns between two recordings still affects the day',()=>{
-  const w=world();w.see([]);w.see([order('A',100)]);const scope={account:'a',environment:'live',market:'US'},win={start:'2026-11-01',end:'2026-11-01'};
-  const row={ticker:'TA',side:'Buy',tradeDate:'2026-11-01',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementDate:'2026-11-02',exchangeRate:1300};
-  w.f.evidence.importK(scope,win,[row]);const g=w.f.evidence.kGroups('a')[0];w.reconcile('A',{settledOn:'2026-11-01',citation:{groupId:g.id,version:1}});w.record();
-  w.nextDay();w.f.evidence.importK(scope,win,[]);assert.equal(w.f.current('a').review.buysUSD,100);w.later(MIN);w.f.evidence.importK(scope,win,[row]);assert.equal(w.f.current('a').review.buysUSD,0);
-  w.f.evidence.importK(scope,win,[row]);const changes=w.f.evidence.events('a').filter(e=>e.kind==='review-changed');
-  assert.deepEqual(changes.map(e=>[e.before.length,e.after.length]),[[0,1],[1,0]],'each change once; an unchanged import notes nothing');
-  w.us.price=1010;w.record();const [,p]=w.points();assert.equal(p.dailyReturn,null);assert.equal(p.pnl,null);assert.match(p.unavailable.join(';'),/\$100\.00 \(coverage under review\)/);
-});
-test('U1 (stage 3.2 review, P2): a trade-history gap over a cited row, opened and closed between two recordings, affects the day',()=>{
-  const {TradingCosts}=require('../electron/trading-costs.cjs');const w=world();w.db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');
-  const costs=new TradingCosts(w.db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});costs.evidence.clock=w.clock;
-  const row={ticker:'TA',side:'Buy',tradeDate:'2026-11-01',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementKRW:130000,feesUSD:0,settlementDate:'2026-11-02',exchangeRate:1300},R={start:'2026-11-01',end:'2026-11-01'};
-  w.see([]);w.see([order('A',100)]);costs.importHistory('a',[{...R,complete:true,rows:[row]}],w.clock());const g=w.f.evidence.kGroups('a')[0];w.reconcile('A',{settledOn:'2026-11-01',citation:{groupId:g.id,version:1}});w.record();
-  w.nextDay();costs.importHistory('a',[{...R,complete:false,reason:'INVALID_RESPONSE',rows:[]}],w.clock());assert.equal(w.f.current('a').review.buysUSD,100);
-  w.later(MIN);costs.importHistory('a',[{...R,complete:true,rows:[row]}],w.clock());assert.equal(w.f.current('a').review.buysUSD,0);
-  assert.deepEqual(w.f.evidence.events('a').filter(e=>e.kind==='review-changed').map(e=>[e.at>w.perf.history('a')[0].at,e.before.length,e.after.length]),[[true,0,1],[true,1,0]],'the gap opening and closing are each noted when they happen');
-  w.us.price=1010;w.record();const [,p]=w.points();assert.equal(p.dailyReturn,null);assert.match(p.unavailable.join(';'),/\$100\.00 \(coverage under review\)/);
+// Release gate Q1 run: a day whose valuation range narrowed, with no money change awaiting the user, makes the summary
+// provisional with range changes only: no unresolved list and no "included" scenario. The Performance page read
+// pv.included.find and went blank (since bc52739); it now shows the money-change notice only when there are some.
+test('a provisional summary may carry range changes only, with no unresolved changes or included scenario',()=>{
+  const db=new DatabaseSync(':memory:');const perf=new PerformanceHistory(db,()=>Date.parse('2026-11-11T03:00:00Z'));perf.history('a');
+  const row=(day,low,narrowed)=>db.prepare('INSERT INTO nav_history VALUES(?,?,?)').run('a',day,JSON.stringify({day,at:Date.parse(day+'T05:00:00Z'),USD:{equity:low,cash:low},KRW:{equity:1,cash:1},equityKRW:1,fx:{usdKRW:1300},valuation:{ranges:{USD:{narrowed}}}}));
+  row('2026-11-09',500,0);row('2026-11-10',510,40);
+  const s=perf.summary('a','USD',null);assert.ok(s.provisional,'provisional');assert.ok(Array.isArray(s.provisional.rangeChanges)&&s.provisional.rangeChanges.length===1);
+  assert.equal(s.provisional.unresolved,undefined);assert.equal(s.provisional.included,undefined,'no included scenario: the page must not read it');
+  const page=require('node:fs').readFileSync(require('node:path').join(__dirname,'../src/AccountPerformance.tsx'),'utf8');assert.ok(page.includes('provisional?.unresolved?.length>0&&')&&page.includes('pv.included?.find'),'the page guards on unresolved changes');
 });

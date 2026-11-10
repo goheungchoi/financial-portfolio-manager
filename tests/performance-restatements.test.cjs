@@ -10,7 +10,7 @@ const close=(a,b,m)=>assert.ok(Math.abs(a-b)<1e-9,`${m??''} ${a} vs ${b}`);
 function world(start=TRACKING,db=new DatabaseSync(':memory:')){let t=start;const clock=()=>t;let rate=1300;
   const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock);
   const rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
-  const sc=performanceCorrections(db,{inFlight:f,reconciliation:rec});perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
+  const sc=performanceCorrections(db,{inFlight:f,reconciliation:rec,strict:true}/* the stage 3.2 rules and restatements, until S4 removes these tests */);perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
   const us={cash:500,price:1000};let orders=[],seq=0;
   const U=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
   const w={db,f,perf,rec,sc,us,clock,later:ms=>{t+=ms;},setRate:r=>{rate=r;},
@@ -33,7 +33,7 @@ test('a settlement date includes the complete New York day across both clock cha
   assert.deepEqual(paymentDateInterval('2026-11-01'),[Date.parse('2026-10-31T15:00:00Z'),Date.parse('2026-11-02T05:00:00Z')-1]);
   assert.deepEqual(paymentDateInterval('2026-03-08'),[Date.parse('2026-03-07T15:00:00Z'),Date.parse('2026-03-09T04:00:00Z')-1]);
 });
-function service(w){return new SettlementRestatements(w.db,{inFlight:w.f,reconciliation:w.rec,performance:w.perf,corrections:w.sc,clock:w.clock});}
+function service(w){return new SettlementRestatements(w.db,{inFlight:w.f,reconciliation:w.rec,performance:w.perf,corrections:w.sc,clock:w.clock,enabled:true});}
 function example({unknown=false,other=false}={}){
   // T40: payment on D, recovery on R, start-of-day deposit and withdrawal.
   const w=world();w.see([]);const a=order('A',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([a]);
