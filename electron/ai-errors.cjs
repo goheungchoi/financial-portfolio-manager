@@ -5,7 +5,9 @@ async function responseError(response){let code;try{const raw=await response.tex
 // only), the research round and the response status. Never arguments, keys or portfolio data.
 function ruleDetail(error){const d=error?.detail;if(!d||typeof d!=='object'||typeof d.rule!=='string')return '';
   return ` Rule: ${d.rule.slice(0,120)}${Number.isInteger(d.toolCount)?` (${d.toolCount} tool request${d.toolCount===1?'':'s'}${Array.isArray(d.tools)&&d.tools.length?`: ${d.tools.slice(0,8).map(x=>String(x).slice(0,40)).join(', ')}`:''})`:''}${Number.isInteger(d.round)?`, round ${d.round}`:''}${d.status&&d.status!=='completed'?`, response ${String(d.status).slice(0,30)}`:''}.${d.decision&&typeof d.decision==='object'?` Decision: ${['action','quantity','symbol'].map(k=>String(d.decision[k]??'').slice(0,24)).filter(Boolean).join(' ')}${d.decision.credit&&d.decision.credit!=='none'?`, credit ${String(d.decision.credit).slice(0,24)}`:''}.`:''}`;}
-function detail(code,stage,error){const location=String(error?.stack??'').match(/([A-Za-z0-9_-]+\.cjs):(\d+):(\d+)/);return `${messages[code]??'Review could not complete.'} Stage: ${stage}.${code==='REVIEW_FAILED'&&location?' Reference: '+location[1]+':'+location[2]+'.':''}${ruleDetail(error)}`;}
+// A stale review names the guard that tripped (automation.cjs staleReason): key names only.
+function changedDetail(error){const c=error?.detail?.changed;return typeof c==='string'&&c?` Changed: ${c.replace(/[^A-Za-z0-9_.,: -]/g,'').slice(0,200)}.`:'';}
+function detail(code,stage,error){const location=String(error?.stack??'').match(/([A-Za-z0-9_-]+\.cjs):(\d+):(\d+)/);return `${messages[code]??'Review could not complete.'} Stage: ${stage}.${code==='REVIEW_FAILED'&&location?' Reference: '+location[1]+':'+location[2]+'.':''}${ruleDetail(error)}${changedDetail(error)}`;}
 // Size failures: the first three are the app's own limit (nothing reached OpenAI), the last is the model's.
 const SIZE_CODES=['CONTEXT_MANDATORY_TOO_LARGE','CONTEXT_OVER_BUDGET','CONTINUATION_OVER_BUDGET','CONTEXT_TOO_LARGE','AI_CONTEXT_LIMIT'];
 // What was measured for a size failure: the stage, size against the app's or the model's limit, the part every
