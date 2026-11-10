@@ -55,6 +55,12 @@ function scoutTools(){const scout=require('./scout.cjs');return [...require('./d
 function scoutFixed(){const scout=require('./scout.cjs');return {tools:scoutTools(),instructions:scout.INSTRUCTIONS,text:{format:{type:'json_schema',name:'portfolio_plan',strict:true,schema:scout.SCHEMA}}};}
 // Bytes the fixed parts add to every scout request, with the request's own fields (model, effort, flags) allowed for.
 function scoutOverheadBytes(){return Buffer.byteLength(JSON.stringify(scoutFixed()))+400;}
+// The tool names a review may call: the client refuses a request for any other (both vendors use this list).
+function offeredToolNames(context){return [...'get_market_evidence set_review_watch set_review_interval get_context_detail'.split(' '),...(context.discovery?.enabled?[...require('./discovery.cjs').TOOL_NAMES,'get_company_research','get_market_overview']:[]),...deskTools(context).map(t=>t.name)];}
+// An item list never moves between vendors (Anthropic provider design 5.3): a Claude turn in an OpenAI request, or
+// OpenAI reasoning or output items in a Claude request, is refused before anything is sent.
+const fromAnthropic=item=>item?.type==='anthropic_turn'||item?.vendor==='anthropic';
+const fromOpenAI=item=>['reasoning','message'].includes(item?.type)||item?.type==='function_call'&&item?.vendor!=='anthropic';
 function deskTools(context){if(!context.agentDesk)return [];const d=require('./agent-desk.cjs');return [d.COMPUTE_TOOL,d.TRIGGER_TOOL,d.NOTE_TOOL,require('./assessments.cjs').TOOL,...(context.agentDesk.conditionalOrders?.allowed?[d.ORDER_TOOL]:[])];}
 // A Buy needs a thesis, an invalidation point, a stop and a horizon; without them it is held back as a Hold.
 // The longest trade-plan horizon accepted, in days (10 years). 2026-10-30: the limit was 1,000 days, silently dropping
@@ -242,6 +248,7 @@ class AiClient {
     const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=require('./ai-models.cjs').reviewByteLimit(options);
     if(inputBytes>limitBytes){const e=new Error(options.continuation?'CONTINUATION_OVER_BUDGET':'CONTEXT_OVER_BUDGET');e.detail={limit:'app bytes',stage:options.continuation?'research continuation (request check)':'first request (request check)',wireBytes:inputBytes,limitBytes,largest:options.continuation?options.continuation.map((it,i)=>[`item ${i} ${it.type??it.role}`,Buffer.byteLength(JSON.stringify(it))]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,b])=>`${k}:${b}`):require('./review-context.cjs').report(context,limitBytes).largest};throw e;}
     try {
+      if(input.some(fromAnthropic))throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'a conversation from another provider'}});
       const response=await this.measured('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(75000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'portfolio-review-v1',max_output_tokens:selected.maxOutput,...(options.research?{tools:reviewTools(context),parallel_tool_calls:true,tool_choice:options.final?'none':'auto'}:{}),reasoning:{effort:selected.effort},instructions:REVIEW_INSTRUCTIONS,input,text:{format:{type:'json_schema',name:'portfolio_decision',strict:true,schema:decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length))}}})});
       if(!response.ok){const e=await require('./ai-errors.cjs').responseError(response);if(e.message==='AI_CONTEXT_LIMIT'){const z=this.lastRequestSizes??{};e.detail={limit:'model context window',wireBytes:z.totalBytes,limitBytes:'model',largest:[`input:${z.inputBytes}`,`instructions:${z.instructionsBytes}`,`tools:${z.toolsBytes}`]};}throw e;}
       // The body is parsed before any refusal, so every refusal carries the usage it cost; its size is recorded per call.
@@ -254,7 +261,7 @@ class AiClient {
         // The bounded tool protocol (1.5.48 audit, A5): a well-formed batch of offered tools comes back whole, up to a hard
         // ceiling; the research loop runs the round's allowance and answers the rest as not run (research-review.cjs). Each
         // refusal names its rule, the tool count and the tools (names only), never the arguments or the portfolio.
-        const offered=[...'get_market_evidence set_review_watch set_review_interval get_context_detail'.split(' '),...(context.discovery?.enabled?[...require('./discovery.cjs').TOOL_NAMES,'get_company_research','get_market_overview']:[]),...deskTools(context).map(t=>t.name)];
+        const offered=offeredToolNames(context);
         const names=calls.map(call=>String(call.name).slice(0,40)),invalid=rule=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule,toolCount:calls.length,tools:[...new Set(names)].slice(0,8),status:body.status}});
         if(!options.research)throw invalid('a tool request in a review without research');
         if(options.final)throw invalid('a tool request on the final round');
@@ -276,4 +283,4 @@ class AiClient {
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }
-module.exports={RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};
+module.exports={RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,kb,offeredToolNames,deskTools,fromAnthropic,fromOpenAI,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};

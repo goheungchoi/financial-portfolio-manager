@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   configureRuntime: value => ipcRenderer.invoke('runtime:configure',value),
   reviewRuntime: () => ipcRenderer.invoke('runtime:review'),
   setBackgroundAi: paused => ipcRenderer.invoke('runtime:background-ai', paused),
-  dryRun: mode => ipcRenderer.invoke('runtime:dry-run', mode),
+  dryRun: (mode, options) => ipcRenderer.invoke('runtime:dry-run', mode, options),
   dryRunEstimate: () => ipcRenderer.invoke('runtime:dry-run-estimate'),
   runScout: () => ipcRenderer.invoke('scout:run'),
   importProviders: () => ipcRenderer.invoke('runtime:providers'),

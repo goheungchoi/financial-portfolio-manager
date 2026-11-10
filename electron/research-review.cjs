@@ -38,6 +38,9 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   const via=(name,fn)=>wrap?wrap(name,fn):fn;
   let continuation,keepFrom=0;const usage={inputTokens:0,outputTokens:0,cachedTokens:0};const cache=new Map();
   const add=u=>{usage.inputTokens+=u?.inputTokens??0;usage.outputTokens+=u?.outputTokens??0;usage.cachedTokens+=u?.cachedTokens??0;};
+  // Claude thinking blocks the API dropped in this review (anthropic-client.cjs droppedThinking, after condensing
+  // rewrote an older result). Counted only when a Claude call reported it, so OpenAI metrics keep their shape.
+  let dropped=null;const drops=r=>{if(Number.isInteger(r?.droppedThinking)&&r.droppedThinking>=0)dropped=(dropped??0)+r.droppedThinking;};
   // Each response is bounded by the round's budget: what the request may still grow by, shared by the round's calls.
   // Every tool result is kept whole for this review (as section result-N of get_context_detail), so whatever bounding
   // cuts or leaves out can be read in full, by path, continuing from each reply's next.from. The meter counts what was asked, read and sent.
@@ -45,7 +48,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   // What research tools changed before the review ended (desk orders, triggers, notes, the watch and the interval): a
   // review that fails afterwards reports these apart from its result, never as "nothing happened" (1.5.48 audit, A5).
   const changes=[];const applied=(name,value)=>{if(value&&typeof value==='object'&&['rejected','unavailable','error'].includes(value.status))return;changes.push({tool:name,status:typeof value?.status==='string'?value.status.slice(0,30):'applied',...(value?.id?{id:String(value.id).slice(0,60)}:{})});};
-  const done=()=>meter.summary(watched);
+  const done=()=>{const m=meter.summary(watched);return dropped==null?m:{...m,droppedThinking:dropped};};
   let perCall=16000;const answer=(call,value,keep=true,runCache=false)=>{const sent=keep?store.keep(call.callId,value,perCall):require('./review-context.cjs').bound(value,perCall);
     meter.call(call.name,call.args,value,sent,{runCache});continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(sent)});};
   // A review that fails still reports what it researched (error.metrics), for the failed review's log and a fallback run.
@@ -53,7 +56,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
   for(let round=0;round<ROUNDS;round++){
     // Near the size limit, older results are digested (and if needed condensed by the cheap model) so the agent keeps what it asked for.
     if(round>0)continuation=await fitRequest(continuation,{keepFrom,compact,log,store});
-    const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});add(result.usage);
+    const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});add(result.usage);drops(result);
     if(!result.toolCalls){
       // A Buy held back because its plan is incomplete gets one request naming the missing field; the safeguard stays.
       // The answer is accepted only if it is a complete plan; otherwise the Buy stays withheld and says so.
@@ -61,7 +64,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
         const w=result.decision.withheld;log('System',w.kind==='reversal'?'Reversal explanation requested':'Plan correction requested',`${w.quantity} ${w.symbol}: ${w.reason}`);
         // A reversal held back gets the same single request, for its reversal explanation (audit 2026-11-04, Stage 4).
         const ask=w.kind==='reversal'?{role:'user',content:`The app held back your opening of ${w.quantity} ${w.symbol} because ${w.reason}. Return your decision again with reversal filled from your own analysis: priorDecisionId, basis, whatChanged, priorRequirement, newEvidence with sources and dates when the basis is new evidence, and afterCost when you would buy back above the exit price. Correcting the earlier reasoning is a valid basis; do not invent a changed fact. If nothing has changed and the earlier reasoning stands, return Hold.`}:{role:'user',content:`The app held back your Buy of ${w.quantity} ${w.symbol} because its plan is incomplete: ${w.reason}. Return your decision again with every plan field filled from your own analysis (thesis, invalidation, stopPrice below the current price, horizonDays, confidence, portfolioImpact, evidence with sources, and valuation and uncertainty where they apply). Mark a fact verified only if you read it in its source. If you cannot justify a complete plan, return Hold. Do not change the trade only to satisfy the format.`};
-        try{const items=[...result.continuation,ask];const again=await request({research:false,final:true,continuation:await fitRequest(items,{keepFrom:items.length,compact,log,store})});add(again.usage);
+        try{const items=[...result.continuation,ask];const again=await request({research:false,final:true,continuation:await fitRequest(items,{keepFrom:items.length,compact,log,store})});add(again.usage);drops(again);
           if(again.decision&&!again.decision.withheld){log('System','Plan correction accepted',`${again.decision.action} ${again.decision.symbol??''} ${again.decision.quantity??''}`.trim());return {...again,usage,metrics:done(),decision:{...again.decision,planCorrected:{missing:w.reason}}};}
           log('System','Plan correction not accepted',again.decision?.withheld?.reason??'no decision');}
         catch(error){log('System','Plan correction failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED');}

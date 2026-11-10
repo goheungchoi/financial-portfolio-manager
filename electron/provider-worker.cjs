@@ -1,23 +1,22 @@
-const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');let ai;let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};let secContact=null;const secState={};const EMAIL=/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
+const fs=require('node:fs/promises');const {AiClient}=require('./ai-client.cjs');const R=require('./ai-router.cjs');
+// router: which client serves each AI call, chosen by the call's model id (ai-router.cjs). Built at import.
+let router=R.createRouter();let dartKey;let pushURL;let ecosKey=null;let fredKey=null;const dartState={};let secContact=null;const secState={};const EMAIL=/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
 process.parentPort.on('message',async({data})=>{
   try {
     let result;
     if(data.operation==='import') {
       const handle=await fs.open(data.path,'r');let text;
       try{if((await handle.stat()).size>65536)throw 0;text=await handle.readFile('utf8');}finally{await handle.close();}
-      const value=JSON.parse(text);if(!value || Object.keys(value).some(key=>!['openaiApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey','secContactEmail'].includes(key)))throw 0;
-      if(value.ecosApiKey&&!/^[A-Za-z0-9]{10,100}$/.test(value.ecosApiKey))throw 0;if(value.fredApiKey&&!/^[a-z0-9]{32}$/.test(value.fredApiKey))throw 0;ecosKey=value.ecosApiKey??null;fredKey=value.fredApiKey??null;
+      // The whole file is checked first (ai-router.cjs parseProviderFile): any problem rejects it and nothing is applied.
       // SEC EDGAR asks every client to identify itself with a contact email; it is sent only to sec.gov.
-      if(value.secContactEmail&&!EMAIL.test(value.secContactEmail))throw 0;secContact=value.secContactEmail??null;
-      ai=value.openaiApiKey?new AiClient(value.openaiApiKey):null;
-      if(value.dartApiKey && !/^[A-Za-z0-9]{20,100}$/.test(value.dartApiKey))throw 0;dartKey=value.dartApiKey??null;
-      if(value.pushWebhookURL){const url=new URL(value.pushWebhookURL);if(url.protocol!=='https:'||url.username||url.password)throw 0;pushURL=url.href;}else pushURL=null;
-      result={aiConnected:Boolean(ai),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey),secConnected:Boolean(secContact)};
-    } else if(data.operation==='decision') {if(!ai)throw 0;result=await ai.decide(data.context,data.options);}
-    else if(data.operation==='reflection') {if(!ai)throw 0;result=await ai.reflect(data.context,data.options);}
-    else if(data.operation==='scout') {if(!ai)throw 0;result=await ai.scout(data.context,data.options);}
-    else if(data.operation==='narrative') {if(!ai)throw 0;result=await ai.narrative(data.context,data.options);}
-    else if(data.operation==='compact') {if(!ai)throw 0;result=await ai.compact(data.payload,data.options);}
+      const value=R.parseProviderFile(text);ecosKey=value.ecosApiKey;fredKey=value.fredApiKey;secContact=value.secContactEmail;dartKey=value.dartApiKey;pushURL=value.pushURL;
+      router=R.createRouter({openai:value.openaiApiKey?new AiClient(value.openaiApiKey):null,anthropic:value.anthropicApiKey?R.claudeClient(value.anthropicApiKey):null});
+      result={...router.flags(),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey),secConnected:Boolean(secContact)};
+    } else if(data.operation==='decision') {result=await router.clientFor(data.options?.openaiModel).decide(data.context,data.options);}
+    else if(data.operation==='reflection') {result=await router.clientFor(data.options?.openaiModel).reflect(data.context,data.options);}
+    else if(data.operation==='scout') {result=await router.clientFor(data.options?.openaiModel).scout(data.context,data.options);}
+    else if(data.operation==='narrative') {result=await router.clientFor(data.options?.openaiModel).narrative(data.context,data.options);}
+    else if(data.operation==='compact') {result=await router.clientFor(data.options?.openaiModel).compact(data.payload,data.options);}
     else if(data.operation==='push') {
       if(!pushURL)throw 0;
       const {body,headers}=require('./phone-snapshot.cjs').pushRequest(pushURL,data);

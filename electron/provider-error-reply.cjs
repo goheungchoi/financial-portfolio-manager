@@ -4,8 +4,11 @@
 // compact joined the AI operations after the 2026-11-10 incident, where a failed condensing step showed only
 // PROVIDER_REQUEST_FAILED and was charged at its full reservation.
 const AI_USAGE=['decision','reflection','scout','narrative','compact'],AI_CODES=['decision','scout','narrative','compact'];
+// A provider error's lookup keys (Anthropic A3b): the request id and error type, pattern-checked again here.
+const lookup=d=>({...(typeof d.requestId==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(d.requestId)?{requestId:d.requestId}:{}),...(typeof d.errorType==='string'&&/^[a-z_]{1,40}$/.test(d.errorType)?{errorType:d.errorType}:{})});
 function decisionDetail(error){
   if(!error.detail||typeof error.detail!=='object')return null;
+  if(typeof error.detail.rule!=='string'&&!('wireBytes' in error.detail)&&!('limit' in error.detail)){const keys=lookup(error.detail);return Object.keys(keys).length?keys:null;}
   if(typeof error.detail.rule==='string')return {rule:error.detail.rule.slice(0,120),...(Number.isInteger(error.detail.toolCount)?{toolCount:error.detail.toolCount}:{}),...(Array.isArray(error.detail.tools)?{tools:error.detail.tools.slice(0,8).map(x=>String(x).slice(0,40))}:{}),...(Number.isInteger(error.detail.round)?{round:error.detail.round}:{}),...(error.detail.status?{status:String(error.detail.status).slice(0,30)}:{}),...(error.detail.decision&&typeof error.detail.decision==='object'?{decision:Object.fromEntries(['action','symbol','quantity','credit'].map(k=>[k,typeof error.detail.decision[k]==='number'?error.detail.decision[k]:String(error.detail.decision[k]??'').slice(0,24)]))}:{})};
   return {limit:String(error.detail.limit??'').slice(0,40),wireBytes:Number(error.detail.wireBytes)||null,limitBytes:typeof error.detail.limitBytes==='number'?error.detail.limitBytes:String(error.detail.limitBytes??'').slice(0,20),largest:(Array.isArray(error.detail.largest)?error.detail.largest:[]).slice(0,6).map(x=>String(x).slice(0,60))};
 }

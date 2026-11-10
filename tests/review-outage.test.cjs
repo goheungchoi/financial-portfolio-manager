@@ -91,8 +91,8 @@ test('research rounds after a near-limit first request: every continuation stays
   assert.ok(answers.every(a=>a.status!=='rejected'),'every detail read and result answered');
 });
 test('the four size failures are told apart, with stage, measured size and largest sections; local ones say nothing reached OpenAI',async()=>{
-  const E=require('../electron/ai-errors.cjs');for(const code of ['CONTEXT_MANDATORY_TOO_LARGE','CONTEXT_OVER_BUDGET','CONTINUATION_OVER_BUDGET'])assert.match(E.messages[code],/not sent to OpenAI|nothing was sent to OpenAI/,code);
-  assert.match(E.messages.AI_CONTEXT_LIMIT,/OpenAI rejected/);assert.notEqual(E.messages.AI_CONTEXT_LIMIT,E.messages.AI_SERVER_ERROR);assert.deepEqual(E.SIZE_CODES.slice(0,3),['CONTEXT_MANDATORY_TOO_LARGE','CONTEXT_OVER_BUDGET','CONTINUATION_OVER_BUDGET']);
+  const E=require('../electron/ai-errors.cjs');for(const code of ['CONTEXT_MANDATORY_TOO_LARGE','CONTEXT_OVER_BUDGET','CONTINUATION_OVER_BUDGET'])assert.match(E.messages[code],/not sent to the AI provider|nothing was sent to the AI provider/,code);
+  assert.match(E.messages.AI_CONTEXT_LIMIT,/AI provider rejected/);assert.notEqual(E.messages.AI_CONTEXT_LIMIT,E.messages.AI_SERVER_ERROR);assert.deepEqual(E.SIZE_CODES.slice(0,3),['CONTEXT_MANDATORY_TOO_LARGE','CONTEXT_OVER_BUDGET','CONTINUATION_OVER_BUDGET']);
   const s=rc.shape({...fixture(),userGuidelines:fill(80000,ko)},{limit:LIMIT});const d=E.sizeDetail(rc.sizeFailure(s));
   assert.match(d,/at first request: \d+ bytes against the app limit of 70000 bytes; the part every decision must see is \d+ bytes; largest userGuidelines:/);
   assert.match(E.sizeDetail(Object.assign(new Error('AI_CONTEXT_LIMIT'),{detail:{limit:'model context window',wireBytes:500000,largest:['scoutPlan:9000']}})),/against the model context window/);
@@ -108,7 +108,7 @@ function harness(contexts){const {Automation}=require('../electron/automation.cj
 test('mandatory data alone over the limit: the review fails clearly, records no Hold and makes no proposal or order',async()=>{
   const ctx={...fixture(),environment:'local-paper',userGuidelines:fill(80000,ko)};const {a,db,events,calls}=harness([ctx]);
   await assert.rejects(a.review('Scheduled review'),/REVIEW_FAILED/);assert.equal(a.lastError,'CONTEXT_MANDATORY_TOO_LARGE');assert.equal(calls.length,0,'nothing sent');
-  assert.match(a.lastErrorDetail,/nothing was sent to OpenAI and nothing was decided.*Size at first request: \d+ bytes against the app limit/);
+  assert.match(a.lastErrorDetail,/nothing was sent to the AI provider and nothing was decided.*Size at first request: \d+ bytes against the app limit/);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM reviews').get().n,0,'no Hold recorded');assert.equal(db.prepare('SELECT COUNT(*) n FROM paper_proposals').get().n,0,'no proposal');
   assert.ok(!events.some(e=>e.title==='Decision'),'no decision event');
 });

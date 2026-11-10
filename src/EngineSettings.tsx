@@ -7,13 +7,16 @@ import {TokenSaving} from './TokenSaving';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
 const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-extended','Extended hours'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-conditional','Conditional orders'],['eng-alerts','Alerts']];
+// Which providers receive KIS data given the selected models (the main and the routine model): one consent covers both.
+const vendorName=(model:string)=>model.startsWith('claude-')?'Anthropic':'OpenAI';
+const receivers=(config:RuntimeConfig)=>[...new Set([config.openaiModel,config.routineModel].filter(Boolean).map(m=>vendorName(String(m))))].join(' and ');
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
 export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,onState}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void}){
   const [preview,setPreview]=useState<string|null>(null);const [phoneNote,setPhoneNote]=useState('');
   const testPhone=async()=>{setPhoneNote('');try{const r=await window.portfolio?.testPhoneSnapshot();setPhoneNote(r?.ok?'Test snapshot queued. It should reach your phone within a few seconds.':r?.error==='NO_WEBHOOK'?'Add a webhook in Connections first.':'Turn on phone alerts and save first.');}catch{setPhoneNote('Could not reach the engine.');}};
   const loadPreview=async()=>{try{const digest=await window.portfolio?.previewDigest();setPreview(digest?.text??'Preview unavailable.');}catch{setPreview('Preview unavailable.');}};
   const jump=(id:string)=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});
-  const efforts=config.openaiModel==='gpt-6-astra'?['low','medium','high']:['none','low','medium','high'];
+  const efforts=config.openaiModel==='gpt-6-astra'||config.openaiModel.startsWith('claude-')?['low','medium','high']:['none','low','medium','high'];
   return <div className="engine-settings" aria-label="Engine settings">
     <div className="settings-jump"><nav aria-label="Settings sections">{SECTIONS.map(([id,label])=><button key={id} onClick={()=>jump(id)}>{label}</button>)}</nav>
       <button className="primary" disabled={busy||state.busy||dirty} title={dirty?'Save or discard your changes before reviewing':'Run one review now with the saved settings'} onClick={onReview}>{state.busy?'Reviewing…':'Run portfolio review'}</button></div>
@@ -29,12 +32,12 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       <Row title="Place orders automatically" hint={config.autoSubmit?'Orders that pass your limits are sent without asking':'Every AI order waits for your approval'}><Switch label="Place orders automatically" disabled={busy} checked={config.autoSubmit} onChange={v=>edit('autoSubmit',v)}/></Row>
       <Row title="Risk per trade" hint="Largest loss at the stop, as a share of equity. Sets the AI's position-size ceiling."><NumberField label="Risk per trade" min={0.1} max={20} step={0.1} unit="%" value={config.sizingRiskPct} disabled={busy} onChange={v=>edit('sizingRiskPct',v)}/></Row>
       <Row title="Stop distance" hint="Multiple of the daily average true range (ATR)."><NumberField label="Stop distance in ATR" min={0.5} max={5} step={0.5} unit="× ATR" value={config.sizingAtrMultiple} disabled={busy} onChange={v=>edit('sizingAtrMultiple',v)}/></Row>
-      <Row title="Share KIS data with OpenAI" hint="Holdings and values; required for AI reviews of KIS accounts"><Switch label="Share KIS data with OpenAI" disabled={busy} checked={config.shareKisWithAI} onChange={v=>edit('shareKisWithAI',v)}/></Row>
+      <Row title="Share KIS data with the AI provider" hint={`Holdings and values, sent to ${receivers(config)}; required for AI reviews of KIS accounts`}><Switch label="Share KIS data with the AI provider" disabled={busy} checked={config.shareKisWithAI} onChange={v=>edit('shareKisWithAI',v)}/></Row>
     </Card>
 
     <ExtendedSessions config={config} busy={busy} edit={edit} live={state.accountEnvironment==='live'}/>
     <Card id="eng-model" title="AI model" hint={state.providerStatus.aiConnected?undefined:'No OpenAI key loaded. Add one in Connections.'}>
-      <Row title="Model"><select aria-label="OpenAI model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></select></Row>
+      <Row title="Model" hint="Claude Opus 5.5: dry run only for now (Dashboard → Dry run)"><select aria-label="Trading model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><optgroup label="OpenAI"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></optgroup><optgroup label="Anthropic"><option value="claude-opus-5-5" disabled>Claude Opus 5.5 · dry run only</option></optgroup></select></Row>
       <Row title="Reasoning effort" hint="Higher is slower and costs more"><select aria-label="Reasoning effort" disabled={busy} value={config.reasoningEffort} onChange={e=>edit('reasoningEffort',e.target.value)}>{efforts.map(v=><option key={v} value={v}>{v[0].toUpperCase()+v.slice(1)}</option>)}</select></Row>
       <Row title="Post-trade reflection" hint="After a trade closes, the AI drafts a lesson for you to approve"><Switch label="Post-trade reflection" disabled={busy} checked={config.reflectionEnabled} onChange={v=>edit('reflectionEnabled',v)}/></Row>
     </Card>

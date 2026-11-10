@@ -65,13 +65,14 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
       <div className="card-head"><div><h2>AI, news and alert keys</h2><small>Optional · one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
       <div className="setting-rows">
         {providerFile?.error&&<div role="alert" className="notice error">{providerFile.error}</div>}
-        {keyRow('OpenAI',providers?.aiConnected,'Not set','Turns on AI reviews')}
+        {keyRow('OpenAI',providers?.openaiConnected??providers?.aiConnected,'Not set','Turns on AI reviews')}
+        {keyRow('Anthropic',providers?.anthropicConnected,'Not set','Claude dry-run reviews')}
         {keyRow('Open DART',providers?.dartConnected,'Not set','Korean disclosures')}
         {keyRow('Bank of Korea ECOS',providers?.ecosConnected,'Sample access','Korean macro data')}
         {keyRow('FRED',providers?.fredConnected,'Not set','U.S. release calendar')}
         {keyRow('Mobile webhook',providers?.pushConnected,'Not set','Phone alerts')}
         <Row block title="Provider file" hint={`${providerFile?.name??'None imported'}${providerFile?.remembered?' · reconnects at launch':''}`}><span className="control-pair"><button className={providerCount?'':'primary'} disabled={busy||!runtime} onClick={()=>void importProviders()}>Import provider JSON</button><button disabled={busy||!providerFile?.remembered||providerFile.status==='connecting'} onClick={()=>void fileAction('providers','reconnect')}>Reconnect</button><button className="danger" disabled={busy||!providerFile?.remembered||providerFile.status==='connecting'} onClick={()=>void fileAction('providers','forget')}>Forget &amp; disconnect</button></span></Row>
-        <details className="inline-help"><summary>Provider JSON format</summary><pre>{JSON.stringify({openaiApiKey:'OPTIONAL_OPENAI_API_KEY',dartApiKey:'OPTIONAL_OPEN_DART_KEY',ecosApiKey:'OPTIONAL_ECOS_KEY',fredApiKey:'OPTIONAL_FRED_KEY',secContactEmail:'OPTIONAL_CONTACT_FOR_SEC_EDGAR',pushWebhookURL:'https://YOUR_PRIVATE_WEBHOOK'},null,2)}</pre><Note summary="An OpenAI key turns the AI on. Macro keys are optional.">Importing an OpenAI key selects and saves the OpenAI decision provider automatically. Choose the model and budget in Engine settings. Macro data works without keys (FRED downloads and ECOS sample access); an ECOS key removes the sample row limit and a FRED key adds the U.S. release calendar. Both keys are free from ecos.bok.or.kr and fred.stlouisfed.org.</Note></details>
+        <details className="inline-help"><summary>Provider JSON format</summary><pre>{JSON.stringify({openaiApiKey:'OPTIONAL_OPENAI_API_KEY',anthropicApiKey:'OPTIONAL_ANTHROPIC_API_KEY',dartApiKey:'OPTIONAL_OPEN_DART_KEY',ecosApiKey:'OPTIONAL_ECOS_KEY',fredApiKey:'OPTIONAL_FRED_KEY',secContactEmail:'OPTIONAL_CONTACT_FOR_SEC_EDGAR',pushWebhookURL:'https://YOUR_PRIVATE_WEBHOOK'},null,2)}</pre><Note summary="An OpenAI key turns the AI on. Macro keys are optional.">Importing an OpenAI key selects and saves the OpenAI decision provider automatically. Choose the model and budget in Engine settings. Macro data works without keys (FRED downloads and ECOS sample access); an ECOS key removes the sample row limit and a FRED key adds the U.S. release calendar. Both keys are free from ecos.bok.or.kr and fred.stlouisfed.org.</Note></details>
       </div>
     </section>
 
@@ -115,7 +116,7 @@ function SecCard(){
     <div className="setting-rows">
       {message&&<div role={message.tone==='error'?'alert':'status'} className={`notice ${message.tone==='error'?'error':''}`}>{message.text}</div>}
       <Row block title="Contact email" hint={source??'SEC asks every app to name a contact. No key or account is needed.'}><span className="control-pair"><input type="email" aria-label="SEC contact email" placeholder="you@example.com" value={draft} disabled={busy} onChange={e=>setDraft(e.target.value)}/><button className={state.ready?'':'primary'} disabled={busy||!draft.trim()||draft.trim()===state.email} onClick={()=>void save(draft.trim())}>Save</button><button disabled={busy||!state.ready} onClick={()=>void test()}>Test</button>{state.email&&<button disabled={busy} onClick={()=>void save('')}>Clear</button>}</span></Row>
-      <Note summary="Sent only to sec.gov.">SEC EDGAR is free and public, but SEC asks every client to identify itself with a contact email in each request. The app sends it only in requests to sec.gov, never to OpenAI or anyone else. Requests happen when U.S. company research loads (cached), and when you press Test, which reads Apple’s filings.</Note>
+      <Note summary="Sent only to sec.gov.">SEC EDGAR is free and public, but SEC asks every client to identify itself with a contact email in each request. The app sends it only in requests to sec.gov, never to an AI provider or anyone else. Requests happen when U.S. company research loads (cached), and when you press Test, which reads Apple’s filings.</Note>
     </div>
   </section>;
 }
