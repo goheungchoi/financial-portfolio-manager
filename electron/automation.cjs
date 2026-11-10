@@ -45,7 +45,7 @@ function reviewSymbols(context,decision){const t=context?.triggerEvidence;const 
   return {triggerSymbols:trigger,assessed:[...new Set([...trigger,...(decision?.planVerdicts??[]).map(v=>v.symbol),decision?.symbol,...held].filter(s=>typeof s==='string'&&s))]};}
 class Automation {
   constructor(db,paper,provider,log) {
-    this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
+    this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
     db.exec('CREATE TABLE IF NOT EXISTS routing_eval(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,account TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS shadow_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS routing_pass(id TEXT PRIMARY KEY,decidedAt INTEGER NOT NULL,payload TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS review_clock(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
@@ -90,6 +90,8 @@ class Automation {
     if(typeof next.orderTracking!=='boolean'||!['full','focused'].includes(next.routineReviews)||!['off','observe','on'].includes(next.reviewGate)||!['off','on'].includes(next.researchSuppression)||!['off','observe','on'].includes(next.watchlistAlerts)||!['off','on'].includes(next.alertTrial)||next.alertTrial==='on'&&(next.watchlistAlerts!=='observe'||next.scope==='paper'||this.config.alertTrial==='on'&&next.scope!==this.config.scope)||next.watchlistMovePct!==null&&(!Number.isFinite(next.watchlistMovePct)||next.watchlistMovePct<.1||next.watchlistMovePct>50))throw new Error('INVALID_SETTINGS');
     require('./guardrails.cjs').validateGuardrails(next);if(!require('./news-events.cjs').MODES.includes(next.newsTrigger))throw new Error('INVALID_SETTINGS');
     require('./ai-models.cjs').settings(next);require('./ai-models.cjs').settings({openaiModel:next.routineModel,reasoningEffort:next.routineEffort});
+    // A Claude model is not a trading model yet (Anthropic provider A1b): refused for both roles before anything is saved.
+    require('./ai-models.cjs').assertTradingModel(next.openaiModel);require('./ai-models.cjs').assertTradingModel(next.routineModel);
     if(['sessionKrNxt','sessionKrxSingle','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!['fixed','auto','complexity'].includes(next.modelRouting)||typeof next.shadowEvaluation!=='boolean'||!Number.isFinite(next.shadowUSDPerDay)||next.shadowUSDPerDay<0.1||next.shadowUSDPerDay>20||!Number.isInteger(next.shadowPct)||next.shadowPct<0||next.shadowPct>100||![next.complexityThreshold,next.spotCheckPct,next.lunaMaxRuns,next.lunaMaxMinutes].every(Number.isInteger)||next.complexityThreshold<0||next.complexityThreshold>100||next.spotCheckPct<0||next.spotCheckPct>100||next.lunaMaxRuns<1||next.lunaMaxRuns>20||next.lunaMaxMinutes<30||next.lunaMaxMinutes>720||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
     if(typeof next.scoutAiRequests!=='boolean'||typeof next.scoutEnabled!=='boolean'||!Object.hasOwn(require('./scout.cjs').SCHEDULES,next.scoutSchedule))throw new Error('INVALID_SETTINGS');
     if(!Array.isArray(next.newsFeeds)||next.newsFeeds.length>10||next.newsFeeds.some(f=>!f||typeof f.url!=='string'||!/^https:\/\//.test(f.url)||f.url.length>500||typeof(f.label??'')!=='string'||String(f.label??'').length>60)||typeof next.kisNews!=='boolean'||typeof next.usTickerNews!=='boolean'||typeof next.narrativeEnabled!=='boolean'||!Number.isFinite(next.sizingRiskPct)||next.sizingRiskPct<0.1||next.sizingRiskPct>20||!Number.isFinite(next.sizingAtrMultiple)||next.sizingAtrMultiple<0.5||next.sizingAtrMultiple>5)throw new Error('INVALID_SETTINGS');
@@ -104,9 +106,9 @@ class Automation {
     if(!this.config.enabled)return {label:'Manual reviews only',detail:'Scheduled reviews are disabled in your saved settings.'};
     if(!this.sessionArmed)return {label:'Paused after restart',detail:'Your settings were restored. Use Start auto trading to resume, or run a manual review.'};
     if(this.config.provider==='external')return {label:'Waiting for external agent',detail:'The external agent must send a decision through the bridge.'};
-    if(this.config.provider==='openai'&&!this.providerStatus.aiConnected)return {label:'API key required',detail:'Import provider JSON to connect the selected OpenAI provider.'};
+    if(this.config.provider==='openai'){const missing=this.missingKey(this.config.openaiModel);if(missing)return {label:'API key required',detail:`Import provider JSON with an ${missing} key for the selected model.`};}
     if(this.config.scope==='paper'&&this.paper.account().paused)return {label:'Paper account paused',detail:'Enable Paper trading to allow scheduled reviews.'};
-    if(this.config.scope!=='paper'&&this.config.provider==='openai'&&!this.config.shareKisWithAI)return {label:'Data sharing required',detail:'Allow KIS context sharing in Engine settings for OpenAI reviews.'};
+    if(this.config.scope!=='paper'&&this.config.provider==='openai'&&!this.config.shareKisWithAI)return {label:'Data sharing required',detail:'Allow KIS context sharing with the AI provider in Engine settings.'};
     const usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0};
     if(this.config.provider==='openai'&&require('./ai-models.cjs').budgetExceeded(this.config,usage,require('./ai-models.cjs').reservation(this.config)))return {label:'Daily API limit reached',detail:'Review your budget or wait for the next Seoul calendar day.'};
     const hours=this.marketHours();if(!hours.open&&this.config.closedMarketReviews!=='keep'&&hours.next){const at=new Date(this.config.closedMarketReviews==='pre-open'?hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS:hours.next.at).toLocaleString('en-GB',{timeZone:'Asia/Seoul',weekday:'short',hour:'2-digit',minute:'2-digit'});return {label:'Monitoring',detail:this.config.closedMarketReviews==='pre-open'?`Markets closed. Next review ${at} KST, before the ${hours.next.market==='KR'?'Korean':'U.S.'} open.`:`Markets closed. Reviews resume at the ${hours.next.market==='KR'?'Korean':'U.S.'} open, ${at} KST.`,closed:true};}
@@ -275,9 +277,14 @@ class Automation {
   // proposes or submits orders, changes conditional orders, watches, triggers, notes, the watchlist, the review interval
   // or the schedule, nor feeds the journal, lessons, learning or the routing evaluation. AI cost is accounted as usual.
   // Building the inputs still refreshes market data and reconciles open orders with KIS, as every review does.
-  async dryRun(mode='inputs'){
+  // options.model: {openaiModel, reasoningEffort} to run one dry-run review on another model while the saved settings
+  // stay as they are (Anthropic A5: one read-only review on Claude Opus 5.5). Validated by settings(); it needs that
+  // vendor's key and the one data-sharing switch, which covers whichever provider receives the account (decision D4).
+  async dryRun(mode='inputs',options={}){
     if(!['inputs','review'].includes(mode))throw new Error('INVALID_REQUEST');if(this.busy)throw new Error('REVIEW_BUSY');
-    if(this.config.scope==='paper')throw new Error('DRY_RUN_NEEDS_KIS');if(mode==='review'&&(this.config.provider!=='openai'||!this.providerStatus.aiConnected))throw new Error('AI_NOT_CONNECTED');
+    let override=null;if(options?.model!=null){if(mode!=='review'||typeof options.model!=='object')throw new Error('INVALID_REQUEST');override={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};try{require('./ai-models.cjs').settings(override);}catch{throw new Error('INVALID_MODEL_SETTINGS');}}
+    if(this.config.scope==='paper')throw new Error('DRY_RUN_NEEDS_KIS');if(mode==='review'&&(this.config.provider!=='openai'||this.missingKey((override??this.config).openaiModel)))throw new Error('AI_NOT_CONNECTED');
+    if(mode==='review'&&override&&!this.config.shareKisWithAI)throw new Error('DATA_SHARING_NOT_ENABLED');
     this.busy=true;const id=randomUUID();const watchScope=this.watchScope();
     try{
       const {context}=await this.assembleReviewContext({watchScope,trigger:'Dry run'});const summary=dryRunSummary(context,{assembledAt:Date.now(),account:this.accountTag(),scope:this.config.scope});
@@ -299,7 +306,7 @@ class Automation {
         const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
         // Every desk tool is a no-op except compute, which only reads prices.
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
-        const model={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');let calls=0;const callIds=[];
+        const model=override??{openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');let calls=0;const callIds=[];
         const request=async options=>{options={...options,...model,validation:dryValidation};
           requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options)});
           const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
@@ -508,7 +515,7 @@ class Automation {
       let result,routing=null,assessed=null,anchor=null,shadowRun=null;
       if(externalDecision){const {validateDecision}=require('./ai-client.cjs');result={decision:validateDecision(externalDecision,context.universe.map(row=>row.symbol)),provider:'external'};}
       else if(this.config.provider==='openai') {
-        if(!this.providerStatus.aiConnected)throw new Error('AI_NOT_CONNECTED');
+        if(this.missingKey(this.config.openaiModel))throw new Error('AI_NOT_CONNECTED');
         stage='AI research and decision';
         const today=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0};
         assessed=this.config.modelRouting==='complexity'||this.config.shadowEvaluation?this.routingInputs(context,trigger):null;const inputs=this.config.modelRouting==='complexity'?assessed:null;
@@ -586,7 +593,7 @@ class Automation {
       {const PG=require('./plan-gap.cjs');const missing=PG.missingVerdicts(context,result.decision);const issues=PG.verdictIssues(context,result.decision);if(missing.length||issues.length)this.log(id,'System','Plan verdicts incomplete',[missing.length?`No verdict on ${missing.join(', ')}.`:'',...issues].filter(Boolean).join(' '));}
       if(result.decision.scoutBrief){const {scoutBrief,...decision}=result.decision;result={...result,decision};if(context.scoutBrief){const value=this.briefScout(watchScope,scoutBrief,id);this.log(id,'Tool','Scout brief',JSON.stringify({brief:scoutBrief,result:value}));}}
       const contextEvidence={guidelines:this.config.guidelines,environment:context.environment,marketSession:context.marketSession??null,quote:context.quotes.find(q=>q.symbol===result.decision.symbol)??null,position:context.positions?.[result.decision.symbol]??null,emergency:context.emergency.active,reviewedLessons:context.reviewedLessons,lessonIds};
-      const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,...(result.provider==='openai'?{instructions:require('./ai-client.cjs').instructions()}:{}),...(context.reviewScope?{reviewScope:context.reviewScope.kind}:{}),alerts:this.alertTag(),...reviewSymbols(context,result.decision),decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null};
+      const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,...(result.provider==='openai'?(v=>v?{vendor:v}:{})(['openai','anthropic'].includes(result.vendor)?result.vendor:(()=>{try{return require('./ai-models.cjs').vendorOf(result.model);}catch{return null;}})()):{}),...(result.provider==='openai'?{instructions:require('./ai-client.cjs').instructions()}:{}),...(context.reviewScope?{reviewScope:context.reviewScope.kind}:{}),alerts:this.alertTag(),...reviewSymbols(context,result.decision),decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null};
       this.db.prepare('INSERT INTO reviews VALUES(?,?)').run(id,JSON.stringify(recorded));
       // A completed review answers the watchlist alert trial's open alerts on the symbols it assessed.
       if(this.trialRunning())try{this.alertTrial.answered({reviewId:id,assessed:recorded.assessed??[]});}catch{}
@@ -657,7 +664,7 @@ class Automation {
         if(context.environment!=='local-paper'&&this.config.autoSubmit&&execution.autoEnabled===false){executionNote=(execution.market==='US'?'U.S.':'Korea')+' automatic execution is off. Proposal awaits manual approval.';this.log(id,'System','Approval required',executionNote);}}
 
       }
-      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,routing};
+      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,routing};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
       // Shadow evaluation: the cheaper model decides the same frozen inputs in the background; it changes nothing.
       if(shadowRun)this.shadowTask=shadowRun.then(shadow=>this.recordShadow(review,assessed,shadow,anchor)).catch(()=>null);
@@ -696,6 +703,10 @@ class Automation {
     let keys=[];try{const a=JSON.parse(costRevision??'null')??{},b=JSON.parse(now??'null')??{};keys=[...new Set([...Object.keys(a),...Object.keys(b)])].filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k])).sort();}catch{}
     return 'cost settings'+(keys.length?': '+keys.slice(0,8).map(k=>String(k).replace(/[^A-Za-z0-9_.-]/g,'').slice(0,40)).join(', '):'');
   }
+  // The vendor name whose key a model needs, when that key is not connected; null when it is (Anthropic A5). A status
+  // without per-vendor flags (before the provider file is read, or a test double) counts aiConnected as OpenAI.
+  missingKey(model){let vendor;try{vendor=require('./ai-models.cjs').vendorOf(model);}catch{return 'AI';}const s=this.providerStatus??{};
+    const ok=vendor==='anthropic'?s.anthropicConnected===true:s.openaiConnected===true||Boolean(s.aiConnected)&&s.anthropicConnected!==true;return ok?null:vendor==='anthropic'?'Anthropic':'OpenAI';}
   async decisionWithRetry(context,options,pauseMs=3000){
     try{return await this.provider.request('decision',{context,options});}
     catch(error){if(!['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'].includes(error?.message)||this.disposed)throw error;await new Promise(r=>setTimeout(r,pauseMs));return this.provider.request('decision',{context,options});}
@@ -1087,7 +1098,7 @@ class Automation {
     const R=require('./replay.cjs');const instructions=typeof options.instructions==='string'?options.instructions.trim().slice(0,R.LIMITS.instructions):'';
     const models=require('./ai-models.cjs');const modelConfig={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};
     // A model change: the variant runs on another model and effort, the baseline on the configured one.
-    let model=null;if(options.model&&typeof options.model==='object'){const m={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};try{models.settings(m);}catch{throw new Error('INVALID_MODEL_SETTINGS');}if(m.openaiModel!==modelConfig.openaiModel||m.reasoningEffort!==modelConfig.reasoningEffort)model=m;}
+    let model=null;if(options.model&&typeof options.model==='object'){const m={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};try{models.settings(m);if(models.vendorOf(m.openaiModel)!=='openai')throw 0;}catch{throw new Error('INVALID_MODEL_SETTINGS');}if(m.openaiModel!==modelConfig.openaiModel||m.reasoningEffort!==modelConfig.reasoningEffort)model=m;}
     const variant={instructions,withoutNarrative:options.withoutNarrative===true,withoutEpisodes:options.withoutEpisodes===true,withoutRegime:options.withoutRegime===true,...(model?{model}:{})};
     if(!variant.instructions&&!variant.withoutNarrative&&!variant.withoutEpisodes&&!variant.withoutRegime&&!variant.model)throw new Error('REPLAY_NO_CHANGE');
     const limit=Math.max(1,Math.min(R.LIMITS.reviews,Number(options.limit)||6));const day=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v:null;

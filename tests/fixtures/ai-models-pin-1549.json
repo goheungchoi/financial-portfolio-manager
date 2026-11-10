@@ -1,0 +1,137 @@
+{
+ "research": {
+  "sha256": "7097dc5eed3cae0cd84768719dc292f35839211149e17ea3fc316fcaf11efec1",
+  "length": 55065
+ },
+ "final": {
+  "sha256": "f672784768cfa614f9a237da0a6bf0cd841f33e1069476fc959ac2a342aedc47",
+  "length": 55065
+ },
+ "plain": {
+  "sha256": "5a76e20e6527ff8fa1b0b3db30cca3feb73f80c1627bb489a03ed817d1799550",
+  "length": 38454
+ },
+ "cost gpt-6-luna": {
+  "micro": 1875,
+  "ordinaryInputMicro": 100,
+  "cachedInputMicro": 200,
+  "cacheWriteMicro": 1125,
+  "outputMicro": 450,
+  "rates": {
+   "input": 0.1,
+   "cached": 0.010000000000000002,
+   "write": 0.125,
+   "output": 0.5
+  },
+  "pricingDate": "2026-10-16",
+  "tier": "default",
+  "cacheDetailsKnown": true,
+  "basis": "Reported token usage × published USD rates; not an invoice"
+ },
+ "cost gpt-6-sol": {
+  "micro": 37500,
+  "ordinaryInputMicro": 2000,
+  "cachedInputMicro": 4000,
+  "cacheWriteMicro": 22500,
+  "outputMicro": 9000,
+  "rates": {
+   "input": 2,
+   "cached": 0.2,
+   "write": 2.5,
+   "output": 10
+  },
+  "pricingDate": "2026-10-16",
+  "tier": "default",
+  "cacheDetailsKnown": true,
+  "basis": "Reported token usage × published USD rates; not an invoice"
+ },
+ "cost gpt-6-astra": {
+  "micro": 187500,
+  "ordinaryInputMicro": 10000,
+  "cachedInputMicro": 20000,
+  "cacheWriteMicro": 112500,
+  "outputMicro": 45000,
+  "rates": {
+   "input": 10,
+   "cached": 1,
+   "write": 12.5,
+   "output": 50
+  },
+  "pricingDate": "2026-10-16",
+  "tier": "default",
+  "cacheDetailsKnown": true,
+  "basis": "Reported token usage × published USD rates; not an invoice"
+ },
+ "cost gpt-6-sol-2026-10-01": {
+  "micro": 37500,
+  "ordinaryInputMicro": 2000,
+  "cachedInputMicro": 4000,
+  "cacheWriteMicro": 22500,
+  "outputMicro": 9000,
+  "rates": {
+   "input": 2,
+   "cached": 0.2,
+   "write": 2.5,
+   "output": 10
+  },
+  "pricingDate": "2026-10-16",
+  "tier": "default",
+  "cacheDetailsKnown": true,
+  "basis": "Reported token usage × published USD rates; not an invoice"
+ },
+ "cost sol long": {
+  "micro": 583500,
+  "ordinaryInputMicro": 40000,
+  "cachedInputMicro": 80000,
+  "cacheWriteMicro": 450000,
+  "outputMicro": 13500,
+  "rates": {
+   "input": 4,
+   "cached": 0.4,
+   "write": 5,
+   "output": 15
+  },
+  "pricingDate": "2026-10-16",
+  "tier": "default",
+  "cacheDetailsKnown": true,
+  "basis": "Reported token usage × published USD rates; not an invoice"
+ },
+ "cost sol flex": {
+  "micro": 18750,
+  "ordinaryInputMicro": 1000,
+  "cachedInputMicro": 2000,
+  "cacheWriteMicro": 11250,
+  "outputMicro": 4500,
+  "rates": {
+   "input": 1,
+   "cached": 0.1,
+   "write": 1.25,
+   "output": 5
+  },
+  "pricingDate": "2026-10-16",
+  "tier": "flex",
+  "cacheDetailsKnown": true,
+  "basis": "Reported token usage × published USD rates; not an invoice"
+ },
+ "reservation sol": 148805,
+ "settings": [
+  {
+   "model": "gpt-6-sol",
+   "effort": "medium",
+   "maxOutput": 8192
+  },
+  {
+   "model": "gpt-6-luna",
+   "effort": "none",
+   "maxOutput": 4096
+  }
+ ],
+ "usage": {
+  "inputTokens": 100,
+  "outputTokens": 10,
+  "cachedTokens": 50,
+  "cacheWriteTokens": 20,
+  "reasoningTokens": 5,
+  "serviceTier": "flex"
+ }
+}

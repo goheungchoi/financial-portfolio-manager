@@ -30,7 +30,7 @@ class KisService {
     this.ensureWorker();
     return new Promise((resolve,reject)=>{
       const id=++this.counter;
-      const timer=setTimeout(()=>{this.disconnect();reject(new Error('REQUEST_FAILED'));},90000);
+      const timer=setTimeout(()=>{this.disconnect();reject(new Error('REQUEST_FAILED'));},this.workerScript==='provider-worker.cjs'?require('./ai-router.cjs').workerCapMs(operation,payload):90000);
       this.pending.set(id,{resolve,reject,timer});
       this.worker.postMessage({id,operation,...(typeof payload==='string'?{path:payload}:payload??{})});
     });

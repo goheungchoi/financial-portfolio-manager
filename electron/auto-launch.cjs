@@ -11,10 +11,10 @@ async function start(a,token){
   if(a.launching||a.busy)throw new Error('A review is already running. Wait for it to finish.');
   if(token!==launchState(a).token)throw new Error('Settings or account changed. Check the updated account label and try again.');
   if(a.config.lossAction==='stop'&&a.emergencyState().active)throw new Error('The daily loss limit is reached and the guardrail keeps auto trading stopped today. Change Loss-limit response in Engine settings to restart.');
-  if(a.config.provider==='external')throw new Error('Choose OpenAI in Engine settings to start automatic reviews.');
-  if(a.config.provider==='openai'&&!a.providerStatus.aiConnected)throw new Error('Import your OpenAI key in Connections first.');
-  if(a.config.scope!=='paper'&&a.config.provider!=='openai')throw new Error('Select OpenAI for broker auto trading. Local rules are for paper practice.');
-  if(a.config.scope!=='paper'&&!a.config.shareKisWithAI)throw new Error('Allow portfolio sharing with OpenAI in Engine settings first.');
+  if(a.config.provider==='external')throw new Error('Choose an AI model in Engine settings to start automatic reviews.');
+  if(a.config.provider==='openai'){const missing=a.missingKey?a.missingKey(a.config.openaiModel):(a.providerStatus.aiConnected?null:'OpenAI');if(missing)throw new Error(`Import your ${missing} key in Connections first.`);}
+  if(a.config.scope!=='paper'&&a.config.provider!=='openai')throw new Error('Select an AI model for broker auto trading. Local rules are for paper practice.');
+  if(a.config.scope!=='paper'&&!a.config.shareKisWithAI)throw new Error('Allow portfolio sharing with the AI provider in Engine settings first.');
   const usage=a.getState().usage;
   if(a.config.provider==='openai'&&require('./ai-models.cjs').budgetExceeded(a.config,usage,require('./ai-models.cjs').reservation(a.config)))throw new Error('Daily API budget reached. Update your budget or wait for the next day.');
   a.launching=true;const generation=a.launchGeneration??0;const selected=engines(a);const prior=selected.map(e=>({e,enabled:e.enabled,autoEnabled:e.autoEnabled}));
