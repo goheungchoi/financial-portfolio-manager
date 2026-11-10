@@ -120,13 +120,29 @@ function validateDecision(value,symbols,{requirePlan=false,memory=null,quotes=[]
   if(denied)decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a ${decision.action==='Sell'?'short sale':'Buy'} of ${decision.quantity} ${decision.symbol}: ${denied}.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:denied,kind:'permission'}};
   return {...decision,...(execution&&(decision.action==='Buy'||decision.action==='Sell')?{execution}:{}),...(plan?{plan}:{}),...(complexity?{complexity}:{}),...(strategyCheck?.length?{strategyCheck}:{}),...(reversal&&decision.action!=='Hold'?{reversal}:{}),...(reversalFlag?{reversalFlag}:{}),...(verdicts?{planVerdicts:verdicts}:{}),...(brief?{scoutBrief:brief}:{})};
 }
+// The refused decision's trade fields for its error detail: no explanation, plan or other text.
+function decisionSummary(v){if(!v||typeof v!=='object')return null;const s=x=>typeof x==='string'?x.replace(/[^A-Za-z0-9:._-]/g,'').slice(0,24):typeof x;
+  return {action:s(v.action),symbol:s(v.symbol),quantity:Number.isFinite(v.quantity)?v.quantity:typeof v.quantity,credit:s(v.credit)};}
 function checkDecision(value,symbols) {
   if(value&&typeof value.explanation==='string')value={...value,explanation:trimExplanation(value.explanation)};
   // Decisions without credit fields (external agents, local rules) are cash orders.
   if(value&&Object.keys(value).sort().join(',')==='action,explanation,quantity,symbol')value={...value,credit:'none',loanDate:''};
-  if(!value || Object.keys(value).sort().join(',')!=='action,credit,explanation,loanDate,quantity,symbol' || !['Hold','Buy','Sell'].includes(value.action) || typeof value.explanation!=='string'||value.explanation.length>1500 || typeof value.symbol!=='string' || !Number.isSafeInteger(value.quantity))throw new Error('INVALID_AI_RESPONSE');
-  if(value.action==='Hold' ? value.quantity!==0 : !symbols.includes(value.symbol)||value.quantity<1||value.quantity>1000)throw new Error('INVALID_AI_RESPONSE');
-  if(value.credit!=='none'&&(CREDIT_SIDE[value.credit]!==value.action||['margin-sell','cover'].includes(value.credit)&&!/^\d{4}-\d{2}-\d{2}$/.test(value.loanDate))||typeof value.loanDate!=='string'||value.loanDate.length>10)throw new Error('INVALID_AI_RESPONSE');
+  // Each refusal names the rule it broke (2026-11-10 incident: two decisions refused with no reason). The detail carries
+  // field names and the decision's action, symbol, quantity and credit only, never the explanation text (ai-errors.ruleDetail).
+  const bad=rule=>{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule,decision:decisionSummary(value)}});};
+  if(!value||typeof value!=='object'||Array.isArray(value))bad('a decision that is not an object');
+  const keys=Object.keys(value).sort();if(keys.join(',')!=='action,credit,explanation,loanDate,quantity,symbol'){const want=['action','credit','explanation','loanDate','quantity','symbol'],missing=want.filter(k=>!keys.includes(k)),extra=keys.filter(k=>!want.includes(k));
+    bad(`decision fields${missing.length?` missing ${missing.join(', ')}`:''}${extra.length?` unexpected ${extra.slice(0,6).map(k=>String(k).slice(0,30)).join(', ')}`:''}`);}
+  if(!['Hold','Buy','Sell'].includes(value.action))bad('an action other than Hold, Buy or Sell');
+  if(typeof value.explanation!=='string'||value.explanation.length>1500)bad('an explanation that is not text of at most 1,500 characters');
+  if(typeof value.symbol!=='string')bad('a symbol that is not text');
+  if(!Number.isSafeInteger(value.quantity))bad('a quantity that is not a whole number');
+  if(value.action==='Hold'&&value.quantity!==0)bad('a Hold with a quantity other than 0');
+  if(value.action!=='Hold'&&!symbols.includes(value.symbol))bad(`a ${value.action} of a symbol outside this review's tradable list (${symbols.length} symbols)`);
+  if(value.action!=='Hold'&&(value.quantity<1||value.quantity>1000))bad(`a ${value.action} quantity outside 1 to 1,000`);
+  if(typeof value.loanDate!=='string'||value.loanDate.length>10)bad('a loanDate that is not text of at most 10 characters');
+  if(value.credit!=='none'&&CREDIT_SIDE[value.credit]!==value.action)bad(CREDIT_SIDE[value.credit]?`credit ${value.credit} with the action ${value.action} (it needs ${CREDIT_SIDE[value.credit]})`:'a credit value other than none, margin-buy, margin-sell, short or cover');
+  if(['margin-sell','cover'].includes(value.credit)&&!/^\d{4}-\d{2}-\d{2}$/.test(value.loanDate))bad(`credit ${value.credit} without a loanDate in YYYY-MM-DD form`);
   return value;
 }
 // The trading review's instructions. Any change to them, to the decision schema or to the review tools needs a new
@@ -221,7 +237,7 @@ class AiClient {
     try {
       const response=await this.measured('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(75000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'portfolio-review-v1',max_output_tokens:selected.maxOutput,...(options.research?{tools:reviewTools(context),parallel_tool_calls:true,tool_choice:options.final?'none':'auto'}:{}),reasoning:{effort:selected.effort},instructions:REVIEW_INSTRUCTIONS,input,text:{format:{type:'json_schema',name:'portfolio_decision',strict:true,schema:decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length))}}})});
       if(!response.ok){const e=await require('./ai-errors.cjs').responseError(response);if(e.message==='AI_CONTEXT_LIMIT'){const z=this.lastRequestSizes??{};e.detail={limit:'model context window',wireBytes:z.totalBytes,limitBytes:'model',largest:[`input:${z.inputBytes}`,`instructions:${z.instructionsBytes}`,`tools:${z.toolsBytes}`]};}throw e;}
-      const text=await response.text();if(text.length>100000)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
+      const text=await response.text();if(text.length>100000)throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:`a response of ${Math.round(text.length/1000)} KB, above the 100 KB limit`}});const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(body.status!=='completed')throw body.incomplete_details?.reason==='max_output_tokens'?new Error('AI_OUTPUT_LIMIT'):Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'an incomplete response',status:String(body.status??'missing').slice(0,30),reason:String(body.incomplete_details?.reason??'').slice(0,40)}});
       if((body.output??[]).some(i=>(i.content??[]).some(c=>c.type==='refusal')))throw new Error('AI_REFUSED');
       const calls=(body.output??[]).filter(item=>item.type==='function_call');
