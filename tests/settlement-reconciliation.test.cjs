@@ -10,12 +10,12 @@ const k=(ticker='TEST',extra={})=>({tradeDate:D,settlementDate:'2026-11-06',tick
 const order=(id,extra={})=>({id,symbol:'NASD:'+(extra.ticker??'TEST'),side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'live',accountKey:'a:US',market:'US',day:D,createdAt:Date.parse(D+'T15:00:00Z'),...extra});
 const INPUTS={kCash:1000000,uCash:500,reportedKRW:0,rate:1300};
 function world({regime=null,u6=false,db=new DatabaseSync(':memory:')}={}){let t=Date.parse(D+'T20:00:00Z');const clock=()=>t;
-  let f=new InFlight(db,clock),funding=new FundingLedger(db,{clock,regime}),perf=new PerformanceHistory(db,clock);
+  let f=new InFlight(db,clock,{feeBound:false}/* fee bound off: these tests need the sub-$1 remainder (reconciliation code S3/S4 removes) */),funding=new FundingLedger(db,{clock,regime}),perf=new PerformanceHistory(db,clock);
   const make=()=>new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'tester',session:'s1'},u6Verified:u6});let rec=make();
   const w={db,clock,get rec(){return rec;},get f(){return f;},get funding(){return funding;},get perf(){return perf;},get ledger(){return f.evidence;},
     see:(us,orders=[])=>{const r=f.observe('a',{us:{timestamp:new Date(t).toISOString(),environment:'live',...us},orders,fx:1300});t+=MIN;return r;},
     current:()=>f.current('a'),pid:(id='A')=>f.current('a').open.find(p=>p.id===id)?.pid,later:ms=>{t+=ms;},
-    restart:()=>{f=new InFlight(db,clock);funding=new FundingLedger(db,{clock,regime});perf=new PerformanceHistory(db,clock);rec=make();},
+    restart:()=>{f=new InFlight(db,clock,{feeBound:false});funding=new FundingLedger(db,{clock,regime});perf=new PerformanceHistory(db,clock);rec=make();},
     // An open $100 buy piece for each order: tracking starts, then the fills appear with cash unchanged.
     open:(...orders)=>{w.see({cash:500});for(const o of orders)funding.track(o);w.see({cash:500},orders);return orders;},
     req:(extra={})=>({requestId:'r'+Math.random().toString(36).slice(2),account:'a',pieceId:w.pid(),cents:10000,explanation:'settled',route:'USD',kisReference:'KIS 2026-11-06 settlement 0001',note:'checked in the KIS app',...extra}),

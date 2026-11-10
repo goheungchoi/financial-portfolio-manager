@@ -14,7 +14,7 @@ const order=(id,extra={})=>({id,symbol:'NASD:'+(extra.ticker??'TEST'),side:'Buy'
 // The tracker, reconciliation, baseline, a U.S. engine whose loss is measured on the valuation, and the flow detector,
 // on one database and one clock. The engine stamps its baseline with the real time, so the test clock runs around it.
 function world({limit=30}={}){const db=new DatabaseSync(':memory:');let t=Date.now()-6*HOUR;const clock=()=>t;
-  const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock),rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
+  const f=new InFlight(db,clock,{settleDays:null}/* age rule off until S3/S4 removes these tests */),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock),rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
   const sb=new SettlementBaseline(db,{inFlight:f,clock}),fd=new FlowDetector(db,perf,clock);let day=D,us={cash:500,holdings:[]};const flows={confirmed:0,unresolved:0};
   const snap=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:us.holdings,reportedTotal:us.cash,timestamp:new Date(t).toISOString()});
   const e=new LiveEngine(db,{request:async()=>{}},()=>({status:'connected',snapshot:snap()}),{market:'US'});e.day=()=>day;

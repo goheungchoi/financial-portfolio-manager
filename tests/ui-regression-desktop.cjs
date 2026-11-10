@@ -9,7 +9,7 @@ process.env.PORTFOLIO_PERFORMANCE_SEED=JSON.stringify({account:'ui-regression-fi
 const macroSeries=(id,market,source,name,unit,values)=>({id,market,source,name,unit,frequency:'daily',date:seedDay(1),value:values.at(-1),previous:values.at(-2),change:Math.round((values.at(-1)-values.at(-2))*1000)/1000,history:values.map((value,i)=>({date:seedDay(values.length-i),value}))});
 process.env.PORTFOLIO_MACRO_SEED=JSON.stringify({ecosAccess:'sample',calendarAccess:'key',errors:[],calendar:[{date:seedDay(-3),market:'US',event:'U.S. CPI',source:'FRED release calendar'}],series:[macroSeries('KR_BASE_RATE','KR','ECOS','BoK base rate','%',[3,3]),macroSeries('KR_USDKRW','KR','ECOS','USD/KRW','KRW',[1338.6,1345.2,1348.5]),macroSeries('US_10Y','US','FRED','U.S. 10-year Treasury','%',[5.21,5.19])]});
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/ui-regression');fs.mkdirSync(output,{recursive:true});
-const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;let dartFixture=false;
+const report={checks:[],screenshots:[],errors:[]};let win;let failUS=false;let usDelayMs=0;let posts=0;let researchMode=false;let researchRound=0;let decisionFailure=false;let dartFixture=false;
 const domestic={accountKey:'ui-regression-fixture',environment:'mock',source:'kis',cash:10000000,reportedTotal:10000000,holdings:[]};
 const overseas={accountKey:'ui-regression-fixture:US',environment:'mock',source:'kis-us',currency:'USD',cash:0,reportedTotal:0,holdings:[]};
 dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path.join(process.env.PORTFOLIO_SMOKE_DATA,'fake-ui-file-never-read.json')]});
@@ -17,6 +17,7 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
   if(operation==='import')return this.workerScript==='provider-worker.cjs'?{aiConnected:true,dartConnected:dartFixture,pushConnected:false}:{...domestic,timestamp:new Date().toISOString()};
   if(operation==='company-chart')return {status:'available',retrievedAt:Date.now(),metrics:{price:110,dayHigh:115,dayLow:100,PER:12,PBR:2,high52Week:150,low52Week:70,ROE:null},data:{SMA5:105,SMA10:102,SMA20:98,stochastic:{K:60,D:58},asOf:Date.now()-86400000},candles:Array.from({length:30},(_,i)=>({timestamp:Date.now()-(30-i)*86400000,open:90+i,high:94+i,low:88+i,close:92+i,volume:100+i}))};
   if(operation==='refresh')return {...domestic,timestamp:new Date().toISOString()};
+  if(operation==='us-context'&&usDelayMs)await new Promise(resolve=>setTimeout(resolve,usDelayMs));
   if(operation==='us-context'){if(failUS)throw Object.assign(new Error('US_CASH_SERVER_ERROR'),{httpStatus:503,brokerCode:'FIXTURE503'});return {balance:{...overseas,timestamp:new Date().toISOString()},quotes:[],warnings:[],marketSession:{open:true,status:'open'}};}
   if(operation==='live-context')return {balance:{...domestic,timestamp:new Date().toISOString()},quotes:[],marketSession:{open:false,status:'closed'}};
   if(operation==='disclosures')return [{title:'삼성전자 · 주요사항보고서(자기주식취득결정)',symbol:'005930',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261016000001',published:'20261016',source:'DART'},{title:'Unrelated Co · 기타공시',symbol:'000001',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20261016000002',published:'20261016',source:'DART'}];
@@ -57,7 +58,7 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
 };
 const timer=setTimeout(()=>{report.errors.push('UI regression timed out');finish(1);},90000);
 function finish(code){clearTimeout(timer);fs.writeFileSync(path.join(output,'ui-regression.json'),JSON.stringify(report,null,2));app.exit(code);}
-app.once('browser-window-created',(_event,created)=>{win=created;win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{
+app.once('browser-window-created',(_event,created)=>{win=created;win.webContents.on('console-message',(...args)=>{const m=args[0]?.message??args[2];const level=args[0]?.level??args[1];if(level==='error'||level===3||/Error|Uncaught/.test(String(m)))console.log('RENDERER-ERROR '+String(m).slice(0,800));});win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{
   const run=code=>win.webContents.executeJavaScript(code),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const until=async(code,message)=>{for(let i=0;i<60;i++){if(await run(code))return;await wait(50);}throw new Error(message);};
   const click=async text=>{await run(`(()=>{const button=Array.from(document.querySelectorAll('button')).find(item=>item.textContent.trim()===${JSON.stringify(text)});if(!button)throw new Error('Missing UI button');button.click();})()`);await wait(80);};
@@ -141,6 +142,122 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     await check('One-click start activates saved MOCK scope; stop disables new automatic orders',async()=>{
       await run("window.portfolio.configureRuntime({scope:'kis',provider:'openai',shareKisWithAI:true,enabled:false,autoSubmit:false,closedMarketReviews:'keep'})");await navigate('Home');await wait(2200);const before=(await run('window.portfolio.getRuntime()')).reviews[0]?.id??null;await click('Start auto trading');await until('(async()=>{const s=await window.portfolio.getRuntime();return s.launch.running&&!s.busy;})()','Launch failed');const active=await run('window.portfolio.getRuntime()');assert.equal(active.execution.markets[0].automatic,true);const startNote=await run('Array.from(document.querySelectorAll(`p[role=status]`)).map(p=>p.textContent).find(t=>t.startsWith("Auto trading started"))??""');assert.match(startNote,/Next review at \d\d:\d\d KST|review is due|before the next open/,'Start says when the next review runs');if(/Next review at/.test(startNote))assert.equal(active.reviews[0]?.id??null,before,'Start does not run a review');assert.equal(posts,0);await wait(2200);await click('Stop auto trading');await until('(async()=>!(await window.portfolio.getRuntime()).sessionArmed)()','Stop failed');await capture('auto-trading-controls');
     });
+    // Release gate G4 (1.5.50): Start reaches running and says so; how long it takes; what the buttons show meanwhile; a
+    // second click during start; Stop. Then the same with a slow U.S. refresh (the start waits for it with Korea + U.S.).
+    await check('G4: Start auto trading reaches running and says so, with a normal and a slow U.S. refresh; a second click during start; Stop',async()=>{
+      await run("window.portfolio.configureRuntime({scope:'both',provider:'openai',shareKisWithAI:true,enabled:false,autoSubmit:false,closedMarketReviews:'keep'})");await navigate('Home');await wait(2200);
+      const header='Array.from(document.querySelectorAll(`button`)).find(b=>/^(Start auto trading|Cancel start|Starting…|Working…|Stop auto trading)$/.test(b.textContent))';const labels=`(()=>({header:${header}?.textContent??null,headerDisabled:Boolean(${header}?.disabled)}))()`;
+      const timeline=async(ms,until)=>{const t0=Date.now(),seen=[];let last='';while(Date.now()-t0<ms){const l=await run(labels),s=await run('window.portfolio.getRuntime().then(s=>({running:Boolean(s?.launch?.running),starting:Boolean(s?.launch?.starting),busy:Boolean(s?.busy)}))');
+          const key=JSON.stringify({...l,...s});if(key!==last){seen.push({atMs:Date.now()-t0,...l,...s});last=key;}if(until&&until(s))break;await new Promise(r=>setTimeout(r,25));}return seen;};
+      const g4={};
+      for(const [name,delay] of [['normal',0],['slow U.S. refresh (3 s)',3000]]){usDelayMs=delay;await until('(async()=>{const s=await window.portfolio.getRuntime();return Boolean(s?.launch)&&!s.launch.running&&!s.launch.starting&&!s.busy;})()','not idle before Start');
+        const t0=Date.now();await run(`${header}?.click()`);
+        // A second click 300 ms into the start, on the same header button.
+        const early=await timeline(300,s=>!delay&&s.running);const second=delay?await run(`(()=>{const b=${header};if(!b)return null;const before={text:b.textContent,disabled:b.disabled};b.click();return before;})()`):'not attempted: the start had completed before a second click could land';
+        const rest=await timeline(15000,s=>s.running&&!s.busy);const confirmedMs=Date.now()-t0;await wait(400);
+        const note=await run('Array.from(document.querySelectorAll(`p[role=status]`)).map(p=>p.textContent).find(t=>/^Auto trading (started|stopped)|Launch canceled|Could not|already running/.test(t))??null');
+        const state=await run('window.portfolio.getRuntime().then(s=>({running:Boolean(s?.launch?.running),sessionArmed:s?.sessionArmed??null,label:s?.scheduler?.label??null}))');
+        g4[name]={confirmedMs,timeline:[...early,...rest.map(x=>({...x,atMs:x.atMs+300}))],secondClick:second,note,state,headerAfter:await run(labels)};
+        if(state.running){const s0=Date.now();await run(`${header}?.click()`);await until('(async()=>!(await window.portfolio.getRuntime()).sessionArmed)()','Stop failed');g4[name].stopMs=Date.now()-s0;g4[name].stopNote=await run('Array.from(document.querySelectorAll(`p[role=status]`)).map(p=>p.textContent).find(t=>t.startsWith("Auto trading stopped"))??null');g4[name].headerAfterStop=await run(labels);}
+        await capture(delay?'g4-start-slow':'g4-start-normal');}
+      usDelayMs=0;console.log('G4 '+JSON.stringify(g4));report.g4=g4;
+      for(const [name,r] of Object.entries(g4)){assert.ok(r.state.running,`${name}: running: ${JSON.stringify(r)}`);assert.match(r.note??'',/^Auto trading started/,`${name}: the start is said`);assert.match(r.stopNote??'',/^Auto trading stopped/,`${name}: the stop is said`);}
+      // While its own start is pending the clicked button is disabled and says so; it never offers a cancel it cannot do.
+      const pending=g4['slow U.S. refresh (3 s)'].timeline.filter(x=>x.starting);assert.ok(pending.length&&pending.every(x=>x.header==='Starting…'&&x.headerDisabled),'during a slow start the button reads Starting…: '+JSON.stringify(pending));
+    });
+    // Release gate G5 (1.5.50): the screens 1.5.50 changes that no other check captures, and Journal/News history: the
+    // window's light state counts each history list (lag fix L2), and the full lists it loads on demand match those counts.
+    await check('G5: Connections, the consent hint and the status header are captured; history counts match the loaded lists',async()=>{
+      await navigate('Connections');await wait(300);await capture('g5-connections');
+      await run('Array.from(document.querySelectorAll(`main *`)).find(e=>e.children.length===0&&e.textContent.trim()==="Anthropic")?.scrollIntoView({block:"center"})');await wait(250);
+      assert.ok(await run('Array.from(document.querySelectorAll(`main *`)).some(e=>e.children.length===0&&e.textContent.trim()==="Claude dry-run reviews")'),'the Anthropic key row is there');await capture('g5-connections-anthropic');
+      await navigate('Engine settings');await run('Array.from(document.querySelectorAll(`.row, [class*=row]`)).find(r=>r.textContent.includes("Share KIS data with the AI provider"))?.scrollIntoView({block:"center"})');await wait(200);
+      const consent=await run('Array.from(document.querySelectorAll(`*`)).find(e=>e.children.length===0&&/^Holdings and values, sent to /.test(e.textContent))?.textContent??null');assert.match(consent??'',/^Holdings and values, sent to (OpenAI|Anthropic|OpenAI and Anthropic); required for AI reviews of KIS accounts$/);await capture('g5-engine-consent');
+      await navigate('Home');await run('document.querySelector(`button.top-chip[title="AI engine"]`)?.click()');await until('Boolean(document.querySelector(`.chip-panel`))','the status header menu opens');await wait(200);await capture('g5-status-header');
+      assert.ok(await run('/Start auto trading|Stop auto trading|Starting…|Cancel start/.test(document.querySelector(`.chip-panel`).textContent)'),'the menu shows the start control');await run('document.querySelector(`button.top-chip[title="AI engine"]`).click()');
+      // H2/H3: the value tile and the Cash tile follow the range rule (under 0.05% of the value: one figure).
+      const pf=await run('window.portfolio.getPortfolio()'),cv=pf?.valuation?.combined;const spread=cv&&!cv.exact&&cv.high!=null&&cv.low>0?(cv.high-cv.low)/cv.low:null;
+      const tile=await run('({title:document.querySelector(`[aria-label="Combined equity"] small`)?.textContent??null,range:Boolean(document.querySelector(`[aria-label="Value range"]`)),text:document.querySelector(`[aria-label="Combined equity"]`)?.textContent??"",cash:document.querySelector(`[aria-label="Cash"] .metric-foot span`)?.textContent??null})');
+      console.log('G5-HOME '+JSON.stringify({spread,exact:cv?.exact??null,tile}));
+      if(spread!=null&&spread<0.0005){assert.equal(tile.title,'Account value');assert.equal(tile.range,false);assert.ok(!/so the value is (a range|an estimate)\./.test(tile.text.replace(/Details.*$/s,'')),'the sentence is under Details');if(spread===0)assert.ok(!/Range ₩/.test(tile.text)&&!/a range\./.test(tile.text),'no range of zero');
+        if((cv?.reasons??[]).every(r=>/^Korea:/.test(r)))assert.ok(!/U\.S\. trades/.test(tile.text),'a Korean reason is not called a U.S. one');assert.match(tile.cash,/% of account value$/);}
+      else if(spread!=null){assert.equal(tile.title,'Estimated account value');assert.equal(tile.range,true);assert.equal(tile.cash,'Share of account value: not shown while the value is a range');}
+      await capture('g5-home-value');
+      const light=await run('window.portfolio.getRuntime()'),full=await run('window.portfolio.getRuntimeHistory()');const counts=light.historyCounts??{};
+      const mismatched=Object.entries(counts).filter(([k,n])=>(Array.isArray(full?.[k])?full[k].length:0)!==n);console.log('G5-HISTORY '+JSON.stringify({counts,loaded:Object.fromEntries(Object.keys(counts).map(k=>[k,Array.isArray(full?.[k])?full[k].length:null])),version:light.historyVersion}));
+      assert.deepEqual(mismatched,[],'each history list loads with the length the light state counts');assert.ok(Object.keys(counts).length>0,'counts are sent');
+      await navigate('Journal');await wait(300);await capture('g5-journal');await run("Array.from(document.querySelectorAll('.nav')).find(b=>b.dataset.tab==='News')?.click()");await wait(300);await capture('g5-news');
+    });
+    // Release gate G5 / F3 (1.5.50): the deposits and withdrawals table, with a 7-digit KRW deposit, a negative USD
+    // transfer and a long note, in both themes, at the default and the minimum window width; its layout is measured.
+    await check('G5/F3: the deposits and withdrawals table keeps its columns apart, dates on one line, and the button on the form edge',async()=>{
+      const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));const {PerformanceHistory}=require('../electron/performance.cjs');const perf=new PerformanceHistory(db);
+      const acct=(await run('window.portfolio.getPerformance?.()'))?.account??'ui-regression-fixture';const day=new Date(Date.now()-3*86400000).toISOString().slice(0,10);
+      const added=[];for(const f of [{day,market:'KR',amount:1000000,note:'Deposit'},{day,market:'US',amount:-10000,note:'Moved to the Korean account for the KOSPI rebalance, as agreed with the planner on the monthly call',transfer:true},{day,market:'KR',amount:-10000000,note:''}])try{added.push(perf.addFlow(acct,f).id);}catch(e){console.log('F3 fixture: '+e.message);}db.close();
+      const measure=`(()=>{const t=document.querySelector('[aria-label="Recorded flows"]');if(!t)return null;const rows=Array.from(t.tBodies[0].rows);const text=el=>{const r=document.createRange();r.selectNodeContents(el);return Array.from(r.getClientRects());};
+        const lines=el=>{const rs=text(el).filter(r=>r.width>0);return new Set(rs.map(r=>Math.round(r.top))).size;};
+        const out=rows.map(r=>{const [d,a,m,n]=r.cells;const ar=text(a).at(-1),mr=text(m)[0];return {date:d.textContent,dateLines:lines(d),amount:m.textContent,amountLines:lines(m),gap:ar&&mr?Math.round(mr.left-ar.right):null,amountRight:Math.round(m.getBoundingClientRect().right-text(m).at(-1).right)};});
+        const head=Array.from(t.tHead.rows[0].cells).map((h,i)=>Math.round(h.getBoundingClientRect().left-t.tBodies[0].rows[0].cells[i].getBoundingClientRect().left));
+        const form=document.querySelector('.flow-form label'),btn=document.querySelector('.flow-form-actions button');return {rows:out,headOffsets:head,buttonEdge:form&&btn?Math.round(btn.getBoundingClientRect().left-form.getBoundingClientRect().left):null,overflow:document.querySelector('main').scrollWidth-document.querySelector('main').clientWidth};})()`;
+      const shots={};
+      for(const [width,height] of [[1360,880],[760,600]]){win.setSize(width,height);for(const theme of ['dark','light']){
+        if(await run('document.documentElement.dataset.theme')!==theme){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'theme');}
+        await navigate('Performance');await until('Boolean(document.querySelector(`[aria-label="Deposits and withdrawals"]`))','the flows section');await run('(()=>{const d=document.querySelector(`[aria-label="Deposits and withdrawals"]`);d.open=true;d.scrollIntoView({block:"start"});})()');
+        await until('document.querySelectorAll(`[aria-label="Recorded flows"] tbody tr`).length>=3','the fixture flows');await wait(250);const m=await run(measure);shots[`${theme}-${width}`]=m;await capture(`g5-flows-${theme}-${width}`);
+        for(const r of m.rows){assert.equal(r.dateLines,1,`${theme} ${width}: ${r.date} on one line`);assert.equal(r.amountLines,1,`${theme} ${width}: ${r.amount} on one line`);assert.ok(r.gap>=12,`${theme} ${width}: Account and Amount apart (${r.gap}px)`);assert.ok(r.amountRight<=1,`${theme} ${width}: Amount right-aligned`);}
+        assert.ok(m.headOffsets.every(x=>Math.abs(x)<=1),`${theme} ${width}: headers aligned with their columns ${m.headOffsets}`);assert.ok(Math.abs(m.buttonEdge)<=1,`${theme} ${width}: Record on the form's left edge (${m.buttonEdge}px)`);assert.ok(m.overflow<=2,`${theme} ${width}: no horizontal overflow (${m.overflow}px)`);}}
+      win.setSize(1280,900);console.log('G5-FLOWS '+JSON.stringify(shots));
+      // The fixture flows are removed again, so the later flow checks see the table as they left it.
+      {const db2=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));for(const id of added)db2.prepare('DELETE FROM cash_flows WHERE id=?').run(id);db2.close();}
+    });
+    // Journal redesign (1.5.50, J1/J2) and gate check G5: one row of six tabs, Decisions by default, nothing stacked above
+    // the tabs; the decision detail shows a short summary first and everything else under More.
+    // Release gate review Q1 (1.5.50): the material-range branch of Home (H2/H3). A $100 U.S. buy filled moments ago and
+    // listed at the tracker's first reading stays in flight, awaiting verification, so the value is a range of about
+    // ₩130,000 on ₩10M (above 0.05%): the tile shows both ends and the Cash tile says why there is no share.
+    await check('Q1: a material value range shows both ends on Home, the reason, and no Cash share',async()=>{
+      const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));const {InFlight}=require('../electron/valuation.cjs');
+      const acct='ui-regression-fixture';const saved=db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(acct)?.payload??null;db.prepare('DELETE FROM inflight_settlement WHERE account=?').run(acct);
+      const now=Date.now();const f=new InFlight(db,()=>now);const pf0=await run('window.portfolio.getPortfolio()');const usCash=pf0?.cash?.USD??0;
+      const Q={id:'q1-open-buy',symbol:'NASD:TQ',side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'mock',accountKey:acct+':US',market:'US',day:new Date(now).toISOString().slice(0,10),createdAt:now-60000,filledObservedAt:now-60000};
+      f.observe(acct,{us:{accountKey:acct+':US',environment:'mock',cash:usCash,pendingSaleProceeds:0,holdings:[],timestamp:new Date(now).toISOString()},orders:[Q],fx:1300});
+      try{
+        await navigate('Performance');await navigate('Home');await until('document.querySelector(`[aria-label="Combined equity"] small`)?.textContent==="Estimated account value"','the tile shows an estimated value');
+        const pf=await run('window.portfolio.getPortfolio()'),cv=pf.valuation.combined;const spread=(cv.high-cv.low)/cv.low;
+        const tile=await run('({range:document.querySelector(`[aria-label="Value range"]`)?.textContent??null,text:document.querySelector(`[aria-label="Combined equity"]`).textContent,cash:document.querySelector(`[aria-label="Cash"] .metric-foot span`)?.textContent??null})');
+        console.log('Q1-HOME '+JSON.stringify({low:cv.low,high:cv.high,spread,tile}));assert.ok(spread>=0.0005,'a material range: '+spread);
+        const nums=(tile.range??'').match(/₩[\d,]+/g)??[];assert.equal(nums.length,2,'both ends: '+tile.range);assert.ok(Number(nums[1].replace(/[₩,]/g,''))>Number(nums[0].replace(/[₩,]/g,'')),'low then high');
+        assert.match(tile.text.replace(/Details.*$/s,''),/Some U\.S\. trades are still being checked, so the value is a range\./,'the reason on the tile');
+        assert.equal(tile.cash,'Share of account value: not shown while the value is a range');await capture('q1-home-range');
+      }finally{db.prepare('DELETE FROM inflight_settlement WHERE account=?').run(acct);if(saved)db.prepare('INSERT INTO inflight_settlement VALUES(?,?)').run(acct,saved);db.close();}
+      // The day's valuation range changed with no money change awaiting the user: the summary is provisional with range
+      // changes only. Performance renders (it blanked on pv.included.find before), with no "money changes awaiting you" notice.
+      await navigate('Performance');await until('Boolean(document.querySelector(`[aria-label="Period returns"]`))','Performance renders with range changes only');
+      const perf=await run('window.portfolio.getPerformance()');const prov=(perf?.summaries??perf?.summary??perf)?.provisional??null;console.log('Q1-PROVISIONAL '+JSON.stringify({keys:prov?Object.keys(prov):null}));
+      assert.ok(!(await run('document.querySelector(`main`).textContent.includes("Provisional performance")')),'no notice about money changes that do not exist');
+    });
+    await check('J1/J2: six Journal tabs in order, Decisions by default, each captured; the decision detail collapsed and expanded',async()=>{
+      // The tab is session memory (useDraftState): the default and the fallback for an unknown saved tab are unit-tested.
+      await navigate('Journal');await until('Boolean(document.querySelector(`[aria-label="Journal views"]`))','Journal tabs');
+      const tabs=await run('Array.from(document.querySelectorAll(`[aria-label="Journal views"] button`)).map(b=>b.textContent)');assert.deepEqual(tabs,['Decisions','Orders and triggers','Trades','Lessons','Scoreboard','Replay']);
+      assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="Replay"]`)||document.querySelector(`[aria-label="Agent desk"]`))')),'nothing stacked above the tabs');
+      const pressed=await run('document.querySelector(`[aria-label="Journal views"] button[aria-pressed="true"]`)?.textContent');console.log('J-DEFAULT '+pressed);
+      const st=await run('window.portfolio.getRuntime()');const armed=st.desk?.orders?.length??0,pending=(st.lessons??[]).filter(l=>!l.lifecycle||['pending','needs-review'].includes(l.lifecycle.status)).length;
+      const counts=await run('Object.fromEntries(Array.from(document.querySelectorAll(`[aria-label="Journal views"] button`)).map(b=>[b.textContent,b.dataset.count??null]))');
+      assert.equal(counts['Orders and triggers'],armed?String(armed):null);assert.equal(counts.Lessons,pending?String(pending):null);for(const t of ['Decisions','Trades','Scoreboard','Replay'])assert.equal(counts[t],null,t+': no badge');
+      console.log('J-BADGES '+JSON.stringify({counts,armed,pending,navBadge:await run('document.querySelector(`.nav[data-tab="Journal"]`)?.textContent??null')}));
+      for(const theme of ['dark','light']){if(await run('document.documentElement.dataset.theme')!==theme){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'theme');}
+        for(const tab of tabs){await click(tab);await wait(350);await capture(`g5-journal-${tab.toLowerCase().replace(/ /g,'-')}-${theme}`);}
+        await click('Decisions');await until('Boolean(document.querySelector(`[aria-label="Decision detail"]`))','detail');
+        await run('(()=>{const d=document.querySelector(`[aria-label="More about this decision"]`);if(d)d.open=false;})()');await wait(150);
+        const collapsed=await run('({facts:Array.from(document.querySelectorAll(`[aria-label="Decision facts"] .decision-fact`)).map(f=>f.textContent),more:document.querySelector(`[aria-label="More about this decision"]`)?.open??null,id:document.querySelector(`[aria-label="Decision detail"]`).dataset.id})');
+        assert.equal(collapsed.more,false);assert.ok(collapsed.facts.length>=1&&collapsed.facts.length<=3&&/^Order/.test(collapsed.facts[0]),'facts row: '+JSON.stringify(collapsed.facts));await capture(`g5-journal-detail-collapsed-${theme}`);
+        await run('document.querySelector(`[aria-label="More about this decision"]`).open=true');await wait(150);
+        assert.ok(await run('Array.from(document.querySelectorAll(`[aria-label="More about this decision"] button`)).some(b=>b.textContent==="Open conversation")'),'everything else is under More');
+        assert.ok((await run('document.querySelector(`[aria-label="More about this decision"]`).textContent')).includes(collapsed.id.slice(0,8)),'the review id is under More');await capture(`g5-journal-detail-expanded-${theme}`);
+        console.log('J-DETAIL '+JSON.stringify({theme,facts:collapsed.facts}));}
+      await click('Decisions');
+    });
     await check('Journal lists decisions beside a detail view that opens the matching AI conversation',async()=>{
       await navigate('Journal');await click('Decisions');await until('Boolean(document.querySelector(`[aria-label="Decision detail"]`))','Decision detail missing');
       const items=await run('document.querySelectorAll(`[aria-label="Decision list"] .run-item`).length');assert.ok(items>=2,'several decisions listed');
@@ -149,24 +266,24 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const pair=await run('[document.querySelectorAll(`[aria-label="Decision list"] .run-item[aria-current="true"]`).length,document.querySelector(`[aria-label="Decision list"] .run-item[aria-current="true"]`)?.dataset.id,document.querySelector(`[aria-label="Decision detail"]`).dataset.id,Array.from(document.querySelectorAll(`[aria-label="Decision list"] .run-item`)).map(b=>b.dataset.id.slice(0,6)).join(",")]');console.log('JOURNAL-SELECTION',JSON.stringify(pair));assert.equal(pair[0],1,'one decision highlighted');assert.equal(pair[1],pair[2],'highlight matches the detail');await wait(400);await capture('journal-decisions');const after=await run('[document.querySelector(`[aria-label="Decision list"] .run-item[aria-current="true"]`)?.dataset.id,document.querySelector(`[aria-label="Decision detail"]`).dataset.id,document.querySelector(`[aria-label="Decision list"] .run-item`).dataset.id]');console.log('JOURNAL-AFTER',JSON.stringify(after));assert.equal(after[0],after[1],'highlight still matches after capture');
       // The newest decision is a real review with a conversation (the seeded ones have none): it opens in the console.
       await run('document.querySelectorAll(`[aria-label="Decision list"] .run-item`)[0].click()');await until('document.querySelectorAll(`[aria-label="Decision list"] .run-item`)[0].getAttribute("aria-current")==="true"','Selection did not move back');const newest=await run('window.portfolio.getRuntime().then(s=>s.reviews[0].id)');
-      await click('Open conversation');await until('document.querySelector("h1").textContent==="AI console"','Console did not open');await until(`document.querySelector('.thread-head')?.textContent.includes(${JSON.stringify(newest.slice(0,8))})`,'The matching conversation is not open');
+      await run('document.querySelector(`[aria-label="More about this decision"]`).open=true');await wait(120);await click('Open conversation');await until('document.querySelector("h1").textContent==="AI console"','Console did not open');await until(`document.querySelector('.thread-head')?.textContent.includes(${JSON.stringify(newest.slice(0,8))})`,'The matching conversation is not open');
     });
     await check('Journal and console content are separate; News exposes source coverage',async()=>{
-      await navigate('Journal');assert.equal(await run('document.querySelectorAll(".timeline").length'),0);await click('Decisions');assert.ok(await run('document.querySelector(".journal-entry")!==null'));await capture('organized-decisions');await click('Reviewed lessons');assert.equal(await run('document.querySelectorAll(".journal-entry time").length'),0);
+      await navigate('Journal');assert.equal(await run('document.querySelectorAll(".timeline").length'),0);await click('Decisions');assert.ok(await run('document.querySelector(".journal-entry")!==null'));await capture('organized-decisions');await click('Lessons');assert.equal(await run('document.querySelectorAll(".journal-entry time").length'),0);
       await navigate('AI console');assert.equal(await run('document.querySelectorAll(`[aria-label="Portfolio journal"]`).length'),0);assert.equal(await run('Array.from(document.querySelectorAll("button")).some(b=>b.textContent==="Run demo")'),false);
       await navigate('News');assert.ok(await run('document.querySelector("main").textContent.includes("Not connected")'));await capture('news-sources');
     });
     await check('Post-trade reflection is visible and suggestion needs explicit approval',async()=>{
       await run("window.portfolio.configureRuntime({reflectionEnabled:true,reflectionUSDPerDay:1,reflectionCallsPerDay:5,shareKisWithAI:true})");
       await until('(async()=> (await window.portfolio.getRuntime()).reflections.jobs.some(j=>j.status==="completed"))()','Reflection did not complete');
-      await navigate('Journal');await click('Reviewed lessons');await until('document.querySelector("main").textContent.includes("AI reflection · unvalidated")','Reflection missing');
+      await navigate('Journal');await click('Lessons');await until('document.querySelector("main").textContent.includes("AI reflection · unvalidated")','Reflection missing');
       await click('Use suggestion in draft');assert.equal(await run('document.querySelector(`[aria-label="Reviewed lesson"]`).value'),'Check full costs before similar exits.');
       assert.equal((await run('window.portfolio.getRuntime()')).lessons.find(l=>l.id==='outcome:broker:outcome-ui').approved,0);
       await run('document.querySelector(`[aria-label="Learning candidate"]`).scrollIntoView({block:"start"})');await capture('post-trade-reflection');
       await run("window.portfolio.configureRuntime({reflectionEnabled:false})");
     });
     await check('Learning queue approval, retirement and economic-evidence invalidation',async()=>{
-      await navigate('Journal');await click('Reviewed lessons');await until('document.querySelector(`[aria-label="Learning candidate"]`)?.textContent.includes("NASD:TEST")','Learning candidate missing');await capture('learning-queue');await click('Approve for future reviews');await until('(async()=> (await window.portfolio.getRuntime()).lessons.some(l=>l.id==="outcome:broker:outcome-ui"&&l.approved===1))()','Lesson not approved');
+      await navigate('Journal');await click('Lessons');await until('document.querySelector(`[aria-label="Learning candidate"]`)?.textContent.includes("NASD:TEST")','Learning candidate missing');await capture('learning-queue');await click('Approve for future reviews');await until('(async()=> (await window.portfolio.getRuntime()).lessons.some(l=>l.id==="outcome:broker:outcome-ui"&&l.approved===1))()','Lesson not approved');
       const approved=(await run('window.portfolio.getRuntime()')).lessons.find(l=>l.id==='outcome:broker:outcome-ui');assert.equal(approved.lifecycle.status,'approved');assert.ok(approved.lifecycle.expiresAt>Date.now());
       const {DatabaseSync}=require('node:sqlite');const fixtureDb=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));const order=JSON.parse(fixtureDb.prepare('SELECT payload FROM live_intents WHERE id=?').get('outcome-ui').payload);order.resultCosts.gainAfterFees=-2;fixtureDb.prepare('UPDATE live_intents SET payload=? WHERE id=?').run(JSON.stringify(order),'outcome-ui');fixtureDb.close();
       await until('(async()=> (await window.portfolio.getRuntime()).lessons.find(l=>l.id==="outcome:broker:outcome-ui").lifecycle.status==="needs-review")()','Changed evidence retained approval');const stale=await run(`window.portfolio.reviewLesson('outcome:broker:outcome-ui',{action:'approve',expectedSignature:${JSON.stringify(approved.lifecycle.signature)}})`);assert.equal(stale.error,'LESSON_CHANGED');await wait(2200);await click('Retire lesson');await until('(async()=> (await window.portfolio.getRuntime()).lessons.find(l=>l.id==="outcome:broker:outcome-ui").lifecycle.status==="retired")()','Retirement failed');const versions=await run("window.portfolio.getOutcomeHistory('broker:outcome-ui')");assert.ok(versions.length>=2);assert.equal(versions[0].accountKey,undefined);
@@ -263,8 +380,8 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       assert.equal(await run('document.querySelector(`[aria-label="Risk per trade"]`).value'),'1');assert.equal(await run('document.querySelector(`[aria-label="Stop distance in ATR"]`).value'),'2');
       await run('document.querySelector(`[aria-label="Let the AI set conditional orders"]`).click()');await until('Boolean(document.querySelector(`[aria-label="Largest conditional order"]`))','Conditional order guardrails missing');
       await click('Save changes');await until('(async()=>(await window.portfolio.getRuntime()).config.conditionalOrders===true)()','Conditional orders not saved');await run('document.querySelector(`[aria-label="Conditional order settings"]`).scrollIntoView({block:"start"})');await wait(150);await capture('conditional-order-settings');
-      await navigate('Journal');await until('document.querySelector(`[aria-label="Agent desk"]`)?.textContent.includes("conditional orders")','Agent desk missing');
-      await until('Boolean(document.querySelector(`[aria-label="Replay"]`))','Replay card missing');await run('Array.from(document.querySelectorAll(`[aria-label="Replay"] button`)).find(b=>b.textContent==="Run replay").click()');await until('document.querySelector(`[aria-label="Replay"]`).textContent.includes("Add instructions, remove a section or pick another model")','Replay without a change should explain itself');
+      await navigate('Journal');await click('Orders and triggers');await until('document.querySelector(`[aria-label="Agent desk"]`)?.textContent.includes("conditional orders")','Agent desk missing');
+      await click('Replay');await until('Boolean(document.querySelector(`[aria-label="Replay"]`))','Replay card missing');await run('Array.from(document.querySelectorAll(`[aria-label="Replay"] button`)).find(b=>b.textContent==="Run replay").click()');await until('document.querySelector(`[aria-label="Replay"]`).textContent.includes("Add instructions, remove a section or pick another model")','Replay without a change should explain itself');
       await run("window.portfolio.configureRuntime({conditionalOrders:false})");
       await run("window.portfolio.configureRuntime({scoutEnabled:false,scope:'paper',provider:'local'})");
     });
@@ -298,7 +415,9 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
         await until('!document.querySelector(`[aria-label^="Confirm flow"]`)','Confirm did not confirm the detected deposit');
         const row=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite')).prepare('SELECT payload FROM cash_flows WHERE id=?').get(det.id);assert.ok(!JSON.parse(row.payload).detected&&JSON.parse(row.payload).confirmedAt,'stored as confirmed');}
     });
-    await check('Stage 3.4: settlement corrections stay apart from performance; a restatement needs a fresh preview and an explicit approval',async()=>{
+    // Settlement simplification S2: no day is unavailable for a settlement reason, the restatement card is gone, and a day
+    // the tracker could not be read still has no return, with its own reason.
+    await check('S2: settlement days have returns (an estimate), corrections stay apart, no restatements; an unreadable day is still unavailable',async()=>{
       // A U.S. settlement history built with the real tracker on the fixture database (synchronous, so no app reading
       // interleaves): a $100 buy paid on its settlement date S while still counted, reconciled two days later.
       const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
@@ -306,42 +425,39 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const acct='ui-regression-fixture',S=new Date(Date.now()-10*86400000).toISOString().slice(0,10),B=Date.parse(new Date(Date.parse(S+'T00:00:00Z')-2*86400000).toISOString().slice(0,10)+'T05:00:00Z');
       let t=B;const clock=()=>t;db.prepare('DELETE FROM inflight_settlement WHERE account=?').run(acct);
       const f=new InFlight(db,clock),perf=new PerformanceHistory(db,clock);perf.settlement=a=>f.snapshot(a);const rec=new Reconciliation(db,{inFlight:f,funding:new FundingLedger(db,{clock}),performance:perf,clock,who:{user:'fixture',session:'fixture'}});
-      const us={cash:500,price:1000};const U=()=>({accountKey:acct+':US',environment:'mock',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
+      // Scaled near the mock account's own U.S. value (about $180), which the app records for today in the same series:
+      // with $1,400 synthetic days that recording read as an 88% fall (a fixture artefact, release gate review).
+      const us={cash:180,price:100};const U=()=>({accountKey:acct+':US',environment:'mock',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
       const A={id:'stage34-A',symbol:'NASD:TA',side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'mock',accountKey:acct+':US',market:'US',day:S,createdAt:B+60000,filledObservedAt:B+60000};
       const see=list=>{f.observe(acct,{us:U(),orders:list,fx:1300});t+=60000;};
       const record=()=>{const v=value({us:U(),inFlight:f.current(acct),fx:{usdKRW:1300,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity.low;perf.record(acct,{totals:{USD:v,KRW:10000000,equityKRW:10000000+v*1300},fx:{usdKRW:1300}});t+=60000;};
-      see([]);see([A]);record();t=B+33*3600000;us.price=1010;record();t=B+55*3600000;us.cash=400;t=B+73*3600000;us.price=1020;record();t=B+97*3600000;
+      see([]);see([A]);record();t=B+33*3600000;us.price=101;record();t=B+55*3600000;us.cash=80;t=B+73*3600000;us.price=102;record();t=B+97*3600000;
       const q={requestId:'stage34-r1',account:acct,pieceId:f.current(acct).open.find(p=>p.id==='stage34-A').pid,cents:10000,explanation:'settled',route:'USD',kisReference:'KIS-FIXTURE',note:'desktop fixture',settledOn:S};const pv=rec.preview(q);rec.confirm({...q,stateVersion:pv.stateVersion,binding:pv.binding});record();
       const approvals=()=>db.prepare('SELECT COUNT(*) n FROM valuation_settlement_approvals WHERE account=?').get(acct).n;
-      // Home: the trend says the return is unavailable and is not presented as verified.
-      await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"]`)?.textContent.includes("Investment return unavailable")','the Home trend should say the return is unavailable');
-      // 1.5.48 UI: one sentence, not stacked labels.
-      // 1.5.48 review: the note gives the actual reason recorded for the day, not a presumed one.
-      const note=await run('document.querySelector(`[aria-label="Account trend"] .trend-note`).textContent');assert.match(note,/^Investment return unavailable: \S.{10,}\.$/,'Home says why in one sentence');
-      assert.ok(!/older trades are being checked/.test(note),'no presumed cause');assert.ok((await run('document.querySelector(`[aria-label="Account trend"] .trend-note`).title')).includes(note.replace(/^Investment return unavailable: /,'').replace(/( \(\d+ days affected\))?\.$/,'')),'the shown reason is the recorded one');
+      // Home: a return, tagged as an estimate (the period has an accounting correction); never the settlement red line.
+      await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"] .trend-note`)?.textContent.startsWith("Return estimate")','the Home trend should show the return as an estimate');
+      assert.ok(!(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Investment return unavailable")')),'no settlement red line');
+      assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="Account trend"] .trend-note.negative`))')),'the note is not red');
+      assert.ok(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Investment P/L")'),'the investment P/L is shown');
       assert.equal(await run('document.querySelectorAll(`[aria-label="Account trend"] .trend-note`).length'),1);assert.ok(!(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Not verified")')),'no isolated badge');
-      await capture('stage1548-home-trend');
-      // Performance, U.S. series: unavailable (not a number), corrections and days without a return apart.
+      await capture('s2-home-trend-estimate');
+      // Performance, U.S. series: the All period is a number with the Estimate tag; corrections listed apart; no gap; no restatements.
       await navigate('Performance');await run(`(()=>{const s=document.querySelector('[aria-label="Performance series"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'USD');s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-      await until('Array.from(document.querySelectorAll(`[aria-label="Period returns"] tbody tr`)).find(r=>r.cells[0].textContent.startsWith("All"))?.textContent.includes("Unavailable")','the All period is unavailable, not a number');
+      await until('/[+−-]?\\d+\\.\\d{2}%/.test(Array.from(document.querySelectorAll(`[aria-label="Period returns"] tbody tr`)).find(r=>r.cells[0].textContent.startsWith("All"))?.cells[2].textContent??"")','the All period has a return');
+      assert.ok(!(await run('Array.from(document.querySelectorAll(`[aria-label="Period returns"] tbody tr`)).some(r=>r.textContent.includes("Unavailable"))')),'no period is unavailable');
       assert.ok(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Estimate")'));assert.ok(await run('Boolean(document.querySelector(`[aria-label="Return labels"]`))'),'the labels are explained');
-      assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`)?.textContent.includes("Days without a return")'),'days without a return are listed');
-      assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`).textContent.includes("Accounting corrections")'),'corrections are listed apart');
+      assert.ok(await run('document.querySelector(`[aria-label="Settlement effects"]`)?.textContent.includes("Accounting corrections")'),'corrections are listed apart');
+      assert.ok(!(await run('document.querySelector(`[aria-label="Settlement effects"]`).textContent.includes("Days without a return")')),'no day without a return');
       for(const label of ['Daily P/L','Drawdown']){await run(`Array.from(document.querySelectorAll('[aria-label="Chart"] button')).find(b=>b.textContent===${JSON.stringify(label)}).click()`);await wait(150);}
-      assert.ok(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Drawdown is unavailable from")'),'the drawdown chart is not drawn across the gap');
-      await until('Boolean(document.querySelector(`[aria-label^="Preview restatement"]`))','the candidate is offered');
-      await run('document.querySelector(`[aria-label^="Preview restatement"]`).click()');
-      await until('document.querySelector(`[aria-label="Restatement preview"]`)?.textContent.includes("Historical change you approve")','the preview is shown');
-      assert.ok(await run('document.querySelector(`[aria-label="Live figures"]`).textContent.includes("not part of the approval")'),'live figures are apart');assert.equal(approvals(),0,'a preview writes nothing');
-      await run('document.querySelector(`[aria-label="Restatement preview"]`).scrollIntoView({block:"center"})');await wait(150);await capture('stage34-restatement-preview');
-      // Stale: a deposit on the payment day after the preview. The approval is refused, the preview refreshed, nothing applied.
-      const D=(await run('window.portfolio.getRestatements()')).restatements.candidates[0].paymentDay;await run(`window.portfolio.addCashFlow({day:${JSON.stringify(D)},market:'US',amount:5,note:'late deposit'})`);
-      await run('(()=>{const el=document.querySelector(`[aria-label="Approval note"]`);Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(el,"Checked the KIS statement");el.dispatchEvent(new Event("input",{bubbles:true}));})()');
-      await click('Approve restatement');await until('document.querySelector(`[aria-label="Restatement preview"] .notice`)?.textContent.includes("refreshed preview")','a stale preview is refreshed');assert.equal(approvals(),0,'nothing applied on a stale confirmation');
-      await click('Approve restatement');await until('document.querySelector(`[aria-label="Historical restatements"]`)?.textContent.includes("Approval history")','the approval is recorded');assert.equal(approvals(),1);
-      await run('document.querySelector(`[aria-label="Historical restatements"] details`).open=true');assert.ok(await run('document.querySelector(`[aria-label="Approval history"]`).textContent.includes("In force")'));
-      const by=JSON.parse(db.prepare('SELECT payload FROM valuation_settlement_approvals WHERE account=?').get(acct).payload).approval.by;assert.ok(/this computer/.test(by)&&by!=='fixture','the approver is the main process identity: '+by);
-      await run('document.querySelector(`[aria-label="Historical restatements"]`).scrollIntoView({block:"center"})');await wait(150);await capture('stage34-restatement-approved');db.close();
+      assert.ok(!(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Drawdown is unavailable from")')),'the drawdown chart is whole');
+      assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="Historical restatements"]`)||document.querySelector(`[aria-label^="Preview restatement"]`))')),'the restatement card is hidden');
+      assert.deepEqual((await run('window.portfolio.getRestatements()')).restatements?.candidates??[],[],'no candidates are discovered');assert.equal(approvals(),0);
+      await capture('s2-performance-estimate');
+      // A day recorded while the tracker could not be read: still no return, with that reason (U4), on Home and Performance.
+      t=B+121*3600000;us.price=103;perf.settlement=()=>{throw new Error('disk I/O error');};record();perf.settlement=a=>f.snapshot(a);
+      await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"] .trend-note`)?.textContent.startsWith("Investment return unavailable")','an unreadable day still makes the return unavailable');
+      assert.match(await run('document.querySelector(`[aria-label="Account trend"] .trend-note`).textContent'),/^Investment return unavailable: the settlement tracker could not be read when this day was recorded \(disk I\/O error\)/,'its own reason, not a settlement one');
+      assert.ok(await run('Boolean(document.querySelector(`[aria-label="Account trend"] .trend-note.negative`))'));await capture('s2-home-trend-unreadable');db.close();
     });
     await check('Learning scoreboard scores past decisions against KOSPI',async()=>{
       await navigate('Journal');await click('Scoreboard');await until('Boolean(document.querySelector(`[aria-label="Decision scores by horizon"]`))','Scoreboard missing');

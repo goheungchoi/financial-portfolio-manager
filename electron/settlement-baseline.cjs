@@ -25,6 +25,11 @@
 // - B7 Coverage under review changed since the baseline is a correction of the same kind: the baseline follows it.
 // - B8 No snapshot for the day (the baseline was taken before this was installed): every adjustment is of unknown
 //   timing (B3), with no cap.
+// - B9 (settlement simplification S1b; release gate H1 adds the fee difference of a fill closed with its evidence) A
+//   piece settled by age after the baseline (InFlight, piece-closed why:'age') is a
+//   cash-free basis change predating it: the baseline moves by the same amount, a buy up (low bound), a sale down (high
+//   bound), cumulative per piece and at most the piece's basis at the baseline. A close alone is zero P/L; a real loss
+//   on the day of a close is measured in full. Without a snapshot (B8) the timing is unknown, with no cap.
 // Amounts are USD; the Korean check never includes U.S. pieces.
 const cents=v=>Math.round(Number(v)*100);
 class SettlementBaseline{
@@ -56,6 +61,7 @@ class SettlementBaseline{
     const side=new Map(),conflict=new Map(Object.entries(snap?.pieces??{}).filter(([,p])=>p.conflict).map(([pid,p])=>[pid,p.cents]));const recs=this.records(account),byId=new Map(recs.map(r=>[r.id,r])),reversed=new Set(recs.filter(r=>r.kind==='reversal').map(r=>r.target));
     // After the baseline: by ledger event id and record ids when the snapshot kept them, by time otherwise.
     const before=new Set(snap?.recordIds??[]),eventAfter=e=>Number.isFinite(snap?.lastEventId)?e.seq>snap.lastEventId:e.at>at,recordAfter=r=>snap?.recordIds?!before.has(r.id):r.confirmedAt>at;
+    const aged=new Map();
     for(const e of this.ledger.events(account)){if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(!eventAfter(e))continue;const s=side.get(e.pieceId);
       // B5: a pre-tracking fill opened after the baseline.
       if(e.kind==='piece-opened'&&e.pretracking){const c=cents(e.usd);basis.set(e.pieceId,(basis.get(e.pieceId)??0)+c);const b=snap?certain:unsure;move(b,s,c,-1);items.push({kind:'pre-tracking fill opened',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:c/100,timing:snap?'before':'unknown'});}
@@ -63,7 +69,10 @@ class SettlementBaseline{
       else if(e.kind==='piece-opened'&&e.why==='conflict'){if(snap&&!known.has(String(e.orderId)))continue;const c=cents(e.usd);conflict.set(e.pieceId,(conflict.get(e.pieceId)??0)+c);basis.set(e.pieceId,(basis.get(e.pieceId)??0)+c);move(snap?certain:unsure,s,c,-1);items.push({kind:'KIS record above the allocation',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:c/100,timing:snap?'before':'unknown'});}
       else if(e.kind==='conflict-reduced'&&conflict.has(e.pieceId)){const c=Math.min(e.cents,conflict.get(e.pieceId));conflict.set(e.pieceId,conflict.get(e.pieceId)-c);basis.set(e.pieceId,Math.max(0,(basis.get(e.pieceId)??0)-c));move(snap?certain:unsure,s,c,1);items.push({kind:'KIS record lowered again',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:c/100,timing:snap?'before':'unknown'});}
       // B4: a reversal of a record made before the baseline.
-      else if(e.kind==='piece-reopened'){const rev=byId.get(e.by),t=rev?byId.get(rev.target):null;if(!t||recordAfter(t))continue;basis.set(e.pieceId,(basis.get(e.pieceId)??0)+e.cents);move(certain,s,e.cents,-1);items.push({kind:'reversal of an earlier reconciliation',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:e.cents/100,timing:'before',reversalId:e.by});}}
+      else if(e.kind==='piece-reopened'){const rev=byId.get(e.by),t=rev?byId.get(rev.target):null;if(!t||recordAfter(t))continue;basis.set(e.pieceId,(basis.get(e.pieceId)??0)+e.cents);move(certain,s,e.cents,-1);items.push({kind:'reversal of an earlier reconciliation',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:e.cents/100,timing:'before',reversalId:e.by});}
+      // B9: settled by age after the baseline.
+      else if(e.kind==='piece-closed'&&(e.why==='age'&&Number.isFinite(e.usd)||Number.isFinite(e.feeUSD))){const sd=e.side??s,cap=snap?(basis.get(e.pieceId)??0):Infinity,x=Math.max(0,Math.min(cents(e.why==='age'?e.usd:e.feeUSD),cap-(aged.get(e.pieceId)??0)));if(!x)continue;
+        aged.set(e.pieceId,(aged.get(e.pieceId)??0)+x);move(snap?certain:unsure,sd,x,1);items.push({kind:e.why==='age'?'settled by age':'fee difference',pieceId:e.pieceId,orderId:e.orderId,side:sd,usd:x/100,timing:snap?'before':'unknown'});}}
     // B7: coverage under review since the baseline.
     if(snap?.review){const r=this.inFlight.current(account).review??{buysUSD:0,sellsUSD:0},db=cents(r.buysUSD)-cents(snap.review.buysUSD),ds=cents(r.sellsUSD)-cents(snap.review.sellsUSD);
       if(db){move(certain,'Buy',db,-1);items.push({kind:'coverage under review',side:'Buy',usd:db/100,timing:'before'});}if(ds){move(certain,'Sell',ds,-1);items.push({kind:'coverage under review',side:'Sell',usd:ds/100,timing:'before'});}}

@@ -20,8 +20,8 @@ const identity=()=>({by:'owner (this computer)',session:'gate'});
 function world({start=TRACKING,file=':memory:'}={}){const db=new DatabaseSync(file);let t=start;const clock=()=>t;let rate=1300;
   const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock);
   const rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
-  const sc=performanceCorrections(db,{inFlight:f,reconciliation:rec});perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
-  const s=new SettlementRestatements(db,{inFlight:f,reconciliation:rec,performance:perf,corrections:sc,clock});const view=restatementActions({restatements:s,reconciliation:rec,identity});
+  const sc=performanceCorrections(db,{inFlight:f,reconciliation:rec,strict:true}/* the stage 3.2 rules and restatements, until S4 removes these tests */);perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
+  const s=new SettlementRestatements(db,{inFlight:f,reconciliation:rec,performance:perf,corrections:sc,clock,enabled:true});const view=restatementActions({restatements:s,reconciliation:rec,identity});
   const us={cash:500,price:1000};let seq=0,orders=[];
   const U=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
   const w={db,f,perf,rec,s,view,us,clock,at:ms=>{t=ms;},later:ms=>{t+=ms;},setRate:r=>{rate=r;},nextDay:()=>{t=Math.ceil((t-start)/DAY)*DAY+start;},

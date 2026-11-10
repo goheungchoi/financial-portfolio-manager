@@ -84,7 +84,7 @@ function unitedStates(u,{inFlight,now}){
   const buys=Math.max(0,inFlight?.buysUSD??0);
   if(buys>0.005)components.push(part('inFlightBuys',-buys,'derived','U.S. buys the app saw fill that no KIS evidence covers yet (fill records)',{low:-buys,high:0,note:'paid from U.S. cash or proceeds at settlement, or already deducted'}));
   for(const [k,what] of [['buysUSD','buys'],['sellsUSD','sales']]){const u=inFlight?.unresolved?.[k]??0,o=inFlight?.overdue?.[k]??0;if(u>0.005)reasons.push(`$${u.toFixed(2)} of U.S. ${what} in flight may already be in KIS figures: unresolved, so the value is a range`);
-    if(o>0.005)reasons.push(`$${o.toFixed(2)} of U.S. ${what} in flight are overdue: no settlement evidence after ${MAX_DAYS} days; reconcile them with KIS`);}
+    if(o>0.005)reasons.push(`$${o.toFixed(2)} of U.S. ${what} in flight from before the age rule; they close at the next reading`);}
   // Bootstrap B1 (stage 2b): fills from before tracking started stay in flight until evidence or a reconciliation.
   const pre=inFlight?.pretracking?.count??0;if(pre)reasons.push(`${pre} pre-tracking U.S. fill${pre>1?'s':''} awaiting verification: the value is provisional`);
   return finish('USD',u,components,reasons,{},now,{reportedTotal:u.reportedTotal});
@@ -144,14 +144,22 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,now=Date.now()}={}){
 //     BOUND fills could be candidates, nothing is applied and the candidate sets are recorded;
 //   - exact amounts (stage 2b): the evidence amount is allocated to the set's fills oldest first, each up to its own
 //     amount, in cents; a fill not fully covered keeps its remainder in flight, unresolved ("evidence short"), and
+//     (release gate H1, 1.5.50) unless the remainder is within a fee-sized bound of the fill (FEE_BOUND: the larger of
+//     $1.00 and 0.5% of the fill): the app's fee estimate against what KIS charged. Such a fill closes with its evidence
+//     and the difference is recorded on the close (feeUSD), a cash-free correction like an age close; a remainder that
+//     is already open from before this rule closes the same way at the next reading. Larger shortfalls stay open;
 //     nothing is written off; evidence beyond the set stays unallocated;
 // - a reading older than the last one is ignored;
 // - the first reading (bootstrap B1, stage 2b; replaces the five-day rule of a7d075a): every fill listed then, or
 //   filled before tracking started and listed later, stays in flight, unresolved and awaiting verification, whatever its
 //   age. Neither its order or fill time nor a KIS settled-trade record (U6 not verified) makes it history. Those KIS's
 //   reported total could cover are marked as possibly reported; evidence resolves them like any other fill;
-// - a fill with no evidence after MAX_DAYS is marked overdue, noted once, and stays in flight, unresolved: time alone
-//   never removes an obligation, raises equity or frees buying capacity (same review, P1: a fill was dropped as settled).
+// - settlement by age (settlement simplification S1a, user decision 2026-11-10; it replaces the overdue rule): a piece
+//   still open SETTLE_DAYS business days of the U.S. market after its trade date (filledAt, else when it opened) is
+//   closed, event piece-closed {why:'age'}. Its amount leaves the open totals; InFlight.explained counts the close as a
+//   cash-free basis change, so returns and the flow detector treat it as a correction, never a gain or a deposit.
+//   onSettled(account, {orderId, why}) is called, inside the reading's transaction, for each order left with no open
+//   piece by a close, by evidence or by age, so the funding ledger can release its filled part.
 // The state (open fills, cumulative amounts, the last reading, the evidence) survives restarts (inflight_settlement).
 // Stage 2b.2: each reading is one transaction, and its evidence, allocations and every piece change are also written to
 // the settlement evidence ledger (electron/settlement-evidence.cjs): evidence is identified by its reading pair, side
@@ -171,7 +179,9 @@ const REPORTED=['reported before seen','reported total moved by an unmatched amo
 const cents=v=>Math.round(v*100);
 const nyDay=ms=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
 class InFlight {
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db,clock);}
+  // settleDays: business days after which an open piece is settled by age (S1a; 3). null turns the age rule off; only the
+  // tests of the reconciliation, panel and baseline code that S3 and S4 remove use that, until they are removed.
+  constructor(db,clock=Date.now,{settleDays=require('./business-days.cjs').SETTLE_DAYS,feeBound=true}={}){this.settleDays=settleDays;this.feeBoundOn=feeBound!==false;this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db,clock);}
   save(account,st){this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));}
   state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[],evidence:[]};}
   // An order's cumulative execution amount in cents and its basis: KIS net cash when known (fees included), otherwise gross.
@@ -241,9 +251,12 @@ class InFlight {
     // Exact amounts: the run's fills, oldest first, each take what is left of the evidence up to their own amount; a fill
     // not fully covered keeps its remainder in flight, unresolved, with the shortfall (nothing is written off).
     // Each allocation is also written to the ledger (src: its evidence), which refuses more than is left of either.
+    // feeBound:false (constructor) keeps every remainder open: only the tests of the reconciliation code S3/S4 removes.
+    const feeBound=f=>this.feeBoundOn?Math.max(100,Math.round((f.cents0??cents(f.usd))*0.005)):-1;
     const take=(run,amountCents,evidence,src=null)=>{let left=amountCents;const out=[];
       for(const f of run){const c=cents(f.usd),a=Math.max(0,Math.min(c,left));left-=a;
         if(a){if(src)ledger.allocate({account,evidenceId:src.evidenceId,pieceId:f.pid,orderId:f.id,cents:a,pieceCents:f.cents0,rule:src.rule});out.push({id:f.id,pid:f.pid,usd:a/100});}if(a===c){settled.add(f);continue;}
+        if(a>0&&c-a<=feeBound(f)){f.feeUSD=(c-a)/100;settled.add(f);notes.push(`${f.side} ${f.id}: evidence covered $${(a/100).toFixed(2)}; the $${f.feeUSD.toFixed(2)} difference is within the fee bound, so it is settled (a fee or conversion difference)`);continue;}
         f.usd=(c-a)/100;f.unresolved={why:'evidence short',shortUSD:(c-a)/100,evidence,at:now};notes.push(`${f.side} ${f.id}: evidence covered $${(a/100).toFixed(2)}; $${f.usd.toFixed(2)} stays in flight, unresolved (evidence short)`);}
       return {allocated:out,left};};
     // Ledger evidence for this reading pair: U.S. cash, or the reported total of a side, each its whole movement in the
@@ -326,7 +339,10 @@ class InFlight {
     // movement their net did not match be allocated to one side).
     const openSide=s=>st.open.some(f=>f.side===s&&!settled.has(f));
     if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell')))allocate('cash',movement<0?'Buy':'Sell',Math.abs(movement));
-    st.open=st.open.filter(f=>!settled.has(f));for(const f of settled)ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id});
+    // H1: a remainder from before the fee bound, already within it, closes now as the same fee difference.
+    for(const f of st.open)if(!settled.has(f)&&f.unresolved?.why==='evidence short'&&cents(f.usd)>0&&cents(f.usd)<=feeBound(f)){f.feeUSD=f.usd;settled.add(f);notes.push(`${f.side} ${f.id}: the $${f.usd.toFixed(2)} left after its evidence is within the fee bound, so it is settled (a fee or conversion difference)`);}
+    st.open=st.open.filter(f=>!settled.has(f));for(const f of settled)ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'evidence',...(Number.isFinite(f.feeUSD)?{feeUSD:f.feeUSD}:{})});
+    const closedBy=new Map();for(const f of settled)closedBy.set(String(f.id),closedBy.get(String(f.id))??'evidence');
     // A KIS settled-trade row linked with certainty to an order whose pieces evidence resolved contradicts the allocation
     // when it is more than a cent away (design v3 §3, T13). Every version is reconciled against what the conflict already
     // holds, in both directions, kept apart (review of 4b534c1, P1):
@@ -357,11 +373,15 @@ class InFlight {
         notes.push(`${o.side} ${id}: KIS's settled record says $${(k/100).toFixed(2)} where $${(base/100).toFixed(2)} was allocated; $${((base-k)/100).toFixed(2)} of that evidence is no longer explained by it (reduced coverage)`);}
       if(was.kCents!==k||was.version!==l.version)ledger.event(account,'conflict',{orderId:id,groupId:l.groupId,version:l.version,kCents:k,allocatedCents:ledger.allocatedToOrder(account,id),conflictCents:held(),releasedCents:c.released.reduce((n,r)=>n+r.cents,0)});
       if(!held()&&!c.released.length&&Math.abs(k-ledger.allocatedToOrder(account,id))<=1)c.settled=now;}
-    // Overdue is noted once (overdueAt is kept); newlyOverdue lists the pieces that became overdue in this reading, for the one
-    // app notification (stage 2b.5).
+    // Settlement by age (S1a): every piece still open SETTLE_DAYS U.S. business days after its trade date is closed.
+    const B=require('./business-days.cjs'),aged=[];
+    if(Number.isInteger(this.settleDays)&&this.settleDays>0)for(const f of st.open){const t=Number.isFinite(f.filledAt)?f.filledAt:f.at;const a=B.agedOut('US',{fillAt:t,now,n:this.settleDays});if(!a.aged)continue;aged.push(f);
+      ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'age',usd:f.usd,days:this.settleDays,tradeDay:a.tradeDay});
+      notes.push(`${f.side} ${f.id} ($${f.usd.toFixed(2)}): settled by age, ${this.settleDays} U.S. business days after its trade date ${a.tradeDay}`);}
+    if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');}
+    // Orders whose last open piece closed in this reading: their funding commitment may release its filled part.
+    for(const [orderId,why] of closedBy)if(!st.open.some(f=>String(f.id)===orderId))this.onSettled?.(account,{orderId,why});
     const newlyOverdue=[];
-    for(const f of st.open)if(!f.overdueAt&&now-(f.filledAt??f.at)>MAX_DAYS*DAY){f.overdueAt=now;f.unresolved??={why:'overdue',at:now};ledger.event(account,'overdue',{pieceId:f.pid,orderId:f.id,usd:f.usd});newlyOverdue.push({pieceId:f.pid,orderId:f.id,side:f.side,usd:f.usd});
-      notes.push(`${f.side} ${f.id} ($${f.usd}): no settlement evidence after ${MAX_DAYS} days; it stays in flight, unresolved, until KIS shows it or it is reconciled`);}
     Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
     // Orders no longer listed are forgotten, so the record stays bounded.
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
@@ -385,7 +405,7 @@ class InFlight {
     const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,review:String(f.pid??'').startsWith('review:'),filledAt:Number.isFinite(f.filledAt)?f.filledAt:null,placedAt:Number.isFinite(f.placedAt)?f.placedAt:null}));
     // open (stage 3.4 review, CN5): every U.S. buy still counted as an obligation, resolved or not. A payment made while
     // one is open shows as a loss until it is matched or reconciled, so those days are not verified.
-    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review},open:{buysUSD:t.buysUSD,buys:t.open.filter(f=>f.side==='Buy').length}};}
+    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review},open:{buysUSD:t.buysUSD,buys:t.open.filter(f=>f.side==='Buy').length,pids:t.open.filter(f=>f.side==='Buy'&&f.pid).map(f=>f.pid)}};}
   // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
   // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,
   // conflict pieces opened or reduced, reconciliations resolving pieces and reversals reopening them. These are
@@ -407,12 +427,30 @@ class InFlight {
   // after it does not count yet); sides keeps only the pieces of those sides (the recorded low series moves with buys).
   explained(account,{afterId=null,since=null,from=null,until=null,sides=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
     const events=this.evidence.events(account).filter(e=>until==null||e.at<=until),reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target));
-    for(const e of events){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;if(sides&&!sides.includes(side.get(e.pieceId)))continue;const s=side.get(e.pieceId)==='Sell'?1:-1;
+    for(const e of events){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;const pieceSide=e.side??side.get(e.pieceId);if(sides&&!sides.includes(pieceSide))continue;const s=pieceSide==='Sell'?1:-1;
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
       else if(e.kind==='reconciliation'){const outside=reversed.has(e.id)||e.explanation==='rounding'||e.reclassified||typeof e.settledOn==='string'&&start!=null&&e.settledOn<start;if(outside)c-=s*e.cents;else cand.push({id:e.id,usd:-s*e.cents/100,settledOn:e.settledOn??null});}
-      else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;}
+      else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;
+      // S1a: a piece settled by age leaves the obligation with no cash movement: the same sign as a reduced conflict.
+      else if(e.kind==='piece-closed'&&e.why==='age'&&Number.isFinite(e.usd))c-=s*cents(e.usd);
+      // H1: a fee difference closed with its evidence leaves the obligation with no cash movement, like an age close.
+      else if(e.kind==='piece-closed'&&Number.isFinite(e.feeUSD))c-=s*cents(e.feeUSD);}
     return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100])),candidates:{usd:Math.round(cand.reduce((n,x)=>n+x.usd,0)*100)/100,ids:cand.map(x=>x.id),items:cand.map(x=>({id:x.id,usd:x.usd,settledOn:x.settledOn}))}};}
   explainedSince(account,since){return this.explained(account,{since}).usd;}
+  // S2b: the part of the U.S. low basis that is a correction still open at `until`: buy pieces opened as a correction
+  // (a pre-tracking fill or a KIS record above the allocation), less what a reconciliation or a reduced conflict took
+  // off, plus what a reversal reopened, until the piece closes (by evidence, by age or otherwise). The recorded value is
+  // that much lower than what the account is worth, so a day's return is measured on a base that adds it back. USD.
+  // In hindsight a piece whose payment was seen after it opened was never a misstatement: one closed by KIS evidence (the
+  // cash fell while it was tracked) or reconciled as paid within a recorded day (paidAfter: those reconciliation ids). It
+  // is left out for every day. One closed by age, reconciled as paid earlier, or still open counts while open.
+  openCorrections(account,{until=null,paidAfter=new Set()}={}){const open=new Map(),side=new Map(),events=this.evidence.events(account);
+    const never=new Set(events.filter(e=>e.kind==='piece-closed'&&e.why==='evidence'||e.kind==='reconciliation'&&paidAfter.has(e.id)).map(e=>e.pieceId));
+    for(const e of events){if(until!=null&&e.at>until)break;if(never.has(e.pieceId))continue;if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if((e.side??side.get(e.pieceId))!=='Buy')continue;const c=open.get(e.pieceId);
+      if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict'))open.set(e.pieceId,(c??0)+cents(e.usd));
+      else if(c==null)continue;else if(e.kind==='piece-closed')open.delete(e.pieceId);
+      else if(e.kind==='reconciliation'||e.kind==='conflict-reduced')open.set(e.pieceId,Math.max(0,c-(e.cents??0)));else if(e.kind==='piece-reopened')open.set(e.pieceId,c+(e.cents??0));}
+    return [...open.values()].reduce((n,c)=>n+c,0)/100;}
 }
 // One market's net equity for the daily loss and new-exposure checks (the engines' netEquityOf), from the same value()
 // every other consumer reads (stage 2b.6: one function for main and the composition harness). KRW committed to U.S. buys

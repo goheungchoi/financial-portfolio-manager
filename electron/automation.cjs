@@ -401,14 +401,17 @@ class Automation {
   conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper');}
   dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>{const {snapshot,...rest}=JSON.parse(r.payload);return rest;});}
   // What a dry-run review would cost before it starts: today's AI use against the limits, and an estimate from the
-  // recent completed reviews on the configured model (a review is one or more requests).
-  dryRunEstimate(){
+  // recent completed reviews on the model it would run on (a review is one or more requests). model: the dry run's
+  // override (release gate R1: Claude Opus 5.5 gets its own measured cost, or none until a review on it completed).
+  dryRunEstimate({model=null}={}){const m=model==='claude-opus-5-5'?model:this.config.openaiModel,claude=m.startsWith('claude-');
+    const same=c=>claude?String(c.model??'').startsWith(m):c.model===m;
     const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
-    const rows=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload)).filter(c=>!c.kind&&c.model===this.config.openaiModel&&c.status==='completed'&&Number.isFinite(c.accountedMicro));
+    const all=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload)).filter(c=>!c.kind&&same(c));
+    const rows=all.filter(c=>c.status==='completed'&&Number.isFinite(c.accountedMicro));
     const byReview=new Map();for(const c of rows){const v=byReview.get(c.reviewId)??{micro:0,calls:0};v.micro+=c.accountedMicro;v.calls++;byReview.set(c.reviewId,v);}
     const recent=[...byReview.values()].slice(0,10);const sorted=recent.map(v=>v.micro).sort((a,b)=>a-b);const median=sorted.length?sorted[Math.floor(sorted.length/2)]:null;
     const usd=v=>v==null?null:Math.round(v)/1e6;
-    return {model:this.config.openaiModel,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${this.config.openaiModel} reviews`,
+    return {model:m,vendor:claude?'Anthropic':'OpenAI',ran:all.length>0,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${m} review${recent.length===1?'':'s'}`,
       today:{calls:usage.calls,usedUSD:usd(usage.reservedMicro),maxCalls:this.config.unlimitedCalls?null:this.config.maxCallsPerDay,maxUSD:this.config.unlimitedBudget?null:this.config.maxUSDPerDay},
       note:'A dry-run review counts against the same daily AI limits as live reviews.'};
   }

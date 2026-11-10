@@ -22,7 +22,7 @@ function EngineChip({onNavigate}:{onNavigate(tab:string):void}){
     <b>{state.scheduler.label}</b><p>{state.scheduler.detail}</p>{state.execution?.detail&&<p>{state.execution.detail}</p>}
     {state.lastErrorDetail&&<p className="negative">{state.lastErrorDetail}</p>}
     {note&&<p role="status">{note}</p>}
-    <div className="chip-actions">{state.launch&&<button className={running?'':'primary'} disabled={busy||(!running&&!state.launch.starting&&state.busy)} onClick={()=>void toggle()}>{running?'Stop auto trading':state.launch.starting?'Cancel start':busy?'Working…':'Start auto trading'}</button>}<button onClick={()=>onNavigate('Engine settings')}>Settings</button>{state.lastError&&<button onClick={()=>onNavigate('AI console')}>Console</button>}</div>
+    <div className="chip-actions">{state.launch&&<button className={running?'':'primary'} disabled={busy||(!running&&!state.launch.starting&&state.busy)} onClick={()=>void toggle()}>{running?'Stop auto trading':busy?'Starting…':state.launch.starting?'Cancel start':'Start auto trading'}</button>}<button onClick={()=>onNavigate('Engine settings')}>Settings</button>{state.lastError&&<button onClick={()=>onNavigate('AI console')}>Console</button>}</div>
   </Chip>;
 }
 export function TopBar({tab,canBack,canForward,onBack,onForward,onNavigate,market,isKis,account,theme,onTheme}:{tab:string;canBack:boolean;canForward:boolean;onBack():void;onForward():void;onNavigate(tab:string):void;market:Market|null;isKis:boolean;account:string;theme:'dark'|'light';onTheme():void}){

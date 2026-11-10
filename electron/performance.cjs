@@ -41,7 +41,8 @@ class PerformanceHistory {
       const seen=[...(prior.settlement?.seen??[])];for(const p of snap?.pieces??[])if(!seen.some(s=>s.pid===p.pid&&s.usd===p.usd&&s.side===p.side))seen.push(p);
       // The most U.S. buy obligation open at any reading of the day (stage 3.4 review, CN5); unknown when a reading lacks it.
       const openMax=Math.max(prior.settlement?.openBuysMaxUSD??0,snap?.open?.buysUSD??0),openUnknown=Boolean(prior.settlement?.openUnknown||snap&&!snap.open);
-      return {last:snap,seen,openBuysMaxUSD:openMax,...(openUnknown?{openUnknown:true}:{}),...(error||prior.settlement?.error?{error:error??prior.settlement.error}:{})};})():null;
+      const openPids=[...new Set([...(prior.settlement?.openPids??[]),...(snap?.open?.pids??[])])];
+      return {last:snap,seen,openBuysMaxUSD:openMax,...(snap?.open?.pids?{openPids}:{}),...(openUnknown?{openUnknown:true}:{}),...(error||prior.settlement?.error?{error:error??prior.settlement.error}:{})};})():null;
     const row={day,at:this.clock(),...(state.valuation?{valuation:bounds(state.valuation,prior.valuation??this.lastValuation(account,day))}:{}),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
       equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined),...(settlement?{settlement}:{})};
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
@@ -103,6 +104,12 @@ class PerformanceHistory {
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
     const history=this.history(account),flows=this.flows(account).filter(f=>unresolved==='include'||!f.detected);let previous=null,index=1,lastFx=null;const points=[];
+    // Settlement simplification S2b: a day's return is its P/L over a base that leaves out the corrections still open in
+    // the previous day's value (openUSD, from the settlement ledger: a pre-tracking buy opened as a correction lowers the
+    // recorded value until it closes), in U.S. dollars, converted at the previous day's rate in the combined series. A base
+    // that is still not positive gives the day no return (never a silent 0%), except a zero base with zero P/L: nothing
+    // invested, nothing gained.
+    const NO_BASE='the day\'s starting value was not positive';let netUSD=0;
     // A correction read that fails is never taken as "no corrections" (stage 3.1 review, P2): every day of the U.S. and
     // combined series then has no return and no P/L, with the reason.
     let corrections=new Map(),failed=null;if(kind!=='KRW'&&this.corrections)try{corrections=this.corrections(account,history);if(!(corrections instanceof Map))throw new Error('CORRECTIONS_INVALID');}catch(e){corrections=new Map();failed=`settlement corrections could not be read (${String(e?.message??e).slice(0,80)})`;}
@@ -131,7 +138,9 @@ class PerformanceHistory {
       if(bounded&&kind!=='USD'){blocked.push(`an uncertain U.S. buy obligation of $${Number(bounded.usd).toFixed(2)}: its funding route and FX exposure are not bounded in this series, so the return is unavailable`);bounded=null;}
       const states=bounded&&base>0&&Number.isFinite(base)?{real:(value-correction)/base-1,notReal:(value+bounded.usd-correction)/(base+bounded.usd)-1}:null;if(bounded&&!states){blocked.push('an uncertain U.S. buy obligation on a day with no base value');bounded=null;}
       const out=Boolean(unknownC.length||lost||blocked.length);
-      const dailyReturn=out||bounded?null:base>0&&Number.isFinite(base)?(value-correction)/base-1:null;
+      const offset=!previous||kind==='KRW'||!(Math.abs(previous.openUSD)>=0.005)?0:-previous.openUSD*(kind==='COMBINED'?previous.fx??NaN:1),returnBase=previous?base-offset:null,gained=previous?value-previous.value-netFlow-correction:null;
+      const dailyReturn=out||bounded||!previous?null:returnBase>0&&Number.isFinite(returnBase)?gained/returnBase:returnBase===0&&Math.abs(gained)<0.005?0:null;
+      const noBase=Boolean(previous&&!out&&!bounded&&dailyReturn==null);if(noBase)blocked.push(NO_BASE);
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
       const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
@@ -139,7 +148,7 @@ class PerformanceHistory {
       const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
       const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
       const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
-      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost||blocked.length?null:known;
+      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost||(blocked.length&&!noBase)?null:known;
       const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
         :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
       // Stage 3.4: how the settlement treatment touched the day (consumers label such days and never call them verified).
@@ -149,8 +158,13 @@ class PerformanceHistory {
       points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
         ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
         ...(bounded?{bounded:{pieceId:bounded.pieceId,usd:bounded.usd,states,returnRange:{low:Math.min(states.real,states.notReal),high:Math.max(states.real,states.notReal)},label:`one uncertain obligation of $${Number(bounded.usd).toFixed(2)}: the return is a range (real, or not real)`}}:{}),
-        dailyReturn,index,pnl,...(lost||blocked.length?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});previous={day:row.day,value};
+        ...(noBase?{returnOnly:true}:{}),...(offset?{returnBase}:{}),dailyReturn,index,pnl,...(lost||(blocked.length&&!noBase)?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});
+      if(previous&&cx?.items?.length&&Number.isFinite(cx.usd))netUSD+=cx.usd;previous={day:row.day,value,openUSD:kind==='KRW'?0:corrections.get(row.day)?.openUSD??0,fx:lastFx};
     }
+    // S2b (c): a correction day is an estimate only while the corrections have not netted to zero: a correction still open
+    // at the last day, or corrections that do not cancel (a reconciliation with no opening, a rounding record). Once they
+    // net to zero the day's return is exact; the corrections stay listed in the corrections card.
+    if(Math.abs(previous?.openUSD??0)>=0.005||Math.abs(netUSD)>=0.005)for(const p of points)if(p.settlement?.includes('corrected'))p.correctionOpen=true;
     return points;
   }
   // Period returns, money gain after flows and the matching benchmark change, all from the same start and end days.
@@ -171,7 +185,7 @@ class PerformanceHistory {
       if(!unavailable.length&&pieces.length>1)unavailable.push(`${pieces.length} uncertain obligations in the period: no consistent range`);
       const chain=state=>inside.reduce((n,p)=>n*(1+(p.bounded?p.bounded.states[state]:p.dailyReturn??0)),1)-1;
       const twrRange=!unavailable.length&&pieces.length?(([a,b])=>({low:Math.min(a,b),high:Math.max(a,b)}))([chain('real'),chain('notReal')]):null;
-      return {label,start:start.day,end:end.day,partial,twr:unavailable.length||pieces.length?null:end.index/start.index-1,gain:unavailable.length?null:end.value-start.value-flows-corrections,flows,
+      return {label,start:start.day,end:end.day,partial,twr:unavailable.length||pieces.length?null:end.index/start.index-1,gain:inside.some(p=>p.unavailable&&!p.returnOnly)?null:end.value-start.value-flows-corrections,flows,
         ...(affected(inside)?{settlementAffected:affected(inside)}:{}),...(twrRange?{twrRange}:{}),...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
@@ -183,7 +197,8 @@ class PerformanceHistory {
   }
 }
 // Stage 3.4: the days of a window the settlement treatment touched, by kind; null when none.
-function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)).length;const out={pending:n('pending'),corrected:n('corrected'),restated:n('restated'),unavailable:n('unavailable'),bounded:n('bounded')};return Object.values(out).some(Boolean)?out:null;}
+// S2b (c): corrections count only while they have not netted to zero (correctionOpen).
+function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)&&(k!=='corrected'||p.correctionOpen)).length;const out={pending:n('pending'),corrected:n('corrected'),restated:n('restated'),unavailable:n('unavailable'),bounded:n('bounded')};return Object.values(out).some(Boolean)?out:null;}
 // Risk and attribution for the points from a start day: peak, trough, drawdowns, volatility, best and worst days,
 // daily P/L and the change in each holding's unrealized P/L.
 // Stage 3.4: an unavailable day (or a bounded one, which has no single return) breaks the time-weighted chain. The
@@ -203,7 +218,7 @@ function analyze(points,from){
     add(first.positions,'start');add(last.positions,'end');contributions=[...map.values()].map(r=>({symbol:r.symbol,name:r.name,startUnrealized:r.start,endUnrealized:r.end,change:r.end-r.start,status:r.held.start&&r.held.end?'held':r.held.end?'new':'closed'})).sort((a,b)=>b.change-a.change);}
   const r2=v=>v==null?null:Math.round(v*100)/100;
   const corrections=days.reduce((a,p)=>a+(p.correction??0),0);
-  return {from:first.day,to:last.day,days:pts.length,startValue:first.value,endValue:last.value,twrPct:gaps.length?null:r2((last.index/first.index-1)*100),gain:blocked.length?null:last.value-first.value-days.reduce((a,p)=>a+p.flow,0)-corrections,
+  return {from:first.day,to:last.day,days:pts.length,startValue:first.value,endValue:last.value,twrPct:gaps.length?null:r2((last.index/first.index-1)*100),gain:blocked.some(p=>!p.returnOnly)?null:last.value-first.value-days.reduce((a,p)=>a+p.flow,0)-corrections,
     ...(corrections?{corrections}:{}),...(affected(days)?{settlementAffected:affected(days)}:{}),returnDays:rets.length,unavailableDays:blocked.map(p=>({day:p.day,reasons:p.unavailable})),...(gaps.length?{chainBrokenFrom:firstGap}:{}),
     // Values on restated days include the approved overlay (stage 3.4 review): flagged, never called recorded values.
     peak:{value:peak.value,day:peak.day,...(peak.restated?{restated:peak.restated}:{})},trough:{value:trough.value,day:trough.day,...(trough.restated?{restated:trough.restated}:{})},intradayHigh:{value:high.high,day:high.day},intradayLow:{value:low.low,day:low.day},
@@ -220,7 +235,7 @@ function reviewSummary(s){return {since:s.start,currency:s.kind,benchmark:s.benc
       return {risk:{window:`${a.from} to ${a.to}`,peak:{value:Math.round(a.peak.value),day:a.peak.day},trough:{value:Math.round(a.trough.value),day:a.trough.day},maxDrawdownPct:a.maxDrawdownPct,currentDrawdownPct:a.currentDrawdownPct,maxDrawdown1mPct:m1?.maxDrawdownPct??null,volatilityPct:a.volatilityPct,bestDay:day(a.bestDay),worstDay:day(a.worstDay),positiveDaysPct:a.positiveDaysPct,daysWithReturn:a.returnDays,daysWithoutReturn:a.unavailableDays.length,...(a.chainBrokenFrom?{returnChainBrokenFrom:a.chainBrokenFrom}:{})},
         recentDailyPnl:a.dailyPnl.slice(-5).map(p=>({day:p.day,pnl:p.pnl==null?null:Math.round(p.pnl),returnPct:p.returnPct,...(p.unavailable?{unavailable:true}:{}),...(p.correction?{accountingCorrection:Math.round(p.correction*100)/100}:{})})),
         settlement:(()=>{const pts=s.points.filter(p=>p.day>a.from);const corr=pts.filter(p=>p.correction).map(p=>({day:p.day,amount:Math.round(p.correction*100)/100}));const un=pts.filter(p=>p.unavailable).map(p=>({day:p.day,why:String(p.unavailable[0]).slice(0,200)}));const rest=pts.filter(p=>p.restated).length;
-          return corr.length||un.length||rest?{accountingCorrections:corr.slice(-5),daysWithoutReturn:un.slice(-5),restatedDays:rest,label:'accounting corrections are not investment return; days without a return are unknown, not zero'}:undefined;})(),unrealizedPnl:a.unrealized==null?null:Math.round(a.unrealized),cashSharePct:a.cashSharePct,
+          return corr.length||un.length||rest?{accountingCorrections:corr.slice(-5),daysWithoutReturn:un.slice(-5),restatedDays:rest,label:'accounting corrections (settlement changes with no cash or market move) are not investment return; days without a return could not be read and are unknown, not zero'}:undefined;})(),unrealizedPnl:a.unrealized==null?null:Math.round(a.unrealized),cashSharePct:a.cashSharePct,
         holdingContribution:top.length?{basis:'Change in unrealized P/L over the window',best:top.slice(0,3).map(c=>({symbol:c.symbol,change:Math.round(c.change),status:c.status})),worst:top.slice(-3).reverse().filter(c=>c.change<0).map(c=>({symbol:c.symbol,change:Math.round(c.change),status:c.status}))}:undefined};})()};}
 // The review context's performance for one market (main's automation.performanceSummary, stage 3.5: one function for main
 // and the stage 3 gate harness): the summary, the money changes not yet settled, and whether the returns measure market
@@ -254,9 +269,9 @@ function returnReliability({unconfirmed=[],checking=[],uncertainKRW=0,settlement
   const reasons=[...unconfirmed.map(f=>`a detected ${f.amount>0?'deposit':'withdrawal'} of ${money(f.amount,f.currency)} on ${f.day} is not confirmed; returns treat it as one`),
     ...checking.map(f=>`a cash change of ${f.amount>0?'+':'−'}${money(f.amount,f.currency)} since ${String(f.since).slice(0,16).replace('T',' ')} UTC is not yet explained; returns count it as gain or loss`),
     ...(uncertainKRW>0?[`funding of ₩${Math.round(uncertainKRW).toLocaleString('en-US')} of unsettled U.S. buys is not yet known, so Korean value may be understated`]:[]),
-    ...(settlement?.unavailable?[`${settlement.unavailable} recorded day${settlement.unavailable>1?'s have':' has'} no return (a U.S. settlement obligation that may not have been real, or a payment that may have been counted twice); returns spanning ${settlement.unavailable>1?'them':'it'} are unavailable, not zero`]:[]),
+    ...(settlement?.unavailable?[`${settlement.unavailable} recorded day${settlement.unavailable>1?'s have':' has'} no return (the account or the settlement tracker could not be read then); returns spanning ${settlement.unavailable>1?'them':'it'} are unavailable, not zero`]:[]),
     ...(settlement?.bounded?[`${settlement.bounded} day${settlement.bounded>1?'s have':' has'} only a return range (one uncertain U.S. obligation)`]:[]),
-    ...(settlement?.pending?[`${settlement.pending} day${settlement.pending>1?'s':''} had U.S. buys awaiting settlement evidence: a payment made then is counted twice until it is matched or reconciled, so ${settlement.pending>1?'those returns are':'that return is'} not verified`]:[]),
+    ...(settlement?.pending?[`${settlement.pending} day${settlement.pending>1?'s have':' has'} a U.S. buy still awaiting settlement: ${settlement.pending>1?'those returns are estimates':'that return is an estimate'} until it settles, by KIS evidence or after 3 business days`]:[]),
     ...(settlement?.corrected?[`${settlement.corrected} day${settlement.corrected>1?'s include':' includes'} accounting corrections, kept out of returns`]:[]),
     ...(settlement?.restated?[`${settlement.restated} day${settlement.restated>1?'s are':' is'} restated by a historical correction you approved`]:[])];
   return reasons.length?{reliable:false,reasons}:{reliable:true};
