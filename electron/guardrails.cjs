@@ -29,6 +29,7 @@ class Guardrails {
   failuresOn(day){return this.db.prepare('SELECT count FROM review_failures WHERE day=?').get(day)?.count??0;}
   failed(now=Date.now()){const day=seoulDate(now);this.db.prepare('INSERT INTO review_failures VALUES(?,1) ON CONFLICT(day) DO UPDATE SET count=count+1').run(day);return ++this.failureStreak;}
   succeeded(){this.failureStreak=0;}
-  state(config,now=Date.now()){const today=this.eventsOn(seoulDate(now));return {events:this.events(),autoOrdersToday:this.autoOrdersToday(now),failureStreak:this.failureStreak,trippedToday:today.some(event=>event.kind==='auto-stopped'),lossAction:config.lossAction};}
+  // autoOrders: today's count when the caller already has it (Automation caches it between writes, lag fix L1).
+  state(config,now=Date.now(),{autoOrders=null}={}){const today=this.eventsOn(seoulDate(now));return {events:this.events(),autoOrdersToday:autoOrders??this.autoOrdersToday(now),failureStreak:this.failureStreak,trippedToday:today.some(event=>event.kind==='auto-stopped'),lossAction:config.lossAction};}
 }
 module.exports={Guardrails,validateGuardrails,LOSS_ACTIONS};

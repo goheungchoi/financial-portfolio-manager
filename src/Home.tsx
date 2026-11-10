@@ -1,5 +1,6 @@
 import {priceBasis} from './live-change.mjs';
 import {useEffect,useState} from 'react';
+import {subscribeRuntime} from './runtimeFeed';
 import type {PortfolioState,PortfolioRow} from './UnifiedPortfolio';
 import {pendingKRW} from './pending';
 import type {RuntimeState} from './RuntimeSettings';
@@ -138,7 +139,7 @@ export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:Portf
 // Shown on every page while an emergency review mode is active.
 export function EmergencyBanner(){
   const [state,setState]=useState<RuntimeState|null>(null);const [busy,setBusy]=useState(false);const [note,setNote]=useState('');
-  useEffect(()=>{let alive=true;const load=()=>window.portfolio?.getRuntime().then(v=>{if(alive)setState(v);}).catch(()=>{});void load();const t=setInterval(load,2000);return()=>{alive=false;clearInterval(t);};},[]);
+  useEffect(()=>subscribeRuntime(v=>{if(v)setState(v);}),[]);
   if(!state?.emergency?.active)return null;const e=state.emergency;const symbol=e.currency==='USD'?'$':'₩';
   return <div className="emergency-notice" role="status"><b>{e.scope==='paper'?'Paper':'KIS'} emergency · loss-reduction reviews</b><span>Daily loss {symbol}{e.loss?.loss.toLocaleString()} ({e.loss?.lossPct.toFixed(2)}%)</span>{note&&<small>{note}</small>}
     <button disabled={busy||state.busy} onClick={async()=>{setBusy(true);setNote('');try{const reply=await window.portfolio?.reviewRuntime();if(reply?.state)setState(reply.state);setNote(reply?.ok?'Review done. See Journal.':'Review failed.');}catch{setNote('Review failed.');}finally{setBusy(false);}}}>{busy?'Reviewing…':'Run emergency review'}</button></div>;

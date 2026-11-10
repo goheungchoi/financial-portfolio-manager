@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
 import {HOME,tabGuides,workspaceGroups} from './WorkspaceUX';
+import {subscribeRuntime} from './runtimeFeed';
 type Market={status:string;error?:string|null;accountTimestamp?:string;stream?:{status:string;subscribed:number};quotes:{timestamp?:number;timeBasis?:string;stale:boolean}[]};
 const kst=(ms:number)=>new Date(ms).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit'});
 // A status chip that opens a small panel of details; closes on outside click or Escape.
@@ -11,7 +12,7 @@ function Chip({label,tone,children,title}:{label:ReactNode;tone:string;children?
 }
 function EngineChip({onNavigate}:{onNavigate(tab:string):void}){
   const [state,setState]=useState<RuntimeState|null>(null);const [busy,setBusy]=useState(false);const [note,setNote]=useState('');
-  useEffect(()=>{let alive=true;const load=()=>window.portfolio?.getRuntime().then(v=>{if(alive)setState(v);}).catch(()=>{});void load();const t=setInterval(load,3000);return()=>{alive=false;clearInterval(t);};},[]);
+  useEffect(()=>subscribeRuntime(v=>{if(v)setState(v);}),[]);
   if(!window.portfolio||!state)return null;
   const running=Boolean(state.launch?.running);const emergency=state.emergency?.active;
   const tone=emergency||state.lastError?'danger':state.guardrails?.trippedToday?'warning':state.busy?'accent':running?'success':'muted';
