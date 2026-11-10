@@ -98,7 +98,7 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
     // The requests over the round's allowance, answered in their order after the ones that ran: nothing was done for them.
     for(const call of over)continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify({status:'not_run',reason:`over this round's limit of ${MAX_CALLS} requests; nothing was done for it. Ask again in the next round if it is still needed.`})});
   }
-  throw new Error('INVALID_AI_RESPONSE');
+  throw protocolError(`no decision after ${ROUNDS} research rounds`,{round:ROUNDS});
   }catch(error){if(error&&typeof error==='object'){if(!error.metrics)error.metrics=done();if(changes.length&&!error.applied)error.applied=changes;}throw error;}
 }
 module.exports={researchReview,fitRequest,ROUNDS,MAX_CALLS,HARD_MAX_CALLS};
