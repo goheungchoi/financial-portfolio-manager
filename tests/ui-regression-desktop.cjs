@@ -288,6 +288,15 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await click('Record deposit');await until('document.querySelector(`[aria-label="Recorded flows"]`)?.textContent.includes("Monthly saving")','Deposit not recorded');
       await run('document.querySelector(`[aria-label="Account performance"]`).scrollIntoView({block:"start"})');await wait(200);await capture('performance-returns');
       await run('document.querySelector(`[aria-label^="Remove flow"]`).click()');await until('!document.querySelector(`[aria-label="Recorded flows"]`)','Flow not removed');
+      // A detected deposit is confirmed with its Confirm button (2026-11-10: the live app's Confirm did nothing).
+      {const {DatabaseSync}=require('node:sqlite');const {PerformanceHistory}=require('../electron/performance.cjs');const fdb=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
+        const det=new PerformanceHistory(fdb).addFlow('ui-regression-fixture',{day:new Date(Date.now()-86400000).toISOString().slice(0,10),market:'KR',amount:3000000,detected:true,note:'Detected: fixture'});fdb.close();
+        await navigate('Home');await navigate('Performance');await run('document.querySelector(`[aria-label="Deposits and withdrawals"]`).open=true');
+        await until('Boolean(document.querySelector(`[aria-label^="Confirm flow"]`))','the detected deposit is listed with Confirm');
+        const before=await run('Array.from(document.querySelectorAll(`[aria-label^="Confirm flow"]`)).map(b=>b.disabled)');console.log('CONFIRM-BUTTONS',JSON.stringify(before));
+        await run('document.querySelector(`[aria-label^="Confirm flow"]`).click()');
+        await until('!document.querySelector(`[aria-label^="Confirm flow"]`)','Confirm did not confirm the detected deposit');
+        const row=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite')).prepare('SELECT payload FROM cash_flows WHERE id=?').get(det.id);assert.ok(!JSON.parse(row.payload).detected&&JSON.parse(row.payload).confirmedAt,'stored as confirmed');}
     });
     await check('Stage 3.4: settlement corrections stay apart from performance; a restatement needs a fresh preview and an explicit approval',async()=>{
       // A U.S. settlement history built with the real tracker on the fixture database (synchronous, so no app reading
