@@ -60,7 +60,8 @@ class WatchAlerts {
 const items=t=>!t?[]:t.kind==='watchlist'?t.alerts:[t,...(t.alongside??[])];
 const marketOf=symbol=>/:/.test(symbol)?'US':'KR';
 // The trading day a check belongs to: Seoul's date for Korea, New York's for the U.S.
-const sessionOf=(market,at)=>new Intl.DateTimeFormat('en-CA',{timeZone:market==='US'?'America/New_York':'Asia/Seoul'}).format(new Date(at));
+const SESSION_FORMAT={US:new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York'}),KR:new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul'})};
+const sessionOf=(market,at)=>(market==='US'?SESSION_FORMAT.US:SESSION_FORMAT.KR).format(new Date(at));
 const sideOf=a=>a?{kind:a.kind,...(a.changePct!=null?{changePct:Math.round(a.changePct*100)/100}:{}),...(a.baseline!=null?{baseline:a.baseline}:{}),...(a.threshold!=null?{threshold:a.threshold}:{})}:null;
 // A row as per-symbol checks: {symbol, held, old, new}. Rows from before Stage 5 name the symbols of each rule and the
 // move of the first one only.

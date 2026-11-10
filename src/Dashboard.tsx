@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
+import {subscribeRuntime} from './runtimeFeed';
 export type AttentionItem={id:string;tone:'action'|'warning'|'info';title:string;detail:string;tab:string;action:string};
 export type Attention={items:AttentionItem[];counts:{approvals:Record<string,number>;lessons:number;news:number}};
 // Polls the main process for things that need the user, shared by the Overview panel and the nav badges.
@@ -26,7 +27,7 @@ function dryRunText(r:DryRunRecord){const s=r.summary;const held=s.positions.len
   return r.review?`${inputs} Would decide: ${r.review.decision.action}${r.review.decision.action==='Hold'?'':` ${r.review.decision.quantity} ${r.review.decision.symbol}`} (${r.review.calls} AI requests, $${r.review.costUSD.toFixed(3)}); nothing was applied.`:inputs;}
 export function AiActivity({onNavigate}:{onNavigate(tab:string):void}){
   const [state,setState]=useState<RuntimeState|null>(null);const [busy,setBusy]=useState(false);const [note,setNote]=useState('');const [now,setNow]=useState(Date.now());
-  useEffect(()=>{let alive=true;const load=()=>window.portfolio?.getRuntime().then(value=>{if(alive)setState(value);}).catch(()=>{});void load();const timer=setInterval(()=>{setNow(Date.now());void load();},3000);return()=>{alive=false;clearInterval(timer);};},[]);
+  useEffect(()=>{const stop=subscribeRuntime(value=>{if(value)setState(value);});const timer=setInterval(()=>setNow(Date.now()),3000);return()=>{stop();clearInterval(timer);};},[]);
   useEffect(()=>{if(!note)return;const t=setTimeout(()=>setNote(''),8000);return()=>clearTimeout(t);},[note]);
   if(!window.portfolio)return null;
   const reviews=(state?.reviews??[]).slice(0,3);const next=state?.nextReview;const wait=next?Math.max(0,next-now):null;const launch=state?.launch;

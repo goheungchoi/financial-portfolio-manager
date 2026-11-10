@@ -1,6 +1,7 @@
 const {exchangeTimestamp}=require('./kis-stream.cjs');
+const SEOUL_DATE=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'});
 function seoulDate(now=Date.now()) {
-  const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(now));
+  const parts=SEOUL_DATE.formatToParts(new Date(now));
   const value=type=>parts.find(part=>part.type===type).value;
   return `${value('year')}-${value('month')}-${value('day')}`;
 }

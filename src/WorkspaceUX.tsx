@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
+import {subscribeRuntime} from './runtimeFeed';
 export const workspaceGroups=[{label:'Portfolio',tabs:['Holdings','Charts','Performance','Activity']},{label:'Trade',tabs:['KIS trading','U.S. stocks','Paper trading']},{label:'AI',tabs:['Journal','AI console']},{label:'Research',tabs:['Discover','News','Macro']},{label:'Settings',tabs:['Connections','Engine settings','Fees & taxes','Short & leverage']}];
 export const HOME='Home';
 // Short sidebar names; the full page name shows in the breadcrumb.
@@ -27,7 +28,7 @@ export const tabGuides:Record<string,{description:string;next:string;target:stri
 const stamp=(value:number|null)=>value?new Date(value).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'} )+' KST':'No review yet';
 export function RuntimePulse({onNavigate,expanded=false}:{onNavigate(tab:string):void;expanded?:boolean}){
   const [reviewing,setReviewing]=useState(false);const [reviewMessage,setReviewMessage]=useState('');const [state,setState]=useState<RuntimeState|null>(null);const [received,setReceived]=useState(0);const [now,setNow]=useState(Date.now());const [failed,setFailed]=useState(false);
-  useEffect(()=>{let alive=true;let pending=false;const load=async()=>{if(pending)return;pending=true;try{const next=await window.portfolio?.getRuntime();if(alive&&next){setState(next);setReceived(Date.now());setFailed(false);}}catch{if(alive)setFailed(true);}finally{pending=false;}};void load();const timer=setInterval(()=>{setNow(Date.now());void load();},2000);return()=>{alive=false;clearInterval(timer);};},[]);
+  useEffect(()=>{const stop=subscribeRuntime((next,failed)=>{if(failed){setFailed(true);return;}if(next){setState(next);setReceived(Date.now());setFailed(false);}});const timer=setInterval(()=>setNow(Date.now()),2000);return()=>{stop();clearInterval(timer);};},[]);
   // Action results are transient; clear them so a stale message does not stay on every page.
   useEffect(()=>{if(!reviewMessage)return;const timer=setTimeout(()=>setReviewMessage(''),8000);return()=>clearTimeout(timer);},[reviewMessage]);
   if(!window.portfolio)return <div className="runtime-strip">Browser preview · Runtime services require the desktop application.</div>;
