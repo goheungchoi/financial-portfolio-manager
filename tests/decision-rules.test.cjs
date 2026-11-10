@@ -33,14 +33,16 @@ test('a symbol from the model is reduced to symbol characters in the detail',()=
   const r=refusal({...base,action:'Buy',symbol:'<b>005930 + "x"</b>',quantity:1});assert.equal(r.detail.decision.symbol,'b005930xb');assert.ok(!/[<>"]/.test(r.line));
 });
 test('the provider worker forwards the decision summary with the rule; the review log line carries both',()=>{
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/provider-worker.cjs'),'utf8');
-  assert.match(src,/error\.detail\.decision&&typeof error\.detail\.decision==='object'\?\{decision:Object\.fromEntries\(\['action','symbol','quantity','credit'\]/);
+  // The worker's error reply lives in provider-error-reply.cjs (2026-11-10), so it is tested directly.
+  const worker=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/provider-worker.cjs'),'utf8');assert.match(worker,/require\('\.\/provider-error-reply\.cjs'\)\.errorReply\(data\.operation,error\)/);
+  const reply=require('../electron/provider-error-reply.cjs').errorReply('decision',Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'a Hold with a quantity other than 0',decision:{action:'Hold',symbol:'',quantity:3,credit:'none',explanation:'private reasoning'}}}));
+  assert.deepEqual(reply.detail,{rule:'a Hold with a quantity other than 0',decision:{action:'Hold',symbol:'',quantity:3,credit:'none'}});
   const e=Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'a Hold with a quantity other than 0',decision:{action:'Hold',symbol:'',quantity:3,credit:'none'}}});
   assert.equal(E.detail('INVALID_AI_RESPONSE','AI research and decision',e),'The model returned an invalid decision. No order was submitted. Stage: AI research and decision. Rule: a Hold with a quantity other than 0. Decision: Hold 3.');
 });
 test('the other unexplained refusals name themselves too',()=>{
   const fs=require('node:fs'),path=require('node:path');const client=fs.readFileSync(path.join(__dirname,'../electron/ai-client.cjs'),'utf8'),rr=fs.readFileSync(path.join(__dirname,'../electron/research-review.cjs'),'utf8');
-  assert.match(client,/above the 100 KB limit/);assert.match(rr,/throw protocolError\(`no decision after \$\{ROUNDS\} research rounds`/);
+  assert.match(client,/a response of \$\{kb\(text\.length\)\}, above the \$\{kb\(RESPONSE_CHAR_LIMIT\)\} limit/);assert.match(rr,/throw protocolError\(`no decision after \$\{ROUNDS\} research rounds`/);
   assert.equal((rr.match(/throw new Error\('INVALID_AI_RESPONSE'\)/g)??[]).length,0,'research-review has no bare refusal left');
   const body=client.slice(client.indexOf('function checkDecision'),client.indexOf('return value;',client.indexOf('function checkDecision')));assert.equal((body.match(/new Error\('INVALID_AI_RESPONSE'\)\)/g)??[]).length,0,'checkDecision has no bare refusal left');
 });

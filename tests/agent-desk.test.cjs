@@ -162,7 +162,9 @@ test('conditional orders fire through the guarded path: submitted, proposed, or 
   a.desk.update(a.desk.orders(a.watchScope())[0],{status:'firing',firingAt:Date.now()-180000});assert.equal(a.desk.orders(a.watchScope())[0].waiting,'interrupted; checking again','an interrupted fire returns to armed');
   ({automation:a}=harness({engineCtx:()=>open}));const sent=[];a.notify=(id,text)=>sent.push([id,text]);arm(a,{limitPrice:225000});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above the 2% limit/,'a floor 3.7% above the bid');
   assert.equal(sent.length,1);assert.match(sent[0][1],/Stop loss for 005930 was rejected.*not protected/,'a rejected stop loss tells the phone');
-  ({automation:a}=harness({engineCtx:()=>({...open,positions:{}})}));arm(a);o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/No shares held/);
+  // 2026-11-10: no shares on a fresh read means nothing is left to protect (not a rejection, no alert); unreadable holdings stay a rejection.
+  ({automation:a}=harness({engineCtx:()=>({...open,positions:{}})}));sent.length=0;a.notify=(id,text)=>sent.push([id,text]);arm(a);o=await fire(a);assert.equal(o.status,'cancelled');assert.match(o.outcome,/Not needed: no shares of 005930 are held/);assert.equal(sent.length,0,'no stop-rejected alert');
+  ({automation:a}=harness({engineCtx:()=>({...open,positions:undefined})}));a.notify=(id,text)=>sent.push([id,text]);arm(a);o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/could not be read/);assert.equal(sent.length,1,'an unreadable balance still alerts');
   ({automation:a}=harness({engineCtx:()=>open}));arm(a,{side:'Buy',quantity:10});o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/above 10% of equity/);
   ({automation:a}=harness({engineCtx:()=>({...open,quotes:[{symbol:'005930',price:225000}]})}));arm(a);o=await fire(a);assert.equal(o.status,'armed','the fresh price no longer meets the condition');
   ({automation:a}=harness({engineCtx:()=>open}));a.live.propose=()=>{throw new Error('INSTRUMENT_NOT_ALLOWED');};arm(a);o=await fire(a);assert.equal(o.status,'rejected');assert.match(o.outcome,/INSTRUMENT_NOT_ALLOWED/);
@@ -341,4 +343,62 @@ test('a review sale larger than the free cash shares is recorded as not proposed
   const {automation:a,queue}=harness();a.live.configure({symbols:[],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE MOCK');queue.push(()=>({decision:{action:'Sell',symbol:'005930',quantity:11,explanation:'Exit.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'}));
   const r=await a.review('User request').catch(e=>{throw new Error(a.lastError+' '+a.lastErrorDetail);});
   assert.match(r.executionNote??'',/Not proposed: Sell 11 005930 is more than the shares it can close: 10 free in its lot/);assert.equal(a.live.orders().length,0,'no proposal');
+});
+// 2026-11-10: two identical one-share PNR stop losses for one held share. The agent re-armed a stop that expired before
+// the next U.S. open because the tool had no way to extend it, and nothing compared a new sell with shares held.
+test('an identical stop for shares already covered renews the armed one; a different one past the shares held is refused',()=>{
+  let now=Date.parse('2026-11-10T05:02:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:3,conditionalMaxHours:168};const U=['NYSE:PNR'];
+  const stop=(extra={},positions={'NYSE:PNR':{quantity:1}})=>desk.setOrder('both:a',{action:'add',id:'',symbol:'NYSE:PNR',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("NYSE:PNR")',op:'<=',value:58.1}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Downside exit',...extra},{config:on,universe:U,positions,reviewId:'r1'});
+  const first=stop();assert.equal(first.status,'armed');const before=desk.orders('both:a')[0];
+  now+=3600000;const again=stop({conditions:[{expr:'price( "NYSE:PNR" )',op:'<=',value:58.10}],expiresInHours:168,reason:'Keep it through the open'});
+  assert.equal(again.status,'armed');assert.equal(again.renewed,true);assert.equal(again.id,first.id);assert.equal(desk.orders('both:a').length,1,'one armed row');
+  const row=desk.orders('both:a')[0];assert.equal(row.expiresAt,now+168*3600000,'later expiry');assert.equal(row.createdAt,before.createdAt,'createdAt kept');assert.equal(row.priceAtCreation,before.priceAtCreation);assert.equal(row.renewals,1);assert.equal(row.reason,'Keep it through the open');
+  // A renewal never shortens the expiry.
+  stop({expiresInHours:1});assert.equal(desk.orders('both:a')[0].expiresAt,now+168*3600000);
+  // A different level for the same share: refused, naming the armed order.
+  const other=stop({conditions:[{expr:'price("NYSE:PNR")',op:'<=',value:57}]});assert.equal(other.status,'rejected');assert.ok(other.reason.includes('1 shares of NYSE:PNR are held')&&other.reason.includes(first.id)&&other.reason.includes('send the identical order again'),other.reason);
+  // A take profit on the same share is a different purpose and is allowed.
+  assert.equal(stop({purpose:'take_profit',conditions:[{expr:'price("NYSE:PNR")',op:'>=',value:80}]}).status,'armed');
+  assert.equal(stop({purpose:'take_profit',conditions:[{expr:'price("NYSE:PNR")',op:'>=',value:90}]},{'NYSE:PNR':{quantity:2}}).status,'armed');assert.equal(desk.orders('both:a').length,3);
+  // Renewal works at the active-order limit, since nothing new is armed.
+  assert.equal(stop().renewed,true,'at the limit of 3, the identical stop still renews');
+  // Without positions nothing is compared: a second identical order is armed as before (a stop from a new buy's plan).
+  const d2=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const s2=()=>d2.setOrder('k',{action:'add',id:'',symbol:'NYSE:PNR',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("NYSE:PNR")',op:'<=',value:58.1}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'r'},{config:on,universe:U});
+  s2();assert.equal(s2().renewed,undefined);assert.equal(d2.orders('k').length,2);
+  // Shares held: stops of 1 and 2 cover 3; a third of 1 is refused. No shares held: refused.
+  const d3=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const s3=(quantity,value,held=3)=>d3.setOrder('k',{action:'add',id:'',symbol:'NYSE:PNR',side:'Sell',quantity,limitPrice:null,conditions:[{expr:'price("NYSE:PNR")',op:'<=',value}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'r'},{config:on,universe:U,positions:{'NYSE:PNR':{quantity:held}}});
+  assert.equal(s3(1,58).status,'armed');assert.equal(s3(2,55).status,'armed');assert.equal(s3(1,50).status,'rejected');assert.ok(s3(1,50,0).reason.startsWith('0 shares of NYSE:PNR are held'));
+  // Two identical one-share stops for two shares are both armed (there is room); a third renews.
+  const d4=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const s4=()=>d4.setOrder('k',{action:'add',id:'',symbol:'NYSE:PNR',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("NYSE:PNR")',op:'<=',value:58.1}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'r'},{config:on,universe:U,positions:{'NYSE:PNR':{quantity:2}}});
+  assert.notEqual(s4().id,s4().id);assert.equal(d4.orders('k').length,2);assert.equal(s4().renewed,true,'the third renews');
+  // A Buy is never compared with holdings.
+  assert.equal(d4.setOrder('k',{action:'add',id:'',symbol:'NYSE:PNR',side:'Buy',quantity:5,limitPrice:null,conditions:[{expr:'price("NYSE:PNR")',op:'>=',value:70}],combine:'all',purpose:'entry',expiresInHours:24,reason:'r'},{config:{...on,conditionalMaxActive:5},universe:U,positions:{'NYSE:PNR':{quantity:2}}}).status,'armed');
+});
+test('a review sending the same stop twice renews it: one armed row, and the tool reply says so',async()=>{
+  const {automation:a,queue,supplied}=harness();const args={action:'add',id:'',symbol:'005930',side:'Sell',quantity:10,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:200000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'};
+  queue.push(()=>({toolCalls:[call('set_conditional_order',args,'s1')],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}}));
+  queue.push(()=>({toolCalls:[call('set_conditional_order',{...args,expiresInHours:48},'s2')],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}}));
+  await a.review('User request').catch(e=>{throw new Error(a.lastError+' '+a.lastErrorDetail);});
+  const outs=supplied.filter(([op])=>op==='decision').flatMap(([,p])=>(p.options.continuation??[]).filter(o=>o.type==='function_call_output').map(o=>JSON.parse(o.output)));
+  assert.ok(outs.some(o=>o.renewed===true),'the second reply says renewed: '+JSON.stringify(outs));assert.equal(a.desk.orders(a.watchScope()).length,1);
+});
+test('a duplicate stop that fires after the first sold the share is closed as not needed, without an alert; the second waits a minute',async()=>{
+  let held=1;const ctx=()=>({marketSession:{open:true},quotes:[{symbol:'NYSE:PNR',price:58}],positions:{'NYSE:PNR':{quantity:held}},equity:5000000,cash:200});
+  const {automation:a}=harness();engines(a,{us:{context:async()=>ctx()}});a.placementPrice=async()=>({price:58});const sent=[];a.notify=(id,text)=>sent.push(text);
+  const scope=a.watchScope();for(const id of ['C-aaaaaa','C-bbbbbb'])a.desk.write('conditional_orders',{id,scope,status:'armed',symbol:'NYSE:PNR',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'price("NYSE:PNR")',op:'<=',value:58.1}],symbols:['NYSE:PNR'],combine:'all',purpose:'stop_loss',reason:'r',createdAt:Date.now(),expiresAt:Date.now()+86400000});
+  const pick=id=>a.desk.orders(scope).find(o=>o.id===id);
+  const first=await fired(a,pick('C-aaaaaa'));assert.equal(first.status,'submitted');assert.ok(pick('C-bbbbbb').nextCheckAt>Date.now()+50000,'the other stop waits for a balance read after the fill');
+  held=0;const second=await fired(a,pick('C-bbbbbb'));assert.equal(second.status,'cancelled');assert.ok(second.outcome.includes('Not needed: no shares of NYSE:PNR are held'));assert.equal(sent.length,0,'no "not protected" alert');assert.equal(a.calls.propose.length,1,'one sale only');
+});
+test('a stale review names the guard that tripped: settings or cost settings by key, never values',async()=>{
+  const hold={decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};
+  let {automation:a,queue}=harness();queue.push(()=>{a.configure({reasoningEffort:'medium'});return hold;});
+  await assert.rejects(a.review('User request'));assert.equal(a.lastError,'STALE_DECISION');assert.ok(a.lastErrorDetail.includes('Changed: settings.'),a.lastErrorDetail);
+  ({automation:a,queue}=harness());const costs={usdKRW:1357.9,fees:{kr:1}};a.costs={get:()=>JSON.parse(JSON.stringify(costs)),context:()=>null};
+  queue.push(()=>{costs.usdKRW=1355.7;return hold;});
+  await assert.rejects(a.review('User request'));assert.equal(a.lastError,'STALE_DECISION');assert.ok(a.lastErrorDetail.includes('Changed: cost settings: usdKRW.'),a.lastErrorDetail);assert.ok(!/1355|1357/.test(a.lastErrorDetail),'no values');
+  // The helper directly: current, account scope, disposed.
+  const s=a.watchScope(),r=a.revision,c=JSON.stringify(a.costs.get());assert.equal(a.staleReason(s,r,c),null);assert.equal(a.staleReason('other',r,c),'account scope');a.disposed=true;assert.equal(a.staleReason(s,r,c),'disposed');
+  // A review with nothing changed still completes.
+  ({automation:a}=harness());await a.review('User request');assert.equal(a.lastError,null);
 });

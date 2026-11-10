@@ -525,7 +525,7 @@ class Automation {
         if(assessed&&this.config.shadowEvaluation&&!this.shadowing&&selected.openaiModel===this.config.openaiModel&&selected.reasoningEffort===this.config.reasoningEffort&&Math.random()*100<this.config.shadowPct){anchor=require('./evidence-anchor.cjs').createAnchor();shadowRun=this.shadowRun(id,structuredClone(providerContext),anchor,detail,validation);}
         if(selected.tier!=='fixed')this.log(id,'System','Model routing',`${selected.openaiModel} · ${selected.reasoningEffort} (${selected.reason})`+(inputs?` · complexity ${inputs.complexity.score}/100${inputs.complexity.reasons.length?': '+inputs.complexity.reasons.join('; '):''}`:''));
         const research=()=>require('./research-review.cjs').researchReview({context,detail,watched:watchedIn(this.discovery,context),wrap:anchor?anchor.wrapper('live'):null,evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:this.researchFor({watchScope,trigger,emergency:emergency.active,gate,gateMode,id})}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config,{heldMoves:this.heldMoves(context)});},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');}):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
-          if(this.disposed||watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
+          {const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
           const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};options={...options,...modelConfig,validation};
           const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options)});
           const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
@@ -567,7 +567,7 @@ class Automation {
         }
       } else if(this.config.provider==='external')throw new Error('EXTERNAL_DECISION_REQUIRED');
       else result={decision:this.localDecision(context),provider:'local'};
-      if(this.disposed)return;if(watchScope!==this.watchScope()||revision!==this.revision||costRevision!==JSON.stringify(this.costs?.get()))throw new Error('STALE_DECISION');
+      if(this.disposed)return;{const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
       decided=true;stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+(routing?.confirmedBy||routing?.spotCheck||routing?.verdictChange?this.config.reasoningEffort:routing?.effort??this.config.reasoningEffort)+(routing?.confirmedBy?` (confirmed ${routing.confirmed?'unchanged':'with changes'})`:''));
       this.log(id,'Agent','Decision',JSON.stringify(result.decision,null,2));
       // The execution boundary (release review 2026-11-05, P1): a model decision is checked once more against this review's
@@ -687,6 +687,15 @@ class Automation {
     finally{this.busy=false;this.researchSeen?.delete(id);this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
   }
   // A momentary OpenAI failure (connection, server error or timeout) is retried once after a short pause.
+  // Which of a review's freshness guards tripped (2026-11-10: a pre-open review failed STALE_DECISION and nothing said
+  // why). Returns null when the review is still current; otherwise 'disposed', 'account scope', 'settings', or
+  // 'cost settings: <changed top-level keys>'. Key names only, never values: no rates, tax figures or account ids.
+  staleReason(watchScope,revision,costRevision){
+    if(this.disposed)return 'disposed';if(watchScope!==this.watchScope())return 'account scope';if(revision!==this.revision)return 'settings';
+    const now=JSON.stringify(this.costs?.get());if(costRevision===now)return null;
+    let keys=[];try{const a=JSON.parse(costRevision??'null')??{},b=JSON.parse(now??'null')??{};keys=[...new Set([...Object.keys(a),...Object.keys(b)])].filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k])).sort();}catch{}
+    return 'cost settings'+(keys.length?': '+keys.slice(0,8).map(k=>String(k).replace(/[^A-Za-z0-9_.-]/g,'').slice(0,40)).join(', '):'');
+  }
   async decisionWithRetry(context,options,pauseMs=3000){
     try{return await this.provider.request('decision',{context,options});}
     catch(error){if(!['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'].includes(error?.message)||this.disposed)throw error;await new Promise(r=>setTimeout(r,pauseMs));return this.provider.request('decision',{context,options});}
@@ -923,7 +932,7 @@ class Automation {
       set_review_trigger:async args=>{guard();const reply=this.desk.setTrigger(scope,args,{universe,reviewId});if(reply.status==='saved')void this.warmSeries(reply.symbols);if(reply.status==='saved'){const check=formula.checkConditions(this.desk.triggers(scope).find(t=>t.id===reply.id).conditions,args.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));}return reply;},
       save_assessment:async args=>{guard();return this.assessments.save(scope,args,{context,reviewId,symbols:[...new Set([...Object.keys(context.positions??{}),...(context.universe??[]).map(r=>r.symbol)])]});},
       save_note:async args=>{guard();return this.desk.saveNote(scope,args,{orderIds:this.engineOrders().filter(o=>o.symbol===String(args?.symbol??'').trim().toUpperCase()&&require('./note-staleness.cjs').OPEN.includes(o.status)).map(o=>o.id)});},
-      set_conditional_order:async args=>{guard();if(args?.action!=='cancel'&&context.environment==='local-paper')return {status:'rejected',reason:'Conditional orders need a KIS account.'};const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';}return reply;},
+      set_conditional_order:async args=>{guard();if(args?.action!=='cancel'&&context.environment==='local-paper')return {status:'rejected',reason:'Conditional orders need a KIS account.'};const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,positions:context.positions??null,lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';}return reply;},
     };
   }
   // Conditional orders fire one at a time: fresh account read, conditions re-checked, then every guardrail before the normal proposal path.
@@ -980,7 +989,10 @@ class Automation {
         if(order.credit.account&&lot.account&&order.credit.account!==lot.account)return note('rejected','Not sent: the account changed since this order was armed.',{results:check.results});
         if(lot.available<1)return lot.reserved>0?note('cancelled',`Not needed: an order already waiting takes this lot (${lot.reserved}).`,{results:check.results}):note('rejected','The lot is already closed.',{results:check.results});
         quantity=Math.min(quantity,lot.available);}
-      else if(order.side==='Sell'){const held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return note('rejected','No shares held to sell.',{results:check.results});
+      // No shares held on a fresh read: the stop has nothing left to protect (2026-11-10, a duplicate stop after the first
+      // sold the share), so it is closed as not needed, without a "not protected" alert. Only when the holdings could not
+      // be read is it a rejection.
+      else if(order.side==='Sell'){const known=Boolean(ctx.positions&&typeof ctx.positions==='object'),held=ctx.positions?.[order.symbol]?.quantity??0;if(held<1)return known?note('cancelled',`Not needed: no shares of ${order.symbol} are held.`,{results:check.results}):note('rejected','No shares held to sell: the holdings could not be read.',{results:check.results});
         // Only cash shares not already in a waiting sale (credit-paths.cjs, Stage 3): margin-loan shares are never sold as
         // cash, and two stops never sell the same shares. Shares a waiting sale already takes need no second order.
         let free=held,reserved=0;try{const bal=engine.riskBalance??engine.getConnection?.()?.snapshot;if(bal?.holdings){const r=require('./credit-paths.cjs').remaining(bal,{symbol:order.symbol,side:'Sell'},engine.orders?.()??[]);free=r.available;reserved=r.reserved;}}catch{}
@@ -1009,6 +1021,9 @@ class Automation {
       if(placed?.reason==='APPROVAL_REQUIRED')return waits('needs your approval (extended session or product rule)');
       if(sent==='Rejected'&&placed.reason==='SESSION_CLOSED')return closed();
       if(sent==='Rejected')return note('rejected',`The broker rejected it (${placed.reason??'BROKER_REJECTED'}${placed.brokerCode?`, KIS ${placed.brokerCode}`:''}). No order was placed.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,results:check.results});
+      // A sale went out: the other armed cash sells of this symbol wait a minute, so the next one is judged on a balance read
+      // after this fill. This narrows, not closes, the window where a fill is recorded before the balance shows it.
+      if(order.side==='Sell'&&!order.credit)for(const other of this.desk.orders(scope))if(other.id!==order.id&&other.symbol===order.symbol&&other.side==='Sell'&&!other.credit)this.desk.update(other,{nextCheckAt:Math.max(other.nextCheckAt??0,Date.now()+60000)});
       if(sent==='Uncertain'||sent==='Submitting')return note('submitted',`Sent at ${limit} for ${quantity} shares, but the broker's reply was unclear (ORDER_UNCERTAIN): not confirmed as accepted or filled. New orders on this account wait until KIS order history confirms it; it is not retried.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,unconfirmed:true,results:check.results});
       return note('submitted',`Submitted at ${limit} for ${quantity} shares.`,{proposalId:proposal.id,orderId:placed?.id??null,brokerStatus:sent,results:check.results});
     }catch(error){

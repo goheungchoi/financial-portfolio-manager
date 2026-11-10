@@ -62,7 +62,12 @@ class AgentDesk {
   orders(scope,status='armed'){this.expire(scope);return this.rows('conditional_orders',scope,status);}
   recentOrders(scope,limit=8){this.expire(scope);return this.rows('conditional_orders',scope).filter(o=>o.status!=='armed').slice(0,limit);}
   // lot: for a credit-lot order, the caller's check of that lot against the account ({ok:true, lot} or {ok:false, reason}).
-  setOrder(scope,args,{config,universe,quotes,reviewId,lot=null}={}){
+  // positions: {symbol: {quantity}} from the review's context, when known. A sell without credit may not leave more shares
+  // under armed orders of its purpose than are held (2026-11-10: two identical one-share PNR stops for one share, because
+  // the agent could not extend a stop that expired before the next U.S. open). Sending the identical order again renews
+  // the armed one instead: its expiry moves, nothing new is armed. Without positions both checks are skipped, so a
+  // missing balance never blocks a protective order; the fire-time check still sells at most the shares held.
+  setOrder(scope,args,{config,universe,quotes,reviewId,lot=null,positions=null}={}){
     if(args?.action==='cancel'){const o=this.orders(scope).find(x=>x.id===args.id);if(!o)return fail('No armed order with that id.');this.write('conditional_orders',{...o,status:'cancelled',closedAt:this.clock(),closedBy:'agent'});return {status:'cancelled',id:o.id};}
     if(!config?.conditionalOrders)return fail('Conditional orders are turned off in Engine settings.');
     if(!isSymbol(args?.symbol)||universe&&!universe.includes(args.symbol))return fail('The symbol must be in the review universe.');
@@ -71,12 +76,23 @@ class AgentDesk {
     let parsed;try{parsed=formula.readConditions(args.conditions,LIMITS.conditionsPerItem);}catch(e){return fail(describe(e));}
     const outside=parsed.symbols.filter(s=>universe&&!universe.includes(s));if(outside.length)return fail(`Symbols must be in the review universe: ${outside.join(', ')}`);
     const hours=Number(args.expiresInHours);if(!Number.isFinite(hours)||hours<1||hours>config.conditionalMaxHours)return fail(`expiresInHours must be 1 to ${config.conditionalMaxHours}.`);
-    if(this.orders(scope).length>=config.conditionalMaxActive)return fail(`Up to ${config.conditionalMaxActive} armed conditional orders; cancel one first.`);
     const quote=quotes?.find(q=>q.symbol===args.symbol);
     if(args.limitPrice!=null&&quote?.price>0&&Math.abs(args.limitPrice/quote.price-1)*100>50)return fail('limitPrice is more than 50% away from the current price.');
     // A credit lot is named by its kind, loan date and source, on this account and symbol (audit 2026-11-04, Stage 4).
     const credit=args.credit??null;if(credit){if(!['margin-sell','cover'].includes(credit.kind)||!/^\d{4}-\d{2}-\d{2}$/.test(String(credit.loanDate??''))||!['self','distribution'].includes(credit.source))return fail('credit needs kind (margin-sell or cover), loanDate (YYYY-MM-DD) and source (self or distribution).');
       if((credit.kind==='margin-sell')!==(args.side==='Sell'))return fail('A margin repayment is a Sell and a cover is a Buy.');if(!lot?.ok)return fail(lot?.reason??'The credit lot could not be checked against the account.');}
+    if(args.side==='Sell'&&!credit&&positions&&typeof positions==='object'){
+      const held=Math.max(0,Number(positions[args.symbol]?.quantity)||0),purpose=args.purpose??null,combine=args.combine==='any'?'any':'all';
+      const same=this.orders(scope).filter(o=>o.symbol===args.symbol&&o.side==='Sell'&&!o.credit&&(o.purpose??null)===purpose),covered=same.reduce((n,o)=>n+o.quantity,0);
+      if(covered+args.quantity>held){
+        const key=c=>JSON.stringify(c.map(x=>[String(x.expr).replace(/\s+/g,''),x.op,Number(x.value)])),want=key(parsed.conditions);
+        const twin=same.find(o=>o.quantity===args.quantity&&(o.limitPrice??null)===(args.limitPrice??null)&&(o.combine??'all')===combine&&key(o.conditions)===want);
+        if(twin){const now=this.clock(),renewed=this.write('conditional_orders',{...twin,expiresAt:Math.max(twin.expiresAt,now+hours*3600000),reason:cut(args.reason,300)||twin.reason,reviewId:reviewId??twin.reviewId??null,renewedAt:now,renewals:(twin.renewals??0)+1});
+          return {status:'armed',id:renewed.id,renewed:true,expiresAt:new Date(renewed.expiresAt).toISOString(),note:'An identical armed order existed; its expiry was extended. Nothing new was armed.'};}
+        return fail(`${held} shares of ${args.symbol} are held and armed ${purpose??'sell'} orders already cover ${covered} (${same.map(o=>o.id).join(', ')||'none'}); this would cover ${covered+args.quantity}. Cancel one first, or send the identical order again to extend it.`);
+      }
+    }
+    if(this.orders(scope).length>=config.conditionalMaxActive)return fail(`Up to ${config.conditionalMaxActive} armed conditional orders; cancel one first.`);
     const now=this.clock();const o={id:'C-'+randomUUID().slice(0,6),scope,status:'armed',symbol:args.symbol,side:args.side,quantity:args.quantity,limitPrice:args.limitPrice,conditions:parsed.conditions.map(({ast,...c})=>c),symbols:parsed.symbols,combine:args.combine==='any'?'any':'all',purpose:args.purpose,reason:cut(args.reason,300),createdAt:now,expiresAt:now+hours*3600000,priceAtCreation:quote?.price??null,reviewId:reviewId??null,...(credit?{credit:{kind:credit.kind,loanDate:credit.loanDate,source:credit.source,account:lot.account??null}}:{})};
     this.write('conditional_orders',o);return {status:'armed',id:o.id,expiresAt:new Date(o.expiresAt).toISOString(),note:config.conditionalAutoSubmit&&config.autoSubmit?'It will be submitted automatically when the conditions are met and every check passes.':'When the conditions are met it becomes a proposal that waits for approval.'};
   }
