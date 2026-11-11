@@ -427,6 +427,59 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       }finally{for(const day of touched){if(original.has(day))db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(original.get(day),acct,day);else db.prepare('DELETE FROM nav_history WHERE account=? AND day=?').run(acct,day);}db.close();
         domestic.holdings=[];Object.assign(overseas,usBefore);await run('window.portfolio.refreshPortfolio()');}
     });
+    // Release gate 1.5.52, G3: unreadable records fail visibly. A damaged daily record is left out (a gap) and counted in
+    // More, and the Result tile says the performance records could not be read while the other tiles still render; with
+    // the records table unreadable, Movement shows "Daily records could not be read." with Retry, never "Loading".
+    await check('G3: a damaged daily record and an unreadable records table are shown as such on Holdings and Home',async()=>{
+      const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
+      const acct=domestic.accountKey,dayN=n=>new Date(Date.now()+9*3600000-n*86400000).toISOString().slice(0,10);
+      const usBefore={holdings:overseas.holdings,reportedTotal:overseas.reportedTotal,cash:overseas.cash};let damaged=null,saved=null,renamed=false,added=false;
+      try{
+        overseas.holdings=[];overseas.reportedTotal=overseas.cash??0;domestic.holdings=[{symbol:'005930',name:'Samsung Electronics',quantity:10,price:216000,cost:200000}];await run('window.portfolio.refreshPortfolio()');
+        damaged=dayN(3);const old=db.prepare('SELECT payload FROM nav_history WHERE account=? AND day=?').get(acct,damaged);saved=old?.payload??null;
+        if(old)db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run('{damaged',acct,damaged);else{db.prepare('INSERT INTO nav_history VALUES(?,?,?)').run(acct,damaged,'{damaged');added=true;}
+        // Holdings: the section loads, the damaged day is counted in More.
+        await navigate('Charts');await navigate('Holdings');
+        await until('Boolean(document.querySelector(`[aria-label="Movement"] .movement-card`))&&!document.querySelector(`[aria-label="Movement"]`).textContent.includes("Loading the daily records")','Movement did not load with a damaged record');
+        const more=await run('(()=>{const d=document.querySelector(`[data-symbol="005930"] details.movement-more`);d.open=true;return Array.from(d.querySelectorAll("li")).map(l=>l.textContent);})()');
+        console.log('G3-MORE '+JSON.stringify(more));assert.ok(more.includes('1 recorded day could not be read and is left out.'),'the damaged day is counted');
+        // Home with the damaged day skipped (perf-fix R1): the Result tile has its figures; nothing says "could not be read".
+        await navigate('Home');
+        await until('Boolean(document.querySelector(`[aria-label="Result"] .result-total`))&&!document.querySelector(`[aria-label="Result"]`).textContent.includes("Starts after")','Result tile missing with a damaged record');
+        const skipped=await run('document.querySelector(`[aria-label="Result"]`).textContent');console.log('G3-HOME-SKIPPED '+JSON.stringify(skipped.slice(0,160)));
+        assert.ok(!skipped.includes('could not be read'),'a skipped day is not a failed read');
+        // A damaged deposit or withdrawal record (review of the 1.5.52 fixes, change 1): the return is tagged as an estimate
+        // on the account value box, the Result tile and the Performance page.
+        db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run('ui-damaged-flow',acct,'oops');
+        await navigate('Charts');await navigate('Home');
+        await until('document.querySelector(`[aria-label="Account trend"]`)?.textContent.includes("Return estimate: a deposit or withdrawal record could not be read.")&&document.querySelector(`[aria-label="Result"] .result-tag`)?.textContent==="Return estimate"','Home estimate tags missing');
+        await run('document.querySelector(".home-metrics").scrollIntoView({block:"start"})');await wait(150);await capture('g3-home-flow-unreadable');
+        await navigate('Performance');await until('Boolean(document.querySelector(`[aria-label="Unreadable money movements"]`))','Performance estimate notice missing');
+        assert.equal(await run('document.querySelector(`[aria-label="Unreadable money movements"]`).textContent'),'Return estimate: a deposit or withdrawal record could not be read. It is left out of the returns, so a deposit or withdrawal may be counted as gain or loss.');
+        await capture('g3-performance-flow-unreadable');
+        db.prepare('DELETE FROM cash_flows WHERE id=?').run('ui-damaged-flow');
+        // The records table unreadable: Movement says so with Retry; Retry recovers once it is readable again.
+        db.exec('ALTER TABLE nav_history RENAME TO nav_history_gone');renamed=true;
+        await navigate('Charts');await navigate('Holdings');
+        await until('Boolean(document.querySelector(`[aria-label="Daily records unavailable"]`))','Movement error state missing');
+        const err=await run('(()=>{const s=document.querySelector(`[aria-label="Movement"]`);return {notice:s.querySelector(`[aria-label="Daily records unavailable"]`).textContent,pl:s.querySelector(`[data-symbol="005930"] [aria-label="P/L"]`)?.textContent??"",loading:s.textContent.includes("Loading the daily records")};})()');
+        console.log('G3-ERROR '+JSON.stringify(err));assert.equal(err.notice,'Daily records could not be read. Retry');assert.match(err.pl,/P\/L history unavailable: the daily records could not be read\./);assert.equal(err.loading,false);
+        await run('document.querySelector(`[aria-label="Movement"]`).scrollIntoView({block:"start"})');await wait(150);await capture('g3-movement-records-unreadable');
+        // Home and Performance with the records unreadable (perf-fix R4): the same sentence on the Result tile, the account
+        // value box and the Performance page; Account value and Cash still render.
+        await navigate('Home');
+        await until('document.querySelector(`[aria-label="Result"]`)?.textContent.includes("The performance records could not be read.")&&document.querySelector(`[aria-label="Account trend"]`)?.textContent.includes("The performance records could not be read.")','Home reasons missing');
+        const home=await run('(()=>({value:document.querySelector(`[aria-label="Combined equity"] strong`)?.textContent??"",cash:document.querySelector(`[aria-label="Cash"] strong`)?.textContent??"",result:document.querySelector(`[aria-label="Result"]`).textContent,unrealized:document.querySelector(`[aria-label="Result"] [aria-label="Unrealized"] dd`)?.dataset.amount}))()');
+        console.log('G3-HOME '+JSON.stringify(home));assert.match(home.value,/₩/,'Account value renders');assert.match(home.cash,/₩/,'Cash renders');assert.ok(!home.result.includes('Starts after values are recorded on two days'),'not the two-day message');assert.equal(home.unrealized,'160000','Unrealized does not depend on the records');
+        await run('document.querySelector(".home-metrics").scrollIntoView({block:"start"})');await wait(150);await capture('g3-home-records-unreadable');
+        await navigate('Performance');await until('document.querySelector(`[aria-label="Account performance"]`)?.textContent.includes("The performance records could not be read.")','Performance page reason missing');await capture('g3-performance-records-unreadable');
+        await navigate('Holdings');await until('Boolean(document.querySelector(`[aria-label="Daily records unavailable"]`))','Movement error state missing on return');
+        db.exec('ALTER TABLE nav_history_gone RENAME TO nav_history');renamed=false;
+        await run('document.querySelector(`[aria-label="Daily records unavailable"] button`).click()');
+        await until('!document.querySelector(`[aria-label="Daily records unavailable"]`)&&Boolean(document.querySelector(`[aria-label="Movement"] .movement-card`))','Retry did not recover');
+      }finally{db.prepare('DELETE FROM cash_flows WHERE id=?').run('ui-damaged-flow');if(renamed)db.exec('ALTER TABLE nav_history_gone RENAME TO nav_history');if(damaged){if(added)db.prepare('DELETE FROM nav_history WHERE account=? AND day=?').run(acct,damaged);else if(saved!=null)db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(saved,acct,damaged);}db.close();
+        domestic.holdings=[];Object.assign(overseas,usBefore);await run('window.portfolio.refreshPortfolio()');}
+    });
     // Since fdc5d5f (2026-10-29) an interval shorter than the user's needs a moving holding, which this paper fixture has
     // not; the case checks that the AI's own choice is kept, so it asks for a longer one (the guard is in review-interval tests).
     await check('Auto review interval persists the AI choice and shows its reason',async()=>{

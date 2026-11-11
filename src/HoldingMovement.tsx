@@ -32,7 +32,7 @@ type Card=ReturnType<typeof movementCards>[number];
 const at=(ms:number)=>new Date(ms).toLocaleString('en-GB',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})+' KST';
 // More (step 4): where each line comes from, the first recorded day, how the two lines end, and the daily values behind
 // both lines, newest first. A day without a record is listed as such.
-function MovementMore({card:c,cache}:{card:Card;cache?:Closes}){
+function MovementMore({card:c,cache,unreadableDays=0}:{card:Card;cache?:Closes;unreadableDays?:number}){
   const us=c.market==='US';const prices=[...c.price.points].reverse();const pl=[...c.pl.points].reverse();
   return <details className="inline-help metric-details movement-more"><summary>More</summary>
     <ul className="muted">
@@ -42,6 +42,7 @@ function MovementMore({card:c,cache}:{card:Card;cache?:Closes}){
       {c.purchase.source==='fill'&&<li>Bought {shortDay(c.purchase.day!,true)} (the app's order).</li>}
       {c.purchase.source==='first recorded'&&<li>The purchase is not in the app's orders: P/L starts at the first recorded day, {shortDay(c.purchase.day!,true)}.</li>}
       {c.pl.startsLate&&<li>The daily records start {shortDay(c.pl.startsAt!,true)}, after the purchase.</li>}
+      {unreadableDays>0&&<li>{unreadableDays} recorded day{unreadableDays===1?'':'s'} could not be read and {unreadableDays===1?'is':'are'} left out.</li>}
     </ul>
     <div className="movement-tables">
       {prices.length>0&&<table aria-label="Daily prices"><thead><tr><th>Day</th><th>Close</th></tr></thead><tbody>{prices.map(p=><tr key={p.day}><td>{shortDay(p.day)}</td><td>{money(p.close,c.currency)}{(p as any).live?' (live)':''}</td></tr>)}</tbody></table>}
@@ -54,7 +55,9 @@ export function HoldingMovement({rows,equity,onCompany}:{rows:PortfolioRow[];equ
   const [period,setPeriod]=useDraftState('portfolio:movementPeriod','1M');
   const [records,setRecords]=useState<Awaited<ReturnType<NonNullable<typeof window.portfolio>['getMovementRecords']>>|null>(null);
   const [,setTick]=useState(0);const bump=()=>setTick(t=>t+1);
-  useEffect(()=>{let alive=true;void (async()=>{try{const r=await window.portfolio?.getMovementRecords();if(alive&&r)setRecords(r);}catch{}})();return()=>{alive=false;};},[]);
+  // A failed read is shown with Retry (release gate 1.5.52, G3): never a section left on "Loading".
+  const loadRecords=async(alive=()=>true)=>{let r:any=null;try{r=await window.portfolio?.getMovementRecords();}catch{r={connected:true,error:'REQUEST_FAILED',days:[],fills:{}};}if(alive())setRecords(r??{connected:true,error:'REQUEST_FAILED',days:[],fills:{}});};
+  useEffect(()=>{let alive=true;void loadRecords(()=>alive);return()=>{alive=false;};},[]);
   const symbols=rows.filter(r=>r.quantity>0).map(r=>r.symbol).join(',');
   // One symbol after another (the KIS queue would space them anyway; this keeps the page from asking for all at once).
   useEffect(()=>{let alive=true;void (async()=>{for(const symbol of symbols.split(',').filter(Boolean)){if(!alive)return;if(closesCache.has(symbol))continue;
@@ -66,9 +69,11 @@ export function HoldingMovement({rows,equity,onCompany}:{rows:PortfolioRow[];equ
   const days=recordedDays(records?.days??[]);
   const closesBySymbol=Object.fromEntries(rows.map(r=>[r.symbol,closesCache.get(r.symbol)??{closes:null,reason:'Loading prices…'}]));
   // now: a U.S. holding's price line is dated by its New York day.
-  const shown=records?movementCards({rows,closesBySymbol,days,fillsBySymbol:records.fills??{},period:active,today,now}):[];
+  const failed=Boolean((records as any)?.error);
+  const shown=records?movementCards({rows,closesBySymbol,days,fillsBySymbol:records.fills??{},period:active,today,now,recordsReason:failed?'P/L history unavailable: the daily records could not be read.':null}):[];
   return <section className="holding-movement" aria-label="Movement">
     <div className="section-head"><h2>Movement</h2><div className="segmented compact" role="tablist" aria-label="Movement period">{PERIODS.map(p=><button key={p} role="tab" aria-selected={active===p} aria-pressed={active===p} onClick={()=>setPeriod(p)}>{p}</button>)}</div></div>
+    {failed&&<p className="notice warning small-line" role="status" aria-label="Daily records unavailable">Daily records could not be read. <button className="link-button" onClick={()=>{setRecords(null);void loadRecords();}}>Retry</button></p>}
     {!records?<p className="muted">Loading the daily records…</p>:!records.connected?<p className="muted">Connect your KIS account to see how your holdings moved.</p>:!shown.length?<p className="muted">No open holdings for this market.</p>:
     <div className="movement-grid">{shown.map(c=>{const row=rows.find(r=>r.symbol===c.symbol)!;const share=equity&&row.valueKRW!=null?row.valueKRW/equity:null;
       const priceValues=c.price.points.map(p=>p.close);const marker=c.price.purchaseMarked?c.price.points.findIndex(p=>p.day>=c.purchase.marketDay!):null;
@@ -88,7 +93,7 @@ export function HoldingMovement({rows,equity,onCompany}:{rows:PortfolioRow[];equ
           <Line values={plDays.map(p=>p.pnl)} zero className={tone(c.pl.end)} label={`${c.name} P/L ${plDays[0]?.day??''} to ${plDays.at(-1)?.day??''}`}/>
           {plDays.length>0&&<small className="movement-days" aria-label="P/L line days"><span>{shortDay(plDays[0].day)}</span><span>{shortDay(plDays.at(-1)!.day)}</span></small>}
           {c.pl.startsLate&&<small className="muted">P/L from {shortDay(c.pl.startsAt!)}, the first recorded day</small>}</>}</div>
-        <MovementMore card={c} cache={cache}/>
+        <MovementMore card={c} cache={cache} unreadableDays={(records as any)?.unreadableDays??0}/>
       </article>;})}</div>}
   </section>;
 }

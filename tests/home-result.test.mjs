@@ -76,3 +76,16 @@ test('Today says "Unavailable" only for a recorded reason, as the box does; othe
   const last=extra=>summary({points:[point('2026-11-10',1010000),point('2026-11-11',1020000,extra)]});
   assert.equal(homeResult({summary:last({pnl:null,unavailable:['x']})}).today.unavailable,true);assert.equal(homeResult({summary:last({pnl:null})}).today.unavailable,false);
 });
+test('the performance records could not be read: Total and Today say so, not "starts after two days" (release gate 1.5.52, G3)',()=>{
+  const f='The performance records could not be read.';
+  const r=homeResult({summary:null,rows:[kr('005930',2,60000,61000)],usLoaded:true,failure:f});
+  assert.equal(r.total.reason,f);assert.equal(r.today.reason,f);assert.equal(r.total.gain,null);assert.equal(r.unrealized.amount,2000,'Unrealized does not depend on the records');
+  assert.equal(homeResult({summary:null}).total.reason,'Starts after values are recorded on two days.','no failure: the usual message');
+  assert.equal(homeResult({summary:summary(),failure:f}).total.reason,null,'a summary that loaded wins over an earlier failure');
+});
+test('an unreadable deposit or withdrawal record: the box note and the Result tile tag say the return is an estimate (review of the 1.5.52 fixes)',async()=>{
+  const {periodNote}=await import('../src/home-result.mjs');const s=summary({unreadableFlows:1,provisional:{unresolved:[{}]}},{settlementAffected:{pending:[]}});
+  assert.equal(periodNote(s.periods.at(-1),s).text,'Return estimate: a deposit or withdrawal record could not be read.','before settlement and unresolved');
+  const r=homeResult({summary:s});assert.deepEqual([r.total.tag.text,r.total.tag.why],['Return estimate','a deposit or withdrawal record could not be read.']);assert.equal(r.total.gain,20000,'the figure is still shown, tagged');
+  assert.equal(periodNote({unavailable:['2026-11-05: x']},{unreadableFlows:1}).missing,true,'no return at all still comes first');
+});

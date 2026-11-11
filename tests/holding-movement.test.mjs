@@ -98,3 +98,10 @@ test("the live point during the U.S. session is dated by the New York day, repla
   const kr=holdingMovement({row:krRow('000270',1,95000,95100),closes:closesFrom('2026-11-01','2026-11-11',95000,100),days:[],period:'1W',today:'2026-11-12',now});
   assert.equal(kr.price.points.at(-1).day,'2026-11-12','a Korean holding keeps the Seoul day');
 });
+test('the daily records could not be read: the P/L line says so, the price line still draws (release gate 1.5.52, G3)',()=>{
+  const m=holdingMovement({row:krRow('000270',1,95000,95100),closes:closesFrom('2026-10-01',TODAY),days:[],period:'1M',today:TODAY,recordsReason:'P/L history unavailable: the daily records could not be read.'});
+  assert.equal(m.pl.reason,'P/L history unavailable: the daily records could not be read.');assert.equal(m.price.reason,null);
+  const cards=movementCards({rows:[krRow('000270',1,95000,95100)],days:{KR:[],US:[]},period:'1M',today:TODAY,recordsReason:'P/L history unavailable: the daily records could not be read.'});
+  assert.equal(cards[0].pl.reason,'P/L history unavailable: the daily records could not be read.');
+  assert.equal(holdingMovement({row:krRow('000270',1,95000,95100),closes:null,days:[],period:'1M',today:TODAY}).pl.reason,'P/L history unavailable: this holding is not in the daily records yet.','without a failure, the usual reason');
+});
