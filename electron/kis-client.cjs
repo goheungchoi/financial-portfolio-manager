@@ -290,7 +290,7 @@ class KisReadOnlyClient {
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
     }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
   }
-  // session.route picks the exchange (KRX or NXT) and order type (00 limit, 07 after-hours single price).
+  // session.route picks the exchange (KRX or NXT) and order type (00 limit).
   async placeOrder(command,session=null) {
     if(command.credit)return this.placeCreditOrder(command);
     await this.authenticate();await this.wait(550);

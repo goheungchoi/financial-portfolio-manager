@@ -4,8 +4,14 @@
 const US_KNOWN={TQQQ:3,SQQQ:-3,QLD:2,QID:-2,PSQ:-1,UPRO:3,SPXU:-3,SPXL:3,SPXS:-3,SSO:2,SDS:-2,SH:-1,SOXL:3,SOXS:-3,TNA:3,TZA:-3,TECL:3,TECS:-3,FAS:3,FAZ:-3,LABU:3,LABD:-3,UDOW:3,SDOW:-3,DDM:2,DXD:-2,DOG:-1,TMF:3,TMV:-3,TBT:-2,UBT:2,NUGT:2,DUST:-2,YINN:3,YANG:-3,FNGU:3,FNGD:-3,NVDL:2,NVDU:2,NVDD:-1,TSLL:2,TSLQ:-1,CONL:2,MSTU:2,BITX:2,UVXY:1.5,SVXY:-0.5};
 // Margin: loan source self (자기융자) or distribution (유통융자, via KSFC); interestPct is the annual loan rate used for estimates.
 // Short: stock loan source (자기대주 / 유통대주); feePct is the annual borrowing fee used for estimates.
-const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5}};
+// leveragedEtps.brokerEligible: whether the user confirmed that KIS lets this account buy leveraged and inverse products
+// (true, false, or null = not confirmed). The app cannot read it from KIS (fact check X2, 2026-11-11).
+const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10,brokerEligible:null},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5}};
 const CREDIT_TYPES={'margin-buy':{self:'21',distribution:'23'},'margin-sell':{self:'25',distribution:'27'},short:{self:'24',distribution:'22'},cover:{self:'28',distribution:'26'}};
+// Whether the AI may consider leveraged and inverse products for this account, with the reason when not: the switch
+// is on and the user confirmed the broker allows the account to buy them.
+function leveragedAccess(p){if(!p?.enabled)return {allowed:false,reason:"Off in the user's settings."};if(p.brokerEligible===true)return {allowed:true};
+  return {allowed:false,reason:p.brokerEligible===false?'The user says the broker does not let this account buy leveraged or inverse products.':'The user has not confirmed that the broker lets this account buy leveraged or inverse products.'};}
 const daysBetween=(a,b)=>Math.round((Date.parse(b)-Date.parse(a))/86400000);
 function classifyName(symbol,name='',englishName=''){
   const us=symbol.includes(':');const ticker=us?symbol.split(':')[1]:symbol;
@@ -50,7 +56,7 @@ class Exposure {
     const next=this.policy(account);
     for(const [section,fields] of Object.entries(value)){if(!fields||typeof fields!=='object')throw new Error('INVALID_SETTINGS');for(const [key,v] of Object.entries(fields)){
       if(!Object.hasOwn(DEFAULT_POLICY[section],key))throw new Error('INVALID_SETTINGS');
-      if(key==='source'?!['self','distribution'].includes(v):['enabled','auto'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
+      if(key==='brokerEligible'?![true,false,null].includes(v):key==='source'?!['self','distribution'].includes(v):['enabled','auto'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
       next[section][key]=v;}}
     for(const section of Object.keys(next))if(!next[section].enabled)next[section].auto=false;
     this.db.prepare('INSERT INTO exposure_policy VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(next));return next;
@@ -108,7 +114,8 @@ class Exposure {
     const policy=this.policy(account),summary=this.summary(holdings,equity,Date.now(),firstSeen);
     const products=[...new Set([...(universe??[]).map(u=>u.symbol),...(holdings??[]).map(h=>h.symbol)])].map(symbol=>({symbol,...this.classify(symbol,(universe??[]).find(u=>u.symbol===symbol)?.name)})).filter(p=>p.kind!=='standard').map(({symbol,factor,kind})=>({symbol,factor,kind}));
     const warnings=summary.positions.filter(r=>r.kind!=='standard'&&r.heldDays!=null&&r.heldDays>policy.leveragedEtps.maxHoldingDays).map(r=>`${r.symbol} (${r.factor}x daily) held ${r.heldDays} days; daily-reset products drift from the index over longer holds.`);
-    return {leveragedEtps:{allowed:policy.leveragedEtps.enabled,automatic:policy.leveragedEtps.auto,maxPctOfEquity:policy.leveragedEtps.maxPctOfEquity,maxHoldingDays:policy.leveragedEtps.maxHoldingDays},products,exposure:{leveragedPct:summary.leveragedPct==null?null:Math.round(summary.leveragedPct*10)/10,effectivePct:summary.effectivePct==null?null:Math.round(summary.effectivePct*10)/10},warnings};
+    const access=leveragedAccess(policy.leveragedEtps);
+    return {leveragedEtps:{allowed:access.allowed,...(access.reason?{reason:access.reason}:{}),automatic:policy.leveragedEtps.auto,maxPctOfEquity:policy.leveragedEtps.maxPctOfEquity,maxHoldingDays:policy.leveragedEtps.maxHoldingDays},products,exposure:{leveragedPct:summary.leveragedPct==null?null:Math.round(summary.leveragedPct*10)/10,effectivePct:summary.effectivePct==null?null:Math.round(summary.effectivePct*10)/10},warnings};
   }
 }
-module.exports={Exposure,classifyName,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};
+module.exports={Exposure,classifyName,leveragedAccess,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};

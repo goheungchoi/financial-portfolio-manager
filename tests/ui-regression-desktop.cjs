@@ -236,6 +236,28 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const perf=await run('window.portfolio.getPerformance()');const prov=(perf?.summaries??perf?.summary??perf)?.provisional??null;console.log('Q1-PROVISIONAL '+JSON.stringify({keys:prov?Object.keys(prov):null}));
       assert.ok(!(await run('document.querySelector(`main`).textContent.includes("Provisional performance")')),'no notice about money changes that do not exist');
     });
+    // Fact check fixes (2026-11-11): X1 the Extended hours card without the ended KRX single-price auction; X2 the
+    // leveraged eligibility row, its notice while not confirmed, and the details behind More. Dark and light.
+    await check('X1/X2: Extended hours has four switches and says when the KRX auction ended; leveraged products wait for confirmed eligibility',async()=>{
+      const theme0=await run('document.documentElement.dataset.theme');const setTheme=async t=>{if(await run('document.documentElement.dataset.theme')!==t){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(t)}`,'theme');}};
+      await navigate('Engine settings');await until('Boolean(document.querySelector(`#eng-extended`))','Extended hours card');
+      const card=await run('(()=>{const c=document.querySelector(`#eng-extended`);c.querySelectorAll(`details`).forEach(d=>d.open=true);c.scrollIntoView({block:"start"});return {text:c.textContent,switches:c.querySelectorAll(`[role=switch],input[type=checkbox]`).length};})()');
+      console.log('X1-CARD '+JSON.stringify({switches:card.switches}));assert.equal(card.switches,4,'four session switches');assert.ok(!/single price|order type 07/.test(card.text.replace(/KRX ended its after-hours single-price auction on 2026-09-14, so the app no longer offers it\./,'')),'no single-price row or route');
+      assert.match(card.text,/KRX ended its after-hours single-price auction on 2026-09-14, so the app no longer offers it\./);
+      for(const t of ['dark','light']){await setTheme(t);await run('document.querySelector(`#eng-extended`).scrollIntoView({block:"start"})');await wait(150);await capture('x1-extended-hours-'+t);}
+      const before=await run('window.portfolio.getExposure()');const savedKR=before.state.markets.KR.policy?.leveragedEtps??null;
+      try{
+        await run("window.portfolio.saveExposurePolicy('KR',{leveragedEtps:{enabled:true,brokerEligible:null}})");await navigate('Short & leverage');
+        await until('document.querySelector(`[aria-label="Korea eligibility notice"]`)?.textContent==="Not offered to the AI until you confirm eligibility."','the notice while not confirmed');
+        const row=await run('(()=>{const s=document.querySelector(`[aria-label="Korea broker eligibility"]`);const sec=s.closest(`.exposure-section`);sec.querySelectorAll(`details`).forEach(d=>d.open=true);sec.scrollIntoView({block:"start"});return {value:s.value,options:Array.from(s.options).map(o=>o.textContent),text:sec.textContent};})()');
+        console.log('X2-ROW '+JSON.stringify({value:row.value,options:row.options}));assert.equal(row.value,'');assert.deepEqual(row.options,['Not confirmed','Yes','No']);
+        for(const s of ['My KIS account can buy these products','KIS requires a basic deposit and investor education.','Why the app asks','KRW 10 million','KRW 30 million'])assert.ok(row.text.includes(s),s);
+        for(const t of ['dark','light']){await setTheme(t);await run('document.querySelector(`[aria-label="Korea broker eligibility"]`).closest(`.exposure-section`).scrollIntoView({block:"start"})');await wait(150);await capture('x2-leverage-not-confirmed-'+t);}
+        await run("window.portfolio.saveExposurePolicy('KR',{leveragedEtps:{brokerEligible:true}})");await navigate('Home');await navigate('Short & leverage');
+        await until('document.querySelector(`[aria-label="Korea broker eligibility"]`)?.value==="yes"','confirmed');assert.equal(await run('Boolean(document.querySelector(`[aria-label="Korea eligibility notice"]`))'),false,'no notice once confirmed');
+        await run('document.querySelector(`[aria-label="Korea broker eligibility"]`).closest(`.exposure-section`).scrollIntoView({block:"start"})');await wait(150);await capture('x2-leverage-confirmed-'+(await run('document.documentElement.dataset.theme')));
+      }finally{await run(`window.portfolio.saveExposurePolicy('KR',{leveragedEtps:${JSON.stringify(savedKR?{enabled:savedKR.enabled,auto:savedKR.auto,brokerEligible:savedKR.brokerEligible??null}:{enabled:false,brokerEligible:null})}})`);await setTheme(theme0);}
+    });
     await check('J1/J2: six Journal tabs in order, Decisions by default, each captured; the decision detail collapsed and expanded',async()=>{
       // The tab is session memory (useDraftState): the default and the fallback for an unknown saved tab are unit-tested.
       await navigate('Journal');await until('Boolean(document.querySelector(`[aria-label="Journal views"]`))','Journal tabs');

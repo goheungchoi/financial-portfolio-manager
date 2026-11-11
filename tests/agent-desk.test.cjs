@@ -402,3 +402,112 @@ test('a stale review names the guard that tripped: settings or cost settings by 
   // A review with nothing changed still completes.
   ({automation:a}=harness());await a.review('User request');assert.equal(a.lastError,null);
 });
+// Agent tools T1 (artifacts/reviews/2026-11-11-agent-tools): cci, stochrsi and ultimate in formulas, the same values as indicators.cjs.
+const ranged=(n,f)=>days(n).map((date,i)=>{const c=f(i);return {date,open:c,high:c+3+(i%4),low:c-2-(i%3),close:c,value:1e9+i};});
+test('T1: cci, stochrsi and ultimate equal indicators.cjs on the same candles',()=>{const ind=require('../electron/indicators.cjs');
+  const c=ranged(60,i=>200+i*0.8+Math.sin(i/3)*6);const d=data({'005930':250},{'005930':c});const v=e=>formula.evaluate(formula.parse(e).ast,d);
+  assert.equal(v('cci("005930")'),ind.cci(c,14));assert.equal(v('cci("005930",20)'),ind.cci(c,20));
+  assert.equal(v('stochrsi("005930")'),ind.stochRsi(c.map(x=>x.close),14));assert.equal(v('stochrsi("005930",10)'),ind.stochRsi(c.map(x=>x.close),10));
+  assert.equal(v('ultimate("005930")'),ind.ultimate(c));assert.ok(v('ultimate("005930")')>=0&&v('ultimate("005930")')<=100);
+  assert.ok(Math.abs(v('cci("005930")-cci("005930",14)'))<1e-12,'usable inside arithmetic');
+});
+test('T1: missing data, missing highs and lows, short history and bad windows give the existing errors',()=>{
+  const code=(e,d)=>{try{formula.evaluate(formula.parse(e).ast,d);return 'ok';}catch(err){return err.code;}};const c=ranged(60,i=>200+i);
+  assert.equal(code('cci("005930")',data({},{})),'NO_DATA');assert.equal(code('ultimate("005930")',data({},{})),'NO_DATA');assert.equal(code('stochrsi("005930")',data({},{})),'NO_DATA');
+  const closesOnly=series(60,i=>200+i);assert.equal(code('cci("005930")',data({},{'005930':closesOnly})),'NO_DATA','cci needs highs and lows');assert.equal(code('ultimate("005930")',data({},{'005930':closesOnly})),'NO_DATA');
+  assert.equal(code('stochrsi("005930")',data({},{'005930':closesOnly})),'ok','stochrsi uses closes only');
+  assert.equal(code('cci("005930")',data({},{'005930':c.slice(0,10)})),'NOT_ENOUGH_HISTORY');assert.equal(code('stochrsi("005930")',data({},{'005930':c.slice(0,20)})),'NOT_ENOUGH_HISTORY');assert.equal(code('ultimate("005930")',data({},{'005930':c.slice(0,28)})),'NOT_ENOUGH_HISTORY');
+  assert.equal(code('cci("005930",1)',data({},{'005930':c})),'BAD_WINDOW');assert.equal(code('stochrsi("005930",400)',data({},{'005930':c})),'BAD_WINDOW');
+  assert.throws(()=>formula.parse('ultimate("005930",7)'),/WRONG_ARGUMENTS/);assert.throws(()=>formula.parse('cci(14)'),/WRONG_ARGUMENTS/);
+  const check=formula.checkConditions(formula.readConditions([{expr:'cci("005930")',op:'>',value:-1e9}]).conditions,'all',data({},{'005930':closesOnly}));assert.equal(check.met,false);assert.equal(check.results[0].error,'NO_DATA');
+});
+test('T1: a review trigger using cci validates, fires once on a price update, and not on missing data',()=>{
+  let now=Date.parse('2026-10-17T01:00:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const c=ranged(60,i=>200+i);
+  const saved=desk.setTrigger('kis:a',{action:'add',id:'',name:'Stretched',conditions:[{expr:'cci("005930",20)',op:'>',value:50}],combine:'all',expiresInHours:24,reason:'Stretched up'},{universe:['005930']});assert.equal(saved.status,'saved');
+  assert.equal(desk.checkTriggers('kis:a',data({'005930':260},{'005930':null})),null,'no series: not fired');assert.equal(desk.checkTriggers('kis:a',data({'005930':260},{'005930':series(60,i=>200+i)})),null,'no highs and lows: not fired');
+  const hit=desk.checkTriggers('kis:a',data({'005930':260},{'005930':c}));assert.ok(hit);assert.equal(hit.trigger.name,'Stretched');assert.ok(hit.results[0].actual>50);
+  assert.equal(desk.checkTriggers('kis:a',data({'005930':260},{'005930':c})),null,'fires once');
+});
+test('T1: a conditional order using cci is armed, fires through the tick once, and not on missing data',async()=>{
+  const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
+  const run=async closes=>{const {automation:a}=harness({engineCtx:()=>open});a.series={closes:s=>s==='005930'?closes:null,ensure:async()=>{}};
+    const r=a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:1,limitPrice:null,conditions:[{expr:'cci("005930",20)',op:'>',value:50}],combine:'all',purpose:'take_profit',expiresInHours:24,reason:'Stretched'},{config:a.config,universe:['005930']});assert.equal(r.status,'armed');
+    a.configure({enabled:true});a.sessionArmed=true;for(let i=0;i<2;i++){a.lastDeskCheck=0;a.tick();await new Promise(res=>setTimeout(res,30));}return a;};
+  const fired=await run(ranged(60,i=>200000+i*500));assert.equal(fired.calls.propose.length,1,'fires once');assert.equal(fired.desk.orders(fired.watchScope()).length,0);
+  const missing=await run(series(60,i=>200000+i*500));assert.equal(missing.calls.propose.length,0,'no highs and lows: stays armed');assert.equal(missing.desk.orders(missing.watchScope()).length,1);
+});
+test('T1: the formula help the AI reads lists cci, stochrsi and ultimate',()=>{
+  for(const s of ['cci(sym,n): commodity channel index','stochrsi(sym,n): stochastic RSI','ultimate(sym): ultimate oscillator'])assert.ok(formula.HELP.includes(s),s);
+});
+
+// Agent tools T0: formula use recorded per review, counting only.
+const FU=require('../electron/formula-use.cjs');
+const t0Calls=()=>({toolCalls:[call('compute',{formulas:[{name:'gap',expr:'(price("005930")/sma("005930",20)-1)*100'},{name:'bad',expr:'foo()'}]},'c1'),call('compute',{formulas:[{name:'r',expr:'rsi("005930")'},{name:'nohist',expr:'sma("005930",200)'}]},'c2'),call('set_review_trigger',{action:'add',id:'',name:'Above average',conditions:[{expr:'price("005930")/sma("005930",20)',op:'>=',value:1.05}],combine:'all',expiresInHours:48,reason:'Trim zone'},'c3')],continuation:[{role:'user',content:'x'}],usage:{inputTokens:1,outputTokens:1}});
+const t0Outputs=supplied=>supplied.filter(([op])=>op==='decision')[1][1].options.continuation.filter(o=>o.type==='function_call_output').map(o=>{const v=JSON.parse(o.output);delete v.id;delete v.expiresAt;return v;});// expiresAt comes from the clock
+const lastReview=db=>JSON.parse(db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);
+test('T0: a review records compute calls, functions, errors and the functions of the trigger it set',async()=>{
+  const {automation,queue,db}=harness();queue.push(t0Calls);await automation.review();
+  const u=FU.recordedUse(lastReview(db));
+  assert.ok(u,'recorded');assert.equal(u.version,1);assert.equal(u.computeCalls,2);assert.equal(u.formulas,4);
+  assert.deepEqual(u.functions,{price:1,sma:2,rsi:1});assert.deepEqual(u.errors,{UNKNOWN_FUNCTION:1,NOT_ENOUGH_HISTORY:1});
+  assert.equal(u.items.length,1);assert.equal(u.items[0].kind,'trigger');assert.deepEqual(u.items[0].functions,['price','sma']);assert.equal(u.incomplete,undefined);
+  assert.equal(FU.recordedUse({id:'old',decision:{}}),null,'an old review reads as not recorded, not zero');
+});
+test('T0: a counter that throws leaves the review, its tool results and its decision identical',async()=>{
+  const normal=harness();normal.queue.push(t0Calls);await normal.automation.review();
+  const saved={compute:FU.FormulaUse.prototype.compute,item:FU.FormulaUse.prototype.item,summary:FU.FormulaUse.prototype.summary};
+  for(const k of Object.keys(saved))FU.FormulaUse.prototype[k]=()=>{throw new Error('counter broke');};
+  try{const broken=harness();broken.queue.push(t0Calls);await broken.automation.review();
+    assert.deepEqual(t0Outputs(broken.supplied),t0Outputs(normal.supplied),'same tool results');
+    const a=lastReview(normal.db),b=lastReview(broken.db);
+    assert.deepEqual(b.decision,a.decision);assert.equal(b.formulaUse,undefined,'nothing recorded');assert.ok(a.formulaUse);assert.equal(broken.automation.lastError??null,null);
+    assert.equal(broken.automation.getState().desk.triggers.length,1,'the trigger was still saved');
+  }finally{Object.assign(FU.FormulaUse.prototype,saved);}
+});
+test('T0: conditional orders and the final decision cancelIf are recorded by kind with their functions',()=>{
+  const u=new FU.FormulaUse();u.item('conditionalOrder','o1',[{expr:'cci("005930")'},{expr:'price("005930")'}]);
+  const s=u.summary({execution:{cancelIf:[{expr:'ultimate("005930")',op:'<',value:30}]}});
+  assert.deepEqual(s.items,[{kind:'conditionalOrder',id:'o1',functions:['cci','price']},{kind:'cancelIf',id:null,functions:['ultimate']}]);
+  assert.deepEqual(FU.functionsOf('foo('),[],'a bad formula counts no functions and does not throw');
+});
+// Fact check X2 (artifacts/reviews/2026-11-11-agent-tools/facts-fix-report.md): an AI conditional entry on a leveraged or
+// inverse product is refused when arming and rejected when firing unless the switch is on and broker eligibility is
+// confirmed; a protective Sell of a held leveraged product still fires.
+const leveragedHarness=({eligible})=>{const {Exposure}=require('../electron/exposure.cjs');
+  const open={marketSession:{open:true},quotes:[{symbol:'122630',price:15000}],positions:{'122630':{quantity:4}},equity:10000000,cash:5000000};
+  const h=harness({engineCtx:()=>open});const {automation:a,db}=h;
+  db.exec("CREATE TABLE IF NOT EXISTS securities(symbol TEXT PRIMARY KEY,name TEXT,englishName TEXT,market TEXT,type TEXT,isin TEXT,industry TEXT);INSERT OR REPLACE INTO securities VALUES('122630','KODEX 레버리지','','KOSPI','etf','',NULL)");
+  const exposure=new Exposure(db);exposure.savePolicy('acct',{leveragedEtps:{enabled:true,...(eligible===undefined?{}:{brokerEligible:eligible})}});a.live.exposure=exposure;
+  a.series={closes:()=>series(40,i=>15000+i),ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'122630',price:15000,timestamp:Date.now(),retrievedAt:Date.now()}];
+  return {...h,exposure};};
+const condition=[{expr:'price("122630")',op:'>',value:1}];
+test('X2: an AI conditional entry on a leveraged product is refused at arming while eligibility is not confirmed',async()=>{
+  const {automation:a}=leveragedHarness({eligible:undefined});const actions=a.deskActions(a.watchScope(),{universe:[{symbol:'122630'}],quotes:[{symbol:'122630',price:15000}],positions:{'122630':{quantity:4}},environment:'kis'},'r1',()=>{});
+  const entry=await actions.set_conditional_order({action:'add',id:'',symbol:'122630',side:'Buy',quantity:1,limitPrice:null,conditions:condition,combine:'all',purpose:'entry',expiresInHours:24,reason:'Entry'});
+  assert.equal(entry.status,'rejected');assert.match(entry.reason,/leveraged product \(2x daily\) is not permitted for this account: The user has not confirmed/);assert.equal(a.desk.orders(a.watchScope()).length,0);
+  const stop=await actions.set_conditional_order({action:'add',id:'',symbol:'122630',side:'Sell',quantity:4,limitPrice:null,conditions:[{expr:'price("122630")',op:'<=',value:14000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'});
+  assert.equal(stop.status,'armed','a protective Sell of the held product is armed');
+});
+test('X2: an armed leveraged entry is rejected at firing when eligibility is not confirmed; a protective Sell still fires',async()=>{
+  const {automation:a}=leveragedHarness({eligible:true});const scope=a.watchScope();
+  const r=a.desk.setOrder(scope,{action:'add',id:'',symbol:'122630',side:'Buy',quantity:1,limitPrice:null,conditions:condition,combine:'all',purpose:'entry',expiresInHours:24,reason:'Entry'},{config:a.config,universe:['122630']});assert.equal(r.status,'armed');
+  a.live.exposure.savePolicy('acct',{leveragedEtps:{brokerEligible:null}});// changed after arming
+  a.configure({enabled:true});a.sessionArmed=true;a.lastDeskCheck=0;a.tick();await new Promise(res=>setTimeout(res,40));
+  assert.equal(a.calls.propose.length,0,'nothing proposed');const closed=a.desk.recentOrders?.(scope)??a.getState().desk.recentOrders;const rec=closed.find(o=>o.id===r.id);
+  assert.equal(rec?.status,'rejected');assert.match(rec.outcome,/not permitted for this account: The user has not confirmed.*Nothing was sent\./);
+  const stop=a.desk.setOrder(scope,{action:'add',id:'',symbol:'122630',side:'Sell',quantity:1,limitPrice:null,conditions:condition,combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['122630']});assert.equal(stop.status,'armed');
+  a.lastDeskCheck=0;a.tick();await new Promise(res=>setTimeout(res,40));assert.equal(a.calls.propose.length,1,'the protective Sell fires');assert.equal(a.calls.propose[0].side,'Sell');
+});
+test('X2: with the switch on and eligibility confirmed, a leveraged conditional entry is armed and fires',async()=>{
+  const {automation:a}=leveragedHarness({eligible:true});const actions=a.deskActions(a.watchScope(),{universe:[{symbol:'122630'}],quotes:[{symbol:'122630',price:15000}],positions:{},environment:'kis'},'r1',()=>{});
+  const entry=await actions.set_conditional_order({action:'add',id:'',symbol:'122630',side:'Buy',quantity:1,limitPrice:null,conditions:condition,combine:'all',purpose:'entry',expiresInHours:24,reason:'Entry'});assert.equal(entry.status,'armed');
+  a.configure({enabled:true});a.sessionArmed=true;a.lastDeskCheck=0;a.tick();await new Promise(res=>setTimeout(res,40));assert.equal(a.calls.propose.length,1);assert.equal(a.calls.propose[0].side,'Buy');
+});
+test('X2: once a product is known to be leveraged, a failure to read the setting refuses the Buy; a standard Buy is not affected',()=>{
+  const {automation:a}=leveragedHarness({eligible:true});const engine=a.live;const real=engine.exposure.policy.bind(engine.exposure);engine.exposure.policy=()=>{throw new Error('SQLITE_BUSY');};
+  try{assert.match(a.leveragedEntryRefusal(engine,'122630','Buy'),/could not read the leveraged-product setting; nothing was sent\./);
+    assert.equal(a.leveragedEntryRefusal(engine,'005930','Buy'),null,'a standard product is never refused');assert.equal(a.leveragedEntryRefusal(engine,'122630','Sell'),null,'a Sell is never refused');
+    const classify=engine.exposure.classify;engine.exposure.classify=()=>{throw new Error('broken');};assert.equal(a.leveragedEntryRefusal(engine,'122630','Buy'),null,'a classification failure leaves the Buy to the order checks');engine.exposure.classify=classify;
+  }finally{engine.exposure.policy=real;}
+  assert.equal(a.leveragedEntryRefusal(engine,'122630','Buy'),null,'confirmed and readable: allowed');
+});
