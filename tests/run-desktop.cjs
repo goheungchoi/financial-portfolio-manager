@@ -12,7 +12,7 @@ const cases=[
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};
 for(let index=0;index<cases.length;index++){
-  const [name,file,args,userData]=cases[index],started=Date.now();const result=spawnSync(require('electron'),[path.join(__dirname,file),...args],{windowsHide:true,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024,env:{...process.env,PORTFOLIO_SMOKE_DATA:userData,PORTFOLIO_REPORT_DIR:directory}});
+  const [name,file,args,userData]=cases[index],started=Date.now();const result=spawnSync(require('electron'),[path.join(__dirname,file),...args],{windowsHide:true,encoding:'utf8',timeout:180000,maxBuffer:4*1024*1024,env:{...process.env,PORTFOLIO_SMOKE_DATA:userData,PORTFOLIO_REPORT_DIR:directory}});
   const log=`case-${index+1}.log`;const output=(result.stdout??'')+(result.stderr??'')+(result.error?'\n'+result.error.message:'');fs.writeFileSync(path.join(directory,log),output);process.stdout.write(output);
   const status=result.status===0&&!result.error?'passed':'failed';report.cases.push({name,file,status,durationMs:Date.now()-started,log,exitCode:result.status});if(status==='failed'){report.status='failed';break;}
 }

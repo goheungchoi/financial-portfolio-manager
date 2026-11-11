@@ -56,7 +56,8 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
   if(operation.includes('place-order')){posts++;throw new Error('UI fixture forbids order submission');}
   throw new Error('Unexpected fixture operation '+operation);
 };
-const timer=setTimeout(()=>{report.errors.push('UI regression timed out');finish(1);},90000);
+// 150 s (was 90 s): the case took 87-89 s before the Home Result tile and Holdings Movement screenshots (2026-11-11).
+const timer=setTimeout(()=>{report.errors.push('UI regression timed out');finish(1);},150000);
 function finish(code){clearTimeout(timer);fs.writeFileSync(path.join(output,'ui-regression.json'),JSON.stringify(report,null,2));app.exit(code);}
 app.once('browser-window-created',(_event,created)=>{win=created;win.webContents.on('console-message',(...args)=>{const m=args[0]?.message??args[2];const level=args[0]?.level??args[1];if(level==='error'||level===3||/Error|Uncaught/.test(String(m)))console.log('RENDERER-ERROR '+String(m).slice(0,800));});win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{
   const run=code=>win.webContents.executeJavaScript(code),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -370,6 +371,61 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     await check('Holdings open the selected company; allocation segments show keyboard-accessible detail; replay runs offline',async()=>{
       overseas.holdings=[{symbol:'NASD:TEST',name:'Test holding',quantity:2,price:90,cost:100}];overseas.reportedTotal=180;await run('window.portfolio.refreshPortfolio()');await navigate('Holdings');await until('Boolean(document.querySelector(`[aria-label="View Test holding charts"]`))','Company link missing');await run('document.querySelector(`[aria-label="View Test holding charts"]`).click()');await until('document.querySelector("h1").textContent==="Charts"&&document.querySelector(`[aria-label="Company stock code"]`)?.value==="NASD:TEST"','Chart symbol not selected');await until('Boolean(document.querySelector(".company-tiles"))','Company data missing');await run('Array.from(document.querySelectorAll("details")).find(d=>d.querySelector("summary")?.textContent.includes("Paper replay")).open=true');await click('Run offline replay');await until('document.querySelector("main").textContent.includes("Later holdout")','Replay missing');
       await navigate('Home');await until('Boolean(document.querySelector(".interactive-ring circle[tabindex]"))','Allocation missing');await run('(()=>{const segment=Array.from(document.querySelectorAll(".interactive-ring circle[tabindex]")).find(e=>e.getAttribute("aria-label").includes("Test holding"));segment.focus();segment.dispatchEvent(new FocusEvent("focusin",{bubbles:true}));})()');await until('document.querySelector(`[role="tooltip"]`)?.textContent.includes("NASD:TEST")','Tooltip details missing');await run('document.querySelector(".allocation-explorer").scrollIntoView({block:"center"})');await wait(250);await capture('allocation-detail-tooltip');
+    });
+    // Holdings Movement cards (2026-11-11): one card per holding with its price line (fixture daily closes) and P/L line
+    // (recorded days). 005930 has records with one missing weekday (a gap); 000660 has none ("P/L history unavailable").
+    await check('Holdings Movement: price and P/L cards, a gap in the P/L line, a holding without records, no overflow at 1360, 960 and 760',async()=>{
+      const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
+      const acct=domestic.accountKey,dayN=n=>new Date(Date.now()+9*3600000-n*86400000).toISOString().slice(0,10);
+      const touched=[];const original=new Map();const usBefore={holdings:overseas.holdings,reportedTotal:overseas.reportedTotal,cash:overseas.cash};
+      try{
+        // Korea only: the U.S. fixture holding an earlier check leaves would be a third card.
+        overseas.holdings=[];overseas.reportedTotal=overseas.cash??0;
+        domestic.holdings=[{symbol:'005930',name:'Samsung Electronics',quantity:10,price:216000,cost:200000},{symbol:'000660',name:'SK Hynix',quantity:2,price:180000,cost:190000}];
+        await run('window.portfolio.refreshPortfolio()');
+        for(let n=12;n>=0;n--){const day=dayN(n);if(n===5)continue;// one weekday-or-not missing day: a gap in the P/L line
+          const row=db.prepare('SELECT payload FROM nav_history WHERE account=? AND day=?').get(acct,day);if(row)original.set(day,row.payload);
+          const p=row?JSON.parse(row.payload):{day,at:Date.parse(day+'T06:00:00Z'),KRW:{equity:12160000,cash:10000000,open:12160000,high:12160000,low:12160000,positions:[]},USD:null,fx:null};
+          const value=10*(216000-n*1200+(n%3)*900);p.KRW={...(p.KRW??{equity:12160000,cash:10000000,open:12160000,high:12160000,low:12160000}),positions:[...((p.KRW?.positions??[]).filter(x=>x.symbol!=='005930')),{symbol:'005930',name:'Samsung Electronics',quantity:10,value,cost:2000000}]};
+          db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(acct,day,JSON.stringify(p));touched.push(day);}
+        // Not through Performance: opening it records today's positions, which would give 000660 a record. The app also
+        // records every minute, so 000660 is removed from today's row just before Holdings opens and reads the records.
+        await navigate('Charts');const today=dayN(0);const t=db.prepare('SELECT payload FROM nav_history WHERE account=? AND day=?').get(acct,today);if(t){const p=JSON.parse(t.payload);if(p.KRW?.positions){p.KRW.positions=p.KRW.positions.filter(x=>x.symbol!=='000660');db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(JSON.stringify(p),acct,today);}}
+        await navigate('Holdings');
+        await until('document.querySelectorAll(`[aria-label="Movement"] .movement-card`).length===2&&!document.querySelector(`[aria-label="Movement"]`).textContent.includes("Loading prices")','Movement cards missing');
+        const cards=await run('Array.from(document.querySelectorAll(`[aria-label="Movement"] .movement-card`)).map(c=>({symbol:c.dataset.symbol,text:c.textContent,priceLines:c.querySelectorAll(`[aria-label="Price"] polyline`).length,plLines:c.querySelectorAll(`[aria-label="P/L"] polyline`).length}))');
+        console.log('MOVEMENT '+JSON.stringify(cards.map(c=>({...c,text:c.text.slice(0,220)}))));
+        assert.deepEqual(cards.map(c=>c.symbol),['005930','000660'],'largest first');
+        const sam=cards[0],sk=cards[1];
+        assert.match(sam.text,/10 shares · \d+% of equity/);assert.match(sam.text,/Price₩216,000/);assert.match(sam.text,/ in 1M/);assert.ok(sam.priceLines>=1,'price line drawn');
+        assert.match(sam.text,/P\/L\+₩160,000\+8\.0% since first recorded /,'P/L from the records, labelled "since first recorded"');assert.equal(sam.plLines,2,'the missing day splits the P/L line');
+        assert.equal(await run('document.querySelectorAll(`[data-symbol="005930"] .movement-marker`).length'),0,'no purchase marker for a first recorded day');
+        assert.match(sk.text,/P\/L history unavailable: this holding is not in the daily records yet\./);assert.ok(sk.priceLines>=1,'its price line still shows');
+        // Step 2 review: the price line is neutral (not the gain colour); first and last days under both lines.
+        const look=await run('(()=>{const c=document.querySelector(`[data-symbol="005930"]`);const price=getComputedStyle(c.querySelector(`[aria-label="Price"] .movement-line`)).color,pl=getComputedStyle(c.querySelector(`[aria-label="P/L"] .movement-line`)).color,gain=getComputedStyle(c.querySelector(`[aria-label="P/L"] b.positive`)).color;return {price,pl,gain,days:Array.from(c.querySelectorAll(".movement-days")).map(d=>d.children.length)};})()');
+        assert.notEqual(look.price,look.gain,'the price line is not drawn in the gain colour');assert.equal(look.pl,look.gain,'the P/L line is coloured by its sign');assert.deepEqual(look.days,[2,2],'first and last day under each line');
+        // Step 4: More, opened: sources, how the lines end, the first recorded day, and both daily tables with the gap.
+        const more=await run('(()=>{const d=document.querySelector(`[data-symbol="005930"] details.movement-more`);d.open=true;return {items:Array.from(d.querySelectorAll("li")).map(l=>l.textContent),prices:d.querySelectorAll(`[aria-label="Daily prices"] tbody tr`).length,pl:Array.from(d.querySelectorAll(`[aria-label="Daily P/L"] tbody tr`)).map(r=>r.textContent),firstPrice:d.querySelector(`[aria-label="Daily prices"] tbody tr`)?.textContent};})()');
+        console.log('MOVEMENT-MORE '+JSON.stringify({...more,pl:more.pl.slice(0,8)}));
+        assert.match(more.items[0],/^Prices: KIS daily closes, read .+ KST\. The price line ends on the live price from the holdings table\.$/);
+        assert.match(more.items[1],/^P\/L: the app's daily records, value minus average cost at each day's last reading\. The line ends on today's last recorded reading/);
+        assert.ok(more.items.some(i=>/^The purchase is not in the app's orders: P\/L starts at the first recorded day, /.test(i)),'first recorded day');
+        assert.ok(more.prices>5,'daily prices listed');assert.match(more.firstPrice,/₩216,000 \(live\)$/,'newest first, the live point marked');
+        assert.ok(more.pl.some(r=>/Not recorded/.test(r)),'the missing day is listed as not recorded');
+        await run('document.querySelector(`[data-symbol="005930"]`).scrollIntoView({block:"center"})');await wait(200);await capture('movement-more-'+await run('document.documentElement.dataset.theme'));
+        await run('document.querySelector(`[data-symbol="005930"] details.movement-more`).open=false');
+        // Period control: Since purchase relabels the price change with the first recorded day.
+        await run('Array.from(document.querySelectorAll(`[aria-label="Movement period"] button`)).find(b=>b.textContent==="Since purchase").click()');
+        await until('document.querySelector(`[data-symbol="005930"] [aria-label="Price"]`).textContent.includes("since first recorded")','Since purchase label');
+        const theme0=await run('document.documentElement.dataset.theme');const [w0,h0]=win.getSize();
+        await run('Array.from(document.querySelectorAll(`[aria-label="Movement period"] button`)).find(b=>b.textContent==="1M").click()');
+        for(const theme of ['dark','light']){if(await run('document.documentElement.dataset.theme')!==theme){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'theme');}
+          for(const [width,height] of [[1360,880],[960,720],[760,700]]){win.setSize(width,height);await wait(250);await run('document.querySelector(`[aria-label="Movement"]`).scrollIntoView({block:"start"})');await wait(200);
+            const over=await run('(()=>{const s=document.querySelector(`[aria-label="Movement"]`);return Array.from(s.querySelectorAll(".movement-card")).flatMap(c=>[c,...c.querySelectorAll("*")].filter(e=>e.getBoundingClientRect().right>c.getBoundingClientRect().right+1||e.scrollWidth>e.clientWidth+1&&getComputedStyle(e).overflowX!=="visible").map(e=>c.dataset.symbol+" "+e.tagName+"."+(e.getAttribute("class")??"")));})()');
+            assert.deepEqual(over,[],`Movement overflows at ${width}px (${theme})`);await capture(`movement-${width}-${theme}`);}}
+        win.setSize(w0,h0);if(await run('document.documentElement.dataset.theme')!==theme0)await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");
+      }finally{for(const day of touched){if(original.has(day))db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(original.get(day),acct,day);else db.prepare('DELETE FROM nav_history WHERE account=? AND day=?').run(acct,day);}db.close();
+        domestic.holdings=[];Object.assign(overseas,usBefore);await run('window.portfolio.refreshPortfolio()');}
     });
     // Since fdc5d5f (2026-10-29) an interval shorter than the user's needs a moving holding, which this paper fixture has
     // not; the case checks that the AI's own choice is kept, so it asks for a longer one (the guard is in review-interval tests).
