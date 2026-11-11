@@ -560,3 +560,26 @@ table.discover-table{table-layout:auto}
 .decision-fact small{color:var(--muted);font-size:11px}
 .decision-fact span{overflow-wrap:anywhere}
 .decision-more{margin-top:8px}
+/* Holdings Movement cards (2026-11-11): three across on a wide window, one on a narrow one. */
+.holding-movement .movement-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+@media (max-width:1100px){.holding-movement .movement-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:860px){.holding-movement .movement-grid{grid-template-columns:minmax(0,1fr)}}
+.movement-card{border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.movement-card header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+.movement-card header .company-link{font-weight:650;text-align:left;overflow-wrap:anywhere}
+.movement-card header small{color:var(--muted);font-size:12px}
+.movement-row{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:10px;row-gap:4px;align-items:baseline;font-size:12.5px;min-width:0}
+.movement-row .movement-label{color:var(--muted);grid-row:span 2}
+.movement-row .movement-figures{display:flex;flex-wrap:wrap;column-gap:8px;align-items:baseline;font-variant-numeric:tabular-nums;min-width:0}
+.movement-row .movement-figures em{font-style:normal;font-weight:500}
+.movement-row .movement-reason{overflow-wrap:anywhere}.movement-row .movement-reason .link-button{margin-left:6px}
+.movement-row>small{grid-column:2}
+/* The price line is neutral: the accent is also the gain colour (step 2 review). Only the P/L line is coloured by sign. */
+.movement-line{grid-column:2;width:100%;height:44px;display:block;color:var(--muted)}
+.movement-row[aria-label="P/L"] .movement-line{color:var(--muted)}.movement-row .movement-line.positive{color:var(--accent)}.movement-row .movement-line.negative{color:#d96c6c}
+.movement-line .movement-zero{stroke:var(--border);stroke-dasharray:3 3}
+.movement-line .movement-marker{stroke:var(--muted);stroke-dasharray:2 3}
+.movement-row .movement-days{grid-column:2;display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);margin-top:-2px}
+.movement-more{font-size:12px}.movement-more ul{margin:6px 0;padding-left:18px}
+.movement-more .movement-tables{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;max-height:220px;overflow:auto}
+.movement-more table{width:100%;font-size:11.5px;font-variant-numeric:tabular-nums;border-collapse:collapse}.movement-more th,.movement-more td{padding:2px 4px;text-align:right}.movement-more th:first-child,.movement-more td:first-child{text-align:left}

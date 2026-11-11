@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   testSec: () => ipcRenderer.invoke('sec:test'),
   getMarketStatus: () => ipcRenderer.invoke('market:status'),
   getPerformance: () => ipcRenderer.invoke('performance:get'),
+  getMovementRecords: () => ipcRenderer.invoke('movement:records'),getMovementCloses: (symbol, refresh) => ipcRenderer.invoke('movement:closes', symbol, refresh),
   addCashFlow: value => ipcRenderer.invoke('performance:add-flow', value),
   removeCashFlow: id => ipcRenderer.invoke('performance:remove-flow', id),
   confirmCashFlow: id => ipcRenderer.invoke('performance:confirm-flow', id),
