@@ -438,16 +438,32 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
         overseas.holdings=[];overseas.reportedTotal=overseas.cash??0;domestic.holdings=[{symbol:'005930',name:'Samsung Electronics',quantity:10,price:216000,cost:200000}];await run('window.portfolio.refreshPortfolio()');
         damaged=dayN(3);const old=db.prepare('SELECT payload FROM nav_history WHERE account=? AND day=?').get(acct,damaged);saved=old?.payload??null;
         if(old)db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run('{damaged',acct,damaged);else{db.prepare('INSERT INTO nav_history VALUES(?,?,?)').run(acct,damaged,'{damaged');added=true;}
-        // Holdings: the section loads, the damaged day is counted in More.
+        // The fill as the live records keep it (G5, 2026-11-11): acceptedAt an ISO text, no filledObservedAt. It must not blank
+        // the window; the card reads the purchase from it.
+        const fillDay=dayN(8),fillAt=Date.parse(fillDay+'T01:30:00Z');
+        db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('UI-ISO-FILL',acct,JSON.stringify({id:'UI-ISO-FILL',accountKey:acct,environment:'mock',source:'kis',market:'KR',currency:'KRW',symbol:'005930',side:'Buy',quantity:10,filled:10,status:'Filled',limitPrice:200000,fillPrice:200000,day:fillDay,createdAt:fillAt-5000,acceptedAt:new Date(fillAt).toISOString()}));
+        // Holdings: the section loads, the damaged day is counted in More, the ISO-time fill is the purchase.
         await navigate('Charts');await navigate('Holdings');
         await until('Boolean(document.querySelector(`[aria-label="Movement"] .movement-card`))&&!document.querySelector(`[aria-label="Movement"]`).textContent.includes("Loading the daily records")','Movement did not load with a damaged record');
+        assert.equal(await run('Boolean(document.querySelector("h1"))&&!document.querySelector(`[data-section-error]`)'),true,'the page stands and no section failed');
         const more=await run('(()=>{const d=document.querySelector(`[data-symbol="005930"] details.movement-more`);d.open=true;return Array.from(d.querySelectorAll("li")).map(l=>l.textContent);})()');
         console.log('G3-MORE '+JSON.stringify(more));assert.ok(more.includes('1 recorded day could not be read and is left out.'),'the damaged day is counted');
+        assert.ok(more.some(l=>/^Bought .+ \(the app's order\)\.$/.test(l)),'the purchase is read from the ISO-time fill');
+        assert.equal(await run('document.querySelectorAll(`[data-symbol="005930"] .movement-marker`).length'),1,'its day is marked on the price line');
         // Home with the damaged day skipped (perf-fix R1): the Result tile has its figures; nothing says "could not be read".
         await navigate('Home');
         await until('Boolean(document.querySelector(`[aria-label="Result"] .result-total`))&&!document.querySelector(`[aria-label="Result"]`).textContent.includes("Starts after")','Result tile missing with a damaged record');
         const skipped=await run('document.querySelector(`[aria-label="Result"]`).textContent');console.log('G3-HOME-SKIPPED '+JSON.stringify(skipped.slice(0,160)));
         assert.ok(!skipped.includes('could not be read'),'a skipped day is not a failed read');
+        // The Today line stays brief (review of the blank-window fix): figure and a "Provisional" tag; range and correction
+        // are in More; the account value box still shows them.
+        const today=await run('(()=>{const r=document.querySelector(`[aria-label="Result"]`);const d=r.querySelector(`[aria-label="Today"] dd`);const m=r.querySelector("details.result-more");return {dd:d.textContent,tag:d.querySelector(".result-tag")?.textContent??null,more:Array.from(m.querySelectorAll("li")).map(l=>l.textContent),box:document.querySelector(`[aria-label="Account trend"] .home-trend-stats`)?.textContent??""};})()');
+        console.log('G3-TODAY '+JSON.stringify({...today,box:today.box.slice(0,160)}));
+        assert.equal(today.tag,'Provisional');assert.ok(!/ to |Correction/.test(today.dd),'no range or correction on the line itself');
+        assert.ok(today.more.some(l=>/^Today is provisional: between .+ and .+; the valuation range changed this day/.test(l)),'the range in More');
+        assert.ok(today.more.some(l=>/^Today includes a settlement correction of .+: bookkeeping, not investment P\/L\.$/.test(l)),'the correction in More');
+        assert.match(today.box,/Provisional: .+ to /,'the account value box keeps the range');assert.match(today.box,/Correction /,'and the correction');
+        await run('document.querySelector(`[aria-label="Result"]`).scrollIntoView({block:"center"})');await wait(150);await capture('result-today-provisional');
         // A damaged deposit or withdrawal record (review of the 1.5.52 fixes, change 1): the return is tagged as an estimate
         // on the account value box, the Result tile and the Performance page.
         db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run('ui-damaged-flow',acct,'oops');
@@ -477,7 +493,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
         db.exec('ALTER TABLE nav_history_gone RENAME TO nav_history');renamed=false;
         await run('document.querySelector(`[aria-label="Daily records unavailable"] button`).click()');
         await until('!document.querySelector(`[aria-label="Daily records unavailable"]`)&&Boolean(document.querySelector(`[aria-label="Movement"] .movement-card`))','Retry did not recover');
-      }finally{db.prepare('DELETE FROM cash_flows WHERE id=?').run('ui-damaged-flow');if(renamed)db.exec('ALTER TABLE nav_history_gone RENAME TO nav_history');if(damaged){if(added)db.prepare('DELETE FROM nav_history WHERE account=? AND day=?').run(acct,damaged);else if(saved!=null)db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(saved,acct,damaged);}db.close();
+      }finally{db.prepare('DELETE FROM live_intents WHERE id=?').run('UI-ISO-FILL');db.prepare('DELETE FROM cash_flows WHERE id=?').run('ui-damaged-flow');if(renamed)db.exec('ALTER TABLE nav_history_gone RENAME TO nav_history');if(damaged){if(added)db.prepare('DELETE FROM nav_history WHERE account=? AND day=?').run(acct,damaged);else if(saved!=null)db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(saved,acct,damaged);}db.close();
         domestic.holdings=[];Object.assign(overseas,usBefore);await run('window.portfolio.refreshPortfolio()');}
     });
     // Since fdc5d5f (2026-10-29) an interval shorter than the user's needs a moving holding, which this paper fixture has

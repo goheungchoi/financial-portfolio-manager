@@ -33,7 +33,7 @@ export function resultSummary(summaries){
 /**
  * @typedef {{low:number,high:number}} Range
  * @typedef {{gain:number|null,twr:number|null,twrRange:Range|null,reason:string|null,tag:{text:string,why:string}|null,start?:string,end?:string}} ResultTotal
- * @typedef {{day:string|null,pnl:number|null,dailyReturn:number|null,pnlRange:Range|null,returnRange:Range|null,correction:number|null,reason:string|null,unavailable?:boolean}} ResultToday
+ * @typedef {{day:string|null,pnl:number|null,dailyReturn:number|null,pnlRange:Range|null,returnRange:Range|null,correction:number|null,reason:string|null,unavailable?:boolean,provisional?:boolean}} ResultToday
  * @typedef {{scope:'both'|'korea',since:string|null,benchmarkName:string,total:ResultTotal|null,today:ResultToday|null,
  *   unrealized:{amount:number|null,percent:number|null,reason:string|null},unrealizedUSD:{amount:number,percent:number|null}|null,
  *   benchmark:{benchmark:number,you:number}|null}} HomeResult
@@ -79,6 +79,8 @@ export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdL
     reason:Number.isFinite(last.pnl)?null:last.unavailable?.length?firstWhy(last.unavailable[0]):'Not known for the latest day.',
     // A recorded reason ("Unavailable" on the box) as against no figure yet ("—").
     unavailable:!Number.isFinite(last.pnl)&&Boolean(last.unavailable?.length)};
+  // The tile's Today line shows a small "Provisional" tag when a range or a correction applies (the figures go to More).
+  if(out.today)out.today.provisional=Boolean(out.today.pnlRange||out.today.returnRange||out.today.correction);
 
   // Unrealized: the old tile's figure, over the holdings the account value counts (Korea alone until the U.S. is loaded).
   const counted=rows.filter(r=>r.market==='KR'||usLoaded);

@@ -65,7 +65,7 @@ export function HoldingMovement({rows,equity,onCompany}:{rows:PortfolioRow[];equ
       if(alive)bump();}})();return()=>{alive=false;};},[symbols]);
   const retry=async(symbol:string)=>{closesCache.set(symbol,{closes:null,reason:'Loading prices…'});bump();try{const r=await window.portfolio?.getMovementCloses(symbol,true);closesCache.set(symbol,r?.closes?{closes:r.closes,reason:null,retrievedAt:r.retrievedAt,stale:r.stale}:{closes:null,reason:readError(r?.error??'UNAVAILABLE')});}catch{closesCache.set(symbol,{closes:null,reason:readError('REQUEST_FAILED')});}bump();};
   const active=PERIODS.includes(period)?period:'1M';
-  const now=Date.now(),today=seoulDay(now);
+  const now=Date.now(),today=seoulDay(now)??new Date().toISOString().slice(0,10);
   const days=recordedDays(records?.days??[]);
   const closesBySymbol=Object.fromEntries(rows.map(r=>[r.symbol,closesCache.get(r.symbol)??{closes:null,reason:'Loading prices…'}]));
   // now: a U.S. holding's price line is dated by its New York day.

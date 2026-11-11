@@ -9,6 +9,7 @@ import {TickDelta,LiveValue} from './LiveValue';
 import {useDraftState} from './useDraftState';
 import {ValueChart,shortDay} from './PerfCharts';
 import {homeResult,resultSummary,periodNote} from './home-result.mjs';
+import {SectionBoundary} from './SectionBoundary';
 const krw=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const native=(n:number,currency:string)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 const compact=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',notation:'compact',maximumFractionDigits:1}).format(n);
@@ -52,7 +53,7 @@ export function HomeMetrics({state}:{state:PortfolioState}){
     <section className="metric-card" aria-label="Cash"><small>Cash</small><strong>{state.cash.KRW==null&&state.cash.USD==null?'—':krw(cash)}</strong>
       {/* A share of a conservative, uncertain estimate can exceed 100% and mislead: the amount only, said why. */}
       <div className="metric-foot"><span>{!equity?'—':ranged?'Share of account value: not shown while the value is a range':cash>equity?'Share of account value: not shown (cash is more than the account value)':`${(cash/equity*100).toFixed(0)}% of account value`}</span>{state.committedKRW?<span title="KRW committed to U.S. buys through integrated margin; KIS deducts it at settlement">{krw(state.committedKRW)} for U.S. buys settling{state.settlementUncertainKRW?` (funding of ${krw(state.settlementUncertainKRW)} not yet known)`:''}</span>:null}{withUS&&state.cash.USD?<span>incl. {native(state.cash.USD,'USD')}</span>:null}{withUS&&state.pendingSettlement?.USD?<span title="Money from U.S. sales that has not settled yet: counted in total equity, spendable once it settles">{native(state.pendingSettlement.USD,'USD')} pending settlement</span>:null}</div></section>
-    <HomeResult state={state} usLoaded={withUS} equityKnown={equity!=null}/>
+    <SectionBoundary label="Result" className="metric-card home-result"><HomeResult state={state} usLoaded={withUS} equityKnown={equity!=null}/></SectionBoundary>
   </div>;
 }
 // The total investment result since the first daily record (artifacts/reviews/2026-11-11-home-result): the account value
@@ -65,13 +66,15 @@ function HomeResult({state,usLoaded,equityKnown}:{state:PortfolioState;usLoaded:
   const r=homeResult({summary,rows:state.rows,usLoaded,equityKnown,usdLoaded:state.totals.USD!=null,failure});
   const tone=(v:number|null)=>v==null||Math.abs(v)<1e-9?'':v>0?'positive':'negative';const sign=(v:number)=>(v>0?'+':v<0?'−':'')+krw(Math.abs(v)).replace('-','');
   const t=r.total,d=r.today,u=r.unrealized;
+  // The Today line stays brief (review of the blank-window fix): a range or a correction is a small tag; the figures are in More.
+  const todayProvisional=Boolean(d?.provisional);
   const totalPct=t?.twr!=null?pct(t.twr*100):t?.twrRange?`${pct(t.twrRange.low*100)} to ${pct(t.twrRange.high*100)}`:null;
   return <section className="metric-card home-result" aria-label="Result"><small>Result</small>
     <strong className="result-total"><span className={tone(t?.gain??null)} title="Investment P/L and time-weighted return: deposits, withdrawals and accounting corrections are not counted" data-amount={t?.gain??''}>{t?.gain==null?'—':sign(t.gain)}</span>{totalPct&&<span className={`result-pct ${tone(t?.twr??null)}`}>{totalPct}</span>}{t?.tag&&<em className="result-tag" title={t.tag.why}>{t.tag.text}</em>}</strong>
     <div className="metric-foot">{r.since&&<span>since {shortDay(r.since,true)}, after deposits</span>}</div>
     {t?.reason&&<div className="metric-foot"><span className={t.twr==null&&!t.twrRange?'negative':undefined} title={t.reason}>{t.reason}</span></div>}
     <dl className="result-lines">
-      <div aria-label="Today"><dt>Today</dt><dd className={tone(d?.pnl??null)} title={d?.reason??undefined}>{d?.pnl==null?(d?.unavailable?'Unavailable':'—'):sign(d.pnl)}{d?.returnRange?<em>{pct(d.returnRange.low*100)} to {pct(d.returnRange.high*100)}</em>:d?.pnlRange?<em title="The valuation range changed this day: the change may be funding settling, not only investment gain or loss.">Provisional: {sign(d.pnlRange.low)} to {sign(d.pnlRange.high)}</em>:d?.dailyReturn!=null&&<em>{pct(d.dailyReturn*100)}</em>}{d?.correction?<em title="Settlement bookkeeping, not investment P/L">Correction {sign(d.correction)}</em>:null}</dd></div>
+      <div aria-label="Today"><dt>Today</dt><dd className={tone(d?.pnl??null)} title={d?.reason??undefined}>{d?.pnl==null?(d?.unavailable?'Unavailable':'—'):sign(d.pnl)}{d?.dailyReturn!=null&&!d.returnRange&&<em>{pct(d.dailyReturn*100)}</em>}{todayProvisional&&<em className="result-tag" title="A range or a settlement correction applies to this day; see More.">Provisional</em>}</dd></div>
       <div aria-label="Unrealized"><dt>Unrealized</dt><dd className={tone(u.amount)} data-amount={u.amount??''} title={u.reason??'Unrealized price gain/loss against holding acquisition cost, before selling fees and taxes. Percentage uses invested cost, excluding cash. Combined KRW uses current indicative FX; historical currency gains are not included.'}>{u.amount==null?'—':sign(u.amount)}{u.percent!=null&&<em>{pct(u.percent)}</em>}{r.scope==='korea'&&<em className="negative">Korea only</em>}</dd></div>
       {r.benchmark&&<div aria-label="Benchmark"><dt>{r.benchmarkName}</dt><dd>{pct(r.benchmark.benchmark*100)}<em>· you {pct(r.benchmark.you*100)}</em></dd></div>}
     </dl>
@@ -80,6 +83,9 @@ function HomeResult({state,usLoaded,equityKnown}:{state:PortfolioState;usLoaded:
       {t?.tag&&<li>{t.tag.text}: {t.tag.why}</li>}
       <li>Total: account value now minus money paid in{r.since?` since ${shortDay(r.since,true)}`:''}, as on the account value chart's "All".</li>
       <li>Unrealized: holdings against their average cost, before selling fees and taxes{r.scope==='korea'?'; Korea only until the U.S. account and an exchange rate load':''}.</li>
+      {d?.pnlRange&&<li aria-label="Today range">Today is provisional: between {sign(d.pnlRange.low)} and {sign(d.pnlRange.high)}; the valuation range changed this day, so part of the change may be funding settling.</li>}
+      {d?.returnRange&&<li aria-label="Today range">Today's return is a range: {pct(d.returnRange.low*100)} to {pct(d.returnRange.high*100)}.</li>}
+      {d?.correction?<li aria-label="Today correction">Today includes a settlement correction of {sign(d.correction)}: bookkeeping, not investment P/L.</li>:null}
       {r.unrealizedUSD&&<li aria-label="U.S. unrealized" data-amount={r.unrealizedUSD.amount}>U.S. unrealized: <span className="nowrap">{(r.unrealizedUSD.amount>0?'+':r.unrealizedUSD.amount<0?'−':'')+native(Math.abs(r.unrealizedUSD.amount),'USD')}</span>{r.unrealizedUSD.percent!=null?` (${pct(r.unrealizedUSD.percent)})`:''}, in dollars.</li>}
       <li>Total and Unrealized come from different records and need not add up.</li>
     </ul></details>

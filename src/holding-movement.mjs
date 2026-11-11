@@ -8,10 +8,12 @@ const DAYS={'1W':7,'1M':30,'3M':91};
 const DAY=86400000;
 const shift=(day,n)=>new Date(Date.parse(day+'T00:00:00Z')+n*DAY).toISOString().slice(0,10);
 /** The Seoul calendar day of a time (the records are kept per Seoul day). */
-export const seoulDay=ms=>new Date(ms+9*3600000).toISOString().slice(0,10);
+// Both return null for a time that is not a finite number, never throwing (release gate 1.5.52, G5: a text time blanked
+// the window).
+export const seoulDay=ms=>typeof ms==='number'&&Number.isFinite(ms)?new Date(ms+9*3600000).toISOString().slice(0,10):null;
 const NY=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'});
 /** The New York calendar day of a time: U.S. daily closes are dated by it (review of step 1, change 2). */
-export const newYorkDay=ms=>NY.format(new Date(ms));
+export const newYorkDay=ms=>typeof ms==='number'&&Number.isFinite(ms)?NY.format(new Date(ms)):null;
 
 /**
  * The current run of a symbol in the recorded days: the rows after the last recorded day on which the symbol was not
@@ -34,7 +36,7 @@ function currentRun(days,symbol){
  */
 function openingFill(fills,quantity){
   let held=0,opened=null;
-  for(const f of [...fills].sort((a,b)=>a.at-b.at)){if(!(f.filled>0))continue;
+  for(const f of fills.filter(f=>typeof f?.at==='number'&&Number.isFinite(f.at)).sort((a,b)=>a.at-b.at)){if(!(f.filled>0))continue;
     if(f.side==='Buy'){if(held===0)opened=f;held+=f.filled;}else{held=Math.max(0,held-f.filled);if(held===0)opened=null;}}
   return opened&&held===quantity?opened:null;
 }
@@ -56,13 +58,15 @@ export function holdingMovement({row,closes,days,fills=[],period,today,now=null,
   // Two calendars (review of step 1, change 2): the P/L line uses the Seoul days the records are kept by; the price line
   // uses the market's own day, as its closes are dated (New York for a U.S. holding).
   const marketDay=ms=>us?newYorkDay(ms):seoulDay(ms);
-  const marketToday=us&&now!=null?newYorkDay(now):today;
+  const marketToday=(us&&now!=null?newYorkDay(now):null)??today;
   // When the position started: the opening fill, else the first day of the current run in the records. day is the
   // Seoul day (for the P/L line); marketDay is the market's day (for the price line's marker). A "first recorded" day is
   // a Seoul record day and is used as it is on both.
   const run=currentRun(days,symbol);
   const fill=openingFill(fills,row.quantity);
-  const purchase=fill?{day:seoulDay(fill.at),marketDay:marketDay(fill.at),source:'fill'}:run.length?{day:run[0].day,marketDay:run[0].day,source:'first recorded'}:{day:null,marketDay:null,source:null};
+  // A fill whose day cannot be read is an unknown purchase day: the "first recorded" path.
+  const fillDay=fill?seoulDay(fill.at):null,fillMarketDay=fill?marketDay(fill.at):null;
+  const purchase=fill&&fillDay&&fillMarketDay?{day:fillDay,marketDay:fillMarketDay,source:'fill'}:run.length?{day:run[0].day,marketDay:run[0].day,source:'first recorded'}:{day:null,marketDay:null,source:null};
   const since=period==='Since purchase';
   const from=since?purchase.day??run[0]?.day??today:shift(today,-(DAYS[period]??30));
   const priceFrom=since?purchase.marketDay??from:shift(marketToday,-(DAYS[period]??30));
