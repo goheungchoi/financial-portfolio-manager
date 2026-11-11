@@ -49,8 +49,9 @@ function openingFill(fills,quantity){
  * @param {string} input.today   the Seoul day (the P/L line's calendar)
  * @param {number|null} [input.now]  the time now; for a U.S. holding the price line's day is its New York day
  * @param {string|null} [input.closesReason]  why the closes are missing (a failed read), when they are
+ * @param {string|null} [input.recordsReason]  why the daily records are missing (a failed read), when they are
  */
-export function holdingMovement({row,closes,days,fills=[],period,today,now=null,closesReason=null}){
+export function holdingMovement({row,closes,days,fills=[],period,today,now=null,closesReason=null,recordsReason=null}){
   const symbol=row.symbol,native=row.currency,us=row.market==='US';
   // Two calendars (review of step 1, change 2): the P/L line uses the Seoul days the records are kept by; the price line
   // uses the market's own day, as its closes are dated (New York for a U.S. holding).
@@ -82,7 +83,7 @@ export function holdingMovement({row,closes,days,fills=[],period,today,now=null,
 
   // P/L line: value minus cost as recorded each day of the current run, inside the period.
   let pl;
-  if(!run.length)pl={points:[],start:null,end:null,startsAt:null,startsLate:false,reason:'P/L history unavailable: this holding is not in the daily records yet.'};
+  if(!run.length)pl={points:[],start:null,end:null,startsAt:null,startsLate:false,reason:recordsReason??'P/L history unavailable: this holding is not in the daily records yet.'};
   else{
     const recorded=run.filter(d=>d.day>=from&&d.day<=today).map(d=>{const p=d.positions.find(x=>x.symbol===symbol);const known=Number.isFinite(p.value)&&Number.isFinite(p.cost)&&p.cost>0;
       const pnl=known?p.value-p.cost:null;const rate=Number.isFinite(d.fx)&&d.fx>0?d.fx:null;
@@ -103,11 +104,11 @@ export function holdingMovement({row,closes,days,fills=[],period,today,now=null,
 
 /**
  * Every open holding, largest position first (by KRW value, then native value).
- * @param {{rows:any[],closesBySymbol:Record<string,{closes:{date:string,close:number}[]|null,reason?:string|null}>,days:{KR:any[],US:any[]},fillsBySymbol?:Record<string,any[]>,period:string,today:string,now?:number|null}} input
+ * @param {{rows:any[],closesBySymbol:Record<string,{closes:{date:string,close:number}[]|null,reason?:string|null}>,days:{KR:any[],US:any[]},fillsBySymbol?:Record<string,any[]>,period:string,today:string,now?:number|null,recordsReason?:string|null}} input
  */
-export function movementCards({rows,closesBySymbol={},days,fillsBySymbol={},period,today,now=null}){
+export function movementCards({rows,closesBySymbol={},days,fillsBySymbol={},period,today,now=null,recordsReason=null}){
   return rows.filter(r=>r.quantity>0).sort((a,b)=>(b.valueKRW??b.quantity*b.price)-(a.valueKRW??a.quantity*a.price))
-    .map(row=>holdingMovement({row,closes:closesBySymbol[row.symbol]?.closes??null,closesReason:closesBySymbol[row.symbol]?.reason??null,days:days[row.market]??[],fills:fillsBySymbol[row.symbol]??[],period,today,now}));
+    .map(row=>holdingMovement({row,closes:closesBySymbol[row.symbol]?.closes??null,closesReason:closesBySymbol[row.symbol]?.reason??null,days:days[row.market]??[],fills:fillsBySymbol[row.symbol]??[],period,today,now,recordsReason}));
 }
 
 /**

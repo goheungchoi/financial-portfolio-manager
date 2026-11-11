@@ -6,6 +6,7 @@ import {portfolioProfit} from './portfolio-profit.mjs';
 
 const firstWhy=s=>String(s).replace(/^\d{4}-\d{2}-\d{2}: /,'').split('; ')[0].replace(/\.$/,'');
 const TAG_SETTLEMENT='Includes days with U.S. buys awaiting settlement evidence, accounting corrections or restatements.';
+const TAG_FLOWS='It is left out of the returns, so a deposit or withdrawal may be counted as gain or loss.';
 const TAG_UNRESOLVED='Money changes awaiting you are left out; confirm or remove them on the Performance page.';
 
 /**
@@ -16,6 +17,8 @@ const TAG_UNRESOLVED='Money changes awaiting you are left out; confirm or remove
 export function periodNote(period,summary){
   const missing=period?.unavailable?.length?period.unavailable:null;
   if(missing)return {text:`Investment return unavailable: ${firstWhy(missing[0])}${missing.length>1?` (${missing.length} days affected)`:''}.`,why:missing.slice(0,3).join(' · '),missing:true};
+  // A deposit or withdrawal record that could not be read (review of the 1.5.52 fixes): the money gain may count it.
+  if(summary?.unreadableFlows)return {text:'Return estimate: a deposit or withdrawal record could not be read.',why:TAG_FLOWS,missing:false};
   if(period?.settlementAffected)return {text:'Return estimate: settlement not verified.',why:TAG_SETTLEMENT,missing:false};
   if(summary?.provisional?.unresolved?.length)return {text:'Provisional: money changes awaiting you are left out.',why:'Confirm or remove them on the Performance page.',missing:false};
   return null;
@@ -39,10 +42,13 @@ export function resultSummary(summaries){
  * summary: getPerformance().state.summaries, picked by resultSummary(); rows: the portfolio rows (state.rows);
  * usLoaded: the U.S. account and an exchange rate are both loaded (as the Account value tile); equityKnown: the account
  * value is known (the old Unrealized tile's `loaded`); usdLoaded: the U.S. total is known, for the U.S. amount in USD.
- * @param {{summary:any,rows?:any[],usLoaded?:boolean,equityKnown?:boolean,usdLoaded?:boolean}} input
+ * failure: why the performance records could not be read (getPerformance failed), in place of the two-day message.
+ * @param {{summary:any,rows?:any[],usLoaded?:boolean,equityKnown?:boolean,usdLoaded?:boolean,failure?:string|null}} input
  * @returns {HomeResult}
  */
-export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdLoaded=false}){
+export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdLoaded=false,failure=null}){
+  // No summary because the read failed (release gate 1.5.52, G3): say so, not "starts after two days".
+  const twoDays=failure&&!(summary?.points?.length>=2)?failure:'Starts after values are recorded on two days.';
   const scope=usLoaded?'both':'korea';
   const points=summary?.points??[];
   /** @type {HomeResult} */
@@ -50,7 +56,7 @@ export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdL
     total:null,today:null,unrealized:{amount:null,percent:null,reason:null},unrealizedUSD:null,benchmark:null};
 
   // Total: the "All" period, as the account value box shows it on "All".
-  if(points.length<2)out.total={gain:null,twr:null,twrRange:null,reason:'Starts after values are recorded on two days.',tag:null};
+  if(points.length<2)out.total={gain:null,twr:null,twrRange:null,reason:twoDays,tag:null};
   else{
     const all=(summary.periods??[]).find(p=>p.label==='All')??null;
     if(!all)out.total={gain:null,twr:null,twrRange:null,reason:'No result for the whole history yet.',tag:null};
@@ -58,7 +64,7 @@ export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdL
       const missing=all.unavailable?.length?all.unavailable:null;
       const gain=Number.isFinite(all.gain)?all.gain:null,twr=Number.isFinite(all.twr)?all.twr:null,twrRange=all.twrRange??null;
       const reason=missing?periodNote(all,summary).text:gain==null?'Not known for the whole history.':null;
-      const tag=all.settlementAffected?{text:'Not verified',why:TAG_SETTLEMENT}:summary.provisional?.unresolved?.length?{text:'Provisional',why:TAG_UNRESOLVED}:null;
+      const tag=summary.unreadableFlows?{text:'Return estimate',why:'a deposit or withdrawal record could not be read.'}:all.settlementAffected?{text:'Not verified',why:TAG_SETTLEMENT}:summary.provisional?.unresolved?.length?{text:'Provisional',why:TAG_UNRESOLVED}:null;
       out.total={gain,twr,twrRange:twr==null?twrRange:null,reason,tag,start:all.start,end:all.end};
       // Benchmark over the same days, shown only next to a return.
       if(Number.isFinite(all.benchmark)&&twr!=null)out.benchmark={benchmark:all.benchmark,you:twr};
@@ -67,7 +73,7 @@ export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdL
 
   // Today: the latest recorded day, as the box's "Latest day".
   const last=points.at(-1);
-  if(!last||points.length<2)out.today={pnl:null,dailyReturn:null,pnlRange:null,returnRange:null,correction:null,day:last?.day??null,reason:'Starts after values are recorded on two days.'};
+  if(!last||points.length<2)out.today={pnl:null,dailyReturn:null,pnlRange:null,returnRange:null,correction:null,day:last?.day??null,reason:twoDays};
   else out.today={day:last.day,pnl:Number.isFinite(last.pnl)?last.pnl:null,dailyReturn:Number.isFinite(last.dailyReturn)?last.dailyReturn:null,
     pnlRange:last.bounded?null:last.pnlRange??null,returnRange:last.bounded?.returnRange??null,correction:Number.isFinite(last.correction)&&last.correction?last.correction:null,
     reason:Number.isFinite(last.pnl)?null:last.unavailable?.length?firstWhy(last.unavailable[0]):'Not known for the latest day.',

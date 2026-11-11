@@ -20,6 +20,8 @@ function bounds(valuation,prev){const c=valuation.combined;if(!c||c.low==null)re
   for(const [k,f] of Object.entries(SCOPES)){const e=f(valuation),width=e&&Number.isFinite(e.low)&&Number.isFinite(e.high)?e.high-e.low:null;const last=prev?.ranges?.[k]?.last??null;const before=same?prev.ranges?.[k]:null;
     const change=width!=null&&last!=null?width-last:0;range[k]={last:width,narrowed:(before?.narrowed??0)+(change<-1?-change:0),widened:(before?.widened??0)+(change>1?change:0)};}
   return {version:valuation.version,low:c.low,high:c.high,exact:c.exact,complete:c.complete,scope:c.scope,reasons:c.reasons.slice(0,6),at:{KR:valuation.markets.KR.at??null,US:valuation.markets.US.at??null,fx:valuation.fx?.at??null},ranges:range};}
+// A stored record that parses to an object with its day (R1, release gate 1.5.52), or null.
+const readable=payload=>{let p=null;try{p=JSON.parse(payload);}catch{}return p&&typeof p==='object'&&!Array.isArray(p)&&typeof p.day==='string'?p:null;};
 class PerformanceHistory {
   constructor(db,clock=Date.now){
     this.db=db;this.clock=clock;
@@ -48,9 +50,19 @@ class PerformanceHistory {
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
   }
   // The last valuation recorded before day (yesterday's last reading): where today's resolution is measured from.
-  lastValuation(account,day){const r=this.db.prepare('SELECT payload FROM nav_history WHERE account=? AND day<? ORDER BY day DESC LIMIT 1').get(account,day);const v=r?JSON.parse(r.payload).valuation:null;return v?{ranges:v.ranges??{},previousDay:true}:null;}
-  history(account){return this.db.prepare('SELECT payload FROM nav_history WHERE account=? ORDER BY day').all(account).map(row=>JSON.parse(row.payload));}
-  flows(account){return this.db.prepare('SELECT payload FROM cash_flows WHERE account=?').all(account).map(row=>JSON.parse(row.payload)).sort((a,b)=>a.day.localeCompare(b.day)||a.createdAt-b.createdAt);}
+  // Release gate 1.5.52 (perf-fix-plan.md R1, R2): every reader of a nav_history or cash_flows payload parses each row on
+  // its own. A row that cannot be parsed, or is not a record of the expected shape, is skipped: the day behaves exactly as
+  // a day that was never recorded. Nothing is deleted or rewritten. The first skip in a run, per table, is logged once
+  // through onSkipped (set by main to the app log), with the days (or flow ids) of the rows skipped.
+  parseRows(table,rows){const out=[],bad=[];for(const r of rows){const p=readable(r.payload);if(p)out.push(p);else bad.push(r.day??r.id??'?');}
+    if(bad.length&&!(this.skipLogged??=new Set()).has(table)){this.skipLogged.add(table);try{this.onSkipped?.(table,bad);}catch{}}return out;}
+  // The latest readable record before day (a damaged latest row no longer hides the one before it).
+  lastValuation(account,day){const v=this.parseRows('nav_history',this.db.prepare('SELECT day,payload FROM nav_history WHERE account=? AND day<? ORDER BY day DESC LIMIT 10').all(account,day))[0]?.valuation??null;return v?{ranges:v.ranges??{},previousDay:true}:null;}
+  // A skipped deposit or withdrawal would otherwise be counted as gain or loss: the summary says how many there are
+  // (review of the 1.5.52 fixes, change 1).
+  unreadableFlows(account){return this.db.prepare('SELECT payload FROM cash_flows WHERE account=?').all(account).filter(r=>!readable(r.payload)).length;}
+  history(account){return this.parseRows('nav_history',this.db.prepare('SELECT day,payload FROM nav_history WHERE account=? ORDER BY day').all(account));}
+  flows(account){return this.parseRows('cash_flows',this.db.prepare('SELECT id,payload FROM cash_flows WHERE account=?').all(account)).sort((a,b)=>a.day.localeCompare(b.day)||a.createdAt-b.createdAt);}
   addFlow(account,value){
     const today=seoulDate(this.clock());
     if(typeof account!=='string'||!account||!value||!isDay(value.day)||value.day>today||!['KR','US'].includes(value.market)||!Number.isFinite(value.amount)||value.amount===0||Math.abs(value.amount)>1e12||typeof(value.note??'')!=='string'||String(value.note??'').length>200)throw new Error('INVALID_FLOW');
@@ -193,7 +205,8 @@ class PerformanceHistory {
     const ranged=points.filter(p=>p.pnlRange).map(p=>({day:p.day,pnl:p.pnl,low:p.pnlRange.low,high:p.pnlRange.high}));
     const provisional=open.length||ranged.length?{...(open.length?{unresolved:open.map(f=>({day:f.day,market:f.market,currency:f.currency,amount:f.amount})),scenario:'headline leaves these out; included counts them as deposits or withdrawals',
       included:this.summary(account,kind,benchmark,{unresolved:'include',...(adjustments?{adjustments}:{})}).periods.map(({label,twr,gain})=>({label,twr,gain}))}:{}),...(ranged.length?{rangeChanges:ranged}:{})}:null;
-    return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics,...(provisional?{provisional}:{})};
+    const unreadable=this.unreadableFlows(account);
+    return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics,...(provisional?{provisional}:{}),...(unreadable?{unreadableFlows:unreadable}:{})};
   }
 }
 // Stage 3.4: the days of a window the settlement treatment touched, by kind; null when none.
@@ -242,7 +255,8 @@ function reviewSummary(s){return {since:s.start,currency:s.kind,benchmark:s.benc
 // performance (cash movements not yet reconciled and settlement-affected days make them unreliable).
 function reviewPerformance(s,{unconfirmed=[],checking=[],uncertainKRW=0}={}){
   const reliability=returnReliability({unconfirmed,checking,uncertainKRW,settlement:(s.analytics?.['3M']??s.analytics?.All)?.settlementAffected??null});
-  return {...reviewSummary(s),...(unconfirmed.length?{unconfirmedFlows:unconfirmed}:{}),...(checking.length?{cashChangesBeingChecked:checking}:{}),returnReliability:reliability};}
+  // A deposit or withdrawal record that could not be read: the returns are estimates (review of the 1.5.52 fixes).
+  return {...reviewSummary(s),...(unconfirmed.length?{unconfirmedFlows:unconfirmed}:{}),...(checking.length?{cashChangesBeingChecked:checking}:{}),...(s.unreadableFlows?{unreadableFlows:{count:s.unreadableFlows,fact:`${s.unreadableFlows} recorded deposit or withdrawal record${s.unreadableFlows===1?'':'s'} could not be read; returns are estimates and may count ${s.unreadableFlows===1?'it':'them'} as gain or loss.`}}:{}),returnReliability:reliability};}
 // Each market's day for the daily digest (main's automation.performanceToday): its return, or why it has none, its
 // accounting correction and its settlement treatment.
 function todayFigures(perf,account,day){return [['KR','KRW','Korea'],['US','USD','U.S.']].flatMap(([market,currency,label])=>{const p=perf.series(account,currency).find(x=>x.day===day);

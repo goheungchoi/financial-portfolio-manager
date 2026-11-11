@@ -59,9 +59,10 @@ export function HomeMetrics({state}:{state:PortfolioState}){
 // box's "All" figures, the latest day, unrealized gain and the benchmark, from src/home-result.mjs. Unknown stays "—" with
 // its reason. The performance summary is read every minute, as the account value box reads it.
 function HomeResult({state,usLoaded,equityKnown}:{state:PortfolioState;usLoaded:boolean;equityKnown:boolean}){
-  const [summary,setSummary]=useState<any>(null);
-  useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();const s=resultSummary(reply?.state?.summaries);if(alive&&s)setSummary(s);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
-  const r=homeResult({summary,rows:state.rows,usLoaded,equityKnown,usdLoaded:state.totals.USD!=null});
+  const [summary,setSummary]=useState<any>(null);const [failure,setFailure]=useState<string|null>(null);
+  // A read that fails, or a reply marked not ok without a summary, is said as such (release gate 1.5.52, G3).
+  useEffect(()=>{let alive=true;const failed='The performance records could not be read.';const load=async()=>{let reply:any=null;try{reply=await window.portfolio?.getPerformance();}catch{if(alive)setFailure(failed);return;}const s=resultSummary(reply?.state?.summaries);if(!alive)return;if(s){setSummary(s);setFailure(null);}else if(!reply||reply.ok===false)setFailure(failed);};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
+  const r=homeResult({summary,rows:state.rows,usLoaded,equityKnown,usdLoaded:state.totals.USD!=null,failure});
   const tone=(v:number|null)=>v==null||Math.abs(v)<1e-9?'':v>0?'positive':'negative';const sign=(v:number)=>(v>0?'+':v<0?'−':'')+krw(Math.abs(v)).replace('-','');
   const t=r.total,d=r.today,u=r.unrealized;
   const totalPct=t?.twr!=null?pct(t.twr*100):t?.twrRange?`${pct(t.twrRange.low*100)} to ${pct(t.twrRange.high*100)}`:null;
@@ -87,12 +88,12 @@ function HomeResult({state,usLoaded,equityKnown}:{state:PortfolioState;usLoaded:
 // Account value over a chosen period: the change in money and percent, the benchmark over the same days, and a chart with hover.
 const TREND_PERIODS=['1W','1M','3M','YTD','1Y','All'];
 export function HomeTrend({onOpen}:{onOpen():void}){
-  const [summary,setSummary]=useState<any>(null);const [period,setPeriod]=useDraftState('home:trendPeriod','1M');
-  useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();const s=reply?.state?.summaries;if(alive&&s)setSummary(s.COMBINED?.points?.length?s.COMBINED:s.KRW);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
+  const [summary,setSummary]=useState<any>(null);const [period,setPeriod]=useDraftState('home:trendPeriod','1M');const [unreadable,setUnreadable]=useState(false);
+  useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();if(!alive)return;setUnreadable(Boolean(reply?.state?.unreadable));const s=reply?.state?.summaries;if(s)setSummary(s.COMBINED?.points?.length?s.COMBINED:s.KRW);}catch{if(alive)setUnreadable(true);}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
   // Stage 3.4: a day or period without a return says so (never a zero or a raw value change); settlement-affected figures
   // are tagged "Not verified", and accounting corrections are not investment P/L.
   const points=(summary?.points??[]) as {day:string;value:number;high?:number;low?:number;flow?:number;pnl?:number|null;pnlRange?:{low:number;high:number};dailyReturn:number|null;unavailable?:string[];correction?:number;bounded?:{returnRange:{low:number;high:number}}}[];
-  if(points.length<2)return <section className="metric-card home-trend" aria-label="Account trend"><div className="home-trend-head"><small>Account value</small><button className="link-button" onClick={onOpen}>Performance →</button></div><p className="muted">The chart starts after values are recorded on two days.</p></section>;
+  if(points.length<2)return <section className="metric-card home-trend" aria-label="Account trend"><div className="home-trend-head"><small>Account value</small><button className="link-button" onClick={onOpen}>Performance →</button></div>{unreadable?<p className="negative" role="status">The performance records could not be read.</p>:<p className="muted">The chart starts after values are recorded on two days.</p>}</section>;
   // Only periods the recorded history covers; "All" always.
   const periods=(summary.periods??[]).filter((p:any)=>TREND_PERIODS.includes(p.label)&&(!p.partial||p.label==='All')).filter((p:any,_:number,list:any[])=>p.label==='All'||!list.some(q=>q.label==='All'&&q.start===p.start));
   const active=periods.some((p:any)=>p.label===period)?period:'All';const sel=periods.find((p:any)=>p.label===active);const a=summary.analytics?.[active];
