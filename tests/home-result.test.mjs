@@ -89,3 +89,11 @@ test('an unreadable deposit or withdrawal record: the box note and the Result ti
   const r=homeResult({summary:s});assert.deepEqual([r.total.tag.text,r.total.tag.why],['Return estimate','a deposit or withdrawal record could not be read.']);assert.equal(r.total.gain,20000,'the figure is still shown, tagged');
   assert.equal(periodNote({unavailable:['2026-11-05: x']},{unreadableFlows:1}).missing,true,'no return at all still comes first');
 });
+test('Today is tagged "Provisional" on the tile when a range or a correction applies; otherwise not (review of the blank-window fix)',()=>{
+  const last=extra=>summary({points:[point('2026-11-10',1010000),point('2026-11-11',1020000,extra)]});
+  assert.equal(homeResult({summary:last({})}).today.provisional,false);
+  assert.equal(homeResult({summary:last({pnlRange:{low:1,high:2}})}).today.provisional,true);
+  assert.equal(homeResult({summary:last({correction:-100000})}).today.provisional,true);
+  assert.equal(homeResult({summary:last({bounded:{returnRange:{low:-0.01,high:0.01}}})}).today.provisional,true);
+  assert.equal(homeResult({summary:last({correction:0})}).today.provisional,false,'a zero correction is none');
+});
