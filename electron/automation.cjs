@@ -677,7 +677,7 @@ class Automation {
         // The order carries its bounds for the tracker, saved before it can be submitted.
         if(bounds&&context.environment!=='local-paper')execution.annotate?.(proposal.id,{tracking:bounds});
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
-        if(result.decision.action==='Buy'&&(result.decision.credit??'none')==='none'&&result.decision.plan&&context.environment!=='local-paper')this.followPlan(watchScope,result.decision,id);
+        if(result.decision.action==='Buy'&&(result.decision.credit??'none')==='none'&&result.decision.plan&&context.environment!=='local-paper')this.followPlan(watchScope,result.decision,id,{proposalId:proposal.id,market:execution.market??null,positions:(()=>{try{const bal=execution.riskBalance??execution.getConnection?.()?.snapshot;return Object.fromEntries((bal?.holdings??[]).map(h=>[h.symbol,{quantity:h.quantity}]));}catch{return {};}})()});
         const autoEligible=this.config.autoSubmit && (context.environment==='local-paper'||execution.autoEnabled!==false) && proposal.status==='Ready' && (context.environment==='kis-combined'?context.markets.find(row=>row.market===execution.market)?.marketSession.open===true:context.marketSession?.open!==false);
         // One daily cap across reviews and conditional orders (1.5.48 audit, A6): the slot is taken before the send and
         // released only when the engine's record shows nothing was sent.
@@ -1025,6 +1025,16 @@ class Automation {
       const quote=ctx.quotes.find(q=>q.symbol===order.symbol);if(!(quote?.price>0)){this.desk.update(order,{status:'armed',waiting:'no fresh quote',nextCheckAt:Date.now()+60000});return;}
       const formula=require('./formula.cjs');const base=this.formulaData(ctx.quotes);const check=formula.checkConditions(order.conditions,order.combine,{...base,price:sym=>ctx.quotes.find(q=>q.symbol===sym)?.price??base.price(sym)});
       if(!check.met){this.desk.update(order,{status:'armed',waiting:null,retries:0,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
+      // A plan stop linked to its purchase (P1) sells at most what that purchase filled; nothing filled yet, it waits while
+      // the purchase is open and closes once it ended unfilled. Shares held before the purchase are never sold by it.
+      // A record that cannot be read (orders() is empty while the account identity cannot be read) is usually momentary:
+      // the stop stays armed and retries; after five minutes of this it is shown on Home (review of the plan stop fixes).
+      let linkedCap=null;if(order.linkedBuy){const lp=this.linkedPurchase(order);if(!lp){const since=order.unreadableSince??Date.now();this.desk.update(order,{status:'armed',waiting:'its purchase record cannot be read',unreadableSince:since,nextCheckAt:Date.now()+30000});
+          if(Date.now()-since>300000&&!order.unreadableNoticeAt){this.desk.update({...order,unreadableSince:since},{status:'armed',waiting:'its purchase record cannot be read',unreadableSince:since,unreadableNoticeAt:Date.now(),nextCheckAt:Date.now()+30000});this.log(order.id,'System','Stop order cannot check its purchase',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): the record of its purchase has not been readable for more than five minutes; it stays armed and keeps trying.`);try{this.notify?.('stop-unreadable-'+order.id,`The stop order for ${order.symbol} cannot read its purchase record; it stays armed and keeps trying.`);}catch{}}
+          return;}
+        if(order.unreadableSince){order={...order,unreadableSince:null,unreadableNoticeAt:null};this.desk.update(order,{status:'firing'});}
+        if(lp.filled<1){if(lp.ended)return note('cancelled',`Not needed: the purchase did not fill (it was ${lp.status}${lp.reason?`: ${lp.reason}`:''}).`,{results:check.results});this.desk.update(order,{status:'armed',waiting:'its purchase has not filled',nextCheckAt:Date.now()+30000});return;}
+        linkedCap=lp.filled;}
       // Priced from a fresh order book with limitPrice as the bound (a sale's floor, a purchase's cap); without a book for a
       // minute the order stays armed and a review is asked for.
       const placement=await this.placementPrice({symbol:order.symbol,side:order.side,bound:order.limitPrice??null,id:order.id,still:()=>this.watchScope()===scope});
@@ -1033,7 +1043,7 @@ class Automation {
       // Another order for this market is being sent (the engine sends one at a time): the order stays armed and is checked
       // again shortly, with its conditions re-read. Checked before proposing, so no proposal is left behind.
       if(engine.busy)return busy();
-      let quantity=order.quantity;
+      let quantity=linkedCap==null?order.quantity:Math.min(order.quantity,linkedCap);
       // A credit-lot order: the path, the account, the lot and what remains in it are checked again now; the order never
       // takes more than remains, so a partial fill or a duplicate trigger cannot sell or buy past the lot.
       if(order.credit){const lot=this.creditLot(order);if(!lot.ok)return note('rejected',`Not sent: ${lot.reason}`,{results:check.results});
@@ -1098,16 +1108,33 @@ class Automation {
   settleAutoSlot(slot,record){if(!slot)return;const s=record?.status??null,reason=record?.reason??null;
     const unsent=s==='Ready'||s==='Rejected'&&['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(reason)||reason==='APPROVAL_REQUIRED'&&s!=='Submitting';
     this.guardrails.settleSlot(slot,unsent?'released':'used',{status:s,...(reason?{reason}:{})});}
-  deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
+  deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
+  // The purchase a plan stop is linked to (P1): its engine record, the shares it filled, and whether it has ended (filled,
+  // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
+  linkedPurchase(order,now=Date.now()){const l=order?.linkedBuy;if(!l)return null;const engine=(l.market??(/:/.test(order.symbol)?'US':'KR'))==='US'?this.usLive:this.live;let rec=null;try{rec=engine?.orders?.().find(r=>r.id===l.id)??null;}catch{rec=null;}if(!rec)return null;
+    const ended=['Filled','Canceled','Rejected'].includes(rec.status)||rec.status==='Ready'&&Number.isFinite(rec.expiresAt)&&now>rec.expiresAt;return {record:rec,filled:Math.max(0,Number(rec.filled)||0),ended,status:rec.status==='Ready'&&ended?'expired':String(rec.status).toLowerCase(),reason:rec.reason??null};}
+  // Linked stops follow their purchase once it ends (P1): nothing filled, the stop is cancelled with the reason; partly
+  // filled, its quantity becomes what was bought. Unlinked orders are not touched.
+  syncLinkedStops(scope=this.watchScope()){for(const o of this.desk.orders(scope)){if(!o.linkedBuy||o.side!=='Sell')continue;const p=this.linkedPurchase(o);if(!p||!p.ended)continue;
+      if(p.filled<1){this.desk.update(o,{status:'cancelled',outcome:`Not needed: the purchase did not fill (it was ${p.status}${p.reason?`: ${p.reason}`:''}).`,closedAt:Date.now(),closedBy:'app'});this.log(o.id,'System','Conditional order · cancelled',`${o.side} ${o.quantity} ${o.symbol} (${o.purpose}): its purchase did not fill.`);}
+      else if(p.filled<o.quantity){this.desk.update(o,{quantity:p.filled,resizedFrom:o.quantity});this.log(o.id,'System','Conditional order · resized',`${o.side} ${o.symbol} (${o.purpose}): now ${p.filled}, the shares its purchase bought.`);}}}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
-  followPlan(scope,decision,reviewId){
+  // The stop is armed when the purchase is proposed, so protection exists the moment a fill can happen, and is linked
+  // to it (plan stop fixes P1-P3, artifacts/reviews/2026-11-11-agent-tools/plan-stop-fixes.md): it never sells more than
+  // that purchase filled, so shares held before it are never sold by it; it may not stack beyond the shares held plus
+  // those being bought; and a stop that could not be armed is said so, on Home, by phone alert and in the next review.
+  followPlan(scope,decision,reviewId,{proposalId=null,market=null,positions={}}={}){
     // A cash long entry only (Stage 3): a cover or margin trade gets no ordinary Sell stop, and a short's protection
     // would be a cover above the price on its own lot, a path not yet confirmed (electron/credit-paths.cjs).
     if(decision.action!=='Buy'||(decision.credit??'none')!=='none')return;
     const p=decision.plan;const day=seoulDate();
     const text=`Plan from ${day}: ${p.thesis} Invalid if: ${p.invalidation}. Stop ${p.stopPrice}${p.targetPrice?`, target ${p.targetPrice}`:''}, horizon ${p.horizonDays} days, confidence ${p.confidence}.`;
     const note=this.desk.saveNote(scope,{action:'set',symbol:decision.symbol,note:text,expiresInDays:Math.min(90,Math.max(1,p.horizonDays))});this.log(reviewId,'Tool','Trade plan saved',JSON.stringify(note));
-    if(this.config.conditionalOrders&&p.stopPrice){const stop=this.desk.setOrder(scope,{action:'add',id:'',symbol:decision.symbol,side:'Sell',quantity:decision.quantity,limitPrice:null,conditions:[{expr:`price("${decision.symbol}")`,op:'<=',value:p.stopPrice}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Stop from the trade plan of ${day}: ${p.invalidation}`.slice(0,300)},{config:this.config,reviewId});this.log(reviewId,'Tool','Stop-loss armed from the plan',JSON.stringify(stop));}
+    if(this.config.conditionalOrders&&p.stopPrice){const stop=this.desk.setOrder(scope,{action:'add',id:'',symbol:decision.symbol,side:'Sell',quantity:decision.quantity,limitPrice:null,conditions:[{expr:`price("${decision.symbol}")`,op:'<=',value:p.stopPrice}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Stop from the trade plan of ${day}: ${p.invalidation}`.slice(0,300)},{config:this.config,reviewId,positions:positions??{},...(proposalId?{link:{id:proposalId,market,quantity:decision.quantity}}:{})});
+      if(stop.status==='armed'){this.log(reviewId,'Tool','Stop-loss armed from the plan',JSON.stringify(stop));return;}
+      const reason=stop.reason??'the stop order was refused';this.log(reviewId,'System','Stop-loss NOT armed from the plan',`${decision.quantity} ${decision.symbol} at ${p.stopPrice}: ${reason} The purchase goes ahead without a stop order.`);
+      try{this.desk.recordPlanStopFailure(scope,{symbol:decision.symbol,quantity:decision.quantity,reason,proposalId});}catch{}
+      try{this.notify?.('plan-stop-'+(proposalId??reviewId),`The purchase of ${decision.quantity} ${decision.symbol} has no stop order: ${reason}`);}catch{}}
   }
   // Upcoming events from cached research, the macro calendar and computed options expiries.
   calendarState(days=21,extra=[]){try{const p=this.portfolioHoldings?.();const symbols=[...new Map([...(p?.holdings??[]).map(h=>[h.symbol,{symbol:h.symbol,name:h.name}]),...(this.discovery?.list?.()??[]).map(w=>[w.symbol,{symbol:w.symbol,name:w.name}]),...(this.calendarSymbols?.()??[]).map(e=>[e.symbol,e]),...extra.map(e=>[e.symbol,e])]).values()].slice(0,60);
@@ -1312,6 +1339,7 @@ class Automation {
       const r=this.alertTrial.monitor({busy:this.busy,since:this.trialWatchSince,held:Boolean(this.failedInput?.scope===scope)||emergency.active,marketsOpen:require('./market-hours.cjs').marketsFor(this.config.scope).some(m=>this.sessionOpen(m))});if(r)this.endTrial(r.end,r.detail);}catch{}}
     if(this.sessionArmed&&this.config.enabled&&this.config.scope!=='paper'&&Date.now()-(this.lastScheduleObservation??0)>=30000){this.lastScheduleObservation=Date.now();try{this.scheduleObserver.observe(this.scheduleState());}catch{}}
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
+    if(deskDue&&this.config.scope!=='paper')try{this.syncLinkedStops();}catch{}
     if(deskDue&&this.conditionalMonitoringActive()&&!this.firing){
       const scope=this.watchScope();const data=this.formulaData();const formula=require('./formula.cjs');
       for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}

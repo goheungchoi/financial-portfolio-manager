@@ -16,7 +16,7 @@ const TEMPORARY=/KIS_ORDER_BUSY|TIMEOUT|NETWORK|RATE_LIMIT|SERVER_ERROR|SESSION_
 const SENT=new Set(['Accepted','Partially filled','Filled']),LAPSED=new Set(['Canceled','Rejected','Expired']);
 const describe=e=>e?.code?`${e.code}${e.detail?`: ${e.detail}`:''}`:'INVALID';
 class AgentDesk {
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS agent_note_history(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,replacedAt INTEGER NOT NULL,reason TEXT NOT NULL);CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
+  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS plan_stop_failures(id TEXT PRIMARY KEY,scope TEXT NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS agent_note_history(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,replacedAt INTEGER NOT NULL,reason TEXT NOT NULL);CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
   rows(table,scope,status){return this.db.prepare(`SELECT payload FROM ${table} WHERE scope=?${status?' AND status=?':''} ORDER BY rowid DESC`).all(...(status?[scope,status]:[scope])).map(r=>JSON.parse(r.payload));}
   write(table,item){this.db.prepare(`INSERT INTO ${table} VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,payload=excluded.payload`).run(item.id,item.scope,item.status,JSON.stringify(item));return item;}
   // Expired triggers and orders are closed before anything reads them.
@@ -67,7 +67,10 @@ class AgentDesk {
   // the agent could not extend a stop that expired before the next U.S. open). Sending the identical order again renews
   // the armed one instead: its expiry moves, nothing new is armed. Without positions both checks are skipped, so a
   // missing balance never blocks a protective order; the fire-time check still sells at most the shares held.
-  setOrder(scope,args,{config,universe,quotes,reviewId,lot=null,positions=null}={}){
+  // link: {id, market, quantity} for a stop armed from a trade plan, tied to the purchase it protects (plan stop fixes
+  // P1/P2, artifacts/reviews/2026-11-11-agent-tools/plan-stop-fixes.md): stored on the order, and its quantity counts
+  // as shares the stops may cover besides those held. Every other caller passes none, as before.
+  setOrder(scope,args,{config,universe,quotes,reviewId,lot=null,positions=null,link=null}={}){
     if(args?.action==='cancel'){const o=this.orders(scope).find(x=>x.id===args.id);if(!o)return fail('No armed order with that id.');this.write('conditional_orders',{...o,status:'cancelled',closedAt:this.clock(),closedBy:'agent'});return {status:'cancelled',id:o.id};}
     if(!config?.conditionalOrders)return fail('Conditional orders are turned off in Engine settings.');
     if(!isSymbol(args?.symbol)||universe&&!universe.includes(args.symbol))return fail('The symbol must be in the review universe.');
@@ -81,22 +84,28 @@ class AgentDesk {
     // A credit lot is named by its kind, loan date and source, on this account and symbol (audit 2026-11-04, Stage 4).
     const credit=args.credit??null;if(credit){if(!['margin-sell','cover'].includes(credit.kind)||!/^\d{4}-\d{2}-\d{2}$/.test(String(credit.loanDate??''))||!['self','distribution'].includes(credit.source))return fail('credit needs kind (margin-sell or cover), loanDate (YYYY-MM-DD) and source (self or distribution).');
       if((credit.kind==='margin-sell')!==(args.side==='Sell'))return fail('A margin repayment is a Sell and a cover is a Buy.');if(!lot?.ok)return fail(lot?.reason??'The credit lot could not be checked against the account.');}
+    const buying=Math.max(0,Number(link?.quantity)||0);
     if(args.side==='Sell'&&!credit&&positions&&typeof positions==='object'){
       const held=Math.max(0,Number(positions[args.symbol]?.quantity)||0),purpose=args.purpose??null,combine=args.combine==='any'?'any':'all';
       const same=this.orders(scope).filter(o=>o.symbol===args.symbol&&o.side==='Sell'&&!o.credit&&(o.purpose??null)===purpose),covered=same.reduce((n,o)=>n+o.quantity,0);
-      if(covered+args.quantity>held){
+      if(covered+args.quantity>held+buying){
         const key=c=>JSON.stringify(c.map(x=>[String(x.expr).replace(/\s+/g,''),x.op,Number(x.value)])),want=key(parsed.conditions);
         const twin=same.find(o=>o.quantity===args.quantity&&(o.limitPrice??null)===(args.limitPrice??null)&&(o.combine??'all')===combine&&key(o.conditions)===want);
         if(twin){const now=this.clock(),renewed=this.write('conditional_orders',{...twin,expiresAt:Math.max(twin.expiresAt,now+hours*3600000),reason:cut(args.reason,300)||twin.reason,reviewId:reviewId??twin.reviewId??null,renewedAt:now,renewals:(twin.renewals??0)+1});
           return {status:'armed',id:renewed.id,renewed:true,expiresAt:new Date(renewed.expiresAt).toISOString(),note:'An identical armed order existed; its expiry was extended. Nothing new was armed.'};}
-        return fail(`${held} shares of ${args.symbol} are held and armed ${purpose??'sell'} orders already cover ${covered} (${same.map(o=>o.id).join(', ')||'none'}); this would cover ${covered+args.quantity}. Cancel one first, or send the identical order again to extend it.`);
+        return fail(`${held} shares of ${args.symbol} are held${buying?` and ${buying} are being bought`:''}, and armed ${purpose??'sell'} orders already cover ${covered} (${same.map(o=>o.id).join(', ')||'none'}); this would cover ${covered+args.quantity}. Cancel one first, or send the identical order again to extend it.`);
       }
     }
     if(this.orders(scope).length>=config.conditionalMaxActive)return fail(`Up to ${config.conditionalMaxActive} armed conditional orders; cancel one first.`);
-    const now=this.clock();const o={id:'C-'+randomUUID().slice(0,6),scope,status:'armed',symbol:args.symbol,side:args.side,quantity:args.quantity,limitPrice:args.limitPrice,conditions:parsed.conditions.map(({ast,...c})=>c),symbols:parsed.symbols,combine:args.combine==='any'?'any':'all',purpose:args.purpose,reason:cut(args.reason,300),createdAt:now,expiresAt:now+hours*3600000,priceAtCreation:quote?.price??null,reviewId:reviewId??null,...(credit?{credit:{kind:credit.kind,loanDate:credit.loanDate,source:credit.source,account:lot.account??null}}:{})};
+    const now=this.clock();const o={id:'C-'+randomUUID().slice(0,6),scope,status:'armed',symbol:args.symbol,side:args.side,quantity:args.quantity,limitPrice:args.limitPrice,conditions:parsed.conditions.map(({ast,...c})=>c),symbols:parsed.symbols,combine:args.combine==='any'?'any':'all',purpose:args.purpose,reason:cut(args.reason,300),createdAt:now,expiresAt:now+hours*3600000,priceAtCreation:quote?.price??null,reviewId:reviewId??null,...(link?{linkedBuy:{id:String(link.id),market:link.market??null,quantity:buying}}:{}),...(credit?{credit:{kind:credit.kind,loanDate:credit.loanDate,source:credit.source,account:lot.account??null}}:{})};
     this.write('conditional_orders',o);return {status:'armed',id:o.id,expiresAt:new Date(o.expiresAt).toISOString(),note:config.conditionalAutoSubmit&&config.autoSubmit?'It will be submitted automatically when the conditions are met and every check passes.':'When the conditions are met it becomes a proposal that waits for approval.'};
   }
   update(order,patch){return this.write('conditional_orders',{...order,...patch});}
+  // A stop from a trade plan that could not be armed (P3): {symbol, quantity, reason, proposalId}. Listed for a day,
+  // until a stop loss for the symbol is armed after it.
+  recordPlanStopFailure(scope,{symbol,quantity,reason,proposalId=null}){const at=this.clock();const item={id:'PSF-'+randomUUID().slice(0,8),scope,symbol,quantity,reason:cut(reason,300),proposalId,at};this.db.prepare('INSERT INTO plan_stop_failures VALUES(?,?,?)').run(item.id,scope,JSON.stringify(item));return item;}
+  planStopFailures(scope){const now=this.clock();const stops=this.rows('conditional_orders',scope).filter(o=>o.side==='Sell'&&o.purpose==='stop_loss'&&(o.status==='armed'||o.status==='firing'));
+    return this.db.prepare('SELECT payload FROM plan_stop_failures WHERE scope=? ORDER BY rowid DESC').all(scope).map(r=>JSON.parse(r.payload)).filter(f=>now-f.at<86400000&&!stops.some(o=>o.symbol===f.symbol&&o.createdAt>=f.at));}
   // Held positions whose latest stop loss was rejected: protection the AI meant to have but does not. positions:
   // {symbol: {quantity}}. Only stop losses count as protection (a take-profit or other sell does not limit a fall), and
   // they must cover the shares the rejected stop was for (its quantity, at most the shares held); fewer is reported as
@@ -127,7 +136,8 @@ class AgentDesk {
     const unprotected=this.unprotected(scope,positions);const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString()}));
     return {notes:relevant,triggers:this.triggers(scope).map(t=>({id:t.id,name:t.name,conditions:t.conditions,combine:t.combine,expires:new Date(t.expiresAt).toISOString()})),
       conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxActive:config.conditionalMaxActive,maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours}:{}),
-        armed:this.orders(scope).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString()})),
+        armed:this.orders(scope).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString(),...(o.linkedBuy?{protectsPurchase:o.linkedBuy.id}:{})})),
+        ...((f=>f.length?{planStopsNotArmed:f.map(x=>({symbol:x.symbol,quantity:x.quantity,reason:x.reason,at:new Date(x.at).toISOString(),fact:`The plan stop for ${x.symbol} was not armed: ${x.reason}`}))}:{})(this.planStopFailures(scope))),
         recent:this.recentOrders(scope,5).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,purpose:o.purpose,status:o.status,outcome:o.outcome??null,at:new Date(o.closedAt??o.createdAt).toISOString()})),
         ...(unprotected.length?{unprotected,unprotectedNote:'These holdings are not protected: their stop loss was rejected and nothing replaced it. A rejected order is not protection. Only a stop loss counts: a take-profit does not limit a fall. quantity is the shares the rejected stop was for and coveredQuantity what armed stop losses cover now (partial: true when some are). replacement is a later stop that has not protected it yet (status proposed: its sell awaits the user’s approval; brokerStatus is what the broker did with it). Re-arm a stop loss for the uncovered shares (temporary: true means the refusal was passing, such as another order being sent), sell, or say in this review why the position stays unprotected. This stays listed until stop losses cover those shares, the shares are gone, or the user dismisses it.'}:{})}};
   }

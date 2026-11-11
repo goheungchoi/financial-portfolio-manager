@@ -258,6 +258,36 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
         await run('document.querySelector(`[aria-label="Korea broker eligibility"]`).closest(`.exposure-section`).scrollIntoView({block:"start"})');await wait(150);await capture('x2-leverage-confirmed-'+(await run('document.documentElement.dataset.theme')));
       }finally{await run(`window.portfolio.saveExposurePolicy('KR',{leveragedEtps:${JSON.stringify(savedKR?{enabled:savedKR.enabled,auto:savedKR.auto,brokerEligible:savedKR.brokerEligible??null}:{enabled:false,brokerEligible:null})}})`);await setTheme(theme0);}
     });
+    // Plan stop fixes P1-P3 (2026-11-11): a purchase without its stop order is on Home and opens the Journal's Orders and
+    // triggers tab; that tab shows the notice, a stop linked to its purchase, and a cancelled one with its reason.
+    await check('P3: a purchase without a stop order is on Home and opens Orders and triggers, with a linked stop and a cancelled one',async()=>{
+      const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
+      const rt=await run('window.portfolio.getRuntime()');const cfgScope=rt.config?.scope??JSON.parse(db.prepare('SELECT payload FROM automation_settings WHERE id=1').get().payload).scope;const scope=cfgScope==='paper'?'paper':`${cfgScope}:ui-regression-fixture`;const now=Date.now();
+      const base={scope,symbol:'005930',side:'Sell',limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:200000}],symbols:['005930'],combine:'all',purpose:'stop_loss',createdAt:now-60000,expiresAt:now+86400000,priceAtCreation:216000,reviewId:'ui-fixture'};
+      const rows=[{...base,id:'C-UILNK',status:'armed',quantity:2,reason:'Stop from the trade plan: breaks the August low',linkedBuy:{id:'P-UI',market:'KR',quantity:2}},
+        {...base,id:'C-UICXL',status:'cancelled',quantity:1,reason:'Stop from the trade plan: closes below support',linkedBuy:{id:'P-UI2',market:'KR',quantity:1},outcome:'Not needed: the purchase did not fill (it was canceled: its stop time passed).',closedAt:now-30000,closedBy:'app'}];
+      const failure={id:'PSF-UI',scope,symbol:'000660',quantity:3,reason:'Up to 5 armed conditional orders; cancel one first.',proposalId:'P-UI3',at:now-10000};
+      try{
+        for(const r of rows)db.prepare('INSERT INTO conditional_orders VALUES(?,?,?,?)').run(r.id,r.scope,r.status,JSON.stringify(r));db.prepare('INSERT INTO plan_stop_failures VALUES(?,?,?)').run(failure.id,scope,JSON.stringify(failure));
+        await navigate('Performance');await navigate('Home');
+        let att=null;for(let i=0;i<40;i++){att=await run('window.portfolio.getAttention()');if(att.items.some(x=>x.title==='No stop order for the purchase of 000660'))break;await wait(250);}
+        console.log('P3-ATTENTION '+JSON.stringify({scope,items:att.items.map(x=>x.title)}));assert.ok(att.items.some(x=>x.title==='No stop order for the purchase of 000660'),'the attention state lists it');
+        for(let i=0;i<40&&!(await run('Array.from(document.querySelectorAll(`[aria-label="Needs your attention"] li`)).some(li=>li.textContent.includes("No stop order for the purchase of 000660"))'));i++)await wait(250);
+        const item=await run('(()=>{const li=Array.from(document.querySelectorAll(`[aria-label="Needs your attention"] li`)).find(l=>l.textContent.includes("No stop order for the purchase of 000660"));li.scrollIntoView({block:"center"});return li.textContent+" | "+li.getAttribute(`title`);})()');
+        console.log('P3-HOME '+JSON.stringify(item));assert.match(item,/No stop order for the purchase of 000660/);assert.match(item,/3 000660: Up to 5 armed conditional orders; cancel one first\./);
+        const theme0=await run('document.documentElement.dataset.theme');const setTheme=async t=>{if(await run('document.documentElement.dataset.theme')!==t){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(t)}`,'theme');}};
+        for(const t of ['dark','light']){await setTheme(t);await run('Array.from(document.querySelectorAll(`[aria-label="Needs your attention"] li`)).find(l=>l.textContent.includes("No stop order for the purchase of 000660")).scrollIntoView({block:"center"})');await wait(150);await capture('p3-home-attention-'+t);}
+        await run('Array.from(document.querySelectorAll(`[aria-label="Needs your attention"] li`)).find(l=>l.textContent.includes("No stop order for the purchase of 000660")).querySelector(`button`).click()');
+        await until('document.querySelector(`h1`)?.textContent==="Journal"&&Boolean(document.querySelector(`[aria-label="Purchases without a stop order"]`))','Orders and triggers opened from Home');
+        const desk=await run('(()=>{document.querySelectorAll(`[aria-label="Agent desk"] details`).forEach(d=>d.open=true);const d=document.querySelector(`[aria-label="Agent desk"]`);d.scrollIntoView({block:"start"});return {notice:document.querySelector(`[aria-label="Purchases without a stop order"]`).textContent,armed:document.querySelector(`[aria-label="Armed conditional orders"]`)?.textContent??"",text:d.textContent};})()');
+        console.log('P3-DESK '+JSON.stringify({notice:desk.notice}));assert.equal(desk.notice,'The purchase of 3 000660 has no stop order. Up to 5 armed conditional orders; cancel one first.');
+        assert.match(desk.armed,/sells only the shares its purchase buys/);assert.match(desk.text,/Not needed: the purchase did not fill \(it was canceled: its stop time passed\)\./);
+        for(const t of ['dark','light']){await setTheme(t);await run('document.querySelector(`[aria-label="Agent desk"]`).scrollIntoView({block:"start"})');await wait(150);await capture('p3-orders-and-triggers-'+t);}
+        await setTheme(theme0);await run('Array.from(document.querySelectorAll(`[aria-label="Journal views"] button`)).find(b=>b.textContent==="Decisions")?.click()');await wait(100);
+      }finally{db.prepare('DELETE FROM conditional_orders WHERE id IN (?,?)').run('C-UILNK','C-UICXL');db.prepare('DELETE FROM plan_stop_failures WHERE id=?').run('PSF-UI');db.close();}
+      // The window's runtime poll (2 s) drops the fixture orders before the next check counts the badges.
+      for(let i=0;i<20&&(await run('window.portfolio.getRuntime()')).desk?.orders?.some(o=>o.id==='C-UILNK');i++)await wait(250);await wait(2500);
+    });
     await check('J1/J2: six Journal tabs in order, Decisions by default, each captured; the decision detail collapsed and expanded',async()=>{
       // The tab is session memory (useDraftState): the default and the fallback for an unknown saved tab are unit-tested.
       await navigate('Journal');await until('Boolean(document.querySelector(`[aria-label="Journal views"]`))','Journal tabs');
