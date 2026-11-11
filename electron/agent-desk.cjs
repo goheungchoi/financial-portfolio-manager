@@ -104,8 +104,17 @@ class AgentDesk {
   // A stop from a trade plan that could not be armed (P3): {symbol, quantity, reason, proposalId}. Listed for a day,
   // until a stop loss for the symbol is armed after it.
   recordPlanStopFailure(scope,{symbol,quantity,reason,proposalId=null}){const at=this.clock();const item={id:'PSF-'+randomUUID().slice(0,8),scope,symbol,quantity,reason:cut(reason,300),proposalId,at};this.db.prepare('INSERT INTO plan_stop_failures VALUES(?,?,?)').run(item.id,scope,JSON.stringify(item));return item;}
-  planStopFailures(scope){const now=this.clock();const stops=this.rows('conditional_orders',scope).filter(o=>o.side==='Sell'&&o.purpose==='stop_loss'&&(o.status==='armed'||o.status==='firing'));
-    return this.db.prepare('SELECT payload FROM plan_stop_failures WHERE scope=? ORDER BY rowid DESC').all(scope).map(r=>JSON.parse(r.payload)).filter(f=>now-f.at<86400000&&!stops.some(o=>o.symbol===f.symbol&&o.createdAt>=f.at));}
+  // Never throws (release gate 1.5.51, G3): the review context and getState() read it with no try of their own. A row
+  // that cannot be parsed is skipped; a failed read of the table or of the stops gives []. The first problem in a run is
+  // written once to the app log (onError, set by Automation), with the error's code and the rows skipped.
+  planStopFailures(scope){const now=this.clock();let stops,rows;
+    try{stops=this.rows('conditional_orders',scope).filter(o=>o.side==='Sell'&&o.purpose==='stop_loss'&&(o.status==='armed'||o.status==='firing'));rows=this.db.prepare('SELECT payload FROM plan_stop_failures WHERE scope=? ORDER BY rowid DESC').all(scope);}
+    catch(error){this.planStopReadProblem(error,0);return [];}
+    const list=[];let skipped=0;for(const r of rows){let f=null;try{f=JSON.parse(r.payload);}catch{}if(f&&typeof f==='object'&&Number.isFinite(f.at)&&typeof f.symbol==='string')list.push(f);else skipped++;}
+    if(skipped)this.planStopReadProblem(null,skipped);
+    return list.filter(f=>now-f.at<86400000&&!stops.some(o=>o.symbol===f.symbol&&o.createdAt>=f.at));}
+  planStopReadProblem(error,skipped){if(this.planStopProblemLogged)return;this.planStopProblemLogged=true;const code=require('./reading-failures.cjs').errorCode;
+    try{this.onError?.('Error: purchases without a stop order could not be read',`${error?`The list could not be read (${code(error)}).`:'The list was read.'} Rows skipped as unreadable: ${skipped}. Until this is fixed, Home and the next review may not show a purchase whose stop order was not armed. Logged once per run.`);}catch{}}
   // Held positions whose latest stop loss was rejected: protection the AI meant to have but does not. positions:
   // {symbol: {quantity}}. Only stop losses count as protection (a take-profit or other sell does not limit a fall), and
   // they must cover the shares the rejected stop was for (its quantity, at most the shares held); fewer is reported as

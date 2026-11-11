@@ -601,3 +601,25 @@ test('P1: an unreadable purchase record keeps the stop armed and retrying; reada
   assert.equal(a.calls.propose.length,1);assert.deepEqual([a.calls.propose[0].side,a.calls.propose[0].quantity],['Sell',1],'the filled quantity');
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/main.cjs'),'utf8');assert.match(src,/o\.linkedBuy&&o\.unreadableSince&&now-o\.unreadableSince>300000/);
 });
+// Release gate 1.5.51, G3: the list of purchases without a stop order never stops a review or getState().
+test('G3: a damaged plan_stop_failures row is skipped, the good ones are still listed, and it is logged once per run',()=>{
+  const {automation:a,events,db}=harness();const scope=a.watchScope();
+  a.desk.recordPlanStopFailure(scope,{symbol:'005930',quantity:2,reason:'Cap reached.',proposalId:'P1'});
+  db.prepare('INSERT INTO plan_stop_failures VALUES(?,?,?)').run('PSF-BAD1',scope,'{not json');db.prepare('INSERT INTO plan_stop_failures VALUES(?,?,?)').run('PSF-BAD2',scope,'null');
+  a.desk.recordPlanStopFailure(scope,{symbol:'000660',quantity:1,reason:'Cap reached.',proposalId:'P2'});
+  assert.deepEqual(a.desk.planStopFailures(scope).map(f=>f.symbol),['000660','005930']);
+  assert.deepEqual(a.desk.context(scope,a.config,['005930','000660'],{}).conditionalOrders.planStopsNotArmed.map(f=>f.symbol),['000660','005930']);
+  assert.deepEqual(a.getState().desk.planStopFailures.map(f=>f.symbol),['000660','005930']);
+  const logged=events.filter(e=>e.title==='Error: purchases without a stop order could not be read');assert.equal(logged.length,1,'once per run');
+  assert.equal(logged[0].kind,'System');assert.match(logged[0].body,/^The list was read\. Rows skipped as unreadable: 2\./);
+});
+test('G3: an unreadable plan_stop_failures table: the review completes, getState() returns, no planStopsNotArmed, one log entry',async()=>{
+  const {automation:a,supplied,events,db}=harness();const scope=a.watchScope();a.desk.recordPlanStopFailure(scope,{symbol:'005930',quantity:2,reason:'Cap reached.',proposalId:'P1'});
+  db.exec('ALTER TABLE plan_stop_failures RENAME TO plan_stop_failures_gone');
+  assert.deepEqual(a.desk.planStopFailures(scope),[]);
+  await a.review('User request');assert.equal(a.lastError,null);
+  const ctx=supplied.filter(([op])=>op==='decision').at(-1)[1].context.agentDesk;assert.equal('planStopsNotArmed' in ctx.conditionalOrders,false);
+  let state;assert.doesNotThrow(()=>{state=a.getState();});assert.deepEqual(state.desk.planStopFailures,[]);
+  const logged=events.filter(e=>e.title==='Error: purchases without a stop order could not be read');assert.equal(logged.length,1,'once per run');
+  assert.match(logged[0].body,/^The list could not be read \([A-Z_]+\)\. Rows skipped as unreadable: 0\./);
+});
