@@ -2,7 +2,7 @@ import {toast} from './Toast';
 import {Note} from './Note';
 import {Card,Row,Switch,NumberField} from './SettingsUI';
 import {useEffect,useState} from 'react';
-type Section={enabled:boolean;auto:boolean;[key:string]:number|boolean|string};
+type Section={enabled:boolean;auto:boolean;[key:string]:number|boolean|string|null};
 type Policy={leveragedEtps:Section;margin:Section;short:Section};
 type Position={symbol:string;name:string;factor:number;kind:string;value:number;heldDays:number|null;short:boolean};
 type Loan={symbol:string;quantity:number;loanAmount:number|null;loanDate:string|null;expiry:string|null;daysToExpiry:number|null;estimatedInterest:number|null};
@@ -28,7 +28,7 @@ function MarketCard({name,market,data,busy,environment,onSave}:{name:string;mark
   const [draft,setDraft]=useState<Policy|null>(data.policy??null);useEffect(()=>{setDraft(data.policy??null);},[JSON.stringify(data.policy)]);
   if(!data.account||!draft)return <Card title={name} label={`${name} short and leverage`}><p className="muted">Connect this account to configure leveraged products.</p></Card>;
   const sections=SECTIONS.filter(s=>market==='KR'||s.key==='leveragedEtps');const s=data.summary!,credit=data.credit;
-  const set=(section:keyof Policy,key:string,value:number|boolean|string)=>setDraft({...draft,[section]:{...draft[section],[key]:value,...(key==='enabled'&&!value?{auto:false}:{})}});
+  const set=(section:keyof Policy,key:string,value:number|boolean|string|null)=>setDraft({...draft,[section]:{...draft[section],[key]:value,...(key==='enabled'&&!value?{auto:false}:{})}});
   const changed=sections.some(x=>JSON.stringify(draft[x.key])!==JSON.stringify(data.policy![x.key]));
   const saved=data.policy!.leveragedEtps;
   return <Card title={name} label={`${name} short and leverage`} aside={<span className={`state-pill ${saved.enabled?'on':''}`}>{status(saved)}</span>}>
@@ -38,6 +38,11 @@ function MarketCard({name,market,data,busy,environment,onSave}:{name:string;mark
       {needsLive&&<p className="muted small-line">Live accounts only · KIS does not offer credit orders on mock accounts.</p>}
       {x.key!=='leveragedEtps'&&data.creditPaths&&(x.key==='margin'?[['margin-buy','Opening'],['margin-sell','Repaying']]:[['short','Opening'],['cover','Covering']]).map(([k,what])=>{const ps=data.creditPaths![k];return ps?<p key={k} className="notice warning small-line" role="status"><b>{what}:</b> {!ps.executable?'Not available. ':''}{ps.label??(ps.automatic?'Automatic.':'')} {ps.reason?`Why: ${ps.reason}.`:''}</p>:null;})}
       <Row title={`Allow ${x.allow}`} hint={x.note}><Switch label={`${name} allow ${x.allow}`} checked={p.enabled} onChange={v=>set(x.key,'enabled',v)}/></Row>
+      {x.key==='leveragedEtps'&&<>
+        <Row title="My KIS account can buy these products" hint="KIS requires a basic deposit and investor education."><select aria-label={`${name} broker eligibility`} value={p.brokerEligible===true?'yes':p.brokerEligible===false?'no':''} onChange={ev=>set(x.key,'brokerEligible',ev.target.value==='yes'?true:ev.target.value==='no'?false:null)}><option value="">Not confirmed</option><option value="yes">Yes</option><option value="no">No</option></select></Row>
+        {data.policy!.leveragedEtps.enabled&&data.policy!.leveragedEtps.brokerEligible!==true&&<p className="notice warning small-line" role="status" aria-label={`${name} eligibility notice`}>Not offered to the AI until you confirm eligibility.</p>}
+        <Note summary="Why the app asks">Korean rules require a basic deposit of KRW 10 million before a retail account can buy leveraged or inverse ETFs and ETNs, and online investor education registered with the broker. Since 22 May 2026 this also applies to U.S.-listed products for investors buying them for the first time; earlier traders were exempt. Single-stock leveraged products need KRW 30 million in cash since 31 July 2026, and extra education. Brokers may apply their own conditions. The app cannot read from KIS whether your account qualifies, so you confirm it here. Until you do, the AI does not consider these products.</Note>
+      </>}
       <Row title="Submit automatically" hint="Off: each order waits for your approval"><Switch label={`${name} automatic ${x.allow}`} disabled={!p.enabled} checked={p.auto} onChange={v=>set(x.key,'auto',v)}/></Row>
       {p.enabled&&x.fields.map(([key,label,kind,min,max])=>kind==='source'?<Row key={key} title={label}><select aria-label={`${name} ${label}`} value={p[key] as string} onChange={ev=>set(x.key,key,ev.target.value)}><option value="self">KIS own (자기)</option><option value="distribution">KSFC distribution (유통)</option></select></Row>:<Row key={key} title={label.replace(/ \((%|days)\)$/,'')}><NumberField label={`${name} ${label}`} min={min!} max={max!} step={0.1} unit={/days/.test(label)?'days':'%'} value={p[key] as number} onChange={v=>set(x.key,key,v)}/></Row>)}
     </div>;})}

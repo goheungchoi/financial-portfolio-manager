@@ -12,6 +12,14 @@ test('pin: the OpenAI decide request body is byte-identical to 1.5.49',async()=>
   for(const [name,opts] of [['research',{research:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium'}],['final',{research:true,final:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium'}],['plain',{openaiModel:'gpt-6-luna',reasoningEffort:'none'}]]){
     let body;const c=new AiClient('fixture_key_123',async(_u,init)=>{body=init.body;return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,explanation:'x'})}]}]})};});
     try{await c.decide(CTX,opts);}catch{}
+    // Agent tools T1 (instructions 'review 2026-11-11') added cci, stochrsi and ultimate to the formula help in the
+    // compute tool's description; with exactly those entries taken out, the body must still be 1.5.49's byte for byte.
+    const F=require('../electron/formula.cjs');const added=['cci','stochrsi','ultimate'].map(k=>`; ${k}(${F.FUNCS[k][0].split('').map(t=>t==='s'?'sym':'n').join(',')}): ${F.FUNCS[k][2]}`).join('');
+    const escaped=JSON.stringify(added).slice(1,-1);if(name!=='plain')assert.ok(body.includes(escaped),name+': the new help entries are sent');body=body.split(escaped).join('');
+    // Instructions 'review 2026-11-11.2' (fact check X1): the abolished KRX single-price auction is no longer named.
+    // Those two sentences are put back as they were, so every other byte is still compared with 1.5.49.
+    for(const [now,then] of [['(Nextrade pre- or after-market, or a U.S. pre-market, after-market or KIS daytime session)','(Nextrade pre- or after-market, the KRX after-hours single-price auction, or a U.S. pre-market, after-market or KIS daytime session)'],
+      [', and prefer protecting or trimming positions over opening large new ones. U.S.',', prefer protecting or trimming positions over opening large new ones, and note that the KRX single-price auction fills every ten minutes within a tight band around the close. U.S.']]){const e=JSON.stringify(now).slice(1,-1);if(body.includes(e))body=body.split(e).join(JSON.stringify(then).slice(1,-1));}
     assert.deepEqual({sha256:crypto.createHash('sha256').update(body).digest('hex'),length:body.length},PIN[name],name);
   }
 });

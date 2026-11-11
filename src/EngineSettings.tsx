@@ -108,16 +108,15 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
 
 // Extended-hours trading, one switch per session. Live accounts only (KIS offers none of these sessions on mock accounts).
 function ExtendedSessions({config,busy,edit,live}:{config:RuntimeConfig;busy:boolean;edit:Edit;live:boolean}){
-  const row=(key:'sessionKrNxt'|'sessionKrxSingle'|'sessionUsPre'|'sessionUsAfter'|'sessionUsDaytime',title:string,hint:string)=><Row title={title} hint={hint}><Switch label={title} disabled={busy} checked={config[key]} onChange={v=>edit(key,v)}/></Row>;
-  const any=config.sessionKrNxt||config.sessionKrxSingle||config.sessionUsPre||config.sessionUsAfter||config.sessionUsDaytime;
+  const row=(key:'sessionKrNxt'|'sessionUsPre'|'sessionUsAfter'|'sessionUsDaytime',title:string,hint:string)=><Row title={title} hint={hint}><Switch label={title} disabled={busy} checked={config[key]} onChange={v=>edit(key,v)}/></Row>;
+  const any=config.sessionKrNxt||config.sessionUsPre||config.sessionUsAfter||config.sessionUsDaytime;
   return <Card id="eng-extended" title="Extended hours" hint="Trade outside regular sessions. Each session has its own switch; all start off." aside={<span className="badge">{any?'On':'Off'}</span>}>
     {!live&&<div className="notice">The connected account is a mock account, which accepts no extended-session orders. These switches take effect on a live account.</div>}
     {row('sessionKrNxt','Korea · Nextrade (NXT)','Pre-market 08:00–08:50 and after-market 15:30–20:00 KST, limit orders on NXT')}
-    {row('sessionKrxSingle','Korea · KRX after-hours single price','16:00–18:00 KST, matched every 10 minutes within ±10% of the close')}
     {row('sessionUsDaytime','U.S. · KIS daytime session','During Korean daytime (09:00–17:00 KST in summer), limit orders only')}
     {row('sessionUsPre','U.S. · Pre-market','04:00–09:30 New York time; every order waits for your approval')}
     {row('sessionUsAfter','U.S. · After-market','16:00–20:00 New York time; needs KIS after-market extension on your account; every order waits for your approval')}
     <Row title="Largest extended-session order" hint="Share of the market's equity per order"><NumberField label="Largest extended-session order" min={0.5} max={50} step={0.5} unit="%" disabled={busy} value={config.extendedMaxOrderPct} onChange={v=>edit('extendedMaxOrderPct',v)}/></Row>
-    <Note summary="How extended orders work">Orders go out only while a session you switched on is open, and stop 5 minutes before it ends. Korean NXT orders are sent to Nextrade with NXT prices; the KRX single-price auction uses order type 07. U.S. daytime orders use KIS's daytime endpoint. KIS's documentation does not confirm how U.S. pre- and after-market orders are handled, so those always wait for your approval. KRX closing-price windows (08:30–08:40, 15:40–16:00) are not traded. Credit (margin and short) orders are regular-session only.</Note>
+    <Note summary="How extended orders work">Orders go out only while a session you switched on is open, and stop 5 minutes before it ends. Korean NXT orders are sent to Nextrade with NXT prices. U.S. daytime orders use KIS's daytime endpoint. KIS's documentation does not confirm how U.S. pre- and after-market orders are handled, so those always wait for your approval. KRX closing-price windows (08:30–08:40, 15:40–16:00) are not traded. Credit (margin and short) orders are regular-session only. KRX ended its after-hours single-price auction on 2026-09-14, so the app no longer offers it.</Note>
   </Card>;
 }

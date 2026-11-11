@@ -1,19 +1,19 @@
 const test=require('node:test');const assert=require('node:assert/strict');
 const {tradableNow}=require('../electron/market-sessions.cjs');const {KisReadOnlyClient}=require('../electron/kis-client.cjs');const {OverseasClient}=require('../electron/kis-overseas.cjs');
-const kst=s=>Date.parse(s+'+09:00');const on={krNxt:true,krxSingle:true,usPre:true,usAfter:true,usDaytime:true};
+const kst=s=>Date.parse(s+'+09:00');const on={krNxt:true,usPre:true,usAfter:true,usDaytime:true};
 test('a session is tradable only when switched on, on a live account, and until 5 minutes before it ends',()=>{
   assert.equal(tradableNow('KR',kst('2026-10-20T19:00'),{environment:'live',enabled:on}).id,'nxt-after');
   assert.equal(tradableNow('KR',kst('2026-10-20T19:56'),{environment:'live',enabled:on}),null,'within 5 minutes of 20:00');
-  assert.equal(tradableNow('KR',kst('2026-10-20T19:00'),{environment:'live',enabled:{krxSingle:true}}),null,'NXT off');
+  assert.equal(tradableNow('KR',kst('2026-10-20T19:00'),{environment:'live',enabled:{}}),null,'NXT off');
   assert.equal(tradableNow('KR',kst('2026-10-20T19:00'),{environment:'mock',enabled:on}),null,'mock accounts');
-  assert.equal(tradableNow('KR',kst('2026-10-20T16:30'),{environment:'live',enabled:on}).id,'nxt-after','continuous NXT preferred over the auction');
-  assert.equal(tradableNow('KR',kst('2026-10-20T16:30'),{environment:'live',enabled:{krxSingle:true}}).route.ordDvsn,'07');
+  assert.equal(tradableNow('KR',kst('2026-10-20T16:30'),{environment:'live',enabled:on}).id,'nxt-after');
+  assert.equal(tradableNow('KR',kst('2026-10-20T16:30'),{environment:'live',enabled:{krxSingle:true}}),null,'the KRX single-price auction ended on 2026-09-14: an old saved switch trades nothing');
   const pre=tradableNow('US',kst('2026-10-20T19:00'),{environment:'live',enabled:on});assert.equal(pre.id,'us-pre');assert.equal(pre.approval,true);
   assert.equal(tradableNow('US',kst('2026-10-20T12:00'),{environment:'live',enabled:on}).route.endpoint,'daytime');
   assert.equal(tradableNow('KR',kst('2026-10-20T10:00'),{environment:'mock'}).id,'krx-regular','the regular session needs no switch');
 });
 const reply=body=>new Response(JSON.stringify(body));
-test('Korean extended orders go to NXT with NXT prices, or use order type 07 for the KRX auction',async()=>{
+test('Korean extended orders go to NXT with NXT prices; regular orders go to KRX',async()=>{
   const calls=[];const client=new KisReadOnlyClient({environment:'live',appKey:'fixture-key',appSecret:'fixture-secret',accountNumber:'12345678',accountProductCode:'01'},async(url,options)=>{calls.push({url,options});
     if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'t',expires_in:3600});if(url.includes('inquire-price'))return reply({rt_cd:'0',output:{stck_prpr:'100',aspr_unit:'1',temp_stop_yn:'N'}});
     if(url.includes('inquire-psbl-order'))return reply({rt_cd:'0',output:{nrcvb_buy_amt:'100000',nrcvb_buy_qty:'100'}});if(url.includes('order-cash'))return reply({rt_cd:'0',output:{ODNO:'42'}});throw new Error('Unexpected '+url);},async()=>{});
@@ -22,7 +22,6 @@ test('Korean extended orders go to NXT with NXT prices, or use order type 07 for
   await client.prepareOrder(command,nxt);assert.match(calls.find(c=>c.url.includes('inquire-price')).url,/FID_COND_MRKT_DIV_CODE=NX/);
   const last=()=>JSON.parse(calls.filter(c=>c.url.includes('order-cash')).at(-1).options.body);
   await client.placeOrder(command,nxt);assert.equal(last().EXCG_ID_DVSN_CD,'NXT');assert.equal(last().ORD_DVSN,'00');
-  await client.placeOrder(command,tradableNow('KR',kst('2026-10-20T16:30'),{environment:'live',enabled:{krxSingle:true}}));assert.equal(last().EXCG_ID_DVSN_CD,'KRX');assert.equal(last().ORD_DVSN,'07');
   await client.placeOrder(command);assert.equal(last().EXCG_ID_DVSN_CD,'KRX');assert.equal(last().ORD_DVSN,'00','regular orders unchanged');
   await assert.rejects(client.prepareOrder({...command,credit:{kind:'margin-buy',type:'21'}},nxt),/FEATURE_UNAVAILABLE/,'credit orders are regular-session only');
 });
