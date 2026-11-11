@@ -4,11 +4,11 @@ import {subscribeRuntime} from './runtimeFeed';
 import type {PortfolioState,PortfolioRow} from './UnifiedPortfolio';
 import {pendingKRW} from './pending';
 import type {RuntimeState} from './RuntimeSettings';
-import {PortfolioProfit} from './PortfolioProfit';
 import {AllocationChart} from './AllocationChart';
 import {TickDelta,LiveValue} from './LiveValue';
 import {useDraftState} from './useDraftState';
 import {ValueChart,shortDay} from './PerfCharts';
+import {homeResult,resultSummary,periodNote} from './home-result.mjs';
 const krw=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const native=(n:number,currency:string)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 const compact=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',notation:'compact',maximumFractionDigits:1}).format(n);
@@ -38,7 +38,6 @@ export function HomeMetrics({state}:{state:PortfolioState}){
   const plain=(reasons:string[])=>{const end=v&&v.high!=null&&v.low!=null&&v.high>v.low?'so the value is a range.':'so the value is an estimate.';const us=reasons.filter(r=>!/^Korea:/.test(r));
     return us.some(r=>/flight|unresolved|settl|review|verification/i.test(r))?`Some U.S. trades are still being checked, ${end}`:us.some(r=>/funding|KRW/i.test(r))?`How some U.S. buys were paid is not known yet, ${end}`:reasons.some(r=>/^Korea:/.test(r))&&!us.length?`Some Korean balance figures were not reported, ${end}`:`Some figures are estimates, ${end}`;};
   const sample=state.valuationSample??Math.max(Date.parse(state.timestamps.KR??'')||0,Date.parse(state.timestamps.US??'')||0);
-  const us=state.rows.filter(r=>r.market==='US');
   // Where the totals come from: a change here (a market loading, a holding moving from its balance price to a live quote)
   // settles the value without showing it as a move.
   const basis=priceBasis(state.rows.filter(r=>r.market==='KR'||withUS),{krLoaded,withUS});
@@ -53,9 +52,37 @@ export function HomeMetrics({state}:{state:PortfolioState}){
     <section className="metric-card" aria-label="Cash"><small>Cash</small><strong>{state.cash.KRW==null&&state.cash.USD==null?'—':krw(cash)}</strong>
       {/* A share of a conservative, uncertain estimate can exceed 100% and mislead: the amount only, said why. */}
       <div className="metric-foot"><span>{!equity?'—':ranged?'Share of account value: not shown while the value is a range':cash>equity?'Share of account value: not shown (cash is more than the account value)':`${(cash/equity*100).toFixed(0)}% of account value`}</span>{state.committedKRW?<span title="KRW committed to U.S. buys through integrated margin; KIS deducts it at settlement">{krw(state.committedKRW)} for U.S. buys settling{state.settlementUncertainKRW?` (funding of ${krw(state.settlementUncertainKRW)} not yet known)`:''}</span>:null}{withUS&&state.cash.USD?<span>incl. {native(state.cash.USD,'USD')}</span>:null}{withUS&&state.pendingSettlement?.USD?<span title="Money from U.S. sales that has not settled yet: counted in total equity, spendable once it settles">{native(state.pendingSettlement.USD,'USD')} pending settlement</span>:null}</div></section>
-    <section className="metric-card" aria-label="Unrealized"><small>Unrealized</small><PortfolioProfit rows={state.rows} loaded={equity!=null}/>
-      {us.length>0&&<div className="metric-foot" aria-label="U.S. unrealized"><span>U.S.</span><PortfolioProfit rows={us} currency="USD" loaded={state.totals.USD!=null}/></div>}</section>
+    <HomeResult state={state} usLoaded={withUS} equityKnown={equity!=null}/>
   </div>;
+}
+// The total investment result since the first daily record (artifacts/reviews/2026-11-11-home-result): the account value
+// box's "All" figures, the latest day, unrealized gain and the benchmark, from src/home-result.mjs. Unknown stays "—" with
+// its reason. The performance summary is read every minute, as the account value box reads it.
+function HomeResult({state,usLoaded,equityKnown}:{state:PortfolioState;usLoaded:boolean;equityKnown:boolean}){
+  const [summary,setSummary]=useState<any>(null);
+  useEffect(()=>{let alive=true;const load=async()=>{try{const reply=await window.portfolio?.getPerformance();const s=resultSummary(reply?.state?.summaries);if(alive&&s)setSummary(s);}catch{}};void load();const t=setInterval(load,60000);return()=>{alive=false;clearInterval(t);};},[]);
+  const r=homeResult({summary,rows:state.rows,usLoaded,equityKnown,usdLoaded:state.totals.USD!=null});
+  const tone=(v:number|null)=>v==null||Math.abs(v)<1e-9?'':v>0?'positive':'negative';const sign=(v:number)=>(v>0?'+':v<0?'−':'')+krw(Math.abs(v)).replace('-','');
+  const t=r.total,d=r.today,u=r.unrealized;
+  const totalPct=t?.twr!=null?pct(t.twr*100):t?.twrRange?`${pct(t.twrRange.low*100)} to ${pct(t.twrRange.high*100)}`:null;
+  return <section className="metric-card home-result" aria-label="Result"><small>Result</small>
+    <strong className="result-total"><span className={tone(t?.gain??null)} title="Investment P/L and time-weighted return: deposits, withdrawals and accounting corrections are not counted" data-amount={t?.gain??''}>{t?.gain==null?'—':sign(t.gain)}</span>{totalPct&&<span className={`result-pct ${tone(t?.twr??null)}`}>{totalPct}</span>}{t?.tag&&<em className="result-tag" title={t.tag.why}>{t.tag.text}</em>}</strong>
+    <div className="metric-foot">{r.since&&<span>since {shortDay(r.since,true)}, after deposits</span>}</div>
+    {t?.reason&&<div className="metric-foot"><span className={t.twr==null&&!t.twrRange?'negative':undefined} title={t.reason}>{t.reason}</span></div>}
+    <dl className="result-lines">
+      <div aria-label="Today"><dt>Today</dt><dd className={tone(d?.pnl??null)} title={d?.reason??undefined}>{d?.pnl==null?(d?.unavailable?'Unavailable':'—'):sign(d.pnl)}{d?.returnRange?<em>{pct(d.returnRange.low*100)} to {pct(d.returnRange.high*100)}</em>:d?.pnlRange?<em title="The valuation range changed this day: the change may be funding settling, not only investment gain or loss.">Provisional: {sign(d.pnlRange.low)} to {sign(d.pnlRange.high)}</em>:d?.dailyReturn!=null&&<em>{pct(d.dailyReturn*100)}</em>}{d?.correction?<em title="Settlement bookkeeping, not investment P/L">Correction {sign(d.correction)}</em>:null}</dd></div>
+      <div aria-label="Unrealized"><dt>Unrealized</dt><dd className={tone(u.amount)} data-amount={u.amount??''} title={u.reason??'Unrealized price gain/loss against holding acquisition cost, before selling fees and taxes. Percentage uses invested cost, excluding cash. Combined KRW uses current indicative FX; historical currency gains are not included.'}>{u.amount==null?'—':sign(u.amount)}{u.percent!=null&&<em>{pct(u.percent)}</em>}{r.scope==='korea'&&<em className="negative">Korea only</em>}</dd></div>
+      {r.benchmark&&<div aria-label="Benchmark"><dt>{r.benchmarkName}</dt><dd>{pct(r.benchmark.benchmark*100)}<em>· you {pct(r.benchmark.you*100)}</em></dd></div>}
+    </dl>
+    {/* More (step 3): what each line counts, the U.S. amount in dollars, and the reason behind any tag. */}
+    <details className="inline-help metric-details result-more"><summary>More</summary><ul className="muted">
+      {t?.tag&&<li>{t.tag.text}: {t.tag.why}</li>}
+      <li>Total: account value now minus money paid in{r.since?` since ${shortDay(r.since,true)}`:''}, as on the account value chart's "All".</li>
+      <li>Unrealized: holdings against their average cost, before selling fees and taxes{r.scope==='korea'?'; Korea only until the U.S. account and an exchange rate load':''}.</li>
+      {r.unrealizedUSD&&<li aria-label="U.S. unrealized" data-amount={r.unrealizedUSD.amount}>U.S. unrealized: <span className="nowrap">{(r.unrealizedUSD.amount>0?'+':r.unrealizedUSD.amount<0?'−':'')+native(Math.abs(r.unrealizedUSD.amount),'USD')}</span>{r.unrealizedUSD.percent!=null?` (${pct(r.unrealizedUSD.percent)})`:''}, in dollars.</li>}
+      <li>Total and Unrealized come from different records and need not add up.</li>
+    </ul></details>
+  </section>;
 }
 // Account value over a chosen period: the change in money and percent, the benchmark over the same days, and a chart with hover.
 const TREND_PERIODS=['1W','1M','3M','YTD','1Y','All'];
@@ -75,8 +102,8 @@ export function HomeTrend({onOpen}:{onOpen():void}){
   // leaves out money changes awaiting you. The reasons are in the tooltip and on the Performance page.
   // The actual reason, not a presumed one (1.5.48 review): a failed corrections read, a missing exchange rate and an
   // unsettled trade each say so. Each entry is "day: reason; reason"; the first reason is shown, the rest are in the tooltip.
-  const firstWhy=(s:string)=>String(s).replace(/^\d{4}-\d{2}-\d{2}: /,'').split('; ')[0].replace(/\.$/,'');
-  const trendNote=missing?{text:`Investment return unavailable: ${firstWhy(sel.unavailable[0])}${sel.unavailable.length>1?` (${sel.unavailable.length} days affected)`:''}.`,why:sel.unavailable.slice(0,3).join(' · ')}:affected?{text:'Return estimate: settlement not verified.',why:'Includes days with U.S. buys awaiting settlement evidence, accounting corrections or restatements.'}:summary.provisional?.unresolved?.length?{text:'Provisional: money changes awaiting you are left out.',why:'Confirm or remove them on the Performance page.'}:null;
+  // The note text is shared with the Result tile (src/home-result.mjs periodNote), so the two cannot drift.
+  const trendNote=periodNote(sel,summary);
   const tone=(v:number|null)=>v==null||Math.abs(v)<1e-9?'':v>0?'positive':'negative';const sign=(v:number)=>(v>0?'+':v<0?'−':'')+krw(Math.abs(v)).replace('-','');
   return <section className="metric-card home-trend" aria-label="Account trend">
     <div className="home-trend-head"><small>Account value</small><div className="home-trend-tools"><div className="segmented compact" role="tablist" aria-label="Account trend period">{periods.map((p:any)=><button key={p.label} role="tab" aria-selected={active===p.label} aria-pressed={active===p.label} onClick={()=>setPeriod(p.label)}>{p.label}</button>)}</div><button className="link-button" onClick={onOpen}>Performance →</button></div></div>
