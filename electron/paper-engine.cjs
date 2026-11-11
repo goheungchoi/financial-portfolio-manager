@@ -93,7 +93,9 @@ class PaperEngine {
   }
   tick() {
     this.atomic(()=>{
-      const account=this.account(),quotes=this.quotes();this.rollDay(account,quotes);account.dayPeakEquity=Math.max(account.dayPeakEquity??account.dayBaseline,this.equity(account,quotes));
+      // Saved at the end only when something changed (CPU fix F1, artifacts/reviews/2026-11-11-cpu): this runs every
+      // second, and an unchanged save still counts as a changed row, which made every history cache read cold.
+      const account=this.account(),read=JSON.stringify(account),quotes=this.quotes();this.rollDay(account,quotes);account.dayPeakEquity=Math.max(account.dayPeakEquity??account.dayBaseline,this.equity(account,quotes));
       for(const order of this.orders().filter(pending)) {
         if(account.paused || this.clock()>order.expiresAt){this.saveOrder({...order,status:'Canceled',reason:account.paused?'Paper paused':'Order expired'});account.version++;continue;}
         const quote=quotes.get(order.symbol);
@@ -116,7 +118,7 @@ class PaperEngine {
         this.db.prepare('INSERT INTO paper_fills(id,payload) VALUES(?,?)').run(fill.id,JSON.stringify(fill));
         this.saveOrder({...order,filled:order.filled+quantity,status:order.filled+quantity===order.quantity?'Filled':'Partially filled',lastSequence:quote.sequence});
       }
-      this.saveAccount(account);
+      if(JSON.stringify(account)!==read)this.saveAccount(account);
     });
   }
   getState() {

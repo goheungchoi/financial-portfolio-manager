@@ -30,7 +30,9 @@ function matcher(securities){
 }
 const receiptOf=url=>/rcpNo=(\d{14})/.exec(url??'')?.[1]??null;
 class NewsEvents {
-  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS news_events(id TEXT PRIMARY KEY,firstSeenAt INTEGER NOT NULL,payload TEXT NOT NULL)');}
+  // The index keeps list()'s order (firstSeenAt, then rowid, which every index ends with) so the read does not sort the
+  // whole table (CPU fix F2, artifacts/reviews/2026-11-11-cpu: 34 ms to 0.2 ms on 30k rows).
+  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS news_events(id TEXT PRIMARY KEY,firstSeenAt INTEGER NOT NULL,payload TEXT NOT NULL);CREATE INDEX IF NOT EXISTS news_events_seen ON news_events(firstSeenAt)');}
   save(event){this.db.prepare('INSERT INTO news_events VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(event.id,event.firstSeenAt,JSON.stringify(event));}
   // Stores unseen items once; returns the newly stored events.
   ingest(items,securities,now=Date.now()){
