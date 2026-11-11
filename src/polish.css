@@ -343,6 +343,17 @@ main>.emergency-notice button{font-size:12px;padding:6px 12px}
 .plan-lines li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}
 .run-dot.tone-scout{background:#6aa7e8}.outcome-pill.tone-scout{background:rgba(106,167,232,.16);color:#6aa7e8}
 .metric-card .portfolio-profit{padding:0;gap:0}.metric-foot .portfolio-profit{display:inline-flex}
+/* Home Result tile (2026-11-11): the total since the first record, then Today, Unrealized and the benchmark as label/value lines. */
+.home-result .result-total{display:flex;align-items:baseline;flex-wrap:wrap;column-gap:8px;row-gap:2px}
+.home-result .result-total .result-pct{font-size:13px;font-weight:600;letter-spacing:0}
+.home-result .result-tag{font-style:normal;font-size:11px;font-weight:600;letter-spacing:0;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:1px 7px;align-self:center}
+.home-result .result-lines{margin:4px 0 0;display:grid;gap:4px;font-size:12.5px}
+.home-result .result-lines>div{display:flex;justify-content:space-between;align-items:baseline;gap:10px;min-width:0}
+.home-result .result-lines dt{color:var(--muted);flex:none}
+.home-result .result-lines dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums;text-align:right;display:flex;flex-wrap:wrap;justify-content:flex-end;column-gap:6px;min-width:0}
+.home-result .result-lines dd em{font-style:normal;font-weight:500;color:var(--muted)}
+.home-result .result-more .nowrap{white-space:nowrap}
+.home-result .result-lines dd.positive em:not(.negative),.home-result .result-lines dd.negative em:not(.negative){color:inherit;opacity:.85}
 
 /* Stage 3 · Korea and U.S. trading */
 .trade-page{display:flex;flex-direction:column;gap:18px;max-width:1000px}

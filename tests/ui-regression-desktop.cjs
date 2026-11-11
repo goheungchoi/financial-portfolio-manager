@@ -78,15 +78,30 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
         await capture(`us-zero-${width}-${theme}`);
       }}
     });
-    await check('Overview places unrealized return below equity in both themes and shows native loss correctly',async()=>{
+    // Home Result tile (2026-11-11): the third tile is Result; its Unrealized line keeps the old tile's figure.
+    await check('Overview: the Result tile shows the unrealized loss in KRW, with Total, Today and the date line, in both themes',async()=>{
       overseas.holdings=[{symbol:'NASD:TEST',name:'Test holding',quantity:2,price:90,cost:100}];overseas.cash=0;overseas.reportedTotal=180;
       await run("(async()=>window.portfolio.saveCosts({...await window.portfolio.getCosts(),usdKRW:1000}))()");await run('window.portfolio.refreshPortfolio()');await navigate('Home');
       for(const theme of ['dark','light']){
         if(await run('document.documentElement.dataset.theme')!==theme)await run('document.querySelector(`[aria-label="Dark mode"]`).click()');
-        await until('document.querySelector(`[aria-label="Unrealized"] .portfolio-profit`)?.dataset.amount==="-20000"','Combined P/L missing');
-        assert.equal(await run('document.querySelector(`[aria-label="U.S. unrealized"] .portfolio-profit`).dataset.amount'),'-20');
+        await until('document.querySelector(`[aria-label="Result"] [aria-label="Unrealized"] dd`)?.dataset.amount==="-20000"','Combined P/L missing');
+        // The U.S. amount in dollars is under More (step 3).
+        assert.equal(await run('document.querySelector(`[aria-label="Result"] [aria-label="U.S. unrealized"]`).dataset.amount'),'-20');
+        const tile=await run('(()=>{const t=document.querySelector(`[aria-label="Result"]`);return {label:t.querySelector("small").textContent,total:t.querySelector(".result-total").textContent,lines:Array.from(t.querySelectorAll(".result-lines dt")).map(d=>d.textContent),text:t.textContent};})()');
+        console.log('RESULT-TILE '+JSON.stringify(tile));assert.equal(tile.label,'Result');assert.deepEqual(tile.lines.slice(0,2),['Today','Unrealized']);assert.ok(!/realized/i.test(tile.text.replace(/unrealized/gi,'')),'no realized line');
         assert.equal(await run('document.querySelectorAll(".home-metrics .metric-card").length'),3,'three key numbers');assert.ok((await run('document.querySelector(`[aria-label="Combined equity"] strong`).textContent')).includes('₩'),'total equity shown');
         await run('document.querySelector(".home-metrics").scrollIntoView({block:"center"})');await capture('overview-pnl-'+theme);
+        // More, opened: every line, the dollar amount and the closing sentence; captured with the whole tile in view.
+        const more=await run('(()=>{const d=document.querySelector(`[aria-label="Result"] details.result-more`);d.open=true;d.closest("section").scrollIntoView({block:"center"});return {summary:d.querySelector("summary").textContent,lines:Array.from(d.querySelectorAll("li")).map(l=>l.textContent),bench:document.querySelector(`[aria-label="Result"] [aria-label="Benchmark"] dd`)?.textContent??null};})()');
+        console.log('RESULT-MORE '+JSON.stringify(more));assert.equal(more.summary,'More');assert.deepEqual(more.lines.map(l=>l.split(':')[0]),['Total','Unrealized','U.S. unrealized','Total and Unrealized come from different records and need not add up.'],'More: Total, Unrealized, U.S. dollars and the closing line only (no Today, no benchmark)');assert.ok(more.lines.includes('U.S. unrealized: −$20.00 (-10.0%), in dollars.'),'U.S. dollar line');assert.equal(await run('getComputedStyle(document.querySelector(`[aria-label="Result"] [aria-label="U.S. unrealized"] .nowrap`)).whiteSpace'),'nowrap','the sign stays with the dollar amount');assert.equal(more.lines.at(-1),'Total and Unrealized come from different records and need not add up.');
+        if(more.bench)assert.match(more.bench,/%· you [+-]/);await wait(150);await capture('home-result-more-'+theme);
+        await run('document.querySelector(`[aria-label="Result"] details.result-more`).open=false');
+        // Wide, mid and the minimum window width (760): nothing in the three tiles overflows its tile.
+        const [w0,h0]=win.getSize();
+        for(const [width,height] of [[1360,880],[960,720],[760,700]]){win.setSize(width,height);await wait(250);await run('document.querySelector(`[aria-label="Result"]`).scrollIntoView({block:"center"})');
+          const over=await run('Array.from(document.querySelectorAll(".home-metrics .metric-card")).flatMap(c=>[c,...c.querySelectorAll("*")].filter(e=>e.scrollWidth>e.clientWidth+1&&getComputedStyle(e).overflowX!=="visible"||e.getBoundingClientRect().right>c.getBoundingClientRect().right+1).map(e=>(c.getAttribute("aria-label")??"")+" "+e.tagName+"."+e.className))');
+          assert.deepEqual(over,[],`Home tiles overflow at ${width}px (${theme})`);await capture(`home-result-${width}-${theme}`);}
+        win.setSize(w0,h0);await wait(200);
       }
       overseas.holdings=[];overseas.cash=0;overseas.reportedTotal=0;await run('window.portfolio.refreshPortfolio()');await navigate('U.S. stocks');
     });
