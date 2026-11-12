@@ -31,7 +31,7 @@ test('X1: a saved profile with the old switch loads, ignores it, and saves setti
 test('X1: the Extended hours card has four switches and no single-price text; the AI is no longer told about the auction',()=>{
   const src=fs.readFileSync(path.join(__dirname,'../src/EngineSettings.tsx'),'utf8');const card=src.slice(src.indexOf('function ExtendedSessions'),src.indexOf('</Card>',src.indexOf('function ExtendedSessions')));
   assert.equal((card.match(/\{row\('/g)??[]).length,4);assert.ok(!/single price'|order type 07|sessionKrxSingle/.test(card));assert.match(card,/KRX ended its after-hours single-price auction on 2026-09-14/);
-  const {REVIEW_INSTRUCTIONS,INSTRUCTIONS_VERSION}=require('../electron/ai-client.cjs');assert.ok(!/single-price/.test(REVIEW_INSTRUCTIONS));assert.equal(INSTRUCTIONS_VERSION,'review 2026-11-11.2');
+  const {REVIEW_INSTRUCTIONS,INSTRUCTIONS_VERSION}=require('../electron/ai-client.cjs');assert.ok(!/single-price/.test(REVIEW_INSTRUCTIONS));assert.match(INSTRUCTIONS_VERSION,/^review 2026-11-1[12]/,'review 2026-11-11.2 removed the auction; later versions (2026-11-12: replaces on set_conditional_order) keep it removed');
 });
 
 // X2
