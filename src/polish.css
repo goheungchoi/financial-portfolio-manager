@@ -245,6 +245,11 @@ button.brand span small{margin-top:3px;letter-spacing:1.4px}
 .settings-jump{justify-content:space-between;align-items:center}
 .settings-jump nav{display:flex;gap:6px;flex-wrap:wrap}
 .settings-jump>.primary{padding:7px 14px;font-size:12px;border-radius:8px}
+/* Engine tabs (step A3): the tab bar wraps at narrow widths; the open tab keeps the card spacing. */
+.engine-tabs{flex-wrap:wrap}
+.engine-tabs button{font-size:12px;padding:6px 12px}
+.engine-tabs button[aria-selected=true]{background:var(--accent);color:#102821}
+.engine-panel{display:flex;flex-direction:column;gap:16px}
 .settings-card .guidelines-editor{margin:0 20px 16px}
 
 /* Stage 1 frame: a fixed top bar spans the window; the sidebar and pages sit below it */

@@ -80,6 +80,7 @@ test('the routing and shadow code is gone; what other code uses stays',()=>{
 
 test('Engine settings: the shadow and routing rows are gone; "Slow down near the budget" and the condensing model remain',()=>{
   const ui=src('src/TokenSaving.tsx');for(const gone of ['Shadow evaluation','Reviews to shadow','Shadow budget','Main model from','Spot checks','Cheaper model limit','"Routine reviews"','Model routing','Save near the budget'])assert.ok(!ui.includes(gone),gone);
-  assert.ok(ui.includes('<Row title="Slow down near the budget" hint="At 80% of the daily budget, scheduled reviews run half as often">'));assert.ok(ui.includes('title="Condensing model" hint="Shrinks research results that grow too large for a review"'));
+  assert.ok(ui.includes('<Row title="Slow down near the budget" hint="At 80% of the daily budget, scheduled reviews run half as often">'));// Step A3: the condensing model is the Context compacting agent on the Agents tab.
+  const engine=src('src/EngineSettings.tsx');assert.ok(engine.includes('<Card id="eng-compacting" title="Context compacting" hint="Shrinks research results that grow too large for a review.">'));assert.ok(engine.includes('<AgentModelRows agent="compacting"'));
   const types=src('src/RuntimeSettings.tsx');for(const k of REMOVED)assert.ok(!types.includes(k+':'),k);assert.ok(!/shadow\?:\{pairs/.test(types));
 });
