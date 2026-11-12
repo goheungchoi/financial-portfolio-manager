@@ -3,6 +3,7 @@ import type {RuntimeConfig,RuntimeState} from './RuntimeSettings';
 import {Card,Row,Switch,Limit} from './SettingsUI';
 import {Note} from './Note';
 import {toast} from './Toast';
+import {ANTHROPIC_NOTE,providerUses} from './providerText.mjs';
 // Release B, step B1 (artifacts/reviews/2026-11-12-engine-settings/b1-design.md): one card per AI provider, alike:
 // whether its key is loaded (never the key), a Test that costs no tokens, data sharing for that provider, and its own
 // daily limits with today's use. Keys still come from the provider file (the import row is in the keys card below).
@@ -12,7 +13,6 @@ const NAMES:Record<Vendor,string>={openai:'OpenAI',anthropic:'Anthropic'};
 const KEYS:Record<Vendor,{share:keyof RuntimeConfig;calls:keyof RuntimeConfig;usd:keyof RuntimeConfig;unlimitedCalls:keyof RuntimeConfig;unlimitedBudget:keyof RuntimeConfig}>={
   openai:{share:'shareKisWithOpenAI',calls:'maxCallsPerDay',usd:'maxUSDPerDay',unlimitedCalls:'unlimitedCalls',unlimitedBudget:'unlimitedBudget'},
   anthropic:{share:'shareKisWithAnthropic',calls:'anthropicCallsPerDay',usd:'anthropicUSDPerDay',unlimitedCalls:'anthropicUnlimitedCalls',unlimitedBudget:'anthropicUnlimitedBudget'}};
-const AGENT_NAMES:Record<string,string>={trading:'Reviews',scout:'scout',narrative:'narrative',compacting:'compacting',reflection:'reflection'};
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
 export function ProviderCards({runtime,providerFile,busy,onState}:{runtime:RuntimeState|null;providerFile?:string|null;busy:boolean;onState(state:RuntimeState):void}){
   return <section className="provider-cards" id="ai-providers" aria-label="AI providers">
@@ -32,7 +32,7 @@ function ProviderCard({vendor,runtime,providerFile,busy,onState}:{vendor:Vendor;
   const save=async(patch:Partial<RuntimeConfig>)=>{const api=window.portfolio;if(!api)return false;setSaving(true);try{const r=await api.configureRuntime(patch);if(r.state)onState(r.state);toast(r.ok?`${name} settings saved`:`Not saved: ${r.message??r.error??'request failed'}`,r.ok?'ok':'error');return r.ok;}catch{toast('Not saved: could not reach the engine','error');return false;}finally{setSaving(false);}};
   const runTest=async()=>{const api=window.portfolio;if(!api?.testProviderKey)return;setTesting(true);setTest(null);try{const r=await api.testProviderKey(vendor);setTest({text:r.text,ok:r.result==='ok'});}catch{setTest({text:`Could not reach ${name}`,ok:false});}finally{setTesting(false);}};
   const today=runtime?.usageByVendor?.[vendor]??{calls:0,reservedMicro:0};
-  const uses=vendor==='anthropic'?'Dry run only until release B3':(()=>{const m=runtime?.agentModels;if(!m)return 'AI reviews';const list=Object.entries(m).filter(([,x])=>!x.openaiModel.startsWith('claude-')).map(([a])=>AGENT_NAMES[a]??a);return list.length?list.join(', ').replace(/^./,c=>c.toUpperCase()):'Nothing now';})();
+  const uses=providerUses(vendor,runtime?.agentModels);
   return <Card title={name} label={`${name} provider`} hint={uses} aside={<span className={`status-pill ${loaded?'ok':'off'}`}><i aria-hidden="true"/>{loaded?'Key loaded':'No key'}</span>}>
     <Row block title="Key" hint={loaded?`From ${providerFile??'your provider file'}`:`Add ${vendor==='anthropic'?'anthropicApiKey':'openaiApiKey'} to your provider file and import it`}>
       <span className="control-pair"><button disabled={busy||testing||!loaded} onClick={()=>void runTest()} title="Lists the provider's models. Uses no tokens.">{testing?'Testing…':'Test'}</button></span></Row>
@@ -44,6 +44,6 @@ function ProviderCard({vendor,runtime,providerFile,busy,onState}:{vendor:Vendor;
     {/* B2: what one dry run can reserve with the current settings; the limits are never changed by the app. */}
     {vendor==='anthropic'&&runtime?.claudeReservation&&(()=>{const r=runtime.claudeReservation;return <p className={r.blocked?'notice':'muted'} aria-label="Dry-run reservation">One dry run of up to {r.requestsUpTo} requests can reserve up to ${r.upToUSD.toFixed(2)}; the first request about ${r.firstRequestUSD.toFixed(2)}.{r.blocked?` The spending limit ($${(r.limitUSD??0).toFixed(2)}) is below that, so a dry run cannot start until you raise it.`:''}</p>;})()}
     {vendor==='anthropic'&&<p className="muted" aria-label="Measured dry run">{runtime?.claudeDryRun?`Measured dry run: ${new Date(runtime.claudeDryRun.timestamp).toLocaleString()}, ${runtime.claudeDryRun.calls} request${runtime.claudeDryRun.calls===1?'':'s'}${runtime.claudeDryRun.costUSD!=null?`, $${runtime.claudeDryRun.costUSD.toFixed(2)}`:''}.`:'Measured dry run: none yet on this account.'}</p>}
-    {vendor==='anthropic'&&<Note summary="What Anthropic is used for now">Only the dry run (Dashboard → Dry run) can use Claude until release B3, and it needs this key, this sharing switch and room in these limits. Every other agent stays on OpenAI.</Note>}
+    {vendor==='anthropic'&&<Note summary="What Anthropic is used for now">{ANTHROPIC_NOTE}</Note>}
   </Card>;
 }

@@ -150,3 +150,19 @@ test('reflection on Claude: its own counter and the Anthropic row in one transac
   {const {a,q}=setup();a.completedClaudeDryRun=()=>null;a.stateCache?.clear();let calls=0;await q.tick(cfg(a),true,{request:async()=>{calls++;return {};}});assert.equal(calls,0);assert.equal(q.reason,'Run one dry run on Claude on this account first','B3 review F1: the gate closed after the save');}
   {const {a,q}=setup({anthropicUSDPerDay:0.01});let calls=0;await q.tick(cfg(a),true,{request:async()=>{calls++;return {};}});assert.equal(calls,0);assert.equal(q.reason,'Anthropic daily limit reached');}
 });
+
+test('the provider cards say what each provider is used for now, and the Anthropic note matches B3 (gate 1.5.54 review)',async()=>{
+  const {providerUses,ANTHROPIC_NOTE}=await import('../src/providerText.mjs');
+  const sol={openaiModel:'gpt-6-sol'},claude={openaiModel:'claude-opus-5-5'};
+  const none={trading:sol,scout:sol,narrative:sol,compacting:{openaiModel:'gpt-6-luna'},reflection:sol};
+  assert.equal(providerUses('anthropic',none),'Dry run','no agent on Claude');
+  assert.equal(providerUses('openai',none),'Reviews, scout, narrative, compacting, reflection');
+  const some={...none,scout:claude,reflection:claude};
+  assert.equal(providerUses('anthropic',some),'Scout, reflection','the agents set to Claude, as the OpenAI card lists its own');
+  assert.equal(providerUses('openai',some),'Reviews, narrative, compacting');
+  assert.equal(providerUses('anthropic',null),'Dry run');assert.equal(providerUses('openai',undefined),'AI reviews');
+  assert.equal(ANTHROPIC_NOTE,'Claude needs this key, this sharing switch and room in these limits. The dry run can use it now. Scout, narrative, compacting and reflection can after one completed Claude dry run on this account. Trading reviews stay on OpenAI.');
+  const card=require('node:fs').readFileSync(require('node:path').join(__dirname,'../src/ProviderCards.tsx'),'utf8');
+  assert.ok(card.includes('providerUses(vendor,runtime?.agentModels)')&&card.includes('{ANTHROPIC_NOTE}'),'the card shows both');
+  assert.ok(!/until release B3|Every other agent stays on OpenAI/.test(card),'the old texts are gone');
+});

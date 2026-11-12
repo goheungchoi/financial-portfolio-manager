@@ -189,7 +189,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await navigate('Connections');await wait(300);await capture('g5-connections');
       // B1: the Anthropic card in AI providers (status, Test, sharing, limits); dark and light at 1360 and 760.
       await until('Boolean(document.querySelector(`[aria-label="Anthropic provider"]`))','the Anthropic card is missing');
-      assert.match(await run('document.querySelector(`[aria-label="Anthropic provider"]`).textContent'),/^AnthropicDry run only until release B3.*Share KIS data with Anthropic.*Calls per day.*Spending per day/);
+      assert.match(await run('document.querySelector(`[aria-label="Anthropic provider"]`).textContent'),/^AnthropicDry run(?! only)(?!,).*Share KIS data with Anthropic.*Calls per day.*Spending per day/);
       {const [w0,h0]=win.getSize();const t0=await run('document.documentElement.dataset.theme');try{for(const [w,h] of [[1360,880],[760,700]]){win.setSize(w,h);await wait(250);for(const t of ['dark','light']){if(await run('document.documentElement.dataset.theme')!==t){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await wait(200);}
         await run('document.querySelector(`[aria-label="AI providers"]`).scrollIntoView({block:"start"})');await wait(200);assert.equal(await run('document.documentElement.scrollWidth<=window.innerWidth+1'),true,`no overflow at ${w} ${t}`);await capture(`b1-ai-providers-${t}-${w}`);}}}
         finally{win.setSize(w0,h0);if(await run('document.documentElement.dataset.theme')!==t0){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await wait(200);}}}
