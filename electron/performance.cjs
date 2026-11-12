@@ -241,11 +241,40 @@ function analyze(points,from){
     dailyPnl:days.map(p=>({day:p.day,pnl:p.pnl,returnPct:p.dailyReturn==null?null:r2(p.dailyReturn*100),...(p.pnlRange?{pnlRange:p.pnlRange}:{}),...(p.unavailable?{unavailable:p.unavailable}:{}),...(p.correction?{correction:p.correction}:{}),...(p.bounded?{returnRangePct:{low:r2(p.bounded.returnRange.low*100),high:r2(p.bounded.returnRange.high*100)}}:{})})),
     drawdown:drawdown.map(d=>({day:d.day,drawdownPct:r2(d.drawdownPct)})),contributions};
 }
+// D1 (artifacts/reviews/2026-11-12-risk-figures/design.md): the review must not get a peak, trough, volatility or best
+// and worst day computed across days whose value is not valid. A day is invalid when it has no return (unavailable),
+// a range instead of one (bounded), or a value that is not positive; a return into or out of such a day is invalid too.
+// With one in the window those figures are left out with the reason, and the last unbroken run of valid days is given
+// on its own (sinceChainResumed: 2 days or more; volatility and best and worst day from 5 returns, as analyze does).
+// null when the window has no invalid day: the section is then exactly as before.
+function riskBreak(points,from,to){
+  // Days at exactly 0 before the account first holds money (an empty account, not a bad record) are left out first.
+  const all=points.filter(p=>p.day>=from&&p.day<=to),funded=all.findIndex(p=>p.value>0);const pts=funded>0&&all.slice(0,funded).every(p=>p.value===0)?all.slice(funded):all;const why=p=>p.unavailable?String(p.unavailable[0]).slice(0,120):p.bounded?'a range, not one value':!(p.value>0)?'value not positive':null;
+  // The window's first day is only a starting value: its own missing return (from before the window) does not count.
+  const bad=pts.map((p,i)=>({p,i,why:i===0?(!(p.value>0)?'value not positive':p.bounded?'a range, not one value':null):why(p)})).filter(x=>x.why);if(!bad.length)return null;
+  const r2=v=>v==null?null:Math.round(v*100)/100;
+  const list=bad.slice(0,4).map(x=>`${x.p.day}: ${x.why}`).join('; ')+(bad.length>4?`; ${bad.length-4} more`:'');
+  const text=`Return chain broken from ${bad[0].p.day} (${list}). Peak, trough, drawdowns, volatility and best and worst days would mix values across it; do not derive them from other figures.`;
+  // The run starts at the last invalid day when only its return is missing (its own value is positive and single), else after it.
+  const last=bad.at(-1),usable=last.p.value>0&&!last.p.bounded;const run=pts.slice(usable?last.i:last.i+1);let resumed=null;
+  if(run.length>=2){let index=1,top=1,maxDd=0;const rets=[];const withRet=[];
+    if(run.slice(1).some(p=>!Number.isFinite(p.dailyReturn)))return {from:bad[0].p.day,text,resumed:null};
+    for(const [i,p] of run.entries()){if(i>0){index*=1+p.dailyReturn;rets.push(p.dailyReturn);withRet.push(p);}top=Math.max(top,index);maxDd=Math.min(maxDd,index/top-1);}
+    const cur=index/top-1;const by=(list,key,dir)=>list.reduce((b,p)=>b==null||dir*(p[key]-b[key])>0?p:b,null);const peak=by(run,'value',1),trough=by(run,'value',-1);
+    const enough=rets.length>=5;const mean=enough?rets.reduce((x,y)=>x+y,0)/rets.length:null;const sd=enough?Math.sqrt(rets.reduce((x,y)=>x+(y-mean)**2,0)/(rets.length-1)):null;
+    const day=p=>p&&{day:p.day,returnPct:r2(p.dailyReturn*100),pnl:p.pnl==null?null:Math.round(p.pnl)};
+    resumed={from:run[0].day,to:run.at(-1).day,days:run.length,peak:{value:Math.round(peak.value),day:peak.day},trough:{value:Math.round(trough.value),day:trough.day},maxDrawdownPct:r2(maxDd*100),currentDrawdownPct:r2(cur*100),
+      ...(enough?{volatilityPct:r2(sd*Math.sqrt(252)*100),bestDay:day(by(withRet,'dailyReturn',1)),worstDay:day(by(withRet,'dailyReturn',-1))}:{note:`${rets.length} day return${rets.length===1?'':'s'} since the chain resumed; volatility and best and worst days need 5`})};}
+  return {from:bad[0].p.day,text,resumed};
+}
 // The performance part of the AI review context (main's automation.performanceSummary), from one series' summary.
 // Stage 3.4: a period without a return is listed with its reasons, never left out or given a number; accounting
 // corrections and days without a return are listed apart.
 function reviewSummary(s){return {since:s.start,currency:s.kind,benchmark:s.benchmark==='SPX'?'S&P 500':'KOSPI',timeWeightedReturns:s.periods.filter(p=>p.start!==p.end).map(p=>({period:p.label,from:p.start,partial:p.partial,returnPct:p.twr==null?null:+(p.twr*100).toFixed(2),...(p.twrRange?{returnRangePct:{low:+(p.twrRange.low*100).toFixed(2),high:+(p.twrRange.high*100).toFixed(2)}}:{}),...(p.unavailable?{unavailable:p.unavailable.slice(0,3).map(x=>String(x).slice(0,240))}:{}),...(p.corrections?{accountingCorrections:Math.round(p.corrections*100)/100}:{}),...(p.settlementAffected?{settlementAffected:p.settlementAffected}:{}),benchmarkPct:p.benchmark==null?null:+(p.benchmark*100).toFixed(2)})),...(()=>{const a=s.analytics?.['3M']??s.analytics?.All;if(!a)return {};const m1=s.analytics?.['1M'];const day=d=>d&&{day:d.day,returnPct:d.returnPct,pnl:Math.round(d.pnl)};const top=(a.contributions??[]).filter(c=>c.change!==0);
-      return {risk:{window:`${a.from} to ${a.to}`,peak:{value:Math.round(a.peak.value),day:a.peak.day},trough:{value:Math.round(a.trough.value),day:a.trough.day},maxDrawdownPct:a.maxDrawdownPct,currentDrawdownPct:a.currentDrawdownPct,maxDrawdown1mPct:m1?.maxDrawdownPct??null,volatilityPct:a.volatilityPct,bestDay:day(a.bestDay),worstDay:day(a.worstDay),positiveDaysPct:a.positiveDaysPct,daysWithReturn:a.returnDays,daysWithoutReturn:a.unavailableDays.length,...(a.chainBrokenFrom?{returnChainBrokenFrom:a.chainBrokenFrom}:{})},
+      const broken=riskBreak(s.points,a.from,a.to);
+      return {risk:{window:`${a.from} to ${a.to}`,...(broken?{peak:null,trough:null}:{peak:{value:Math.round(a.peak.value),day:a.peak.day},trough:{value:Math.round(a.trough.value),day:a.trough.day}}),maxDrawdownPct:broken?null:a.maxDrawdownPct,currentDrawdownPct:broken?null:a.currentDrawdownPct,maxDrawdown1mPct:m1&&!riskBreak(s.points,m1.from,m1.to)?m1.maxDrawdownPct:null,
+        ...(broken?{volatilityPct:null,bestDay:null,worstDay:null,positiveDaysPct:null}:{volatilityPct:a.volatilityPct,bestDay:day(a.bestDay),worstDay:day(a.worstDay),positiveDaysPct:a.positiveDaysPct}),daysWithReturn:a.returnDays,daysWithoutReturn:a.unavailableDays.length,...(a.chainBrokenFrom?{returnChainBrokenFrom:a.chainBrokenFrom}:{}),
+        ...(broken?{returnChainBrokenFrom:broken.from,riskUnavailable:broken.text,...(broken.resumed?{sinceChainResumed:broken.resumed}:{})}:{})},
         recentDailyPnl:a.dailyPnl.slice(-5).map(p=>({day:p.day,pnl:p.pnl==null?null:Math.round(p.pnl),returnPct:p.returnPct,...(p.unavailable?{unavailable:true}:{}),...(p.correction?{accountingCorrection:Math.round(p.correction*100)/100}:{})})),
         settlement:(()=>{const pts=s.points.filter(p=>p.day>a.from);const corr=pts.filter(p=>p.correction).map(p=>({day:p.day,amount:Math.round(p.correction*100)/100}));const un=pts.filter(p=>p.unavailable).map(p=>({day:p.day,why:String(p.unavailable[0]).slice(0,200)}));const rest=pts.filter(p=>p.restated).length;
           return corr.length||un.length||rest?{accountingCorrections:corr.slice(-5),daysWithoutReturn:un.slice(-5),restatedDays:rest,label:'accounting corrections (settlement changes with no cash or market move) are not investment return; days without a return could not be read and are unknown, not zero'}:undefined;})(),unrealizedPnl:a.unrealized==null?null:Math.round(a.unrealized),cashSharePct:a.cashSharePct,
@@ -290,4 +319,4 @@ function returnReliability({unconfirmed=[],checking=[],uncertainKRW=0,settlement
     ...(settlement?.restated?[`${settlement.restated} day${settlement.restated>1?'s are':' is'} restated by a historical correction you approved`]:[])];
   return reasons.length?{reliable:false,reasons}:{reliable:true};
 }
-module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,reviewSummary,reviewPerformance,todayFigures,finishedRows,closedSince,sessionEnd,returnReliability};
+module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,riskBreak,reviewSummary,reviewPerformance,todayFigures,finishedRows,closedSince,sessionEnd,returnReliability};

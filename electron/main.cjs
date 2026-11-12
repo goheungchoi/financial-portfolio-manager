@@ -42,6 +42,11 @@ kisService.onQuote=quote=>{
   kisQuotes.set(quote.symbol,{symbol:quote.symbol,price:quote.price,timestamp:quote.timestamp,receivedAt:quote.receivedAt,cumulativeVolume:quote.cumulativeVolume,previousClose:previous?.previousClose??null,source:'stream'});
 };
 let kisState = {status:'disconnected',snapshot:null,error:null};
+// D4 (settlement-check.cjs): which Korean reading is used while KIS moves last night's settlement. heldReading is the new
+// KIS reading when the last consistent one is held in its place; settlementProvisional marks an overnight reading used
+// because none is held (it never sets the record's high or low, or a graph point).
+let balanceHold=null;
+const useKr=snapshot=>{if(!balanceHold)return {snapshot};const r=balanceHold.accept(snapshot);return {snapshot:r.provisional?{...r.balance,settlementProvisional:r.reason}:r.balance,...(r.held?{heldReading:snapshot}:{})};};
 let kisBusy = false;
 let kisGeneration=0;
 let quoteBusy=false;
@@ -79,7 +84,7 @@ async function connectCalendarFile(file){
 }
 async function connectKisFile(file){
   kisBusy=true;live.stop();usLive?.stop();usSnapshot=null;if(usLive)usLive.refreshError=null;const generation=++kisGeneration;remembered.progress.kis='connecting';remembered.errors.kis=null;streamState={status:'connecting',subscribed:0};nextQuoteAttempt=0;kisQuotes.clear();kisHistory.clear();kisService.disconnect();kisState={status:'connecting',snapshot:null,error:null};broadcastMarket();
-  try{const snapshot=await kisService.request('import',file);if(closing||generation!==kisGeneration)return;kisState={status:'connected',snapshot,error:null};remembered.remember('kis',file);remembered.progress.kis='connected';}
+  try{const snapshot=await kisService.request('import',file);if(closing||generation!==kisGeneration)return;kisState={status:'connected',...useKr(snapshot),error:null};remembered.remember('kis',file);remembered.progress.kis='connected';}
   catch(error){if(closing||generation!==kisGeneration)return;kisService.disconnect();kisState={status:'disconnected',snapshot:null,error:kisErrorCode(error)};remembered.progress.kis='error';remembered.errors.kis='Could not reconnect. Check the file location, credentials and network, or import again.';}
   finally{kisBusy=false;if(!closing){broadcastMarket();void pollKisQuotes();}}
 }
@@ -139,7 +144,7 @@ async function refreshKisBalance() {
   kisBusy=true;const generation=kisGeneration;
   try {
     const snapshot=await kisService.request('refresh');
-    if(generation===kisGeneration){kisState={status:'connected',snapshot,error:null};live?.observeBalance(snapshot);detectFlows();kisQuotes=new Map([...kisQuotes].filter(([symbol])=>snapshot.holdings.some(h=>h.symbol===symbol)));broadcastMarket();}
+    if(generation===kisGeneration){kisState={status:'connected',...useKr(snapshot),error:null};live?.observeBalance(snapshot);detectFlows();kisQuotes=new Map([...kisQuotes].filter(([symbol])=>snapshot.holdings.some(h=>h.symbol===symbol)));broadcastMarket();}
   } catch(error){if(generation===kisGeneration){kisState={...kisState,status:'error',error:kisErrorCode(error)};broadcastMarket();}}
   finally {kisBusy=false;}
   return kisState;
@@ -223,6 +228,7 @@ app.whenReady().then(async () => {
   paper=new PaperEngine(store.db,domain.holdings,()=>marketCache.snapshot());
   automation=new Automation(store.db,paper,providerService,interaction);
   live=new LiveEngine(store.db,kisService,()=>kisState);automation.live=live;
+  balanceHold=new (require('./settlement-check.cjs').BalanceHold)({log:(title,body)=>{try{automation.log('kis-balance-'+Date.now(),'System',title,body);}catch{}}});live.balanceHold=balanceHold;
   costs=new TradingCosts(store.db);live.costs=costs;automation.costs=costs;
   // Tax figures cover the connected live account (and accounts the user links as the same owner).
   costs.currentAccount=()=>kisState.snapshot?.accountKey?{accountKey:kisState.snapshot.accountKey,environment:kisState.snapshot.environment}:null;
@@ -432,7 +438,7 @@ app.whenReady().then(async () => {
   performance.settlement=account=>inFlight.snapshot(account);
   // Stage 3.3 backend; Stage 3.4 will expose preview and explicit approval in the UI.
   performance.restatements=new (require('./valuation-corrections.cjs').SettlementRestatements)(store.db,{inFlight,reconciliation,performance,corrections:settlementCorrections});
-  detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
+  detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',kisState.heldReading??s);if(us)brokerBalances.record(s.accountKey,'US',us);}catch{}
     if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch(e){readingFailed('U.S. settlement tracking',e);}}
     // S1b: Korean filled buys release their funding by age (3 Korean business days after the order's day).
     try{for(const x of fundingLedger.releaseAgedKR(s.accountKey))automation.log(require('node:crypto').randomUUID(),'System','Korean settlement',`Buy ${x.orderId}: settled by age, 3 Korean business days after its trade date ${x.tradeDay}; its funding is released`);}catch(e){readingFailed('Korean settlement',e);}const funding=require('./integrated-settlement.cjs').settlement(us);const kr=(Number.isFinite(s.settledCash)?s.settledCash:s.cash)-funding.confirmedKRW;
@@ -449,7 +455,7 @@ app.whenReady().then(async () => {
     return require('./valuation.cjs').marketValue(market,{korea:kr,us,fx:automation.fx?.(),inFlight:inFlightOf(k.accountKey)});};
   live.netEquityOf=snapshot=>marketValue('KR',snapshot);live.creditApproved=()=>automation.config.creditProtectionApproved===true;usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
-  const recordValue=()=>{try{if(kisState.snapshot?.accountKey)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
+  const recordValue=()=>{try{if(kisState.snapshot?.accountKey&&!kisState.snapshot.settlementProvisional)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
   setInterval(recordValue,60000).unref();
   setInterval(()=>{if(Date.now()-calendarAt>6*3600000)void refreshKrCalendar();},600000).unref();
   automation.officialClosedDays=()=>officialKrCalendar().filter(r=>!r.open).map(r=>r.day);
@@ -460,7 +466,7 @@ app.whenReady().then(async () => {
   // Phone snapshots when a buy or sell fills (only when phone alerts and snapshots are on).
   const phone=require('./phone-snapshot.cjs');const intraday=new phone.IntradayValues(store.db);
   // Only a value covering the account's markets: a Korea-only value of a two-market account would show as a fall.
-  setInterval(()=>{try{const s=portfolioState();const v=s.totals.equityKRW??(automation.config.scope==='kis'?s.totals.KRW:null);if(kisState.snapshot?.accountKey&&v!=null)intraday.record(kisState.snapshot.accountKey,v);}catch{}},60000).unref();
+  setInterval(()=>{try{const s=portfolioState();const v=s.totals.equityKRW??(automation.config.scope==='kis'?s.totals.KRW:null);if(kisState.snapshot?.accountKey&&!kisState.heldReading&&!kisState.snapshot.settlementProvisional&&v!=null)intraday.record(kisState.snapshot.accountKey,v);}catch{}},60000).unref();
   notifier.render=spec=>require('./chart-image.cjs').renderChart(spec);
   const figures=()=>{const account=kisState.snapshot?.accountKey;const combined=account?performance.series(account,'COMBINED'):[];const daily=combined.length?combined:account?performance.series(account,'KRW'):[];
     return phone.portfolioFigures({portfolio:portfolioState(),daily,intraday:account?intraday.day(account):[],previousClose:symbol=>kisQuotes.get(symbol)?.previousClose??null,amounts:automation.config.phoneAmounts});};
