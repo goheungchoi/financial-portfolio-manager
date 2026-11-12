@@ -14,6 +14,6 @@ test('a reading is stored only when a figure changed, per account and market, wi
   now+=(LIMITS.days+1)*86400000;store.record('acct','KR',s({dnca_tot_amt:3}));assert.deepEqual(store.list('acct','KR').map(r=>r.raw.dnca_tot_amt),[3],'older than 30 days: deleted');
 });
 test('the Korean balance keeps the broker summary figures it was read from',()=>{
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/kis-client.cjs'),'utf8');assert.match(src,/raw:require\('\.\/broker-raw\.cjs'\)\.numericFields\(summary\)/);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/kis-client.cjs'),'utf8');assert.match(src,/const raw=require\('\.\/broker-raw\.cjs'\)\.numericFields\(summary\)/);assert.match(src,/timestamp:new Date\(\)\.toISOString\(\),raw,/);// D4: raw is read once and also checked (settlement-check.cjs)
   const us=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/kis-overseas.cjs'),'utf8');assert.match(us,/numericFields\(usd\)/);assert.match(us,/numericFields\(present\.body\.output3\)/);
 });
