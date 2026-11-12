@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getMarketOverview:refresh=>ipcRenderer.invoke('research:market',refresh),getUSMarketOverview:refresh=>ipcRenderer.invoke('research:us-market',refresh),
   openChartWindow:symbol=>ipcRenderer.invoke('chart:pop-out',symbol),getChartBars:symbol=>ipcRenderer.invoke('chart:bars',symbol),watchChart:symbol=>ipcRenderer.invoke('chart:watch',symbol),onChartTick:callback=>{const listener=(_event,tick)=>callback(tick);ipcRenderer.on('chart:tick',listener);return()=>ipcRenderer.removeListener('chart:tick',listener);},
   getMacro:()=>ipcRenderer.invoke('macro:get'),
-  getAttention:()=>ipcRenderer.invoke('workspace:attention'),
+  getAttention:()=>ipcRenderer.invoke('workspace:attention'),dismissAttention:id=>ipcRenderer.invoke('workspace:dismiss',id),getLoginItem:()=>ipcRenderer.invoke('system:login-item'),setLoginItem:on=>ipcRenderer.invoke('system:set-login-item',on),
   getUpdates:()=>ipcRenderer.invoke('update:get'),checkForUpdates:()=>ipcRenderer.invoke('update:check'),downloadUpdate:()=>ipcRenderer.invoke('update:download'),installUpdate:()=>ipcRenderer.invoke('update:install'),saveUpdateSettings:value=>ipcRenderer.invoke('update:settings',value),
   onUpdates:callback=>{const listener=(_event,state)=>callback(state);ipcRenderer.on('update:changed',listener);return ()=>ipcRenderer.removeListener('update:changed',listener);},
   refreshMacro:()=>ipcRenderer.invoke('macro:refresh'),

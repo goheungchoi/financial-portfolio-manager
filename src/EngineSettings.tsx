@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
 import type {RuntimeConfig,RuntimeState} from './RuntimeSettings';
 import {Card,Row,Switch,NumberField,Limit} from './SettingsUI';
 import {Note} from './Note';
@@ -33,6 +33,7 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       <Row title="Risk per trade" hint="Largest loss at the stop, as a share of equity. Sets the AI's position-size ceiling."><NumberField label="Risk per trade" min={0.1} max={20} step={0.1} unit="%" value={config.sizingRiskPct} disabled={busy} onChange={v=>edit('sizingRiskPct',v)}/></Row>
       <Row title="Stop distance" hint="Multiple of the daily average true range (ATR)."><NumberField label="Stop distance in ATR" min={0.5} max={5} step={0.5} unit="× ATR" value={config.sizingAtrMultiple} disabled={busy} onChange={v=>edit('sizingAtrMultiple',v)}/></Row>
       <Row title="Share KIS data with the AI provider" hint={`Holdings and values, sent to ${receivers(config)}; required for AI reviews of KIS accounts`}><Switch label="Share KIS data with the AI provider" disabled={busy} checked={config.shareKisWithAI} onChange={v=>edit('shareKisWithAI',v)}/></Row>
+    <StartWithWindows/>
     </Card>
 
     <ExtendedSessions config={config} busy={busy} edit={edit} live={state.accountEnvironment==='live'}/>
@@ -119,4 +120,14 @@ function ExtendedSessions({config,busy,edit,live}:{config:RuntimeConfig;busy:boo
     <Row title="Largest extended-session order" hint="Share of the market's equity per order"><NumberField label="Largest extended-session order" min={0.5} max={50} step={0.5} unit="%" disabled={busy} value={config.extendedMaxOrderPct} onChange={v=>edit('extendedMaxOrderPct',v)}/></Row>
     <Note summary="How extended orders work">Orders go out only while a session you switched on is open, and stop 5 minutes before it ends. Korean NXT orders are sent to Nextrade with NXT prices. U.S. daytime orders use KIS's daytime endpoint. KIS's documentation does not confirm how U.S. pre- and after-market orders are handled, so those always wait for your approval. KRX closing-price windows (08:30–08:40, 15:40–16:00) are not traded. Credit (margin and short) orders are regular-session only. KRX ended its after-hours single-price auction on 2026-09-14, so the app no longer offers it.</Note>
   </Card>;
+}
+// Start with Windows (restart part 1, step 3): applies at once (it is Windows' setting, not a saved engine setting) and
+// shows Windows' real state, read each time. The hint says the limit on the row itself.
+type LoginItemState={available:boolean;on:boolean;reason?:string;error?:string};
+function StartWithWindows(){
+  const [state,setState]=useState<LoginItemState|null>(null);const [busy,setBusy]=useState(false);
+  useEffect(()=>{let alive=true;void window.portfolio?.getLoginItem?.().then(v=>{if(alive&&v)setState(v);}).catch(()=>{});return()=>{alive=false;};},[]);
+  const change=async(on:boolean)=>{setBusy(true);try{const v=await window.portfolio?.setLoginItem?.(on);if(v)setState(v);}catch{}finally{setBusy(false);}};
+  const hint=state&&!state.available?(state.reason??'Not available.'):'Opens the app when you sign in to Windows. After a restart at night it opens only once you sign in. It starts paused.';
+  return <Row title="Start with Windows" hint={state?.error?`${hint} ${state.error}`:hint}><Switch label="Start with Windows" disabled={busy||!state?.available} checked={Boolean(state?.on)} onChange={v=>void change(v)}/></Row>;
 }
