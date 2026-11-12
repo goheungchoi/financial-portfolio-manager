@@ -3,7 +3,7 @@ const {randomUUID}=require('node:crypto');
 // and how long routine reviews may wait for a pending order.
 const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
 // creditProtectionApproved: the user approved Stage 3 (audit 2026-11-04); until then no credit close is automatic.
-const DEFAULTS={alertTrial:'off',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithAI:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutSchedule:'twice',scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,...require('./agent-desk.cjs').COND_DEFAULTS};
+const DEFAULTS={alertTrial:'off',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithAI:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutSchedule:'twice',scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS};
 // Settings that no longer exist: accepted from a saved profile or the window and ignored. sessionKrxSingle switched on
 // the KRX after-hours single-price auction, which KRX ended on 2026-09-14 (fact check X1).
 // Shadow evaluation and complexity routing were removed on 2026-11-12 (step A1, artifacts/reviews/2026-11-12-engine-settings):
@@ -106,9 +106,10 @@ class Automation {
     if(!['paper','kis','us','both'].includes(next.scope)||typeof next.shareKisWithAI!=='boolean')throw new Error('INVALID_SETTINGS');
     if(typeof next.orderTracking!=='boolean'||!['full','focused'].includes(next.routineReviews)||!['off','observe','on'].includes(next.reviewGate)||!['off','on'].includes(next.researchSuppression)||!['off','observe','on'].includes(next.watchlistAlerts)||!['off','on'].includes(next.alertTrial)||next.alertTrial==='on'&&(next.watchlistAlerts!=='observe'||next.scope==='paper'||this.config.alertTrial==='on'&&next.scope!==this.config.scope)||next.watchlistMovePct!==null&&(!Number.isFinite(next.watchlistMovePct)||next.watchlistMovePct<.1||next.watchlistMovePct>50))throw new Error('INVALID_SETTINGS');
     require('./guardrails.cjs').validateGuardrails(next);if(!require('./news-events.cjs').MODES.includes(next.newsTrigger))throw new Error('INVALID_SETTINGS');
-    require('./ai-models.cjs').settings(next);require('./ai-models.cjs').settings({openaiModel:next.routineModel,reasoningEffort:next.routineEffort});
-    // A Claude model is not a trading model yet (Anthropic provider A1b): refused for both roles before anything is saved.
-    require('./ai-models.cjs').assertTradingModel(next.openaiModel);require('./ai-models.cjs').assertTradingModel(next.routineModel);
+    require('./ai-models.cjs').settings(next);
+    // A Claude model is not a trading model yet (Anthropic provider A1b): refused for the trading review and, through each
+    // agent's resolved model, for every other agent (step A2) before anything is saved.
+    require('./ai-models.cjs').assertTradingModel(next.openaiModel);require('./agent-models.cjs').validate(next);
     if(['sessionKrNxt','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
     if(typeof next.scoutAiRequests!=='boolean'||typeof next.scoutEnabled!=='boolean'||!Object.hasOwn(require('./scout.cjs').SCHEDULES,next.scoutSchedule))throw new Error('INVALID_SETTINGS');
     if(!Array.isArray(next.newsFeeds)||next.newsFeeds.length>10||next.newsFeeds.some(f=>!f||typeof f.url!=='string'||!/^https:\/\//.test(f.url)||f.url.length>500||typeof(f.label??'')!=='string'||String(f.label??'').length>60)||typeof next.kisNews!=='boolean'||typeof next.usTickerNews!=='boolean'||typeof next.narrativeEnabled!=='boolean'||!Number.isFinite(next.sizingRiskPct)||next.sizingRiskPct<0.1||next.sizingRiskPct>20||!Number.isFinite(next.sizingAtrMultiple)||next.sizingAtrMultiple<0.5||next.sizingAtrMultiple>5)throw new Error('INVALID_SETTINGS');
@@ -238,7 +239,7 @@ class Automation {
   // unchanged and it runs again after a restart, as the status says. Trading reviews and order safety are separate.
   setBackgroundPaused(paused){if(typeof paused!=='boolean')throw new Error('INVALID_REQUEST');this.backgroundPaused=paused;this.log(randomUUID(),'System',paused?'Background AI paused':'Background AI resumed',paused?'Scout, reflection and narrative runs are paused for this session; your saved settings are unchanged.':'Scout, reflection and narrative runs follow your settings again.');return this.getState();}
   backgroundAi(){const c=this.config;return {paused:Boolean(this.backgroundPaused),enabled:[c.scoutEnabled&&'scout',c.reflectionEnabled&&'reflections',c.narrativeEnabled&&'market narrative'].filter(Boolean)};}
-  getState(){this.syncLearning();return {backgroundAi:this.backgroundAi(),lastErrorAt:this.lastError?this.lastErrorAt??null:null,reviewBackoff:this.reviewBackoffState(),accountEnvironment:this.live?.getConnection?.()?.snapshot?.environment??null,calendar:this.calendarState(),regime:this.regimeState(),exposure:this.exposureState(),narrative:this.narrativeState(),desk:this.deskState(),scout:this.scoutState(),tokenSaving:{...this.tokenSavingState(),reviewGate:this.reviewGateState()},watchlistAlerts:this.watchlistAlertsState(),newsEvents:this.stateCached('newsEvents',()=>this.newsEvents.list(100)),lastNewsTrigger:this.lastNewsTrigger??null,guardrails:this.guardrails.state(this.config,Date.now(),{autoOrders:this.stateCached('autoOrdersToday',()=>this.guardrails.autoOrdersToday())}),digests:this.digest.list(),lessonTrials:this.trials.list(),reviewInterval:this.reviewInterval.get(this.watchScope(),this.config),reflections:this.reflections.state(),aiCalls:this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)),learning:{...this.memory.summary(),lastRun:this.learningLastRun??null,error:this.learningError??null},watches:this.watches.list(this.watchScope()),outcomes:this.outcomes.list(),execution:this.executionState(),emergency:this.emergencyState(),config:this.config,sessionArmed:this.sessionArmed,savedAt:this.savedAt,heartbeat:Date.now(),scheduler:this.schedulerStatus(),lastAttempt:this.lastRun||null,lastSuccess:this.lastSuccess||null,lastError:this.lastError,lastErrorDetail:this.lastErrorDetail??null,nextReview:this.nextReviewAt(),providerStatus:this.providerStatus,busy:this.busy,news:this.news,newsUpdatedAt:this.newsUpdatedAt??null,newsError:this.newsError,account:this.accountTag(),reviews:this.stateCached('reviews',()=>this.reviewHistory(50)),allReviews:this.stateCached('allReviews',()=>this.reviewHistory(50,true)),lessons:this.memory.list(),usage:this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0}};}
+  getState(){this.syncLearning();return {agentModels:require('./agent-models.cjs').agentModels(this.config),backgroundAi:this.backgroundAi(),lastErrorAt:this.lastError?this.lastErrorAt??null:null,reviewBackoff:this.reviewBackoffState(),accountEnvironment:this.live?.getConnection?.()?.snapshot?.environment??null,calendar:this.calendarState(),regime:this.regimeState(),exposure:this.exposureState(),narrative:this.narrativeState(),desk:this.deskState(),scout:this.scoutState(),tokenSaving:{...this.tokenSavingState(),reviewGate:this.reviewGateState()},watchlistAlerts:this.watchlistAlertsState(),newsEvents:this.stateCached('newsEvents',()=>this.newsEvents.list(100)),lastNewsTrigger:this.lastNewsTrigger??null,guardrails:this.guardrails.state(this.config,Date.now(),{autoOrders:this.stateCached('autoOrdersToday',()=>this.guardrails.autoOrdersToday())}),digests:this.digest.list(),lessonTrials:this.trials.list(),reviewInterval:this.reviewInterval.get(this.watchScope(),this.config),reflections:this.reflections.state(),aiCalls:this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)),learning:{...this.memory.summary(),lastRun:this.learningLastRun??null,error:this.learningError??null},watches:this.watches.list(this.watchScope()),outcomes:this.outcomes.list(),execution:this.executionState(),emergency:this.emergencyState(),config:this.config,sessionArmed:this.sessionArmed,savedAt:this.savedAt,heartbeat:Date.now(),scheduler:this.schedulerStatus(),lastAttempt:this.lastRun||null,lastSuccess:this.lastSuccess||null,lastError:this.lastError,lastErrorDetail:this.lastErrorDetail??null,nextReview:this.nextReviewAt(),providerStatus:this.providerStatus,busy:this.busy,news:this.news,newsUpdatedAt:this.newsUpdatedAt??null,newsError:this.newsError,account:this.accountTag(),reviews:this.stateCached('reviews',()=>this.reviewHistory(50)),allReviews:this.stateCached('allReviews',()=>this.reviewHistory(50,true)),lessons:this.memory.list(),usage:this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0}};}
   localDecision(context) {
     if(context.currency==='USD'||context.currency==='MULTI')return {action:'Hold',symbol:'',quantity:0,explanation:'U.S. portfolio requires an AI review or a manual proposal; the domestic demonstration rule does not trade USD assets.'};
     if(context.orders.some(order=>['Pending','Partially filled','Accepted','Submitting','Uncertain'].includes(order.status)))return {action:'Hold',symbol:'',quantity:0,explanation:'Wait for pending orders to reconcile before another rebalance.'};
@@ -298,7 +299,7 @@ class Automation {
         const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
         // Every desk tool is a no-op except compute, which only reads prices.
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
-        const model=override??{openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};const models=require('./ai-models.cjs');let calls=0;const callIds=[];
+        const model=override??this.agentModel('trading');const models=require('./ai-models.cjs');let calls=0;const callIds=[];
         const request=async options=>{options={...options,...model,validation:dryValidation};
           requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options)});
           const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
@@ -377,6 +378,8 @@ class Automation {
       reconciliation:recon.includes('unconfirmed')?'unconfirmed':recon.includes('confirmed')?'confirmed':null,regime:this.regimeState()?.regime??null,stories,scoutPlanAsOf:plan?.timestamp??null};
   }
   // Whether armed conditional orders are being checked and can fire: the one rule the firing loop, reviews and the UI share.
+  // The model and effort an agent runs on (step A2): 'trading', 'scout', 'narrative', 'compacting' or 'reflection'.
+  agentModel(agent){return require('./agent-models.cjs').agentModel(this.config,agent);}
   conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper');}
   dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>{const {snapshot,...rest}=JSON.parse(r.payload);return rest;});}
   // What a dry-run review would cost before it starts: today's AI use against the limits, and an estimate from the
@@ -517,7 +520,7 @@ class Automation {
         if(this.missingKey(this.config.openaiModel))throw new Error('AI_NOT_CONNECTED');
         stage='AI research and decision';
         // The configured model decides every review (model routing and shadow evaluation were removed in step A1).
-        const selected={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};
+        const selected=this.agentModel('trading');
         // The validation snapshot: position memory and quotes before compression, for every request of this review.
         const validation=validationOf(context);
         let providerContext=saver.compact(context);
@@ -541,7 +544,7 @@ class Automation {
       } else if(this.config.provider==='external')throw new Error('EXTERNAL_DECISION_REQUIRED');
       else result={decision:this.localDecision(context),provider:'local'};
       if(this.disposed)return;{const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
-      decided=true;stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+this.config.reasoningEffort);
+      decided=true;stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+this.agentModel('trading').reasoningEffort);
       this.log(id,'Agent','Decision',JSON.stringify(result.decision,null,2));
       // The execution boundary (release review 2026-11-05, P1): a model decision is checked once more against this review's
       // full position memory, whatever the prompt showed, so compression or a repair round can never remove the reversal rule.
@@ -677,7 +680,7 @@ class Automation {
   }
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){
-    const modelConfig={openaiModel:this.config.routineModel,reasoningEffort:this.config.routineEffort};const models=require('./ai-models.cjs');
+    const modelConfig=this.agentModel('compacting');const models=require('./ai-models.cjs');
     const reserve=models.reservation(modelConfig,payload,{maxBytes:400000});const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
     if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
     const callId=randomUUID(),record={reviewId,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'compact'};
@@ -1067,7 +1070,7 @@ class Automation {
   async replay(options={}){
     if(this.replaying)throw new Error('REPLAY_BUSY');const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');
     const R=require('./replay.cjs');const instructions=typeof options.instructions==='string'?options.instructions.trim().slice(0,R.LIMITS.instructions):'';
-    const models=require('./ai-models.cjs');const modelConfig={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort};
+    const models=require('./ai-models.cjs');const modelConfig=this.agentModel('trading');
     // A model change: the variant runs on another model and effort, the baseline on the configured one.
     let model=null;if(options.model&&typeof options.model==='object'){const m={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};try{models.settings(m);if(models.vendorOf(m.openaiModel)!=='openai')throw 0;}catch{throw new Error('INVALID_MODEL_SETTINGS');}if(m.openaiModel!==modelConfig.openaiModel||m.reasoningEffort!==modelConfig.reasoningEffort)model=m;}
     const variant={instructions,withoutNarrative:options.withoutNarrative===true,withoutEpisodes:options.withoutEpisodes===true,withoutRegime:options.withoutRegime===true,...(model?{model}:{})};
@@ -1107,7 +1110,7 @@ class Automation {
       const previous=this.narratives.latest();
       const context={today:seoulDate(),signals:signalList,headlines:headlineList.map(({url,...h})=>h),...(stories.length?{topStories:stories.map((s,k)=>({story:k,terms:s.terms,outlets:s.outlets,timesUsual:s.timesUsual,firstSeen:s.firstSeen,latest:s.latest}))}:{}),previousNarrative:previous?{asOf:new Date(previous.timestamp).toISOString(),drivers:previous.drivers.map(({id,kind,title,themes,since})=>({id,kind,title,themes,since}))}:null};
       this.log(id,'Program',trigger==='User request'?'Market narrative':'Market narrative · '+trigger,`Summarizing ${headlineList.length} recent headlines against ${signalList.length} market signals.`);
-      const modelConfig={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort==='none'?'low':this.config.reasoningEffort};const models=require('./ai-models.cjs');
+      const modelConfig=this.agentModel('narrative');const models=require('./ai-models.cjs');
       const reserve=models.reservation(modelConfig,context,{maxBytes:120000});const day=seoulDate(),usage=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
       if(models.budgetExceeded(this.config,usage,reserve))throw new Error('AI_BUDGET_EXHAUSTED');
       const callId=require('node:crypto').randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'narrative'};
@@ -1191,7 +1194,7 @@ class Automation {
         const stale=this.staleCarried(deferredTargets);if(stale.length)context.carriedNeedingReassessment=stale;}
       this.log(id,'Program',trigger==='User request'?'Scout run':'Scout run · '+trigger,'Researching the market to update the shortlist and the portfolio plan. The scout does not trade.');
       this.log(id,'Context','Supplied context',loggableContext(context));
-      const modelConfig={openaiModel:this.config.openaiModel,reasoningEffort:this.config.reasoningEffort==='none'?'low':this.config.reasoningEffort};
+      const modelConfig=this.agentModel('scout');
       const request=async({final,continuation})=>{
         const options={final,continuation,...modelConfig,maxBytes:scoutLib.SCOUT_REQUEST_BYTES};const models=require('./ai-models.cjs');
         const reserve=models.reservation(modelConfig,context,options);
@@ -1217,7 +1220,7 @@ class Automation {
   tick() {
     this.restoreClock();
     if(!this.learningLastRun||Date.now()-this.learningLastRun>=15000)this.syncLearning();
-    if(!this.busy&&!this.learningError&&!this.backgroundPaused)void this.reflections.tick(this.config,this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
+    if(!this.busy&&!this.learningError&&!this.backgroundPaused)void this.reflections.tick({...this.config,...this.agentModel('reflection')},this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
     const emergency=this.emergencyState();
     this.observeEmergency(emergency);
     if(emergency.active&&this.config.lossAction==='stop'&&(this.config.enabled||this.config.autoSubmit)&&!this.busy)this.trip('auto-stopped',`Auto trading stopped: daily loss limit reached in ${this.config.scope==='paper'?'the paper portfolio':emergency.activeMarkets.map(m=>m==='US'?'U.S.':'Korea').join(' and ')}. Positions and accepted broker orders are unchanged.`);
