@@ -103,6 +103,17 @@ class AnthropicClient {
   constructor(key,transport=fetch,{timeoutMs=TIMEOUT_MS}={}){if(typeof key!=='string'||!/^[A-Za-z0-9_\-]{10,512}$/.test(key))throw new Error('INVALID_PROVIDER_FILE');this.#key=key;this.transport=transport;this.timeoutMs={...TIMEOUT_MS,...timeoutMs};}
   // One SDK client per call: its fetch measures this call's request parts and response size, keeps redirect:'error',
   // and hands the SDK a plain Response built from the body text (the transport may return a Response-like object).
+  // B1: the key Test (key-test.cjs) through the SDK's model list: no tokens, one attempt (maxRetries 0), the same
+  // credential and header rules as client(), and only this one address allowed. Only the status is read. The key goes
+  // as Authorization: Bearer, as the SDK sends it for API version 2026-10-21 (platform.claude.com/docs/en/manage-claude/
+  // authentication.md: "Send it as Authorization: Bearer <key>"); no beta header on the model list.
+  async testKey(timeoutMs=require('./key-test.cjs').TIMEOUT_MS){const K=require('./key-test.cjs');const S=SDK();
+    const models=url=>{try{const u=new URL(String(url));return u.origin==='https://api.anthropic.com'&&u.pathname==='/v1/models'&&!u.username&&!u.password&&!u.hash;}catch{return false;}};
+    const fetchFn=async(url,init={})=>{if(!models(url))throw new Error('UNEXPECTED_ADDRESS');
+      const sent=new Headers();for(const [name,value] of new Headers(init.headers))if(HEADER_ALLOWED(name))sent.set(name,value);sent.set('authorization','Bearer '+this.#key);sent.delete('anthropic-beta');
+      const response=await this.transport(url,{...init,headers:sent,redirect:'error'});return new Response('{"data":[],"has_more":false,"first_id":null,"last_id":null}',{status:response.status??(response.ok===false?500:200),headers:{'content-type':'application/json'}});};
+    try{await new S({...LOCKED,apiKey:this.#key,maxRetries:0,timeout:timeoutMs,fetch:fetchFn}).models.list({limit:1});return {result:'ok'};}
+    catch(error){return {result:Number.isInteger(error?.status)?K.classify(error.status):'unreachable'};}}
   client(timeout,call){
     const S=SDK();
     const fetchFn=async(url,init={})=>{

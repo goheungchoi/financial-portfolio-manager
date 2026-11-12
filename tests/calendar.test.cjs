@@ -26,7 +26,7 @@ test('reviews receive the event calendar',async()=>{
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot}));
   const supplied=[];const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),{request:async(op,p)=>{supplied.push(p);return {decision:{action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'Hold.'},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}},()=>{});
   const soon=new Date(Date.now()+9*3600000+3*86400000).toISOString().slice(0,10);a.macro={get:()=>({calendar:[{date:soon,market:'US',event:'U.S. CPI'}],series:[]}),context:()=>null};
-  a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await a.review();const ctx=supplied[0].context;assert.ok(ctx.eventCalendar.some(e=>e.title==='U.S. CPI'));assert.ok(ctx.eventCalendar.every(e=>e.date&&e.title));assert.ok(a.getState().calendar.some(e=>e.kind==='macro'));
 });
 test('a results date announced in an IR notice replaces the estimate on the calendar',()=>{

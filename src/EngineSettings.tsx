@@ -4,10 +4,10 @@ import {Card,Row,Switch,NumberField,Limit} from './SettingsUI';
 import {Note} from './Note';
 import {Guardrails} from './Guardrails';
 import {TokenSaving} from './TokenSaving';
-import {useDraftState} from './useDraftState';
+import {useDraftState,setDraft} from './useDraftState';
 import {AGENT_KEYS as DRAFT_KEYS,effortOptions} from './agentDraft.mjs';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
-type Props={state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void};
+type Props={state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void;onNavigate?(tab:string):void};
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
 // Engine settings in four tabs (step A3, artifacts/reviews/2026-11-12-engine-settings/plan.md). Only the open tab is
 // rendered; the draft lives in RuntimeSettings, so switching tabs keeps unsaved changes, and the open tab is kept for
@@ -16,9 +16,6 @@ export const ENGINE_TABS=['Trading','Agents','Schedule and triggers','Alerts'] a
 type Tab=typeof ENGINE_TABS[number];
 const MODEL_NAMES:Record<string,string>={'gpt-6-luna':'GPT-6 Luna','gpt-6-sol':'GPT-6 Sol','gpt-6-astra':'GPT-6 Astra','claude-opus-5-5':'Claude Opus 5.5'};
 const cap=(v:string)=>v[0].toUpperCase()+v.slice(1);
-// Which providers receive KIS data given the selected models (trading and every agent with its own): one consent covers all.
-const vendorName=(model:string)=>model.startsWith('claude-')?'Anthropic':'OpenAI';
-const receivers=(config:RuntimeConfig)=>[...new Set([config.openaiModel,config.routineModel,config.scoutModel,config.narrativeModel,config.reflectionModel].filter(m=>m&&m!=='same').map(m=>vendorName(String(m))))].join(' and ');
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
 // Scheduled scout runs by market event (step A4, electron/scout-timing.cjs): key, title, hint.
 const SCOUT_SLOTS:['scoutBeforeKrOpen'|'scoutAfterKrOpen'|'scoutKrMidday'|'scoutBeforeUsOpen',string,string][]=[
@@ -41,7 +38,7 @@ export function EngineSettings(props:Props){
   </div>;
 }
 
-function TradingTab({state,config,busy,edit}:Props){
+function TradingTab({state,config,busy,edit,onNavigate}:Props){
   return <>
     <Card id="eng-guidelines" title="Agent guidelines" label="Guidelines" hint="Your goals in plain language. The AI reads them on every review.">
       <label className="guidelines-editor"><textarea aria-label="Agent guidelines" rows={4} maxLength={6000} value={config.guidelines??''} placeholder="Example: Concentrated positions are fine; protect gains when the outlook weakens." onChange={e=>edit('guidelines',e.target.value)}/></label>
@@ -53,7 +50,8 @@ function TradingTab({state,config,busy,edit}:Props){
       <Row title="Place orders automatically" hint={config.autoSubmit?'Orders that pass your limits are sent without asking':'Every AI order waits for your approval'}><Switch label="Place orders automatically" disabled={busy} checked={config.autoSubmit} onChange={v=>edit('autoSubmit',v)}/></Row>
       <Row title="Risk per trade" hint="Largest loss at the stop, as a share of equity. Sets the AI's position-size ceiling."><NumberField label="Risk per trade" min={0.1} max={20} step={0.1} unit="%" value={config.sizingRiskPct} disabled={busy} onChange={v=>edit('sizingRiskPct',v)}/></Row>
       <Row title="Stop distance" hint="Multiple of the daily average true range (ATR)."><NumberField label="Stop distance in ATR" min={0.5} max={5} step={0.5} unit="× ATR" value={config.sizingAtrMultiple} disabled={busy} onChange={v=>edit('sizingAtrMultiple',v)}/></Row>
-      <Row title="Share KIS data with the AI provider" hint={`Holdings and values, sent to ${receivers(config)}; required for AI reviews of KIS accounts`}><Switch label="Share KIS data with the AI provider" disabled={busy} checked={config.shareKisWithAI} onChange={v=>edit('shareKisWithAI',v)}/></Row>
+      {/* B1: data sharing is per provider, on each provider's card in Connections. */}
+      <Row block title="Data sharing" hint={`Per provider, in Connections · OpenAI ${config.shareKisWithOpenAI?'on':'off'}, Anthropic ${config.shareKisWithAnthropic?'on':'off'}`}><button className="link-button" onClick={()=>{setDraft('connections:ai-providers',true);onNavigate?.('Connections');}}>Open Connections</button></Row>
       <StartWithWindows/>
     </Card>
     <ExtendedSessions config={config} busy={busy} edit={edit} live={state.accountEnvironment==='live'}/>
@@ -116,9 +114,10 @@ function AgentsTab(props:Props){
       <Row block title="Reflection calls"><Limit label="Reflection calls per day" min={1} max={200} disabled={busy} unlimited={config.reflectionUnlimitedCalls} value={config.reflectionCallsPerDay} onUnlimited={v=>edit('reflectionUnlimitedCalls',v)} onValue={v=>edit('reflectionCallsPerDay',v)}/></Row>
       <Row block title="Reflection spending"><Limit label="Daily reflection budget (USD)" min={.01} max={100} step={.01} unit="USD" disabled={busy} unlimited={config.reflectionUnlimitedBudget} value={config.reflectionUSDPerDay} onUnlimited={v=>edit('reflectionUnlimitedBudget',v)} onValue={v=>edit('reflectionUSDPerDay',v)}/></Row>
     </Card>
-    <Card id="eng-budget" title="Daily AI budget" aside={<span className="badge">Today {state.usage.calls} calls · {usd(state.usage.reservedMicro)}</span>} hint="A local estimate from reported tokens, not your OpenAI invoice.">
-      <Row block title="Review calls"><Limit label="API calls per day" min={1} max={200} disabled={busy} unlimited={config.unlimitedCalls} value={config.maxCallsPerDay} onUnlimited={v=>edit('unlimitedCalls',v)} onValue={v=>edit('maxCallsPerDay',v)}/></Row>
-      <Row block title="Review spending"><Limit label="Daily local API budget (USD)" min={.01} max={100} step={.01} unit="USD" disabled={busy} unlimited={config.unlimitedBudget} value={config.maxUSDPerDay} onUnlimited={v=>edit('unlimitedBudget',v)} onValue={v=>edit('maxUSDPerDay',v)}/></Row>
+    {/* B1: the daily limits are per provider and set in Connections; this card shows today's use. */}
+    <Card id="eng-budget" title="Daily AI budget" aside={<span className="badge">Today {state.usage.calls} calls · {usd(state.usage.reservedMicro)}</span>} hint="A local estimate from reported tokens. Limits are per provider, in Connections.">
+      {(['openai','anthropic'] as const).map(v=>{const u=state.usageByVendor?.[v]??{calls:0,reservedMicro:0};const name=v==='openai'?'OpenAI':'Anthropic';const lim=v==='openai'?{c:config.unlimitedCalls?null:config.maxCallsPerDay,d:config.unlimitedBudget?null:config.maxUSDPerDay}:{c:config.anthropicUnlimitedCalls?null:config.anthropicCallsPerDay,d:config.anthropicUnlimitedBudget?null:config.anthropicUSDPerDay};
+        return <Row block key={v} title={name}><span className="muted" aria-label={`${name} usage today`}>{u.calls} of {lim.c??'no limit'} calls · {usd(u.reservedMicro)} of {lim.d==null?'no limit':`$${lim.d.toFixed(2)}`}</span></Row>;})}
       <details className="inline-help"><summary>Recent API calls</summary>{state.aiCalls?.length?<table className="compact-table" aria-label="Recent API calls"><thead><tr><th>Time</th><th>Model</th><th>Status</th><th>Tokens in / out</th><th>Cost</th></tr></thead><tbody>{state.aiCalls.map((c,i)=><tr key={i}><td>{new Date(c.timestamp).toLocaleTimeString()}</td><td>{c.model}</td><td>{c.status}</td><td>{c.usage?`${c.usage.inputTokens.toLocaleString()} / ${c.usage.outputTokens.toLocaleString()}`:'—'}</td><td>{c.estimatedMicro==null?`${usd(c.reservedMicro)} reserved`:`$${(c.estimatedMicro/1e6).toFixed(4)}`}</td></tr>)}</tbody></table>:<p className="muted">No calls yet.</p>}</details>
     </Card>
   </>;

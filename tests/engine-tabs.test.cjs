@@ -19,7 +19,7 @@ const TABS={
 const CONTROLS=[
   ['Trading','Agent guidelines','guidelines'],['Trading','Portfolio scope','scope'],['Trading','Decision provider','provider'],
   ['Trading','Scheduled reviews','enabled'],['Trading','Place orders automatically','autoSubmit'],['Trading','Risk per trade','sizingRiskPct'],
-  ['Trading','Stop distance in ATR','sizingAtrMultiple'],['Trading','Share KIS data with the AI provider','shareKisWithAI'],['Trading','Start with Windows',null],
+  ['Trading','Stop distance in ATR','sizingAtrMultiple'],['Trading','Start with Windows',null],
   ['Trading',"'Korea · Nextrade (NXT)'",'sessionKrNxt'],['Trading',"'U.S. · KIS daytime session'",'sessionUsDaytime'],['Trading',"'U.S. · Pre-market'",'sessionUsPre'],
   ['Trading',"'U.S. · After-market'",'sessionUsAfter'],['Trading','Largest extended-session order','extendedMaxOrderPct'],
   ['Trading','Loss-limit response','lossAction'],['Trading','Automatic orders per day','maxAutoOrdersPerDay'],['Trading','Stop after consecutive failed reviews','maxConsecutiveFailures'],
@@ -27,7 +27,7 @@ const CONTROLS=[
   ['Trading','Submit conditional orders automatically','conditionalAutoSubmit'],['Trading','Most armed conditional orders','conditionalMaxActive'],
   ['Trading','Largest conditional order','conditionalMaxOrderPct'],['Trading','Conditional order price drift','conditionalMaxSlippagePct'],['Trading','Conditional order lifetime','conditionalMaxHours'],
   ['Agents','Trading model','setModel'],['Agents','Reasoning effort','reasoningEffort'],['Agents','Post-trade reflection','reflectionEnabled'],
-  ['Agents','API calls per day','maxCallsPerDay'],['Agents','Daily local API budget (USD)','maxUSDPerDay'],
+
   ['Agents','Reflection calls per day','reflectionCallsPerDay'],['Agents','Daily reflection budget (USD)','reflectionUSDPerDay'],['Agents','Recent API calls',null],
   ['Schedule and triggers','Auto review interval','autoReviewInterval'],['Schedule and triggers','Review interval','intervalMinutes'],
   ['Schedule and triggers','Reviews while markets are closed','closedMarketReviews'],['Schedule and triggers','Price move trigger','eventTolerancePct'],
@@ -62,7 +62,7 @@ test('every control of the old screen is on exactly one tab, the A0 one, with it
 });
 
 test('Start with Windows moves with the other Trading rows',()=>{
-  const t=fn('TradingTab');assert.ok(t.indexOf('<StartWithWindows/>')>t.indexOf('label="Share KIS data with the AI provider"')&&t.indexOf('<StartWithWindows/>')<t.indexOf('</Card>',t.indexOf('id="eng-trading"')));
+  const t=fn('TradingTab');assert.ok(t.indexOf('<StartWithWindows/>')>t.indexOf('title="Data sharing"')&&t.indexOf('<StartWithWindows/>')<t.indexOf('</Card>',t.indexOf('id="eng-trading"')));
 });
 
 test('the Agents tab: one card per agent, each with Model and Effort; the narrative gets its first switch',()=>{
@@ -93,8 +93,10 @@ test('two edits in one event both apply (an agent model and its effort)',()=>{
   assert.ok(rs.includes("INVALID_MODEL_SETTINGS:'A model and its effort don’t go together"),'a refused pair says why');
 });
 
-test('the KIS consent names every provider that receives data, from the trading model and each agent with its own',()=>{
-  assert.ok(engine.includes("[config.openaiModel,config.routineModel,config.scoutModel,config.narrativeModel,config.reflectionModel].filter(m=>m&&m!=='same')"));
+test('B1: the KIS consent is per provider in Connections; Engine → Trading shows both and links there',()=>{
+  assert.ok(!engine.includes('shareKisWithAI')&&!engine.includes('Share KIS data'),'no consent switch left in Engine settings');
+  const t=fn('TradingTab');assert.ok(t.includes('title="Data sharing"')&&t.includes("setDraft('connections:ai-providers',true);onNavigate?.('Connections');"));
+  const cards=src('src/ProviderCards.tsx');assert.ok(cards.includes("share:'shareKisWithOpenAI'")&&cards.includes("share:'shareKisWithAnthropic'")&&cards.includes('<Switch label={`Share KIS data with ${name}`}'));
 });
 
 test('step A4: the scout timing switches and the after-open offset are on Schedule and triggers, keyed as in scout-timing.cjs',()=>{

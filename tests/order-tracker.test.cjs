@@ -81,7 +81,7 @@ test('the trading review and the scout see open orders; the scout is told an ope
   const a=new Automation(db,paper,{request:async(op,payload)=>{seen=payload.context;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}},()=>{});
   a.live=live;a.usLive={identity:()=>'acct:US',context:async()=>({market:'US',currency:'USD',equity:500,cash:0,positions:{'NASD:GOOGL':{quantity:1}}}),getState:()=>({})};a.refreshUS=async()=>({});a.providerStatus.aiConnected=true;a.discovery={list:()=>[],symbols:()=>[]};
   a.pendingOrders=()=>[{symbol:'NASD:GOOGL',side:'Sell',quantity:1,filled:0,status:'Accepted',limitPrice:287.64}];
-  a.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});await a.scout();
+  a.configure({scope:'both',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});await a.scout();
   assert.ok(seen,'the scout ran');assert.equal(seen.openOrders?.orders?.[0]?.symbol,'NASD:GOOGL');assert.match(seen.openOrders.note,/placed but not filled/);
 });
 test('your revision in KIS, as the mock account recorded it, stops the tracker and shows the agents your price',async()=>{

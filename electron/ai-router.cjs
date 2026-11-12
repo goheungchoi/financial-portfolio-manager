@@ -16,6 +16,8 @@ function createRouter({openai=null,anthropic=null}={}){
   return {
     clientFor(model){const vendor=model==null?'openai':models.vendorOf(model);const client=vendor==='anthropic'?anthropic:openai;if(!client)throw new Error('AI_NOT_CONNECTED');return client;},
     flags(){return {aiConnected:Boolean(openai||anthropic),openaiConnected:Boolean(openai),anthropicConnected:Boolean(anthropic)};},
+    // B1: the key Test of one provider (key-test.cjs); 'missing' without a key.
+    async testKey(vendor){if(!['openai','anthropic'].includes(vendor))throw new Error('INVALID_REQUEST');const client=vendor==='anthropic'?anthropic:openai;if(!client?.testKey)return {result:'missing'};return client.testKey();},
   };
 }
 // Until the Claude client exists (step A3, then stage B for the other calls): every Claude call is refused as an
@@ -26,7 +28,7 @@ function pendingClaudeClient(){
 }
 // Step A3: the Claude client for the portfolio decision; scout, condensing, summary and reflection stay refused until
 // stage B. The key lives only inside AnthropicClient (a private field); this object holds none.
-function claudeClient(key,transport){const client=new (require('./anthropic-client.cjs').AnthropicClient)(key,transport);return {...pendingClaudeClient(),pending:false,decide:(context,options)=>client.decide(context,options)};}
+function claudeClient(key,transport){const client=new (require('./anthropic-client.cjs').AnthropicClient)(key,transport);return {...pendingClaudeClient(),pending:false,decide:(context,options)=>client.decide(context,options),testKey:()=>client.testKey()};}
 // The provider file, checked whole before anything is used: only known keys, each in its expected form. Any problem
 // rejects the file (the caller reports it as a failed import); nothing is half-applied. Values are never logged.
 function parseProviderFile(text){

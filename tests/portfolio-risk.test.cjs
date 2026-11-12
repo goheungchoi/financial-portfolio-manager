@@ -39,7 +39,7 @@ function harness(decision,{conditional=false}={}){
   const supplied=[];const events=[];const provider={request:async(op,payload)=>{supplied.push([op,payload]);return {decision,usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
   const a=new Automation(db,paper,provider,(id,kind,title,body)=>events.push({kind,title,body}));a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};
   a.series={closes:()=>series(60,i=>200000+i*300),ensure:async()=>{}};a.indexCloses=()=>({KOSPI:series(60,i=>5000+i),VIX:series(10,()=>18)});
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',conditionalOrders:conditional});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',conditionalOrders:conditional});
   return {a,supplied,events};
 }
 test('reviews get sizing and the regime gauge; a stop not below the price holds the Buy back',async()=>{

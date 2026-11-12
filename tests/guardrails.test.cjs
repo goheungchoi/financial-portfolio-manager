@@ -83,7 +83,7 @@ test('KIS scope blocks AI buys after the broker daily loss limit without any ord
     live.configure({symbols:[],lossLimit:{mode:'amount',value:500000}},'ENABLE MOCK');live.enableAuto('ENABLE AUTO MOCK');snapshot.reportedTotal=9400000;
     const paper=new PaperEngine(db,[{symbol:'005930',name:'Fixture',price:100}],()=>[]);
     const automation=new Automation(db,paper,{request:async()=>({provider:'openai',decision:{action:'Buy',symbol:'005930',quantity:1,explanation:'Buy the dip.'}})},()=>{});automation.live=live;automation.providerStatus.aiConnected=true;
-    automation.configure({provider:'openai',scope:'kis',shareKisWithAI:true,autoSubmit:true,lossAction:'block-buys'});
+    automation.configure({provider:'openai',scope:'kis',shareKisWithOpenAI:true,autoSubmit:true,lossAction:'block-buys'});
     const review=await automation.review();assert.equal(review.emergency,true);assert.match(review.executionNote,/buys are blocked/);assert.equal(review.orderId,null);
     assert.equal(live.orders().length,0);assert.deepEqual([...new Set(calls)],['live-context']);
   }finally{db.close();}

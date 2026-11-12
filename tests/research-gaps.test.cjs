@@ -24,7 +24,7 @@ test('through real reviews: gaps are recorded from each review and the next revi
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:1}],()=>[]),{request:async(op,p)=>{supplied.push(p);return {decision,usage:{inputTokens:1,outputTokens:1},provider:'openai'};}},log);
   const ctx=()=>({environment:'kis',market:'KR',currency:'KRW',executionEnabled:true,marketSession:{open:false},equity:1000000,cash:1000000,positions:{},universe:[{symbol:'005930',name:'S',price:1}],quotes:[{symbol:'005930',price:1,timestamp:Date.now()}],orders:[],risk:{symbols:[],anyStock:true,baseline:1000000,lossLimit:{mode:'off',value:0}}});
   a.live={identity:()=>'acct',enabled:true,market:'KR',context:async()=>ctx(),orderReconciliation:()=>null,getState:()=>({}),orders:()=>[]};a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   for(let i=0;i<3;i++)await a.review('User request');await a.review('User request');
   const last=supplied.at(-1).context.researchGaps;assert.equal(last[0].symbol,'005930');assert.equal(last[0].status,'retry limit reached');assert.equal(last[0].reviews,3);
 });

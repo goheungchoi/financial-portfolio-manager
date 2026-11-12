@@ -19,7 +19,7 @@ function harness(status){
     return gpt;}};
   const a=new Automation(db,paper,provider,()=>{});a.live=live;Object.assign(a.providerStatus,status);a.evidence={get:async()=>({status:'ok'})};
   a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:false});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,shareKisWithAnthropic:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:false});
   return {a,db,t,seen};
 }
 const BOTH={aiConnected:true,openaiConnected:true,anthropicConnected:true},OPENAI={aiConnected:true,openaiConnected:true,anthropicConnected:false},ONLY_CLAUDE={aiConnected:true,openaiConnected:false,anthropicConnected:true};
@@ -52,7 +52,7 @@ test('A5: a dry-run review can run once on Claude Opus 5.5 while the saved setti
 });
 test('A5: the dry-run override is refused without its key, without the sharing switch, for inputs, or with an invalid model',async()=>{
   let h=harness(OPENAI);await assert.rejects(h.a.dryRun('review',{model:CLAUDE}),/AI_NOT_CONNECTED/);assert.equal(h.t.sent.length,0);
-  h=harness(BOTH);h.a.configure({shareKisWithAI:false});await assert.rejects(h.a.dryRun('review',{model:CLAUDE}),/DATA_SHARING_NOT_ENABLED/);assert.equal(h.t.sent.length,0);
+  h=harness(BOTH);h.a.configure({shareKisWithAnthropic:false});await assert.rejects(h.a.dryRun('review',{model:CLAUDE}),/DATA_SHARING_NOT_ENABLED/);assert.equal(h.t.sent.length,0);
   h=harness(BOTH);await assert.rejects(h.a.dryRun('inputs',{model:CLAUDE}),/INVALID_REQUEST/);
   for(const model of [{openaiModel:'claude-opus-5-5',reasoningEffort:'none'},{openaiModel:'claude-opus-5-5-20260101',reasoningEffort:'medium'},{openaiModel:'gpt-7',reasoningEffort:'low'},'claude-opus-5-5'])await assert.rejects(harness(BOTH).a.dryRun('review',{model}),/INVALID_MODEL_SETTINGS|INVALID_REQUEST/,JSON.stringify(model));
   // Without an override the dry run is as before, on the saved model.

@@ -242,6 +242,10 @@ class AiClient {
   }
   // Sends a request and keeps the size of its parts (input, instructions, tool definitions) for size reports.
   measured(url,init){try{const b=JSON.parse(init.body),n=v=>Buffer.byteLength(JSON.stringify(v??null));this.lastRequestSizes={totalBytes:Buffer.byteLength(init.body),inputBytes:n(b.input),instructionsBytes:n(b.instructions),toolsBytes:n(b.tools)};}catch{}return this.transport(url,init);}
+  // B1: the key Test (key-test.cjs). One GET of the model list (no tokens), one attempt; only the status is read.
+  async testKey(timeoutMs=require('./key-test.cjs').TIMEOUT_MS){const K=require('./key-test.cjs');let response;
+    try{response=await this.transport('https://api.openai.com/v1/models',{method:'GET',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{authorization:'Bearer '+this.#key}});}catch{return {result:'unreachable'};}
+    return {result:K.classify(response?.status??(response?.ok?200:500))};}
   async decide(context,options={}) {
     const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model,responseChars=null;
     // The app's byte limit applies to the input; a rejection says which limit and what was largest.

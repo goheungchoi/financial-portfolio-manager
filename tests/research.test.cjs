@@ -258,7 +258,7 @@ test('scout context names the buyable markets and per-account product permission
   live.exposure={policy:()=>({leveragedEtps:{enabled:true,brokerEligible:true,maxPctOfEquity:20,maxHoldingDays:10},margin:{enabled:false},short:{enabled:false}}),context:()=>({products:[],warnings:[],leveragedEtps:{allowed:true}}),creditRisk:()=>null};
   let context;const automation=new Automation(db,paper,{request:async(op,payload)=>{context=payload.context;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}},()=>{});
   automation.live=live;automation.usLive={identity:()=>'acct:US',context:async()=>({market:'US',currency:'USD',equity:500,cash:0,positions:{}}),getState:()=>({})};automation.refreshUS=async()=>({});automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[],symbols:()=>[]};
-  automation.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  automation.configure({scope:'both',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.scout();
   assert.deepEqual(context.opportunitySet.tradableMarkets,['KR','US']);assert.equal(context.opportunitySet.usStocksBuyable,false,'no USD cash');assert.match(context.opportunitySet.note,/Korean-listed ETFs/);
   assert.equal(context.accounts[0].products.leveragedOrInverseEtps.allowed,true);assert.match(context.accounts[1].note,/No U.S. buying power/);

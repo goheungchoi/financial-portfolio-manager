@@ -70,7 +70,7 @@ function automation(t){
   const provider={request:async(op,payload)=>{ops.push(op);if(op!=='decision')throw new Error('PROVIDER_REQUEST_FAILED');return viaWorker(()=>claude.decide(payload.context,{...payload.options,...CLAUDE}));}};
   const a=new Automation(db,paper,provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({status:'ok'})};
   a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:false});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:false});
   return {a,db,ops};
 }
 test('A4: decisionWithRetry retries one AI_REQUEST_FAILED on Claude and never an INVALID_AI_RESPONSE',async()=>{

@@ -72,7 +72,7 @@ test('review fix: settlement uncertainty reaches the equity reliability check th
     const usLive=new LiveEngine(db,{request:async()=>usValue},()=>({status:'connected',snapshot:usBal}),{market:'US'});usLive.annotateBalance=b=>tracker.annotate(b,RATE);
     const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),{request:async()=>{throw new Error('no AI call');}},()=>{});
     a.live=live;a.usLive=usLive;a.refreshUS=async()=>usValue;a.fx=()=>({usdKRW:RATE,source:'fixture'});a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[];
-    a.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+    a.configure({scope:'both',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
     const {context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'Dry run',setStage:()=>{}});db.close();return context;};
   const usd=await assemble(1000,100);assert.equal(usd.equityReliability.reliable,false);assert.deepEqual(usd.equityUncertainty,{understatedUpToKRW:BUY,reasons:['funding of ₩1,192,140 of unsettled U.S. buys is not yet known (KRW or USD)']});
   assert.deepEqual(usd.equityReliability.reasons,usd.equityUncertainty.reasons);assert.match(usd.markets.find(m=>m.market==='KR').cashNote,/equity may be understated by up to that amount/);

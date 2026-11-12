@@ -95,7 +95,7 @@ function harness({engineCtx,autoSubmit=true,conditionalAutoSubmit=true}={}){
   const automation=new Automation(db,paper,provider,(id,kind,title,body)=>events.push({id,kind,title,body}));automation.live=live;automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
   const closes=series(40,i=>200000+i*500);automation.series={closes:s=>s==='005930'?closes:null,ensure:async()=>{}};
   automation.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];
-  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit,conditionalOrders:true,conditionalAutoSubmit});
+  automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit,conditionalOrders:true,conditionalAutoSubmit});
   if(engineCtx){const calls={propose:[],submit:[]};automation.live={identity:()=>'acct',autoEnabled:true,enabled:true,context:async()=>engineCtx(),propose:cmd=>{calls.propose.push(cmd);return {id:'P1',status:'Ready'};},autoSubmit:async id=>{calls.submit.push(id);return {id:'O1'};},getState:()=>({})};automation.calls=calls;}
   return {automation,supplied,events,queue,db};
 }
@@ -584,7 +584,7 @@ test('Regression: an unlinked stop (set by the AI, or armed before this change) 
 test('Restart between proposal and fill: the link is stored and the rules still hold',async()=>{
   const {a,db,records,stops}=planHarness({held:3});a.followPlan(a.watchScope(),planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{'005930':{quantity:3}}});
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');
-  const b=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]),{request:async()=>({})},()=>{});b.live=a.live;b.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:true,conditionalOrders:true,conditionalAutoSubmit:true});
+  const b=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]),{request:async()=>({})},()=>{});b.live=a.live;b.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:true,conditionalOrders:true,conditionalAutoSubmit:true});
   b.series=a.series;b.marketQuotes=a.marketQuotes;assert.deepEqual(b.desk.orders(b.watchScope())[0].linkedBuy,{id:'P1',market:'KR',quantity:2});
   records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:0,status:'Accepted'});b.configure({enabled:true});b.sessionArmed=true;b.lastDeskCheck=0;b.tick();await new Promise(r=>setTimeout(r,40));
   assert.equal(a.calls.propose.length,0,'held shares not sold after restart');void stops;

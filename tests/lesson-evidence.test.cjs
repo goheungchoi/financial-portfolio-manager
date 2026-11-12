@@ -33,7 +33,7 @@ test('evidence from before this version (no episode) with the same facts keeps i
   const signature=memory.lifecycle(id).signature;memory.review(id,{action:'approve',expectedSignature:signature});const {episode,evidenceVersion,...old}=JSON.parse(db.prepare('SELECT payload FROM lesson_evidence WHERE id=?').get(id).payload);
   db.prepare('UPDATE lesson_evidence SET payload=? WHERE id=?').run(JSON.stringify(old),id);memory.sync();assert.equal(memory.lifecycle(id).signature,signature);assert.equal(memory.lifecycle(id).status,'approved');assert.equal(memory.describe(id).evidenceVersion,2);
 });
-const result={facts:'f',uncertainty:'u',hypothesis:'h',lesson:'l',applicability:'a'};const config={reflectionEnabled:true,shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',reflectionCallsPerDay:5,reflectionUSDPerDay:1};
+const result={facts:'f',uncertainty:'u',hypothesis:'h',lesson:'l',applicability:'a'};const config={reflectionEnabled:true,shareKisAllowed:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',reflectionCallsPerDay:5,reflectionUSDPerDay:1};
 test('a lesson awaiting review whose reflection lacked the entry and exit is reflected on once more; the earlier one is kept',async()=>{const {db,memory,id}=setup();try{
   const q=new ReflectionQueue(db,memory);q.sync();const base=q.jobs().find(j=>j.lessonId===id);assert.equal(base.evidenceVersion,2,'a new lesson starts from complete evidence');
   // The Kia case: a completed reflection from version-1 evidence.
