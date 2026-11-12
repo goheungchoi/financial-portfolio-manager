@@ -496,6 +496,24 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       }finally{db.prepare('DELETE FROM live_intents WHERE id=?').run('UI-ISO-FILL');db.prepare('DELETE FROM cash_flows WHERE id=?').run('ui-damaged-flow');if(renamed)db.exec('ALTER TABLE nav_history_gone RENAME TO nav_history');if(damaged){if(added)db.prepare('DELETE FROM nav_history WHERE account=? AND day=?').run(acct,damaged);else if(saved!=null)db.prepare('UPDATE nav_history SET payload=? WHERE account=? AND day=?').run(saved,acct,damaged);}db.close();
         domestic.holdings=[];Object.assign(overseas,usBefore);await run('window.portfolio.refreshPortfolio()');}
     });
+    // Restart part 1, step 3: "Start with Windows" in Engine → Trading. The desktop suite runs on the in-memory fake
+    // (PORTFOLIO_SMOKE_DATA), so the machine's real login items are never touched.
+    await check('Start with Windows: the row and its hint in Engine settings; the switch applies at once and reads back (fake)',async()=>{
+      await navigate('Engine settings');await until('Boolean(document.querySelector(`[aria-label="Start with Windows"]`))','Start with Windows row missing');
+      const row=await run('(()=>{const sw=document.querySelector(`[aria-label="Start with Windows"]`);const r=sw.closest(".setting-row");return {text:r.textContent,checked:sw.checked,disabled:sw.disabled};})()');
+      console.log('SWW '+JSON.stringify(row));assert.match(row.text,/Start with Windows/);
+      assert.match(row.text,/Opens the app when you sign in to Windows\. After a restart at night it opens only once you sign in\. It starts paused\./);
+      assert.equal(row.checked,false,'off by default');assert.equal(row.disabled,false);
+      assert.equal((await run('window.portfolio.getLoginItem()')).test,true,'the fake, not Windows');
+      await run('document.querySelector(`[aria-label="Start with Windows"]`).click()');await until('document.querySelector(`[aria-label="Start with Windows"]`).checked===true','switch did not turn on');
+      assert.equal((await run('window.portfolio.getLoginItem()')).on,true,'read back on');
+      const theme0=await run('document.documentElement.dataset.theme');
+      for(const theme of ['dark','light']){if(await run('document.documentElement.dataset.theme')!==theme){await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'theme');}
+        await run('document.querySelector(`[aria-label="Start with Windows"]`).scrollIntoView({block:"center"})');await wait(150);await capture('start-with-windows-'+theme);}
+      if(await run('document.documentElement.dataset.theme')!==theme0)await run("document.querySelector('[aria-label=\"Dark mode\"]').click()");
+      await run('document.querySelector(`[aria-label="Start with Windows"]`).click()');await until('document.querySelector(`[aria-label="Start with Windows"]`).checked===false','switch did not turn off');
+      assert.equal((await run('window.portfolio.getLoginItem()')).on,false,'read back off');
+    });
     // Since fdc5d5f (2026-10-29) an interval shorter than the user's needs a moving holding, which this paper fixture has
     // not; the case checks that the AI's own choice is kept, so it asks for a longer one (the guard is in review-interval tests).
     await check('Auto review interval persists the AI choice and shows its reason',async()=>{

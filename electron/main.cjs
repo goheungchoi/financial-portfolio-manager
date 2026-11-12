@@ -1,6 +1,10 @@
 const { app, BrowserWindow, ipcMain, dialog, Notification, shell, Menu } = require('electron');
 if(!process.env.PORTFOLIO_SMOKE_DATA&&!app.requestSingleInstanceLock()){app.quit();process.exit(0);}
 let mainWindow=null;const chartWindows=new Map();
+// How the app last stopped (restart part 1, step 1): this run's exit record and the previous run's stop.
+let exitRecord=null,previousStop=null;
+// The start notice (step 2): shown on Home until auto trading is started or it is dismissed.
+let restartNotice=null,restartNoticeDismissed=false;
 app.on('second-instance',()=>{const window=mainWindow&&!mainWindow.isDestroyed()?mainWindow:BrowserWindow.getAllWindows()[0];if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
 const { PortfolioStore } = require('./storage.cjs');
 const { KisService } = require('./kis-service.cjs');
@@ -159,6 +163,15 @@ function authorize(event) {
 function createWindow() {
   const win = new BrowserWindow({ show:!verificationDirectory, width: 1360, height: 880, minWidth: 760, minHeight: 600, backgroundColor: store?.getTheme() === 'light' ? '#f3f6fa' : '#181818', title: 'Financial Portfolio Manager', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // Windows ending the session (restart, shutdown, sign-out): one synchronous row write, before anything else. Nothing
+  // here holds Windows back (no preventDefault). before-quit is not sent on a shutdown, so this is the only word.
+  // query-session-end is a question (the shutdown can still be cancelled): a tentative stop; session-end confirms it.
+  win.on('query-session-end',event=>{try{exitRecord?.stop('windows-shutdown',event?.reasons,true);}catch{}});
+  win.on('session-end',event=>{try{exitRecord?.stop('windows-shutdown',event?.reasons);}catch{}
+    // Best effort, after the row: one phone message straight to the webhook, not through the outbox. Nothing waits for
+    // it; if it is not confirmed, the start notice tells the phone at the next start, with the real time.
+    try{const N=require('./start-notice.cjs');let scope=null;try{scope=automation?.watchScope();}catch{}const message=N.sessionEndMessage({stops:N.armedStops(store.db,{scope}),running:require('./auto-launch.cjs').launchState(automation).running});
+      if(message&&automation?.config.mobileAlerts&&automation.providerStatus?.pushConnected)void Promise.resolve(providerService.request('push',{message})).then(()=>{try{exitRecord?.markPhoneSent();}catch{}}).catch(()=>{});}catch{}});
   win.webContents.on('will-navigate', event => event.preventDefault());
   if(verificationDirectory)win.webContents.once('did-finish-load',async()=>{try{await new Promise(resolve=>setTimeout(resolve,200));const result=await win.webContents.executeJavaScript("Promise.all([document.querySelector('h1').textContent,typeof window.require,window.portfolio.getPaper(),window.portfolio.liveAction('get'),window.portfolio.getRuntime()])");if(result[0]!=='Home'||result[1]!=='undefined'||!result[2].data.account.paused||result[3].state.enabled||result[3].state.autoEnabled)throw 0;
     // A fresh profile has auto trading off; a copied one keeps its preference, and only the runtime pause is asserted.
@@ -185,6 +198,8 @@ function openChartWindow(symbol){
 app.whenReady().then(async () => {
   domain = await import('../src/domain.mjs');
   store = new PortfolioStore(path.join(app.getPath('userData'), 'portfolio.sqlite'));if(verifyProfile)verifyStart=profileRecord();
+  // The previous run's stop, then this run's record and its heartbeat (not during build or profile verification).
+  if(!verificationDirectory){const {ExitRecord,lastStop}=require('./exit-record.cjs');exitRecord=new ExitRecord(store.db);previousStop=lastStop(exitRecord.begin());setInterval(()=>{let scope=null;try{scope=automation?.watchScope();}catch{}exitRecord.heartbeat(scope);},60000).unref();}
   remembered=new (require('./remembered-files.cjs').RememberedFiles)(store.db);
   events = store.getEvents();
   if (!store.latestSnapshot()) store.saveSnapshot({timestamp:new Date().toISOString(), cash:domain.cash, holdings:domain.holdings});
@@ -272,6 +287,10 @@ app.whenReady().then(async () => {
   
   notifier=new Notifications(store.db,providerService,()=>({...automation.config,pushConnected:automation.providerStatus.pushConnected}),message=>{if(Notification.isSupported())new Notification({title:'Financial Portfolio Manager',body:message}).show();});
   automation.notify=(id,message)=>notifier.notify(id,message);
+  // The start notice (restart part 1, step 2): once per start, desktop and phone, when stop orders are armed or auto
+  // trading was running at the last stop. Not on a first start. The Home item stays until Start or Dismiss.
+  try{const N=require('./start-notice.cjs');restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit)});
+    if(restartNotice){const id='restart-notice:'+(exitRecord?.current?.startedAt??Date.now());setTimeout(()=>{try{notifier.notify(id,restartNotice.message);}catch{}},3000);}}catch{}
   agentBridge=require('./agent-bridge.cjs').startBridge(app.getPath('userData'),paper,decision=>automation.review('External agent',decision));
   automation.evidence=new (require('./market-evidence.cjs').MarketEvidence)(async(args,context)=>{
     if(context.environment==='local-paper'){
@@ -521,10 +540,16 @@ app.whenReady().then(async () => {
     try{for(const o of automation.desk.orders(automation.watchScope()))if(o.linkedBuy&&o.unreadableSince&&now-o.unreadableSince>300000)items.push({id:'stop-unreadable-'+o.id,tone:'warning',title:`Stop order for ${o.symbol} cannot read its purchase`,detail:'It stays armed and keeps trying; it sells nothing until the purchase can be read.',tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
     try{for(const f of automation.desk.planStopFailures(automation.watchScope()))items.push({id:'plan-stop-'+f.id,tone:'warning',title:`No stop order for the purchase of ${f.symbol}`,detail:`${f.quantity} ${f.symbol}: ${f.reason}`,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
     try{const home=settlementView()?.home;if(home)items.push({id:'settlements',tone:home.tone,title:home.title,detail:home.detail,tab:'U.S. stocks',action:'Review'});}catch{}
+    try{if(restartNotice&&!restartNoticeDismissed&&!require('./auto-launch.cjs').launchState(automation).running)items.push({id:'restart-notice',tone:'warning',title:restartNotice.title,detail:restartNotice.message,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers',dismissible:true});}catch{}
     if(updates.view().status==='downloaded')items.push({id:'update',tone:'info',title:`Version ${updates.view().available?.version} is ready to install`,detail:'Install from Connections when no trading is active.',tab:'Connections',action:'Install'});
     return {items,counts};
   };
   ipcMain.handle('workspace:attention',event=>{authorize(event);return attentionState();});
+  // Start with Windows (restart part 1, step 3): read from Windows each time; set only by the installed app; a fake in test runs.
+  const loginItem=require('./login-item.cjs').createLoginItem({app,packaged:app.isPackaged,fake:process.env.PORTFOLIO_SMOKE_DATA?{on:false}:null});
+  ipcMain.handle('system:login-item',event=>{authorize(event);return loginItem.get();});
+  ipcMain.handle('system:set-login-item',(event,on)=>{authorize(event);try{return loginItem.set(on);}catch{return {...loginItem.get(),error:'Invalid request.'};}});
+  ipcMain.handle('workspace:dismiss',(event,id)=>{authorize(event);if(id==='restart-notice')restartNoticeDismissed=true;return attentionState();});
   // The settlement panel (stage 2b.5). The account is the connected one, never the page's. A preview and its
   // confirmation are computed with the balances, rate and capacity inputs the app holds (no read is made for them), so a
   // confirmation applies only if nothing it was bound to changed (electron/settlement-reconciliation.cjs R3); otherwise
@@ -753,6 +778,7 @@ app.whenReady().then(async () => {
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
 }).catch(() => { dialog.showErrorBox('Startup failed', 'The local portfolio database could not be opened. The app will close without submitting any orders.'); app.exit(1); });
 app.on('will-quit', () => {
+  try{exitRecord?.stop('clean');}catch{}
   closing=true;if(automation)automation.disposed=true;if(notifier)notifier.disposed=true;live?.stop();
   agentBridge?.close();providerService.disconnect();
   kisService.disconnect();
