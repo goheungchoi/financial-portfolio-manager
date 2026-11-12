@@ -58,6 +58,17 @@ const CLAUDE_GATE_REASON='Run one dry run on Claude on this account first';
 // B2: the measurement of one dry run, from its own AI call records: per request, the kind (dry-run or compact), model,
 // status, stop reason, tokens (cache read and write apart), service tier, reserved and settled cost and sizes; and the
 // totals. Built for GPT and Claude runs alike; a record made before B2 has no block and still opens.
+// The app's own rule for an answer it did not accept (short gate 1.5.56, note 2): the rule text of fail(rule) in the
+// clients and of the validators, as the provider worker forwards it (decisionDetail), with the answer's stop reason.
+// Kept on the failed dry-run record for the Dry-run panel only; the dry run logs no line with it. The only rule that
+// quotes the answer is checkDecision's "unexpected <field names>" (up to six names of 30 characters); control
+// characters are removed and the whole rule is cut to 200 characters.
+const ANSWER_CODES=['INVALID_AI_RESPONSE','AI_OUTPUT_LIMIT','AI_REFUSED'];
+function answerRule(error){if(!ANSWER_CODES.includes(error?.message))return null;const d=error?.detail&&typeof error.detail==='object'?error.detail:null;
+  const clean=(v,n)=>String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').replace(/\s+/g,' ').trim().slice(0,n);
+  const rule=typeof d?.rule==='string'&&d.rule.trim()?clean(d.rule,200):typeof error?.detail==='string'&&error.detail.trim()?clean(error.detail,200):null;
+  const stop=typeof error?.stopReason==='string'?error.stopReason:typeof d?.status==='string'?d.status:null;
+  return rule||stop?{code:error.message,...(rule?{rule}:{}),...(stop?{stopReason:clean(stop,30).replace(/[^a-z_ ]/g,'')}:{})}:null;}
 // The first refused call of a review (ai-accounting.cjs settle keeps providerError on it), for the dry-run record.
 function firstRefusal(db,reviewId){try{for(const r of db.prepare('SELECT payload FROM ai_calls ORDER BY rowid').all()){const p=JSON.parse(r.payload);if(p.reviewId===reviewId&&p.providerError)return p.providerError;}}catch{}return null;}
 function dryRunMeasurement(db,reviewId){
@@ -321,7 +332,8 @@ class Automation {
         // A refused request (Claude refused-request design 1): the first refused call's local record goes with the failed
         // dry run for the Dry-run panel; the console line carries its status, type and request id, never the message.
         const failed=error=>{const at=Date.now();const providerError=firstRefusal(this.db,id);if(providerError)this.log(id+':refused','System','Dry-run review · request refused',`${providerError.status}${providerError.errorType?' '+providerError.errorType:''}${providerError.requestId?` · request ${providerError.requestId}`:''}`);
-          const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...(providerError?{providerError}:{}),measurement:dryRunMeasurement(this.db,id),...trace(),...(error?.metrics?{research:error.metrics}:{})}};
+          const notAccepted=providerError?null:answerRule(error);
+          const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...(providerError?{providerError}:{}),...(notAccepted?{answerRule:notAccepted}:{}),measurement:dryRunMeasurement(this.db,id),...trace(),...(error?.metrics?{research:error.metrics}:{})}};
           try{this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,at,JSON.stringify({...record,snapshot}));}catch{}return error;};
         if(!shapedDry.fits){const failure=require('./review-context.cjs').sizeFailure(shapedDry,{stage:'dry-run first request'});this.saveSizeFailure(id,failure,{report:size,steps:shapedDry.steps,input:providerContext});throw failed(failure);}
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
@@ -750,7 +762,7 @@ class Automation {
   // The failed dry run recorded since `since` (this request's own record): its refused request's local record and its
   // measurement, for the Dry-run panel (Claude refused-request design 1). Null when none was recorded.
   dryRunFailure(since){try{const row=this.db.prepare('SELECT payload FROM dry_runs WHERE timestamp>=? ORDER BY timestamp DESC LIMIT 1').get(since);if(!row)return null;const r=JSON.parse(row.payload);if(!r.review?.failed)return null;
-    return {failed:r.review.failed,providerError:r.review.providerError??null,measurement:r.review.measurement??null};}catch{return null;}}
+    return {failed:r.review.failed,providerError:r.review.providerError??null,answerRule:r.review.answerRule??null,measurement:r.review.measurement??null};}catch{return null;}}
   completedClaudeDryRun(){const tag=this.accountTag();if(!tag?.key)return null;
     const rows=this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT 50').all();
     for(const row of rows){let r;try{r=JSON.parse(row.payload);}catch{continue;}const v=r.review;
@@ -1392,4 +1404,4 @@ class Automation {
   }
   approveLesson(id,approved){if(typeof id!=='string'||typeof approved!=='boolean')throw new Error('INVALID_REQUEST');this.syncLearning();if(this.learningError)throw new Error('LESSON_REVIEW_FAILED');const lifecycle=this.memory.lifecycle(id);if(lifecycle)this.memory.review(id,{expectedSignature:lifecycle.signature,action:approved?'approve':'retire'});else this.db.prepare('UPDATE lessons SET approved=? WHERE id=?').run(approved?1:0,id);return this.getState();}
 }
-module.exports={loggableContext,dryRunSummary,dryRunMeasurement,Automation,DEFAULTS};
+module.exports={loggableContext,dryRunSummary,dryRunMeasurement,answerRule,Automation,DEFAULTS};

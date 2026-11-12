@@ -182,7 +182,7 @@ class AnthropicClient {
         if(call.refused)throw Object.assign(new Error('AI_REQUEST_FAILED'),{detail:{rule:call.refused}});
         const detail=errorDetail(error),providerError=refusalRecord(error,call,[this.#key]);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{},providerError?{providerError}:{});}
       if(call.responseChars>C.RESPONSE_CHAR_LIMIT)throw fail(`a response of ${C.kb(call.responseChars)}, above the ${C.kb(C.RESPONSE_CHAR_LIMIT)} limit`);
-      reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;
+      reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;if(typeof reply.stop_reason==='string')call.stopReason=reply.stop_reason.replace(/[^a-z_]/g,'').slice(0,30);
       const blocks=Array.isArray(reply.content)?reply.content:[];
       const base={usage:reportedUsage,provider:'openai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking:(reply.input_transformations??[]).filter(t=>t?.type==='thinking_dropped').length,stopReason:typeof reply.stop_reason==='string'?reply.stop_reason.slice(0,30):null,requestSizes:call.sizes};
       if(reply.stop_reason==='refusal'){const category=String(reply.stop_details?.category??'').replace(/[^a-z_]/g,'').slice(0,30);throw Object.assign(new Error('AI_REFUSED'),{stopReason:'refusal',detail:{rule:`a refusal${category?` (${category})`:''}`}});}
@@ -200,7 +200,7 @@ class AnthropicClient {
       let parsed;if(textFormat)parsed=onlyObject(output,{empty:`no ${kind} answer`,invalid:`a ${kind} answer that is not one JSON object`});
       else{try{parsed=JSON.parse(output);}catch{throw fail(output.trim()?`a ${kind} answer that is not valid JSON`:`no ${kind} answer`,{status:'end_turn'});}}
       return {...base,parsed};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
   }
   async narrative(context,options={}){const n=require('./narrative.cjs');const {parsed,...r}=await this.structured({kind:'narrative',system:n.INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:n.SCHEMA,options,maxBytes:120000});return {...r,narrative:parsed};}
   async compact(payload,options={}){const f=require('./context-fit.cjs');const {parsed,...r}=await this.structured({kind:'compact',system:f.COMPACT_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(payload)}],schema:f.COMPACT_SCHEMA,options,maxBytes:400000});return {...parsed,...r};}
@@ -258,7 +258,7 @@ class AnthropicClient {
         const detail=errorDetail(error),providerError=refusalRecord(error,call,[this.#key]);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{},providerError?{providerError}:{});}
       this.lastRequestSizes=call.sizes;
       if(call.responseChars>C.RESPONSE_CHAR_LIMIT)throw fail(`a response of ${C.kb(call.responseChars)}, above the ${C.kb(C.RESPONSE_CHAR_LIMIT)} limit`);
-      reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;
+      reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;if(typeof reply.stop_reason==='string')call.stopReason=reply.stop_reason.replace(/[^a-z_]/g,'').slice(0,30);
       const blocks=Array.isArray(reply.content)?reply.content:[];
       const droppedThinking=(reply.input_transformations??[]).filter(t=>t?.type==='thinking_dropped').length;
       // B2: the stop reason and the measured request sizes go with each reply, for the dry run's measurement.
@@ -289,7 +289,7 @@ class AnthropicClient {
       return {...base,decision,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;
       // B2: a failure keeps its stop reason and the measured request sizes for the dry run's measurement.
-      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
+      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
   }
   // The loaded key removed from a text by value (review C2): the provider worker runs a refused request's message through
   // every client it holds before the message leaves the worker. The key itself never leaves this object.

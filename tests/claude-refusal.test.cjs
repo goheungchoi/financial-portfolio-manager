@@ -143,7 +143,7 @@ test('the message stays local: not in the code, lastErrorDetail, the log, the ph
 test('the Dry-run panel says $0.00, refused and the reservation released; the request id is shown (C5)',()=>{
   const src=fs.readFileSync(path.join(__dirname,'../src/Dashboard.tsx'),'utf8');
   assert.ok(src.includes("' $0.00, refused: the reservation was released.'"),'the text');assert.ok(src.includes('aria-label="Refused request"')&&src.includes('{p.requestId}'),'the request id');
-  assert.ok(src.includes('{dryFailure?.providerError&&<Refusal p={dryFailure.providerError}/>}{dryFailure?.measurement&&<Measurement m={dryFailure.measurement}/>}'));
+  assert.ok(src.includes('{dryFailure?.providerError&&<Refusal p={dryFailure.providerError}/>}')&&src.includes('{dryFailure?.measurement&&<Measurement m={dryFailure.measurement}/>}'),'the refusal and the failed run\'s measurement');
   const main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');assert.ok(main.includes('failure:automation.dryRunFailure(started)'));
 });
 
