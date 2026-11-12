@@ -58,6 +58,8 @@ const CLAUDE_GATE_REASON='Run one dry run on Claude on this account first';
 // B2: the measurement of one dry run, from its own AI call records: per request, the kind (dry-run or compact), model,
 // status, stop reason, tokens (cache read and write apart), service tier, reserved and settled cost and sizes; and the
 // totals. Built for GPT and Claude runs alike; a record made before B2 has no block and still opens.
+// The first refused call of a review (ai-accounting.cjs settle keeps providerError on it), for the dry-run record.
+function firstRefusal(db,reviewId){try{for(const r of db.prepare('SELECT payload FROM ai_calls ORDER BY rowid').all()){const p=JSON.parse(r.payload);if(p.reviewId===reviewId&&p.providerError)return p.providerError;}}catch{}return null;}
 function dryRunMeasurement(db,reviewId){
   try{const rows=db.prepare('SELECT payload FROM ai_calls ORDER BY rowid').all().map(r=>JSON.parse(r.payload)).filter(p=>p.reviewId===reviewId);
     const usd=m=>m==null?null:Math.round(m)/1e6;const requests=rows.map((p,i)=>({request:i+1,kind:p.kind??'review',model:p.model??null,status:p.status??null,stopReason:p.stopReason??null,
@@ -316,7 +318,10 @@ class Automation {
         this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
         const providerContext=shapedDry.context;const transcript=[],requests=[];
         const trace=()=>({size,requests,transcript,detailReads:transcript.filter(t=>t.title.startsWith('Context detail')).map(t=>t.title.replace(/^Context detail · /,'')+' → '+t.body),condensed:transcript.filter(t=>t.title==='Research context condensed').map(t=>t.body)});
-        const failed=error=>{const at=Date.now();const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',measurement:dryRunMeasurement(this.db,id),...trace(),...(error?.metrics?{research:error.metrics}:{})}};
+        // A refused request (Claude refused-request design 1): the first refused call's local record goes with the failed
+        // dry run for the Dry-run panel; the console line carries its status, type and request id, never the message.
+        const failed=error=>{const at=Date.now();const providerError=firstRefusal(this.db,id);if(providerError)this.log(id+':refused','System','Dry-run review · request refused',`${providerError.status}${providerError.errorType?' '+providerError.errorType:''}${providerError.requestId?` · request ${providerError.requestId}`:''}`);
+          const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...(providerError?{providerError}:{}),measurement:dryRunMeasurement(this.db,id),...trace(),...(error?.metrics?{research:error.metrics}:{})}};
           try{this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,at,JSON.stringify({...record,snapshot}));}catch{}return error;};
         if(!shapedDry.fits){const failure=require('./review-context.cjs').sizeFailure(shapedDry,{stage:'dry-run first request'});this.saveSizeFailure(id,failure,{report:size,steps:shapedDry.steps,input:providerContext});throw failed(failure);}
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
@@ -742,6 +747,10 @@ class Automation {
   // B2: the latest completed Claude dry run on this account, or null. Completed: a review-mode run on a Claude model,
   // not failed, with a decision; its account is the current one; every Claude call it made completed with usage and a
   // settled cost; at least one call; and it has the measurement block. B3 and C gate on it.
+  // The failed dry run recorded since `since` (this request's own record): its refused request's local record and its
+  // measurement, for the Dry-run panel (Claude refused-request design 1). Null when none was recorded.
+  dryRunFailure(since){try{const row=this.db.prepare('SELECT payload FROM dry_runs WHERE timestamp>=? ORDER BY timestamp DESC LIMIT 1').get(since);if(!row)return null;const r=JSON.parse(row.payload);if(!r.review?.failed)return null;
+    return {failed:r.review.failed,providerError:r.review.providerError??null,measurement:r.review.measurement??null};}catch{return null;}}
   completedClaudeDryRun(){const tag=this.accountTag();if(!tag?.key)return null;
     const rows=this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT 50').all();
     for(const row of rows){let r;try{r=JSON.parse(row.payload);}catch{continue;}const v=r.review;
@@ -757,7 +766,10 @@ class Automation {
     const ok=vendor==='anthropic'?s.anthropicConnected===true:s.openaiConnected===true||Boolean(s.aiConnected)&&s.anthropicConnected!==true;return ok?null:vendor==='anthropic'?'Anthropic':'OpenAI';}
   async decisionWithRetry(context,options,pauseMs=3000){
     try{return await this.provider.request('decision',{context,options});}
-    catch(error){if(!['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'].includes(error?.message)||this.disposed)throw error;await new Promise(r=>setTimeout(r,pauseMs));return this.provider.request('decision',{context,options});}
+    catch(error){if(!['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'].includes(error?.message)||this.disposed)throw error;await new Promise(r=>setTimeout(r,pauseMs));
+      // The retry's failure follows an uncertain attempt on the same call record: settle never takes it as a certain
+      // refusal at zero (Claude refused-request diff review F2).
+      try{return await this.provider.request('decision',{context,options});}catch(retry){if(retry&&typeof retry==='object')retry.earlierUncertain=true;throw retry;}}
   }
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){

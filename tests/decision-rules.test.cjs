@@ -34,7 +34,7 @@ test('a symbol from the model is reduced to symbol characters in the detail',()=
 });
 test('the provider worker forwards the decision summary with the rule; the review log line carries both',()=>{
   // The worker's error reply lives in provider-error-reply.cjs (2026-11-10), so it is tested directly.
-  const worker=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/provider-worker.cjs'),'utf8');assert.match(worker,/require\('\.\/provider-error-reply\.cjs'\)\.errorReply\(data\.operation,error\)/);
+  const worker=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/provider-worker.cjs'),'utf8');assert.match(worker,/require\('\.\/provider-error-reply\.cjs'\)\.errorReply\(data\.operation,error,\{redact:text=>router\.redact\(text\)\}\)/);
   const reply=require('../electron/provider-error-reply.cjs').errorReply('decision',Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'a Hold with a quantity other than 0',decision:{action:'Hold',symbol:'',quantity:3,credit:'none',explanation:'private reasoning'}}}));
   assert.deepEqual(reply.detail,{rule:'a Hold with a quantity other than 0',decision:{action:'Hold',symbol:'',quantity:3,credit:'none'}});
   const e=Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'a Hold with a quantity other than 0',decision:{action:'Hold',symbol:'',quantity:3,credit:'none'}}});

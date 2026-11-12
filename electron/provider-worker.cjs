@@ -44,5 +44,5 @@ process.parentPort.on('message',async({data})=>{
       result=rows.slice(0,500).filter(row=>/^\d{14}$/.test(row.rcept_no)).map(row=>({title:(String(row.corp_name??'').trim()+' · '+String(row.report_nm??'').trim()).slice(0,500),symbol:row.stock_code??'',url:'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='+row.rcept_no,published:row.rcept_dt,source:'DART'}));
     } else throw 0;
     process.parentPort.postMessage({id:data.id,ok:true,snapshot:result});
-  }catch(error){process.parentPort.postMessage({id:data.id,...require('./provider-error-reply.cjs').errorReply(data.operation,error)});}
+  }catch(error){process.parentPort.postMessage({id:data.id,...require('./provider-error-reply.cjs').errorReply(data.operation,error,{redact:text=>router.redact(text)})});}
 });

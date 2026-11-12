@@ -123,7 +123,11 @@ test('error mapping: each status and type to the app code; the key and the provi
     [err(400,'invalid_request_error','Your credit balance is too low to access the Anthropic API.'),'AI_QUOTA_EXHAUSTED'],[err(403,'permission_error','Your credit balance is too low'),'AI_QUOTA_EXHAUSTED'],[err(402,'billing_error'),'AI_QUOTA_EXHAUSTED'],
     [err(400,'invalid_request_error','prompt is too long: 1200000 tokens > 1000000 maximum'),'AI_CONTEXT_LIMIT'],[err(413,'request_too_large'),'CONTEXT_TOO_LARGE'],[err(400,'invalid_request_error'),'AI_BAD_REQUEST'],
     [err(500,'api_error'),'AI_REQUEST_FAILED'],[err(529,'overloaded_error'),'AI_REQUEST_FAILED']];
-  for(const [reply,code] of cases)await assert.rejects(client(transport(reply)).decide(CTX,OPTS),e=>{assert.equal(e.message,code,JSON.stringify(reply.status));const all=e.message+JSON.stringify(e)+String(e.stack);assert.ok(!all.includes(KEY),'no key');assert.ok(!all.includes('details'),'no provider text');return true;});
+  for(const [reply,code] of cases)await assert.rejects(client(transport(reply)).decide(CTX,OPTS),e=>{assert.equal(e.message,code,JSON.stringify(reply.status));const all=e.message+JSON.stringify(e)+String(e.stack);assert.ok(!all.includes(KEY),'no key');
+    // Claude refused-request design: the provider text stays out of the code, detail and stack; only the separate local
+    // providerError.message may hold it (a 4xx other than 401 and 429), with the key removed.
+    assert.ok(!(e.message+JSON.stringify(e.detail??null)+String(e.stack)).includes('details'),'no provider text in the code, detail or stack');
+    if(e.providerError?.message!==undefined)assert.ok(reply.status>=400&&reply.status<500&&![401,429].includes(reply.status),'a message only for a 4xx other than 401 and 429');return true;});
   await assert.rejects(client(async()=>{throw new TypeError('fetch failed '+KEY);}).decide(CTX,OPTS),e=>e.message==='AI_REQUEST_FAILED'&&!JSON.stringify(e).includes(KEY));
   // The SDK's timeout (shortened for the test) is AI_TIMEOUT.
   const slow=(url,init)=>new Promise((_,reject)=>init.signal.addEventListener('abort',()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'}))));
@@ -178,7 +182,9 @@ test('A3b: an API error keeps its request id and error type, and nothing else fr
   const failing=(status,type,requestId)=>async()=>new Response(JSON.stringify({type:'error',error:{type,message:'output_config.format.schema: private text '+KEY}}),{status,headers:{'content-type':'application/json',...(requestId?{'request-id':requestId}:{})}});
   const e=await client(failing(400,'invalid_request_error','req_011CTestABC')).decide(CTX,OPTS).catch(x=>x);
   assert.equal(e.message,'AI_BAD_REQUEST');assert.deepEqual(e.detail,{requestId:'req_011CTestABC',errorType:'invalid_request_error'});
-  const reply=errorReply('decision',e);assert.deepEqual(reply.detail,{requestId:'req_011CTestABC',errorType:'invalid_request_error'});assert.ok(!JSON.stringify(reply).includes('private')&&!JSON.stringify(reply).includes(KEY));
+  const reply=errorReply('decision',e);assert.deepEqual(reply.detail,{requestId:'req_011CTestABC',errorType:'invalid_request_error'});assert.ok(!JSON.stringify({code:reply.code,detail:reply.detail}).includes('private')&&!JSON.stringify(reply).includes(KEY));
+  // Claude refused-request design: the provider message travels only as the separate local providerError, key removed.
+  assert.equal(reply.providerError.message,'output_config.format.schema: private text [redacted]');
   assert.match(E.detail(reply.code,'AI research and decision',Object.assign(new Error(reply.code),{detail:reply.detail})),/rejected the request format.*Stage: AI research and decision\. Request: req_011CTestABC \(invalid_request_error\)\.$/);
   const bad=await client(failing(400,'invalid_request_error','req <script>')).decide(CTX,OPTS).catch(x=>x);assert.deepEqual(bad.detail,{errorType:'invalid_request_error'},'a malformed request id is dropped');
   assert.equal((await client(failing(422,'invalid_request_error')).decide(CTX,OPTS).catch(x=>x)).message,'AI_BAD_REQUEST');

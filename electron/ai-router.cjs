@@ -22,6 +22,8 @@ function createRouter({openai=null,anthropic=null}={}){
     flags(){return {aiConnected:Boolean(openai||anthropic),openaiConnected:Boolean(openai),anthropicConnected:Boolean(anthropic)};},
     // B1: the key Test of one provider (key-test.cjs); 'missing' without a key.
     async testKey(vendor){if(!['openai','anthropic'].includes(vendor))throw new Error('INVALID_REQUEST');const client=vendor==='anthropic'?anthropic:openai;if(!client?.testKey)return {result:'missing'};return client.testKey();},
+    // Claude refused-request review C2: a text with every loaded key removed by value (each client removes its own).
+    redact(text){let s=String(text??'');for(const c of [openai,anthropic])if(typeof c?.redact==='function')s=c.redact(s);return s;},
   };
 }
 // Until the Claude client exists (step A3, then stage B for the other calls): every Claude call is refused as an
@@ -32,7 +34,7 @@ function pendingClaudeClient(){
 }
 // Step A3: the Claude client for the portfolio decision; scout, condensing, summary and reflection stay refused until
 // stage B. The key lives only inside AnthropicClient (a private field); this object holds none.
-function claudeClient(key,transport){const client=new (require('./anthropic-client.cjs').AnthropicClient)(key,transport);return {pending:false,decide:(context,options)=>client.decide(context,options),scout:(context,options)=>client.scout(context,options),narrative:(context,options)=>client.narrative(context,options),compact:(payload,options)=>client.compact(payload,options),reflect:(context,options)=>client.reflect(context,options),testKey:()=>client.testKey()};}
+function claudeClient(key,transport){const client=new (require('./anthropic-client.cjs').AnthropicClient)(key,transport);return {pending:false,decide:(context,options)=>client.decide(context,options),scout:(context,options)=>client.scout(context,options),narrative:(context,options)=>client.narrative(context,options),compact:(payload,options)=>client.compact(payload,options),reflect:(context,options)=>client.reflect(context,options),testKey:()=>client.testKey(),redact:text=>client.redact(text)};}
 // The provider file, checked whole before anything is used: only known keys, each in its expected form. Any problem
 // rejects the file (the caller reports it as a failed import); nothing is half-applied. Values are never logged.
 function parseProviderFile(text){
