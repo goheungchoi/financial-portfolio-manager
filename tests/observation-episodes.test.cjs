@@ -32,7 +32,3 @@ test('a U.S. check belongs to the New York trading day; the terms are shared',()
   const [p]=parts({at:Date.parse('2026-11-04T03:00:00Z'),current:{kind:'percent',symbols:['NASD:NVDA']},proposed:null});assert.match(p.key,/\|US\|2026-11-03\|NASD:NVDA\|/);
   assert.deepEqual(Object.keys(E.TERMS),['check','episode','reviewStarted','comparison']);assert.equal(E.GAP_MS,3600000);
 });
-test('the routing report counts pairs selected for the audit apart from validly adjudicated ones',()=>{
-  const {report}=require('../scripts/routing-report.cjs');const out=report({records:[],contextOf:()=>null,freeze:{evaluationStart:'2026-11-01T00:00:00Z',binding:{}},currentBinding:{}});
-  assert.match(out.checks.adjudicationComplete.detail,/0 same\/wording pairs selected for the audit, 0 validly adjudicated \(at least 20 adjudicated\)/);
-});

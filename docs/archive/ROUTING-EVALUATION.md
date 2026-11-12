@@ -1,5 +1,7 @@
 # Model routing evaluation protocol
 
+> Archived 2026-11-12: shadow evaluation and model routing were removed in step A1 (artifacts/reviews/2026-11-12-engine-settings). The stored records (`routing_eval`, `shadow_usage`) stay in the database, no longer written. Paths named below refer to files that no longer exist.
+
 Question: can some reviews run on the cheaper model (GPT-6 Luna, no reasoning) instead of the configured model
 (GPT-6 Sol, medium) without materially worse decisions, and does the complete routing policy save enough to be worth it?
 

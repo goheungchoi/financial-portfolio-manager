@@ -1,5 +1,5 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
-const PG=require('../electron/plan-gap.cjs');const {validateDecision,decisionSchema}=require('../electron/ai-client.cjs');const {evidenceGap}=require('../electron/evidence-anchor.cjs');
+const PG=require('../electron/plan-gap.cjs');const {validateDecision,decisionSchema}=require('../electron/ai-client.cjs');
 const ctx=(extra={})=>({market:'KR',currency:'KRW',equity:500001,cash:500001,executionEnabled:true,marketSession:{open:true},quotes:[{symbol:'005930',price:209000},{symbol:'360750',price:25415}],
   positionSizing:{rows:[{symbol:'005930',maxShares:1},{symbol:'360750',maxShares:19}]},scoutPlan:{asOf:'a',targets:[{symbol:'005930',name:'Samsung',role:'candidate',targetWeightPct:42},{symbol:'360750',name:'ETF',role:'candidate',targetWeightPct:5}]},...extra});
 test('the minimum feasible position is one share, weighed against total equity, with cash, sizing and cap checks',()=>{
@@ -37,26 +37,12 @@ test('the decision format: testable verdict fields survive validation, and every
   const strict=(s,path='')=>{if(s.anyOf){s.anyOf.forEach((x,i)=>strict(x,path+'/anyOf'+i));return;}if(s.type==='object'||(Array.isArray(s.type)&&s.type.includes('object'))){assert.equal(s.additionalProperties,false,path);assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort(),path);for(const [k,v] of Object.entries(s.properties))strict(v,path+'/'+k);}if(s.items)strict(s.items,path+'[]');};
   strict(decisionSchema(true,true));const item=decisionSchema(false,true).properties.planVerdicts.items;assert.ok(item.properties.dataGap.anyOf.some(x=>x.type==='null'),'nullable objects use anyOf');
 });
-test('evidence gaps flag one-sided evidence that bears on a decision, not every difference in tool choice',()=>{
-  const t=(tool,args)=>({tool,args});const waitData={planVerdicts:[{symbol:'005930',verdict:'waiting',reason:'r',condition:{kind:'data'}}]};const waitMarket={planVerdicts:[{symbol:'005930',verdict:'waiting',reason:'r',condition:{kind:'market'}}]};
-  const live=[t('get_company_research',{symbol:'005930',sections:['events','financials']})],shadow=[t('get_company_research',{symbol:'005930',sections:['overview']})];
-  assert.match(evidenceGap(live,shadow,{shadowDecision:waitData}).reasons[0],/cheaper model's 005930 verdict depends on information, and only the other model read events, financials/);
-  assert.equal(evidenceGap(live,shadow,{shadowDecision:waitMarket}).inspect,false,'a market condition does not hinge on the filing');
-  assert.equal(evidenceGap([t('get_market_overview',{})],[],{koreaOpen:true}).inspect,true);assert.equal(evidenceGap([t('get_market_overview',{})],[],{koreaOpen:false}).inspect,false);
-  assert.equal(evidenceGap([{tool:'set_review_interval',args:{},write:true}],[]).inspect,false,'writes are not evidence');
-});
 test('end to end: a stale breadth reading reaches the review labeled stale and out of the regime score',()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',name:'F',price:1}],()=>[]),{request:async()=>({})},()=>{});
   a.indexCloses=()=>({});a.macro={get:()=>({series:[{id:'US_VIX',value:20},{id:'US_HY_SPREAD',value:4,change:0}]})};a.marketOverviewCache=()=>({value:{breadth:[{index:'KOSPI',advanceRatioPct:13.2}]},at:Date.now()-10*86400000});
   const r=a.regimeState();const c=r.components.find(x=>x.name==='KOSPI advancers %');assert.equal(c.stale,true);assert.equal(c.score,0);assert.match(c.reading,/stale/);
   a.marketOverviewCache=()=>({value:{breadth:[{index:'KOSPI',advanceRatioPct:13.2}]},at:undefined});assert.equal(a.regimeState().components.find(x=>x.name==='KOSPI advancers %').stale,true,'unknown time is stale');
-});
-test('end to end: the fingerprint covers every engine module and decision-relevant settings',()=>{
-  const sim=require('../electron/routing-sim.cjs');const {DEFAULTS}=require('../electron/automation.cjs');const b=sim.binding(DEFAULTS);
-  assert.notEqual(sim.binding({...DEFAULTS,guidelines:'different'}).settings,b.settings,'guidelines change what the agents see');assert.notEqual(sim.binding({...DEFAULTS,sizingRiskPct:5}).settings,b.settings);
-  assert.equal(sim.binding({...DEFAULTS,phoneSnapshots:!DEFAULTS.phoneSnapshots,shadowPct:50}).settings,b.settings,'operational switches do not');
-  assert.match(b.code,/^[0-9a-f]{16}$/);
 });
 test('end to end: the stale label and its time survive into the review context, and the cheaper model has room for the verdict format',()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');

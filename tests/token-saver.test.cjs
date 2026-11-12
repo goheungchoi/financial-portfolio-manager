@@ -1,5 +1,5 @@
 const test=require('node:test');const assert=require('node:assert/strict');
-const {fingerprint,shouldSkip,compact,route,nearBudget}=require('../electron/token-saver.cjs');
+const {fingerprint,shouldSkip,compact,nearBudget}=require('../electron/token-saver.cjs');
 const {DEFAULTS,Automation}=require('../electron/automation.cjs');const {DatabaseSync}=require('node:sqlite');const {PaperEngine}=require('../electron/paper-engine.cjs');
 function engine(decide){
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'Fixture',price:50000}],()=>[{symbol:'005930',price:50000,sequence:1,timestamp:Date.now(),volume:10,stale:false}]);paper.saveAccount({...paper.account(),paused:false});
@@ -14,14 +14,16 @@ test('a repeated scheduled review with unchanged state makes no AI call; a user 
   await automation.review('User request');assert.equal(requests.length,2);
   assert.equal(automation.getState().tokenSaving.today.skipped,1);assert.ok(!('performance' in requests[0].context&&requests[0].context.performance==null),'compact context');
 });
-test('auto routing: routine reviews use the cheap model and a proposed trade is confirmed by the configured model',async()=>{
-  const {automation,requests}=engine(({options,context})=>context.confirmation?{action:'Buy',symbol:'005930',quantity:1,explanation:'Confirmed.'}:options.openaiModel==='gpt-6-luna'?{action:'Buy',symbol:'005930',quantity:2,explanation:'Cheap model idea.'}:hold);
-  automation.configure({provider:'openai',openaiModel:'gpt-6-sol',reasoningEffort:'medium',modelRouting:'auto'});
+// Step A1 (2026-11-12): model routing was removed. Every review runs on the configured model; a saved or sent routing
+// setting is ignored, never an error.
+test('every review uses the configured model; a removed routing setting is accepted and ignored',async()=>{
+  const {automation,requests}=engine(({options})=>options.openaiModel==='gpt-6-luna'?{action:'Buy',symbol:'005930',quantity:2,explanation:'Cheap model idea.'}:hold);
+  automation.configure({provider:'openai',openaiModel:'gpt-6-sol',reasoningEffort:'medium',modelRouting:'auto',shadowEvaluation:true,complexityThreshold:5});
+  for(const k of ['modelRouting','shadowEvaluation','complexityThreshold'])assert.equal(k in automation.config,false,k+' is not kept');
   const review=await automation.review('Scheduled review');
-  assert.deepEqual(requests.map(r=>r.options.openaiModel),['gpt-6-luna','gpt-6-sol']);assert.equal(requests[1].context.confirmation.decision.quantity,2);
-  assert.equal(review.decision.quantity,1,'the confirming model decides');assert.equal(review.routing.confirmed,false);assert.equal(review.routing.tier,'routine');
-  requests.length=0;await automation.review('User request');assert.deepEqual(requests.map(r=>r.options.openaiModel),['gpt-6-sol'],'user requests are escalated');
-  assert.throws(()=>automation.configure({modelRouting:'smart'}),/INVALID_SETTINGS/);assert.throws(()=>automation.configure({routineModel:'gpt-6-astra',routineEffort:'none'}),/INVALID_MODEL_SETTINGS/);
+  assert.deepEqual(requests.map(r=>r.options.openaiModel),['gpt-6-sol']);assert.equal(review.decision.action,'Hold');assert.equal('routing' in review,false,'no routing record');
+  requests.length=0;await automation.review('User request');assert.deepEqual(requests.map(r=>r.options.openaiModel),['gpt-6-sol']);
+  assert.throws(()=>automation.configure({routineModel:'gpt-6-astra',routineEffort:'none'}),/INVALID_MODEL_SETTINGS/,'the condensing model is still checked');
 });
 const base=()=>({environment:'kis',market:'KR',universe:[{symbol:'005930',price:70000}],quotes:[{symbol:'005930',price:70000,retrievedAt:1}],positions:{'005930':{quantity:10,costTotal:650000}},cash:1000000,news:[{title:'A',published:'20261016',symbols:[],importance:'normal'}],reviewedLessons:[],marketSession:{open:true},emergency:{active:false},performance:{currentEquity:1700000},timestamp:'x'});
 const skip=(next,config={...DEFAULTS},now=60*60000,trigger='Scheduled review')=>shouldSkip({trigger,config,fingerprint:fingerprint(next),last:{...fingerprint(base()),completedAt:0},now});
@@ -47,14 +49,12 @@ test('compact drops empty values, rounds decimals, keeps universe and puts stabl
   assert.deepEqual(Object.keys(value).slice(0,2),['environment','userGuidelines']);assert.equal(value.quotes[0].price,123.4568);assert.equal('note' in value.quotes[0],false);
   assert.deepEqual(value.universe,[]);assert.equal('reviewedLessons' in value,false);assert.equal(value.news[0].title.length,160);assert.equal('url' in value.news[0],false);
 });
-test('routing: fixed keeps the configured model; auto sends routine reviews to the cheap model and escalates important ones',()=>{
-  const config={...DEFAULTS,openaiModel:'gpt-6-sol',reasoningEffort:'medium'};
-  assert.deepEqual(route(config,{trigger:'Scheduled review'}),{openaiModel:'gpt-6-sol',reasoningEffort:'medium',tier:'fixed',reason:'fixed model'});
-  assert.equal(route(config,{trigger:'Scheduled review',nearBudget:true}).openaiModel,'gpt-6-luna','near the budget even fixed mode degrades');
-  const auto={...config,modelRouting:'auto'};assert.equal(route(auto,{trigger:'Scheduled review'}).openaiModel,'gpt-6-luna');assert.equal(route(auto,{trigger:'Price movement trigger'}).tier,'routine');
-  assert.equal(route(auto,{trigger:'Scheduled review',emergencyActive:true}).reason,'emergency');assert.equal(route(auto,{trigger:'User request'}).openaiModel,'gpt-6-sol');
-  assert.equal(route(auto,{trigger:'News event trigger',triggerEvidence:{kind:'news',events:[{importance:'high'}]}}).reason,'important disclosure');assert.equal(route(auto,{trigger:'News event trigger',triggerEvidence:{kind:'news',events:[{importance:'normal'}]}}).tier,'routine');
+test('near the budget: 80% of the USD or call allowance, never with unlimited budgets; "Slow down" doubles the interval only',()=>{
   assert.equal(nearBudget({...DEFAULTS,maxUSDPerDay:1},{calls:0,reservedMicro:800000}),true);assert.equal(nearBudget({...DEFAULTS,maxCallsPerDay:20},{calls:15,reservedMicro:0}),false);assert.equal(nearBudget({...DEFAULTS,unlimitedBudget:true,unlimitedCalls:true},{calls:1e6,reservedMicro:1e12}),false);
+  const db=new DatabaseSync(':memory:');const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
+  a.configure({provider:'openai',unlimitedBudget:false,maxUSDPerDay:1});db.prepare('INSERT INTO ai_usage VALUES(?,?,?)').run(require('../electron/kis-activity.cjs').seoulDate(),1,850000);
+  assert.equal(a.slowFactor(),2,'on (default): half as often');a.configure({degradeNearBudget:false});assert.equal(a.slowFactor(),1,'off: the normal interval');
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/automation.cjs'),'utf8');assert.ok(!/routineModel[^\n]*nearBudget|nearBudget[^\n]*routineModel/.test(src),'near the budget never picks the condensing model');
 });
 // Review of 8ef1be1, P2: the skip compared every field outside a background list exactly, so volume 1,000 -> 1,001
 // with an unchanged price and portfolio forced another paid scheduled review.

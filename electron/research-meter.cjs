@@ -41,7 +41,8 @@ function usable(name,value){
   const sections=Object.entries(value.provenance??{});if(!sections.length)return null;
   const ok=sections.filter(([,p])=>p?.cache!=='unavailable').length;return ok===0?null:ok<sections.length?'partial':'full';
 }
-// Two runs of one review (a cheaper model's run and its confirmation): counts add up, coverage is of both.
+// Two runs of one review: counts add up, coverage is of both. Its only caller (a cheaper model's run and its
+// confirmation) was removed with model routing in step A1; kept as a tested helper.
 function merge(a,b){
   if(!a||!b)return a??b??null;const out={...b};for(const k of COUNTS)out[k]=(a[k]??0)+(b[k]??0);
   out.researchedSymbols=[...new Set([...(a.researchedSymbols??[]),...(b.researchedSymbols??[])])];

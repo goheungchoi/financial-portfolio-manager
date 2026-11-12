@@ -36,12 +36,11 @@ test('assessments stay with their account and instruction version, go stale with
   assert.equal(view(a,ctx({userGuidelines:'Goal: capital preservation'})),undefined,'other guidelines');
   at(t0+15*DAY);assert.deepEqual(view(a).stale,SECTIONS,'over two weeks: every section');at(t0+31*DAY);assert.equal(view(a),undefined,'dropped after a month');
 });
-test('the tool is strict and the scheduler offers it; shadow runs cannot write',async()=>{
+test('the tool is strict and the scheduler offers it',async()=>{
   assert.equal(TOOL.strict,true);assert.deepEqual(TOOL.parameters.required.sort(),Object.keys(TOOL.parameters.properties).sort());
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
   const actions=a.deskActions('s',ctx(),'R1',()=>{});assert.equal((await actions.save_assessment(full())).status,'saved');assert.equal(a.assessments.context('s',{context:ctx(),symbols:['028050']}).length,1);
-  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.match(src,/save_assessment:noop\('save_assessment'\)/,'shadow runs get a no-op');
 });
 test('the context holds at most eight, holdings first, four evidence items each',()=>{
   const {a,at}=setup();const symbols=Array.from({length:12},(_,i)=>String(100000+i));const c=ctx({positions:{[symbols[0]]:{quantity:1}},universe:symbols.map(symbol=>({symbol})),quotes:[]});

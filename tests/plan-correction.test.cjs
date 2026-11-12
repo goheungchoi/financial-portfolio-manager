@@ -1,5 +1,5 @@
 const test=require('node:test');const assert=require('node:assert/strict');
-const {researchReview}=require('../electron/research-review.cjs');const {validateDecision}=require('../electron/ai-client.cjs');const {triage}=require('../electron/complexity.cjs');
+const {researchReview}=require('../electron/research-review.cjs');const {validateDecision}=require('../electron/ai-client.cjs');
 const context={universe:[{symbol:'NASD:GOOGL'}],quotes:[{symbol:'NASD:GOOGL',price:323.68}]};
 // 2026-10-23 23:03 and 23:35 KST: sol's Alphabet Buy came back without horizonDays and was held back.
 const raw=horizon=>({action:'Buy',symbol:'NASD:GOOGL',quantity:1,explanation:'Long-term investment: buy one Alphabet share.',credit:'none',loanDate:'',plan:{strategy:'long-term',thesis:'Cash generation and AI demand',invalidation:'Earnings show cash flow falling',stopPrice:300,targetPrice:370,horizonDays:horizon,confidence:'medium',portfolioImpact:{weightBeforePct:0,weightAfterPct:28.5,related:['NASD:GOOGL'],relatedBeforePct:0,relatedAfterPct:28.5,equityReliable:true,why:'A long-term cash-generative business at 28.5% is acceptable concentration for this growth goal.'},
@@ -17,20 +17,14 @@ test('if the correction is still incomplete, the Buy stays withheld and is marke
   const r=await researchReview({context,evidence:null,request:async()=>{calls++;return replies.shift();},log:()=>{}});
   assert.equal(calls,2,'bounded: one retry only');assert.equal(r.decision.action,'Hold');assert.equal(r.decision.withheld.symbol,'NASD:GOOGL');assert.equal(r.decision.withheld.correctionTried,true);
 });
-test('a complete Buy needs no correction; evaluations keep a withheld Buy distinct from a Hold',async()=>{
+test('a complete Buy needs no correction',async()=>{
   let calls=0;const r=await researchReview({context,evidence:null,request:async()=>{calls++;return reply(365);},log:()=>{}});assert.equal(calls,1);assert.equal(r.decision.planCorrected,undefined);
-  const hold={action:'Hold',symbol:'',quantity:0,explanation:'x',planVerdicts:[]};assert.equal(triage({...hold,withheld:{symbol:'NASD:GOOGL',quantity:1,reason:'no horizon'}},hold),'withheld');assert.equal(triage(hold,{...hold}),'same');
 });
 test('reviews are told how to explain a reversal of the previous review',()=>{
   const fs=require('node:fs'),path=require('node:path');const src=fs.readFileSync(path.join(__dirname,'..','electron','ai-client.cjs'),'utf8');
   assert.match(src,/previousReview is the last review on this account; when your action or a verdict reverses it/);
   const auto=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(auto,/context\.previousReview=\{at:/);
   const {fingerprint}=require('../electron/token-saver.cjs');const base={universe:[],quotes:[]};assert.equal(fingerprint({...base,previousReview:{action:'Hold'}}).exact,fingerprint({...base,previousReview:{action:'Buy'}}).exact,'the previous review alone does not force a review');
-});
-test('review fix: withheld pairs stay in the adjudication queue with their details',()=>{
-  const fs=require('node:fs'),path=require('node:path');
-  assert.match(fs.readFileSync(path.join(__dirname,'..','scripts','routing-report.cjs'),'utf8'),/const MATERIAL=\['action','symbol','size','verdict','withheld'\];/);
-  const auto=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(auto,/withheld:\{symbol:d\.withheld\.symbol,quantity:d\.withheld\.quantity,reason:d\.withheld\.reason/);
 });
 test('a Buy without the before-and-after portfolio comparison is held back; the app checks the stated weights',()=>{
   const noImpact=validateDecision({...raw(365),plan:{...raw(365).plan,portfolioImpact:null}},['NASD:GOOGL'],{requirePlan:true});
@@ -46,9 +40,4 @@ test('a Buy without the before-and-after portfolio comparison is held back; the 
 test('reviews are told whether equity is reliable for the comparison',()=>{
   const fs=require('node:fs'),path=require('node:path');const src=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');
   assert.match(src,/context\.equityReliability=\{reliable:!reasons\.length/);assert.match(fs.readFileSync(path.join(__dirname,'..','electron','ai-client.cjs'),'utf8'),/If equityReliability\.reliable is false, set equityReliable to false and say the comparison cannot be trusted/);
-});
-test('protocol 2026-10-24: withheld pairs are queued and incomplete-plan is an adjudication category',()=>{
-  const fs=require('node:fs'),path=require('node:path');const {PROTOCOL_VERSION}=require('../electron/routing-sim.cjs');assert.equal(PROTOCOL_VERSION,'2026-10-24');
-  const rep=fs.readFileSync(path.join(__dirname,'..','scripts','routing-report.cjs'),'utf8');assert.match(rep,/'evidence-ignored','incomplete-plan'\]/);
-  const doc=fs.readFileSync(path.join(__dirname,'..','docs','ROUTING-EVALUATION.md'),'utf8');assert.match(doc,/`symbol`, `withheld` \(material differences/);assert.match(doc.replace(/\s+/g,' '),/A withheld Buy is not automatically a model error/);assert.match(doc,/protocol version 2026-10-24/);
 });

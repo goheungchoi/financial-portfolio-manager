@@ -31,11 +31,10 @@ async function fitRequest(items,{keepFrom,compact,log,store=null}){
   if(cf.size(out)>cf.LIMIT){const e=new Error('CONTINUATION_OVER_BUDGET');e.detail={limit:'app bytes',stage:'research continuation',wireBytes:cf.size(out),limitBytes:cf.LIMIT,largest:out.map((it,i)=>[`item ${i} ${it?.type??it?.role}`,cf.size(it)]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,b])=>`${k}:${b}`)};e.input=out;throw e;}
   return out;
 }
-// wrap, when given, sees every tool call (name, function) and returns the function to run: the shadow evaluation uses it
-// to share evidence between the live and shadow runs and to keep both tool transcripts.
 // watched: the watchlist symbols this review could research (for the coverage count in metrics).
-async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions,compact,wrap=null,detail=null,watched=[]}){
-  const via=(name,fn)=>wrap?wrap(name,fn):fn;
+async function researchReview({context,evidence,request,log,setWatch,setInterval,discovery,actions,compact,detail=null,watched=[]}){
+  // Every tool call goes through via(name, fn). The shadow evaluation's evidence sharing hooked in here until step A1.
+  const via=(name,fn)=>fn;
   let continuation,keepFrom=0;const usage={inputTokens:0,outputTokens:0,cachedTokens:0};const cache=new Map();
   const add=u=>{usage.inputTokens+=u?.inputTokens??0;usage.outputTokens+=u?.outputTokens??0;usage.cachedTokens+=u?.cachedTokens??0;};
   // Claude thinking blocks the API dropped in this review (anthropic-client.cjs droppedThinking, after condensing

@@ -1,6 +1,6 @@
 const {createHash}=require('node:crypto');
-// Token saving for AI reviews: skip unchanged scheduled reviews, compact and order context for prompt caching,
-// and route routine reviews to a cheaper model while escalating important ones.
+// Token saving for AI reviews: skip unchanged scheduled reviews, compact and order context for prompt caching, and
+// tell when the daily budget is nearly used (model routing was removed in step A1, 2026-11-12).
 const VOLATILE=/^(timestamp|retrievedAt|updatedAt|fetchedAt|generatedAt|heartbeat|savedAt|at|asOfTimestamp)$|At$/;
 const IGNORED=new Set(['performance','decisionScoreboard','triggerEvidence','reviewInterval','reviewWatches','paperVersion']);
 const MONEY=/price|last|close|value|equity|cash|amount|total|marketValue|pnl|gain|profit|cost|notional|evaluation|usdKRW|rate/i;
@@ -71,28 +71,7 @@ function compact(context){
   if(Array.isArray(ordered.news))ordered.news=ordered.news.map(({title,published,symbols,importance})=>prune({title:String(title??'').slice(0,160),published,symbols,importance})).filter(Boolean);
   return ordered;
 }
-// Picks the model for this review. 'auto' sends routine reviews to the cheaper model; emergencies, user requests and
-// important disclosures use the configured model. Near the daily budget, routine reviews always use the cheaper model.
-// 'complexity' sends a review to the configured model when a hard rule applies or the complexity score reaches the threshold,
-// and only once a routing evaluation has passed (eligible); otherwise the configured model decides.
-// Order: escalations, then shadow evaluation (main model only, so the experiment cannot change live decisions), then
-// complexity routing, then the budget fallback for the other modes. Validated complexity routing has no budget fallback:
-// the routing simulation evaluates this same function, so the evaluated policy is the deployed one.
-function route(config,{trigger,emergencyActive=false,triggerEvidence=null,nearBudget=false,complexity=null,hardRule=null,eligible=false}){
-  const strong={openaiModel:config.openaiModel,reasoningEffort:config.reasoningEffort},routine={openaiModel:config.routineModel,reasoningEffort:config.routineEffort};
-  const important=emergencyActive?'emergency':trigger==='User request'?'user request':triggerEvidence?.kind==='news'&&(triggerEvidence.events??[]).some(e=>e.importance==='high')?'important disclosure':null;
-  if(important)return {...strong,tier:'escalated',reason:important};
-  if(config.shadowEvaluation)return {...strong,tier:'fixed',reason:'shadow evaluation: main model only'};
-  // Complexity routing without a valid evaluation pass keeps the main model, before any budget fallback.
-  if(config.modelRouting==='complexity'&&!eligible)return {...strong,tier:'fixed',reason:'complexity routing not validated'};
-  if(config.modelRouting==='complexity'){
-    if(hardRule)return {...strong,tier:'escalated',reason:hardRule};
-    const score=complexity?.score??100;return score>=config.complexityThreshold?{...strong,tier:'escalated',reason:`complexity ${score} ≥ ${config.complexityThreshold}`}:{...routine,tier:'routine',reason:`complexity ${score} < ${config.complexityThreshold}`};
-  }
-  if(nearBudget&&config.degradeNearBudget)return {...routine,tier:'routine',reason:'near daily budget'};
-  if(config.modelRouting==='auto')return {...routine,tier:'routine',reason:'routine review'};
-  return {...strong,tier:'fixed',reason:'fixed model'};
-}
-// The daily budget is "near" at 80% of the USD allowance or of the call count.
+// The daily budget is "near" at 80% of the USD allowance or of the call count. Near it, "Slow down near the budget"
+// doubles the review interval (automation.cjs slowFactor); since step A1 it no longer switches to a cheaper model.
 function nearBudget(config,usage){return (!config.unlimitedBudget&&usage.reservedMicro>=config.maxUSDPerDay*1e6*0.8)||(!config.unlimitedCalls&&usage.calls>=Math.floor(config.maxCallsPerDay*0.8));}
-module.exports={decisionView,fingerprint,shouldSkip,compact,route,nearBudget,canonical,within};
+module.exports={decisionView,fingerprint,shouldSkip,compact,nearBudget,canonical,within};
