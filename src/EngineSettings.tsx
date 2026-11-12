@@ -5,7 +5,7 @@ import {Note} from './Note';
 import {Guardrails} from './Guardrails';
 import {TokenSaving} from './TokenSaving';
 import {useDraftState,setDraft} from './useDraftState';
-import {AGENT_KEYS as DRAFT_KEYS,effortOptions} from './agentDraft.mjs';
+import {AGENT_KEYS as DRAFT_KEYS,claudeGateText,effortOptions} from './agentDraft.mjs';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
 type Props={state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void;onNavigate?(tab:string):void};
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
@@ -84,8 +84,14 @@ function AgentModelRows({agent,name,state,config,busy,edit}:{agent:AgentKey;name
   const efforts=effortOptions(config,agent);
   const now=state.agentModels?.[agent];
   const pickModel=(v:string)=>edit(mk,v);
+  // B3: Claude Opus 5.5 for these agents once a Claude dry run has completed on this account and the key is loaded.
+  const anthropicKey=Boolean(state.providerStatus.anthropicConnected),measured=Boolean(state.claudeDryRun);const claudeOpen=anthropicKey&&measured;
+  const claudeLabel=claudeOpen?'Claude Opus 5.5':!anthropicKey?'Claude Opus 5.5 · needs the Anthropic key in Connections':'Claude Opus 5.5 · after a measured dry run';
+  const resolvedModel=model==='same'?config.openaiModel:model,onClaude=resolvedModel.startsWith('claude-');
+  const blocked=onClaude?(!anthropicKey?'The Anthropic key is not loaded: this agent will not run.':!measured?claudeGateText(agent):agent!=='narrative'&&!config.shareKisWithAnthropic?'Sharing KIS data with Anthropic is off: this agent will not run.':null):null;
   return <>
-    <Row title="Model" hint={now?`Now ${MODEL_NAMES[now.openaiModel]??now.openaiModel} · ${cap(now.reasoningEffort)}`:undefined}><select aria-label={`${name} model`} disabled={busy} value={model} onChange={e=>pickModel(e.target.value)}><option value="same">Same as the trading agent</option><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></select></Row>
+    <Row title="Model" hint={now?`Now ${MODEL_NAMES[now.openaiModel]??now.openaiModel} · ${cap(now.reasoningEffort)}`:undefined}><select aria-label={`${name} model`} disabled={busy} value={model} onChange={e=>pickModel(e.target.value)}><option value="same">Same as the trading agent</option><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option><optgroup label="Anthropic"><option value="claude-opus-5-5" disabled={!claudeOpen&&model!=='claude-opus-5-5'}>{claudeLabel}</option></optgroup></select></Row>
+    {onClaude&&<p className={blocked?'notice':'muted'} aria-label={`${name} on Claude`}>{blocked??`Requests go to Anthropic and count against its limit${agent!=='narrative'?'; needs sharing KIS data with Anthropic':''}.`}{agent==='compacting'&&state.claudeReservation?.compactUpToUSD!=null?` One condensing can reserve up to $${state.claudeReservation.compactUpToUSD.toFixed(2)}.`:''}</p>}
     <Row title="Effort"><select aria-label={`${name} effort`} disabled={busy} value={effort} onChange={e=>edit(ek,e.target.value)}>{!efforts.includes(effort)&&<option value={effort} disabled>{cap(effort)} · not allowed with this model</option>}{efforts.map(v=><option key={v} value={v}>{v==='same'?'Same as the trading agent':cap(v)}</option>)}</select></Row>
   </>;
 }

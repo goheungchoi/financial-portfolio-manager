@@ -107,5 +107,6 @@ test('the key Test: one request, fixed answers, the key never in an answer or a 
 
 test('still refused after B1: a Claude model for any agent',()=>{
   const {a}=automation();a.configure({shareKisWithAnthropic:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium'});
-  for(const k of ['openaiModel','scoutModel','narrativeModel','reflectionModel','routineModel'])assert.throws(()=>a.configure({[k]:'claude-opus-5-5',...(k==='openaiModel'?{reasoningEffort:'medium'}:{})}),k==='routineModel'?/INVALID_MODEL_SETTINGS|CLAUDE_NOT_ENABLED_FOR_TRADING/:/CLAUDE_NOT_ENABLED_FOR_TRADING/,k);// compacting keeps its own effort None, which Claude does not accept: refused as an invalid pair first
+  // B3: the trading model stays refused until C2; the other agents are refused until a completed Claude dry run.
+  for(const k of ['openaiModel','scoutModel','narrativeModel','reflectionModel','routineModel'])assert.throws(()=>a.configure({[k]:'claude-opus-5-5',...(k==='openaiModel'?{reasoningEffort:'medium'}:{})}),k==='openaiModel'?/CLAUDE_NOT_ENABLED_FOR_TRADING/:k==='routineModel'?/INVALID_MODEL_SETTINGS|CLAUDE_DRY_RUN_REQUIRED/:/CLAUDE_DRY_RUN_REQUIRED/,k);
 });

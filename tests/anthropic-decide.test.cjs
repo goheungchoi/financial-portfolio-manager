@@ -146,11 +146,11 @@ test('size limits before sending, as on OpenAI',async()=>{
   await assert.rejects(client(t).decide(CTX,{...OPTS,continuation:[{role:'user',content:'x'.repeat(150000)}]}),e=>e.message==='CONTINUATION_OVER_BUDGET');assert.equal(t.sent.length,0);
   assert.throws(()=>new A.AnthropicClient('bad key'),/INVALID_PROVIDER_FILE/);
 });
-test('the worker router: decide goes to the Claude client; the other four calls are still not built; the key is not exposed',async()=>{
+test('the worker router: every call goes to the Claude client (B3); the key is not exposed',async()=>{
   const R=require('../electron/ai-router.cjs');const t=transport(claudeReply());const claude=R.claudeClient(KEY,t);
   assert.equal(claude.pending,false);assert.ok(!JSON.stringify(claude).includes(KEY));
   const r=await R.createRouter({anthropic:claude}).clientFor('claude-opus-5-5').decide(CTX,OPTS);assert.equal(r.decision.action,'Hold');assert.equal(t.sent.length,1);
-  for(const op of ['scout','narrative','compact','reflect'])await assert.rejects(claude[op]({},OPTS),e=>e.message==='AI_MODEL_UNAVAILABLE'&&/not built yet/.test(e.detail.rule),op);
+  for(const op of ['scout','narrative','compact','reflect'])assert.equal(typeof claude[op],'function',op);assert.equal(claude.pending,false);
 });
 
 // A3b (review finding 1): nothing in the environment can move a Claude request, change its credential or add a header.

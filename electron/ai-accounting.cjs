@@ -12,7 +12,7 @@ function settle(db,table,day,callId,response,status){
   // B1: the provider's own daily row (ai_usage_vendor) gets the same correction, under the provider the call was reserved
   // for (the vendor of the model it was reserved with). Profiles without the table (tests of this module) skip it.
   const delta=accountedMicro-(record.accountedMicro??record.reservedMicro);let reservedVendor=null;try{reservedVendor=require('./ai-models.cjs').vendorOf(record.model);}catch{}
-  const perVendor=table==='ai_usage'&&reservedVendor&&db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_usage_vendor'").get();
+  const perVendor=(table==='ai_usage'||table==='reflection_usage'&&reservedVendor==='anthropic')&&reservedVendor&&db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_usage_vendor'").get();
   db.exec('BEGIN IMMEDIATE');try{db.prepare(`UPDATE ${table} SET reservedMicro=reservedMicro+? WHERE day=?`).run(delta,day);if(perVendor)db.prepare('UPDATE ai_usage_vendor SET reservedMicro=reservedMicro+? WHERE day=? AND vendor=?').run(delta,day,reservedVendor);db.prepare('UPDATE ai_calls SET payload=? WHERE id=?').run(JSON.stringify(next),callId);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return next;
 }
 module.exports={settle};

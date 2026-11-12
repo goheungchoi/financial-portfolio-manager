@@ -84,7 +84,7 @@ test('post-trade reflection receives its resolved model; the reflection worker r
   assert.equal(given.reflectionCallsPerDay,a.config.reflectionCallsPerDay,'the rest of the configuration is passed unchanged');assert.equal(a.config.openaiModel,'gpt-6-sol','the saved trading model is untouched');
   // reflection.cjs reads config.openaiModel and config.reasoningEffort for the request, the call record and the reservation.
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/reflection.cjs'),'utf8');
-  assert.match(src,/models\.reservation\(config,context\)/);assert.match(src,/model:config\.openaiModel,reasoningEffort:config\.reasoningEffort,reservedMicro:reserve/);assert.match(src,/options:\{openaiModel:config\.openaiModel,reasoningEffort:config\.reasoningEffort\}/);
+  assert.match(src,/models\.reservation\(config,context,\{kind:'reflect'\}\)/);assert.match(src,/model:config\.openaiModel,reasoningEffort:config\.reasoningEffort,reservedMicro:reserve/);assert.match(src,/options:\{openaiModel:config\.openaiModel,reasoningEffort:config\.reasoningEffort\}/);
 });
 
 test('settings are checked on every agent\'s resolved model; a refused change saves nothing',()=>{
@@ -92,7 +92,7 @@ test('settings are checked on every agent\'s resolved model; a refused change sa
   const refused=[
     [{scoutModel:'gpt-7'},/INVALID_MODEL_SETTINGS/],[{scoutModel:''},/INVALID_SETTINGS/],[{narrativeEffort:'max'},/INVALID_SETTINGS/],
     [{narrativeEffort:'none'},/INVALID_SETTINGS/],[{scoutEffort:'none'},/INVALID_SETTINGS/],
-    [{reflectionModel:'claude-opus-5-5',reflectionEffort:'low'},/CLAUDE_NOT_ENABLED_FOR_TRADING/],[{routineModel:'claude-opus-5-5',routineEffort:'low'},/CLAUDE_NOT_ENABLED_FOR_TRADING/],
+    [{reflectionModel:'claude-opus-5-5',reflectionEffort:'low'},/CLAUDE_DRY_RUN_REQUIRED/],[{routineModel:'claude-opus-5-5',routineEffort:'low'},/CLAUDE_DRY_RUN_REQUIRED/],// B3: allowed after a completed Claude dry run
     [{routineModel:'gpt-6-astra',routineEffort:'none'},/INVALID_MODEL_SETTINGS/],
     // Reflection follows the trading model with its own effort 'none': moving the trading agent to Astra (no 'none') is refused.
     [{reflectionModel:'same',reflectionEffort:'none',openaiModel:'gpt-6-astra',reasoningEffort:'low'},/INVALID_MODEL_SETTINGS/],

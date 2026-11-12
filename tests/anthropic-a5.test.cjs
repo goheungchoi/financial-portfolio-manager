@@ -62,8 +62,9 @@ test('A5: the dry-run override is refused without its key, without the sharing s
   assert.ok(main.includes("automation.dryRun(mode,options&&typeof options==='object'?{model:options.model??null}:{})"));assert.ok(preload.includes("dryRun: (mode, options) => ipcRenderer.invoke('runtime:dry-run', mode, options)"));
 });
 test('A5: Claude calls get their own timeout, and the worker cap leaves room for it',()=>{
-  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:150000,narrative:120000,compact:90000,reflect:120000});assert.ok(Object.isFrozen(R.CLAUDE_TIMEOUT_MS));
-  assert.equal(R.workerCapMs('decision',{options:CLAUDE}),315000);// B2: 300 s for a decision of up to 32,000 tokensassert.equal(R.workerCapMs('compact',{options:CLAUDE}),105000);assert.equal(R.workerCapMs('reflection',{options:CLAUDE}),135000);
+  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:300000,narrative:240000,compact:450000,reflect:240000});assert.ok(Object.isFrozen(R.CLAUDE_TIMEOUT_MS));
+  // B2 and B3: 300 s for a decision of up to 32,000 tokens; condensing 450 s (16,000 tokens); reflection 240 s.
+  assert.equal(R.workerCapMs('decision',{options:CLAUDE}),315000);assert.equal(R.workerCapMs('compact',{options:CLAUDE}),465000);assert.equal(R.workerCapMs('reflection',{options:CLAUDE}),255000);
   for(const [op,payload] of [['decision',{options:{openaiModel:'gpt-6-sol'}}],['decision',{}],['decision',{options:{openaiModel:'gpt-7'}}],['news',{options:CLAUDE}],['import',{}]])assert.equal(R.workerCapMs(op,payload),90000,op);
   assert.equal(require('../electron/anthropic-client.cjs').TIMEOUT_MS,R.CLAUDE_TIMEOUT_MS,'one table');
   const svc=fs.readFileSync(path.join(__dirname,'../electron/kis-service.cjs'),'utf8');assert.ok(svc.includes("this.workerScript==='provider-worker.cjs'?require('./ai-router.cjs').workerCapMs(operation,payload):90000"),'only the provider worker gets the AI cap');
@@ -73,6 +74,6 @@ test('A5: saved reviews carry their vendor; a Claude trading model is refused wi
   // A Claude decision (as the stage D go-live will route it) is recorded as anthropic.
   const h=harness(BOTH);h.a.config.openaiModel='claude-opus-5-5';h.a.config.reasoningEffort='medium';await h.a.review('User request');const row2=JSON.parse(h.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);assert.equal(row2.vendor,'anthropic');
   assert.throws(()=>harness(BOTH).a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/);
-  const main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');assert.ok(main.includes("error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'?error.message:'INVALID_SETTINGS'"),'the code reaches the settings page');
+  const main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');assert.ok(main.includes("error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')?error.message:'INVALID_SETTINGS'"),'the code, and the agent a Claude dry run is needed for (B3 review F1), reach the settings page');
   const ui=fs.readFileSync(path.join(__dirname,'../src/RuntimeSettings.tsx'),'utf8');assert.match(ui,/CLAUDE_NOT_ENABLED_FOR_TRADING:'Claude models run dry-run reviews only for now; trading on Claude is not enabled yet\.'/);
 });

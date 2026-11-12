@@ -18,9 +18,13 @@ function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort
 // Request size limits for a portfolio review: the first request, and follow-up rounds that carry research results.
 // The budget reservation and the AI client both use this, so they always agree.
 const reviewByteLimit=options=>options?.continuation?140000:70000;
-function reservation(config,context={},options={}){const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>(options.maxBytes??70000))throw new Error('CONTEXT_TOO_LARGE');return reservationAt(config,bytes);}
+function reservation(config,context={},options={}){const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>(options.maxBytes??70000))throw new Error('CONTEXT_TOO_LARGE');return reservationAt(config,bytes,options.kind);}
+// B3: Claude's output cap per agent (thinking counts toward it): the decision and the scout 32,000; condensing 16,000 (it
+// hit 4,096 on GPT-6 Luna with no reasoning); the narrative and reflection 8,000. OpenAI keeps its own (settings()).
+const CLAUDE_OUTPUT=Object.freeze({decide:32000,scout:32000,compact:16000,narrative:8000,reflect:8000});
+function outputCap(config,kind='decide'){const selected=settings(config);return MODELS[selected.model].vendor==='anthropic'?(CLAUDE_OUTPUT[kind]??selected.maxOutput):selected.maxOutput;}
 // The reservation for a request of a given size (B2: the card's "can reserve up to", from the byte limits).
-function reservationAt(config,bytes){const selected=settings(config);const rate=MODELS[selected.model];return Math.max(10000,Math.ceil(((bytes+20000)*rate.input+selected.maxOutput*rate.output)*1.2));}
+function reservationAt(config,bytes,kind){const selected=settings(config);const rate=MODELS[selected.model];return Math.max(10000,Math.ceil(((bytes+20000)*rate.input+outputCap(config,kind)*rate.output)*1.2));}
 // The app's usage meaning for both vendors: inputTokens is all input, cachedTokens and cacheWriteTokens are the parts of
 // it read from and written to the cache. Anthropic reports uncached input separately, so its three counts are summed
 // (a missing cache count is zero; a broken one makes the total unknown). Claude reports no reasoning-token count.
@@ -48,4 +52,4 @@ function costDetails(model,usage){
 }
 function usageEstimate(model,usage){return costDetails(model,usage)?.micro??null;}
 function budgetExceeded(config,usage,reserve,reflection=false){const calls=reflection?'reflectionCallsPerDay':'maxCallsPerDay',usd=reflection?'reflectionUSDPerDay':'maxUSDPerDay',prefix=reflection?'reflectionUnlimited':'unlimited';return (!config[prefix+'Calls']&&usage.calls>=config[calls])||(!config[prefix+'Budget']&&usage.reservedMicro+reserve>config[usd]*1e6);}
-module.exports={reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,settings,reservation,reservationAt,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
+module.exports={reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};

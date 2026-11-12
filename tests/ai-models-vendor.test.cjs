@@ -85,7 +85,7 @@ test('A1b: configure refuses a Claude id as the main or routine model and keeps 
   assert.equal(m.CLAUDE_TRADING_ENABLED,false);assert.throws(()=>m.assertTradingModel('claude-opus-5-5'),/CLAUDE_NOT_ENABLED_FOR_TRADING/);m.assertTradingModel('gpt-6-sol');
   const a=automation();a.configure({openaiModel:'gpt-6-sol',reasoningEffort:'medium',routineModel:'gpt-6-luna',routineEffort:'none'});const before=JSON.stringify(a.config);
   assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/);
-  assert.throws(()=>a.configure({routineModel:'claude-opus-5-5',routineEffort:'low'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/);
+  assert.throws(()=>a.configure({routineModel:'claude-opus-5-5',routineEffort:'low'}),/CLAUDE_DRY_RUN_REQUIRED/);// B3: until a completed Claude dry run
   assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'none'}),/INVALID_MODEL_SETTINGS/,'an invalid effort is still the settings error');
   assert.equal(JSON.stringify(a.config),before,'nothing was saved');
   // Saved to the database too: a new automation over the same database reads the GPT settings.

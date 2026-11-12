@@ -6,7 +6,9 @@ const KEY=/^[A-Za-z0-9_\-]{10,512}$/;
 // Claude call timeouts (design 5.6): Opus thinks before answering, so a call may run longer than GPT's 75 to 85 s.
 // B2: a Claude decision may now write up to 32,000 tokens (thinking included); 300 s, at the SDK's own planning rate of
 // 128,000 tokens an hour, is about 10,700 tokens, twice what 150 s allowed. The worker's cap follows (+15 s).
-const CLAUDE_TIMEOUT_MS=Object.freeze({decide:300000,scout:150000,narrative:120000,compact:90000,reflect:120000});
+// B3: the scout 300 s (up to 32,000 tokens); the narrative and reflection 240 s (8,000 tokens at the SDK's planning rate of
+// about 36 tokens a second needs about 225 s); condensing 450 s (16,000 tokens at that rate).
+const CLAUDE_TIMEOUT_MS=Object.freeze({decide:300000,scout:300000,narrative:240000,compact:450000,reflect:240000});
 const METHOD={decision:'decide',reflection:'reflect',scout:'scout',narrative:'narrative',compact:'compact'};
 // The worker's hard cap for one request (kis-service.cjs): 90 s as before, or for a Claude call its own timeout plus
 // 15 s, so the client's timeout ends the call first and is reported as AI_TIMEOUT, not a broken worker.
@@ -30,7 +32,7 @@ function pendingClaudeClient(){
 }
 // Step A3: the Claude client for the portfolio decision; scout, condensing, summary and reflection stay refused until
 // stage B. The key lives only inside AnthropicClient (a private field); this object holds none.
-function claudeClient(key,transport){const client=new (require('./anthropic-client.cjs').AnthropicClient)(key,transport);return {...pendingClaudeClient(),pending:false,decide:(context,options)=>client.decide(context,options),testKey:()=>client.testKey()};}
+function claudeClient(key,transport){const client=new (require('./anthropic-client.cjs').AnthropicClient)(key,transport);return {pending:false,decide:(context,options)=>client.decide(context,options),scout:(context,options)=>client.scout(context,options),narrative:(context,options)=>client.narrative(context,options),compact:(payload,options)=>client.compact(payload,options),reflect:(context,options)=>client.reflect(context,options),testKey:()=>client.testKey()};}
 // The provider file, checked whole before anything is used: only known keys, each in its expected form. Any problem
 // rejects the file (the caller reports it as a failed import); nothing is half-applied. Values are never logged.
 function parseProviderFile(text){

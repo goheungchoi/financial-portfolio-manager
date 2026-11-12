@@ -8,6 +8,13 @@
 export const AGENT_KEYS={scout:['scoutModel','scoutEffort'],narrative:['narrativeModel','narrativeEffort'],compacting:['routineModel','routineEffort'],reflection:['reflectionModel','reflectionEffort']};
 const RAISED=new Set(['scout','narrative']);
 const follows=v=>v==null||v==='same';
+// Models with no effort None: GPT-6 Astra, and every Claude model (B3: Claude takes Low, Medium or High).
+const noNoneModel=m=>m==='gpt-6-astra'||String(m??'').startsWith('claude-');
+
+/** @type {Record<string,string>} */
+const AGENT_TITLES={scout:'Scout',narrative:'Market narrative',compacting:'Context compacting',reflection:'Reflection'};
+/** B3 review F1: why an agent on Claude will not run, and will not save, without a measured dry run on this account. @param {string} agent */
+export function claudeGateText(agent){return `${AGENT_TITLES[agent]??'An agent'} is set to Claude Opus 5.5, which needs a measured dry run on this account. Run one, or choose another model for it.`;}
 
 /** The model and effort an agent resolves to in a draft, before the engine's raise for the scout and the narrative. */
 export function resolved(config,agent){const [mk,ek]=AGENT_KEYS[agent];return {model:follows(config[mk])?config.openaiModel:config[mk],effort:follows(config[ek])?config.reasoningEffort:config[ek]};}
@@ -16,12 +23,12 @@ export function resolved(config,agent){const [mk,ek]=AGENT_KEYS[agent];return {m
 export function correctAgents(config){
   /** @type {Record<string,string>} */
   const fix={};
-  for(const agent of Object.keys(AGENT_KEYS)){if(RAISED.has(agent))continue;const r=resolved(config,agent);if(r.model==='gpt-6-astra'&&r.effort==='none')fix[AGENT_KEYS[agent][1]]='low';}
+  for(const agent of Object.keys(AGENT_KEYS)){if(RAISED.has(agent))continue;const r=resolved(config,agent);if(noNoneModel(r.model)&&r.effort==='none')fix[AGENT_KEYS[agent][1]]='low';}
   return fix;
 }
 
 /** The effort values an agent's Effort list offers: 'same' first; 'none' only where the engine accepts it. */
 export function effortOptions(config,agent){
-  const noNone=RAISED.has(agent)||resolved(config,agent).model==='gpt-6-astra';
+  const noNone=RAISED.has(agent)||noNoneModel(resolved(config,agent).model);
   return ['same',...(noNone?[]:['none']),'low','medium','high'];
 }
