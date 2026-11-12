@@ -9,7 +9,9 @@
 const C=require('./ai-client.cjs');const M=require('./ai-models.cjs');
 const BETA='thinking-binding-controls-2026-08-01';
 const TIMEOUT_MS=require('./ai-router.cjs').CLAUDE_TIMEOUT_MS;
-const MAX_TOKENS=16000;
+// B2: 32,000, because thinking counts toward max_tokens on Claude Opus 5.5 (model-migration.md, Breaking change 1); the
+// reservation follows it (ai-models.cjs maxOutput).
+const MAX_TOKENS=32000;
 const SDK=()=>{const m=require('@anthropic-ai/sdk');return m.default??m.Anthropic??m;};
 // Every SDK 1.3.0 client input that otherwise comes from the environment or disk, set explicitly. With an apiKey given
 // in code the SDK reads no other credential (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, profiles under
@@ -161,9 +163,10 @@ class AnthropicClient {
       reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;
       const blocks=Array.isArray(reply.content)?reply.content:[];
       const droppedThinking=(reply.input_transformations??[]).filter(t=>t?.type==='thinking_dropped').length;
-      const base={usage:reportedUsage,provider:'openai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking};
-      if(reply.stop_reason==='refusal'){const category=String(reply.stop_details?.category??'').replace(/[^a-z_]/g,'').slice(0,30);throw Object.assign(new Error('AI_REFUSED'),{detail:{rule:`a refusal${category?` (${category})`:''}`}});}
-      if(reply.stop_reason==='max_tokens')throw new Error('AI_OUTPUT_LIMIT');
+      // B2: the stop reason and the measured request sizes go with each reply, for the dry run's measurement.
+      const base={usage:reportedUsage,provider:'openai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking,stopReason:typeof reply.stop_reason==='string'?reply.stop_reason.slice(0,30):null,requestSizes:call.sizes};
+      if(reply.stop_reason==='refusal'){const category=String(reply.stop_details?.category??'').replace(/[^a-z_]/g,'').slice(0,30);throw Object.assign(new Error('AI_REFUSED'),{stopReason:'refusal',requestSizes:call.sizes,detail:{rule:`a refusal${category?` (${category})`:''}`}});}
+      if(reply.stop_reason==='max_tokens')throw Object.assign(new Error('AI_OUTPUT_LIMIT'),{stopReason:'max_tokens',requestSizes:call.sizes,usage:reportedUsage});
       const calls=blocks.filter(b=>b?.type==='tool_use');
       if(calls.length){
         // The same bounded tool protocol as AiClient.decide: research on, not the final round, the ceiling, offered
@@ -184,7 +187,9 @@ class AnthropicClient {
       const memory=C.validationMemory(context,options);const decision=C.validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {...base,decision,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;
+      // B2: a failure keeps its stop reason and the measured request sizes for the dry run's measurement.
+      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;throw safe;}
   }
 }
 module.exports={AnthropicClient,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};

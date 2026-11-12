@@ -62,8 +62,8 @@ test('A5: the dry-run override is refused without its key, without the sharing s
   assert.ok(main.includes("automation.dryRun(mode,options&&typeof options==='object'?{model:options.model??null}:{})"));assert.ok(preload.includes("dryRun: (mode, options) => ipcRenderer.invoke('runtime:dry-run', mode, options)"));
 });
 test('A5: Claude calls get their own timeout, and the worker cap leaves room for it',()=>{
-  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:150000,scout:150000,narrative:120000,compact:90000,reflect:120000});assert.ok(Object.isFrozen(R.CLAUDE_TIMEOUT_MS));
-  assert.equal(R.workerCapMs('decision',{options:CLAUDE}),165000);assert.equal(R.workerCapMs('compact',{options:CLAUDE}),105000);assert.equal(R.workerCapMs('reflection',{options:CLAUDE}),135000);
+  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:150000,narrative:120000,compact:90000,reflect:120000});assert.ok(Object.isFrozen(R.CLAUDE_TIMEOUT_MS));
+  assert.equal(R.workerCapMs('decision',{options:CLAUDE}),315000);// B2: 300 s for a decision of up to 32,000 tokensassert.equal(R.workerCapMs('compact',{options:CLAUDE}),105000);assert.equal(R.workerCapMs('reflection',{options:CLAUDE}),135000);
   for(const [op,payload] of [['decision',{options:{openaiModel:'gpt-6-sol'}}],['decision',{}],['decision',{options:{openaiModel:'gpt-7'}}],['news',{options:CLAUDE}],['import',{}]])assert.equal(R.workerCapMs(op,payload),90000,op);
   assert.equal(require('../electron/anthropic-client.cjs').TIMEOUT_MS,R.CLAUDE_TIMEOUT_MS,'one table');
   const svc=fs.readFileSync(path.join(__dirname,'../electron/kis-service.cjs'),'utf8');assert.ok(svc.includes("this.workerScript==='provider-worker.cjs'?require('./ai-router.cjs').workerCapMs(operation,payload):90000"),'only the provider worker gets the AI cap');

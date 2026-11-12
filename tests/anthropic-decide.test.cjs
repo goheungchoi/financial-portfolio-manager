@@ -26,7 +26,7 @@ test('request shape: system cached, Claude tools, auto then none, effort and for
   const t=transport(claudeReply());await client(t).decide(FULL,{...OPTS,research:true});
   const {body,headers,url}=t.sent[0];
   assert.match(url,/^https:\/\/api\.anthropic\.com\/v1\/messages/);
-  assert.equal(body.model,'claude-opus-5-5');assert.equal(body.max_tokens,16000);assert.equal(body.service_tier,'standard_only');
+  assert.equal(body.model,'claude-opus-5-5');assert.equal(body.max_tokens,32000);// B2: thinking counts toward max_tokensassert.equal(body.service_tier,'standard_only');
   assert.deepEqual(body.system,[{type:'text',text:C.REVIEW_INSTRUCTIONS,cache_control:{type:'ephemeral'}}]);
   assert.equal(body.tools.length,C.reviewTools(FULL).length);assert.deepEqual(body.tools.map(x=>x.name),C.reviewTools(FULL).map(x=>x.name),'same tools, same order');
   for(const tool of body.tools)assert.deepEqual(Object.keys(tool).sort(),['description','input_schema','name']);

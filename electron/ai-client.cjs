@@ -273,7 +273,7 @@ class AiClient {
         if(calls.some(call=>!offered.includes(call.name)))throw invalid('a tool that was not offered');
         if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>(call.name==='save_assessment'?6000:2000)))throw invalid('a malformed or oversized tool request');
         let toolCalls;try{toolCalls=calls.map(call=>({name:call.name,callId:call.call_id,args:JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments that are not valid JSON');}
-        return {toolCalls,continuation:[...input,...body.output],usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars};
+        return {toolCalls,continuation:[...input,...body.output],stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       if(output.length>DECISION_OUTPUT_CHAR_LIMIT)throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:`a decision of ${kb(output.length)}, above the ${kb(DECISION_OUTPUT_CHAR_LIMIT)} limit`,status:body.status}});
@@ -283,7 +283,7 @@ class AiClient {
       let raw;try{raw=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:output.trim()?'a decision that is not valid JSON':'no decision and no tool request',status:body.status}});}
       const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
-      return {decision,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
+      return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }

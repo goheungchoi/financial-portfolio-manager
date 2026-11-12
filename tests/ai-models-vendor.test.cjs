@@ -43,10 +43,10 @@ test('each model names its vendor; unknown models are refused',()=>{
   assert.equal(m.MODELS['claude-opus-5-5'].vendor,'anthropic');assert.ok(Object.entries(m.MODELS).every(([k,r])=>r.vendor===(k.startsWith('claude-')?'anthropic':'openai')));
   assert.equal(Object.keys(m.MODELS).filter(k=>k.startsWith('claude-')).length,1,'only Opus 5.5 in step A1 (Haiku comes in stage B)');
 });
-test('Claude settings: efforts low, medium and high; no "none"; 16,000 output tokens',()=>{
+test('Claude settings: efforts low, medium and high; no "none"; 32,000 output tokens (B2)',()=>{
   assert.throws(()=>m.settings({openaiModel:'claude-opus-5-5',reasoningEffort:'none'}),/INVALID_MODEL_SETTINGS/);
   assert.throws(()=>m.settings({openaiModel:'claude-opus-5-5'}),/INVALID_MODEL_SETTINGS/,'the default effort none is not valid for Claude');
-  for(const effort of ['low','medium','high'])assert.deepEqual(m.settings({openaiModel:'claude-opus-5-5',reasoningEffort:effort}),{model:'claude-opus-5-5',effort,maxOutput:16000});
+  for(const effort of ['low','medium','high'])assert.deepEqual(m.settings({openaiModel:'claude-opus-5-5',reasoningEffort:effort}),{model:'claude-opus-5-5',effort,maxOutput:32000});
   for(const effort of ['xhigh','max','Medium',''])assert.throws(()=>m.settings({openaiModel:'claude-opus-5-5',reasoningEffort:effort}),/INVALID_MODEL_SETTINGS/,effort);
   assert.throws(()=>m.settings({openaiModel:'claude-opus-5-5-20260101',reasoningEffort:'medium'}),/INVALID_MODEL_SETTINGS/,'dated Claude ids are not accepted');
 });
@@ -75,7 +75,7 @@ test('Opus 5.5 cost uses its own cache rates and no long-input surcharge',()=>{
 });
 test('the Opus reservation is finite and above GPT Sol for the same context',()=>{
   const ctx={a:'x'.repeat(5000)};const opus=m.reservation({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'},ctx),sol=m.reservation({openaiModel:'gpt-6-sol',reasoningEffort:'medium'},ctx);
-  assert.ok(Number.isFinite(opus)&&opus>sol,`opus ${opus} > sol ${sol}`);assert.ok(opus>=16000*20,'covers 16,000 output tokens at $20 per million');
+  assert.ok(Number.isFinite(opus)&&opus>sol,`opus ${opus} > sol ${sol}`);assert.ok(opus>=32000*20,'covers 32,000 output tokens at $20 per million');
   assert.throws(()=>m.reservation({openaiModel:'claude-opus-5-5',reasoningEffort:'none'},ctx),/INVALID_MODEL_SETTINGS/);
 });
 // A1b: a Claude model cannot be saved as a trading model, main or routine, and a replay cannot run on it, until trading
