@@ -4,27 +4,42 @@ import {Card,Row,Switch,NumberField,Limit} from './SettingsUI';
 import {Note} from './Note';
 import {Guardrails} from './Guardrails';
 import {TokenSaving} from './TokenSaving';
+import {useDraftState} from './useDraftState';
+import {AGENT_KEYS as DRAFT_KEYS,effortOptions} from './agentDraft.mjs';
 type Edit=(key:keyof RuntimeConfig,value:string|number|boolean)=>void;
+type Props={state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void};
 const usd=(micro:number)=>`$${(micro/1e6).toFixed(2)}`;
-const SECTIONS:[string,string][]=[['eng-guidelines','Guidelines'],['eng-trading','Trading'],['eng-extended','Extended hours'],['eng-model','AI model'],['eng-schedule','Schedule'],['eng-budget','Budget'],['eng-guardrails','Guardrails'],['eng-saving','Token saving'],['eng-scout','Scout'],['eng-conditional','Conditional orders'],['eng-alerts','Alerts']];
-// Which providers receive KIS data given the selected models (the main and the routine model): one consent covers both.
+// Engine settings in four tabs (step A3, artifacts/reviews/2026-11-12-engine-settings/plan.md). Only the open tab is
+// rendered; the draft lives in RuntimeSettings, so switching tabs keeps unsaved changes, and the open tab is kept for
+// the session like Journal's.
+export const ENGINE_TABS=['Trading','Agents','Schedule and triggers','Alerts'] as const;
+type Tab=typeof ENGINE_TABS[number];
+const MODEL_NAMES:Record<string,string>={'gpt-6-luna':'GPT-6 Luna','gpt-6-sol':'GPT-6 Sol','gpt-6-astra':'GPT-6 Astra','claude-opus-5-5':'Claude Opus 5.5'};
+const cap=(v:string)=>v[0].toUpperCase()+v.slice(1);
+// Which providers receive KIS data given the selected models (trading and every agent with its own): one consent covers all.
 const vendorName=(model:string)=>model.startsWith('claude-')?'Anthropic':'OpenAI';
-const receivers=(config:RuntimeConfig)=>[...new Set([config.openaiModel,config.routineModel].filter(Boolean).map(m=>vendorName(String(m))))].join(' and ');
+const receivers=(config:RuntimeConfig)=>[...new Set([config.openaiModel,config.routineModel,config.scoutModel,config.narrativeModel,config.reflectionModel].filter(m=>m&&m!=='same').map(m=>vendorName(String(m))))].join(' and ');
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
-export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,onState}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;dirty:boolean;edit:Edit;setModel(model:string):void;onReview():void;onState(state:RuntimeState):void}){
-  const [preview,setPreview]=useState<string|null>(null);const [phoneNote,setPhoneNote]=useState('');
-  const testPhone=async()=>{setPhoneNote('');try{const r=await window.portfolio?.testPhoneSnapshot();setPhoneNote(r?.ok?'Test snapshot queued. It should reach your phone within a few seconds.':r?.error==='NO_WEBHOOK'?'Add a webhook in Connections first.':'Turn on phone alerts and save first.');}catch{setPhoneNote('Could not reach the engine.');}};
-  const loadPreview=async()=>{try{const digest=await window.portfolio?.previewDigest();setPreview(digest?.text??'Preview unavailable.');}catch{setPreview('Preview unavailable.');}};
-  const jump=(id:string)=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});
-  const efforts=config.openaiModel==='gpt-6-astra'||config.openaiModel.startsWith('claude-')?['low','medium','high']:['none','low','medium','high'];
+export function EngineSettings(props:Props){
+  const {state,busy,dirty,onReview}=props;
+  const [saved,setTab]=useDraftState<string>('engine:tab','Trading');const tab:Tab=(ENGINE_TABS as readonly string[]).includes(saved)?saved as Tab:'Trading';
   return <div className="engine-settings" aria-label="Engine settings">
-    <div className="settings-jump"><nav aria-label="Settings sections">{SECTIONS.map(([id,label])=><button key={id} onClick={()=>jump(id)}>{label}</button>)}</nav>
+    <div className="settings-jump"><div className="segmented engine-tabs" role="tablist" aria-label="Engine sections">{ENGINE_TABS.map(t=><button key={t} role="tab" aria-selected={tab===t} onClick={()=>setTab(t)}>{t}</button>)}</div>
       <button className="primary" disabled={busy||state.busy||dirty} title={dirty?'Save or discard your changes before reviewing':'Run one review now with the saved settings'} onClick={onReview}>{state.busy?'Reviewing…':'Run portfolio review'}</button></div>
+    <div className="engine-panel" role="tabpanel" aria-label={tab}>
+      {tab==='Trading'&&<TradingTab {...props}/>}
+      {tab==='Agents'&&<AgentsTab {...props}/>}
+      {tab==='Schedule and triggers'&&<ScheduleTab {...props}/>}
+      {tab==='Alerts'&&<AlertsTab {...props}/>}
+    </div>
+  </div>;
+}
 
+function TradingTab({state,config,busy,edit}:Props){
+  return <>
     <Card id="eng-guidelines" title="Agent guidelines" label="Guidelines" hint="Your goals in plain language. The AI reads them on every review.">
       <label className="guidelines-editor"><textarea aria-label="Agent guidelines" rows={4} maxLength={6000} value={config.guidelines??''} placeholder="Example: Concentrated positions are fine; protect gains when the outlook weakens." onChange={e=>edit('guidelines',e.target.value)}/></label>
     </Card>
-
     <Card id="eng-trading" title="Trading">
       <Row title="Portfolio" hint="Which account the AI manages"><select disabled={busy} aria-label="Portfolio scope" value={config.scope} onChange={e=>edit('scope',e.target.value)}><option value="paper">Paper (simulated)</option><option value="kis">Korea · KIS</option><option value="us">U.S. · KIS</option><option value="both">Korea + U.S. · KIS</option></select></Row>
       <Row title="Decision maker"><select disabled={busy} aria-label="Decision provider" value={config.provider} onChange={e=>edit('provider',e.target.value)}><option value="local" disabled={config.scope!=='paper'}>Rules only (no AI, paper)</option><option value="openai">OpenAI</option><option value="external">External agent</option></select></Row>
@@ -33,45 +48,10 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       <Row title="Risk per trade" hint="Largest loss at the stop, as a share of equity. Sets the AI's position-size ceiling."><NumberField label="Risk per trade" min={0.1} max={20} step={0.1} unit="%" value={config.sizingRiskPct} disabled={busy} onChange={v=>edit('sizingRiskPct',v)}/></Row>
       <Row title="Stop distance" hint="Multiple of the daily average true range (ATR)."><NumberField label="Stop distance in ATR" min={0.5} max={5} step={0.5} unit="× ATR" value={config.sizingAtrMultiple} disabled={busy} onChange={v=>edit('sizingAtrMultiple',v)}/></Row>
       <Row title="Share KIS data with the AI provider" hint={`Holdings and values, sent to ${receivers(config)}; required for AI reviews of KIS accounts`}><Switch label="Share KIS data with the AI provider" disabled={busy} checked={config.shareKisWithAI} onChange={v=>edit('shareKisWithAI',v)}/></Row>
-    <StartWithWindows/>
+      <StartWithWindows/>
     </Card>
-
     <ExtendedSessions config={config} busy={busy} edit={edit} live={state.accountEnvironment==='live'}/>
-    <Card id="eng-model" title="AI model" hint={state.providerStatus.aiConnected?undefined:'No OpenAI key loaded. Add one in Connections.'}>
-      <Row title="Model" hint="Claude Opus 5.5: dry run only for now (Dashboard → Dry run)"><select aria-label="Trading model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><optgroup label="OpenAI"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></optgroup><optgroup label="Anthropic"><option value="claude-opus-5-5" disabled>Claude Opus 5.5 · dry run only</option></optgroup></select></Row>
-      <Row title="Reasoning effort" hint="Higher is slower and costs more"><select aria-label="Reasoning effort" disabled={busy} value={config.reasoningEffort} onChange={e=>edit('reasoningEffort',e.target.value)}>{efforts.map(v=><option key={v} value={v}>{v[0].toUpperCase()+v.slice(1)}</option>)}</select></Row>
-      <Row title="Post-trade reflection" hint="After a trade closes, the AI drafts a lesson for you to approve"><Switch label="Post-trade reflection" disabled={busy} checked={config.reflectionEnabled} onChange={v=>edit('reflectionEnabled',v)}/></Row>
-    </Card>
-
-    <Card id="eng-schedule" title="Schedule">
-      <Row title="Let the AI choose the interval" hint="Between 1 and 60 minutes, depending on the market"><Switch label="Auto review interval" disabled={busy} checked={config.autoReviewInterval} onChange={v=>edit('autoReviewInterval',v)}/></Row>
-      <Row title={config.autoReviewInterval?'Initial review interval (minutes)':'Review interval (minutes)'} hint={config.autoReviewInterval&&state.reviewInterval?.auto?`Now every ${state.reviewInterval.minutes} min · ${state.reviewInterval.reason}`:undefined}><NumberField label="Review interval" min={1} max={1440} unit="min" disabled={busy} value={config.intervalMinutes} onChange={v=>edit('intervalMinutes',v)}/></Row>
-      <Row title="When markets are closed" hint={config.closedMarketReviews==='keep'?'Reviews follow the interval around the clock':config.closedMarketReviews==='off'?'No scheduled reviews until a market opens':'One review 10 minutes before the next open'}><select aria-label="Reviews while markets are closed" disabled={busy} value={config.closedMarketReviews} onChange={e=>edit('closedMarketReviews',e.target.value)}><option value="pre-open">Review once before the open</option><option value="off">Wait for the open</option><option value="keep">Keep the schedule</option></select></Row>
-      <Row title="Price move trigger" hint={config.watchlistAlerts==='on'?'Review early when a holding moves this much':'Review early when a price moves this much'}><NumberField label="Price move trigger" min={.1} max={50} step={.1} unit="%" disabled={busy} value={config.eventTolerancePct} onChange={v=>edit('eventTolerancePct',v)}/></Row>
-      <Row title="Watchlist alerts" hint={config.watchlistAlerts==='on'?'Stocks you don’t hold: entry levels when crossed, wider moves, grouped':config.watchlistAlerts==='observe'?'Logged beside the current rule; nothing changes':'Every quoted stock uses the price move trigger'}><select aria-label="Watchlist alerts" disabled={busy} value={config.watchlistAlerts} onChange={e=>edit('watchlistAlerts',e.target.value)}><option value="observe">Observe only</option><option value="on">On</option><option value="off">Off</option></select></Row>
-      {config.watchlistAlerts!=='off'&&<Row title="Watchlist move trigger" hint={`Default ${2*config.eventTolerancePct}%, twice the price move trigger`}><NumberField label="Watchlist move trigger" min={.1} max={50} step={.1} unit="%" disabled={busy} value={config.watchlistMovePct??2*config.eventTolerancePct} onChange={v=>edit('watchlistMovePct',v)}/></Row>}
-      {config.watchlistAlerts==='observe'&&<Row title="Watchlist alert trial" hint={config.alertTrial==='on'?'Price reviews use watchlist alerts; the current rule runs in shadow. Ends by itself on a rollback condition, after $2.50 of added reviews, or after 5 trading days per market':'Off: nothing changes. Only price-move reviews would change; protection and every other trigger stay as they are'}><select aria-label="Watchlist alert trial" disabled={busy} value={config.alertTrial??'off'} onChange={e=>edit('alertTrial',e.target.value)}><option value="off">Off</option><option value="on">On</option></select></Row>}
-      {state.watchlistAlerts?.trial&&(()=>{const t=state.watchlistAlerts.trial;return <p className="muted" aria-label="Watchlist alert trial status">Trial {t.status}{t.endReason?` (${t.endReason})`:''}: {t.days.KR} Korean and {t.days.US} U.S. qualifying trading days{t.partialDays.KR.length+t.partialDays.US.length?` (${t.partialDays.KR.length+t.partialDays.US.length} not fully watched, not counted)`:''}, {t.priceReviews} price reviews, {t.addedReviews} the current rule would not have started (${t.addedUSD.toFixed(2)}).{t.endDetail?` ${t.endDetail}`:''}</p>;})()}
-      {config.watchlistAlerts!=='off'&&state.watchlistAlerts?.summary&&(()=>{const s=state.watchlistAlerts.summary;return <p className="muted" aria-label="Watchlist alert observation">Last 7 days: {s.reviewsStarted??'?'} price reviews started. Checks that would alert: {s.checks.current} current rule, {s.checks.proposed} watchlist alerts, in {s.episodes.total} episodes ({s.episodes.oldOnly} current rule only, {s.episodes.newOnly} watchlist alerts only, {s.episodes.both} both){s.notHeldAlerts.length?` · ${s.delayed} of ${s.notHeldAlerts.length} alerts on stocks you don’t hold later, ${s.notAlerted} not alerted`:''}.</p>;})()}
-    </Card>
-
-    <Card id="eng-budget" title="Daily AI budget" aside={<span className="badge">Today {state.usage.calls} calls · {usd(state.usage.reservedMicro)}</span>} hint="A local estimate from reported tokens, not your OpenAI invoice.">
-      <Row block title="Review calls"><Limit label="API calls per day" min={1} max={200} disabled={busy} unlimited={config.unlimitedCalls} value={config.maxCallsPerDay} onUnlimited={v=>edit('unlimitedCalls',v)} onValue={v=>edit('maxCallsPerDay',v)}/></Row>
-      <Row block title="Review spending"><Limit label="Daily local API budget (USD)" min={.01} max={100} step={.01} unit="USD" disabled={busy} unlimited={config.unlimitedBudget} value={config.maxUSDPerDay} onUnlimited={v=>edit('unlimitedBudget',v)} onValue={v=>edit('maxUSDPerDay',v)}/></Row>
-      <Row block title="Reflection calls"><Limit label="Reflection calls per day" min={1} max={200} disabled={busy} unlimited={config.reflectionUnlimitedCalls} value={config.reflectionCallsPerDay} onUnlimited={v=>edit('reflectionUnlimitedCalls',v)} onValue={v=>edit('reflectionCallsPerDay',v)}/></Row>
-      <Row block title="Reflection spending"><Limit label="Daily reflection budget (USD)" min={.01} max={100} step={.01} unit="USD" disabled={busy} unlimited={config.reflectionUnlimitedBudget} value={config.reflectionUSDPerDay} onUnlimited={v=>edit('reflectionUnlimitedBudget',v)} onValue={v=>edit('reflectionUSDPerDay',v)}/></Row>
-      <details className="inline-help"><summary>Recent API calls</summary>{state.aiCalls?.length?<table className="compact-table" aria-label="Recent API calls"><thead><tr><th>Time</th><th>Model</th><th>Status</th><th>Tokens in / out</th><th>Cost</th></tr></thead><tbody>{state.aiCalls.map((c,i)=><tr key={i}><td>{new Date(c.timestamp).toLocaleTimeString()}</td><td>{c.model}</td><td>{c.status}</td><td>{c.usage?`${c.usage.inputTokens.toLocaleString()} / ${c.usage.outputTokens.toLocaleString()}`:'—'}</td><td>{c.estimatedMicro==null?`${usd(c.reservedMicro)} reserved`:`$${(c.estimatedMicro/1e6).toFixed(4)}`}</td></tr>)}</tbody></table>:<p className="muted">No calls yet.</p>}</details>
-    </Card>
-
     <Guardrails id="eng-guardrails" state={state} config={config} busy={busy} edit={edit}/>
-    <TokenSaving id="eng-saving" state={state} config={config} busy={busy} edit={edit}/>
-
-    <Card id="eng-scout" title="AI scout" label="Scout settings" hint={state.scout?.blocked??'Researches the market, keeps a shortlist on your watchlist and writes a plan for the trading reviews. It never trades.'}>
-      <Row title="Scheduled scout runs" hint="Weekdays, Seoul time. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
-      <Row title="Reviews can ask for a scout run" hint="When the plan looks stale. Up to 3 a day, at least 2 hours apart."><Switch label="Reviews can request a scout run" disabled={busy} checked={config.scoutAiRequests} onChange={v=>edit('scoutAiRequests',v)}/></Row>
-      {config.scoutEnabled&&<Row title="When"><select aria-label="Scout schedule" disabled={busy} value={config.scoutSchedule} onChange={e=>edit('scoutSchedule',e.target.value)}><option value="daily">09:10</option><option value="twice">09:10 and 13:00</option><option value="kr-us">09:10 and 22:40 (U.S. open)</option><option value="three">09:10, 13:00 and 22:40</option></select></Row>}
-    </Card>
-
     <Card id="eng-execution" title="Order execution" hint="How KIS orders are placed and kept until they fill.">
       <Row title="Follow the best price" hint={config.orderTracking?'Orders go in at the best bid (sell) or ask (buy) and move with it every 3 seconds until filled, within any bound the AI set. Orders you change in KIS are left to you.':'Orders stay at the price they were placed at.'}><Switch label="Follow the best price" disabled={busy} checked={config.orderTracking} onChange={v=>edit('orderTracking',v)}/></Row>
     </Card>
@@ -85,7 +65,86 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
         <Row title="Longest life" hint="Orders expire after this many hours."><NumberField label="Conditional order lifetime" min={1} max={336} unit="h" value={config.conditionalMaxHours} disabled={busy} onChange={v=>edit('conditionalMaxHours',v)}/></Row>
       </>}
     </Card>
+  </>;
+}
 
+// One agent's Model and Effort rows (step A2 settings). "Same as the trading agent" follows the Trading review card.
+// The hint shows what the agent runs on with the saved settings. Effort "None" is not offered where the engine refuses
+// it: for the scout and the market narrative (they run with at least Low) and with GPT-6 Astra. Every draft edit runs
+// through correctAgents (src/agentDraft.mjs, called by RuntimeSettings' edit), so an agent never stays on Astra with None.
+// The select always shows the draft's value: a value the list would not offer is shown, marked, and cannot be picked.
+type AgentKey='scout'|'narrative'|'compacting'|'reflection';
+const AGENT_KEYS=DRAFT_KEYS as Record<AgentKey,[keyof RuntimeConfig,keyof RuntimeConfig]>;
+function AgentModelRows({agent,name,state,config,busy,edit}:{agent:AgentKey;name:string}&Props){
+  const [mk,ek]=AGENT_KEYS[agent];const model=String(config[mk]??'same'),effort=String(config[ek]??'same');
+  const efforts=effortOptions(config,agent);
+  const now=state.agentModels?.[agent];
+  const pickModel=(v:string)=>edit(mk,v);
+  return <>
+    <Row title="Model" hint={now?`Now ${MODEL_NAMES[now.openaiModel]??now.openaiModel} · ${cap(now.reasoningEffort)}`:undefined}><select aria-label={`${name} model`} disabled={busy} value={model} onChange={e=>pickModel(e.target.value)}><option value="same">Same as the trading agent</option><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></select></Row>
+    <Row title="Effort"><select aria-label={`${name} effort`} disabled={busy} value={effort} onChange={e=>edit(ek,e.target.value)}>{!efforts.includes(effort)&&<option value={effort} disabled>{cap(effort)} · not allowed with this model</option>}{efforts.map(v=><option key={v} value={v}>{v==='same'?'Same as the trading agent':cap(v)}</option>)}</select></Row>
+  </>;
+}
+
+function AgentsTab(props:Props){
+  const {state,config,busy,edit,setModel}=props;
+  const efforts=config.openaiModel==='gpt-6-astra'||config.openaiModel.startsWith('claude-')?['low','medium','high']:['none','low','medium','high'];
+  return <>
+    <Card id="eng-model" title="Trading review" label="AI model" hint={state.providerStatus.aiConnected?'Decides Buy, Sell or Hold. The other agents can follow it.':'No OpenAI key loaded. Add one in Connections.'}>
+      <Row title="Model" hint="Claude Opus 5.5: dry run only for now (Dashboard → Dry run)"><select aria-label="Trading model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><optgroup label="OpenAI"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></optgroup><optgroup label="Anthropic"><option value="claude-opus-5-5" disabled>Claude Opus 5.5 · dry run only</option></optgroup></select></Row>
+      <Row title="Reasoning effort" hint="Higher is slower and costs more"><select aria-label="Reasoning effort" disabled={busy} value={config.reasoningEffort} onChange={e=>edit('reasoningEffort',e.target.value)}>{efforts.map(v=><option key={v} value={v}>{cap(v)}</option>)}</select></Row>
+    </Card>
+    <Card id="eng-scout-agent" title="AI scout" label="Scout agent" hint="Researches the market and writes the plan for the trading reviews. It never trades. When it runs: Schedule and triggers.">
+      <AgentModelRows agent="scout" name="Scout" {...props}/>
+    </Card>
+    <Card id="eng-narrative" title="Market narrative" label="Narrative agent" hint="Summarises what is driving the market for the reviews. It never trades.">
+      <Row title="Scheduled narrative" hint="Weekdays 08:30 and 16:30. Update now on Discover works either way."><Switch label="Scheduled market narrative" disabled={busy} checked={config.narrativeEnabled} onChange={v=>edit('narrativeEnabled',v)}/></Row>
+      <AgentModelRows agent="narrative" name="Market narrative" {...props}/>
+    </Card>
+    <Card id="eng-compacting" title="Context compacting" hint="Shrinks research results that grow too large for a review.">
+      <AgentModelRows agent="compacting" name="Context compacting" {...props}/>
+    </Card>
+    <Card id="eng-reflection" title="Reflection" label="Reflection agent" hint="After a trade closes, the AI drafts a lesson for you to approve.">
+      <Row title="Post-trade reflection"><Switch label="Post-trade reflection" disabled={busy} checked={config.reflectionEnabled} onChange={v=>edit('reflectionEnabled',v)}/></Row>
+      <AgentModelRows agent="reflection" name="Reflection" {...props}/>
+      <Row block title="Reflection calls"><Limit label="Reflection calls per day" min={1} max={200} disabled={busy} unlimited={config.reflectionUnlimitedCalls} value={config.reflectionCallsPerDay} onUnlimited={v=>edit('reflectionUnlimitedCalls',v)} onValue={v=>edit('reflectionCallsPerDay',v)}/></Row>
+      <Row block title="Reflection spending"><Limit label="Daily reflection budget (USD)" min={.01} max={100} step={.01} unit="USD" disabled={busy} unlimited={config.reflectionUnlimitedBudget} value={config.reflectionUSDPerDay} onUnlimited={v=>edit('reflectionUnlimitedBudget',v)} onValue={v=>edit('reflectionUSDPerDay',v)}/></Row>
+    </Card>
+    <Card id="eng-budget" title="Daily AI budget" aside={<span className="badge">Today {state.usage.calls} calls · {usd(state.usage.reservedMicro)}</span>} hint="A local estimate from reported tokens, not your OpenAI invoice.">
+      <Row block title="Review calls"><Limit label="API calls per day" min={1} max={200} disabled={busy} unlimited={config.unlimitedCalls} value={config.maxCallsPerDay} onUnlimited={v=>edit('unlimitedCalls',v)} onValue={v=>edit('maxCallsPerDay',v)}/></Row>
+      <Row block title="Review spending"><Limit label="Daily local API budget (USD)" min={.01} max={100} step={.01} unit="USD" disabled={busy} unlimited={config.unlimitedBudget} value={config.maxUSDPerDay} onUnlimited={v=>edit('unlimitedBudget',v)} onValue={v=>edit('maxUSDPerDay',v)}/></Row>
+      <details className="inline-help"><summary>Recent API calls</summary>{state.aiCalls?.length?<table className="compact-table" aria-label="Recent API calls"><thead><tr><th>Time</th><th>Model</th><th>Status</th><th>Tokens in / out</th><th>Cost</th></tr></thead><tbody>{state.aiCalls.map((c,i)=><tr key={i}><td>{new Date(c.timestamp).toLocaleTimeString()}</td><td>{c.model}</td><td>{c.status}</td><td>{c.usage?`${c.usage.inputTokens.toLocaleString()} / ${c.usage.outputTokens.toLocaleString()}`:'—'}</td><td>{c.estimatedMicro==null?`${usd(c.reservedMicro)} reserved`:`$${(c.estimatedMicro/1e6).toFixed(4)}`}</td></tr>)}</tbody></table>:<p className="muted">No calls yet.</p>}</details>
+    </Card>
+  </>;
+}
+
+function ScheduleTab({state,config,busy,edit}:Props){
+  return <>
+    <Card id="eng-schedule" title="Schedule">
+      <Row title="Let the AI choose the interval" hint="Between 1 and 60 minutes, depending on the market"><Switch label="Auto review interval" disabled={busy} checked={config.autoReviewInterval} onChange={v=>edit('autoReviewInterval',v)}/></Row>
+      <Row title={config.autoReviewInterval?'Initial review interval (minutes)':'Review interval (minutes)'} hint={config.autoReviewInterval&&state.reviewInterval?.auto?`Now every ${state.reviewInterval.minutes} min · ${state.reviewInterval.reason}`:undefined}><NumberField label="Review interval" min={1} max={1440} unit="min" disabled={busy} value={config.intervalMinutes} onChange={v=>edit('intervalMinutes',v)}/></Row>
+      <Row title="When markets are closed" hint={config.closedMarketReviews==='keep'?'Reviews follow the interval around the clock':config.closedMarketReviews==='off'?'No scheduled reviews until a market opens':'One review 10 minutes before the next open'}><select aria-label="Reviews while markets are closed" disabled={busy} value={config.closedMarketReviews} onChange={e=>edit('closedMarketReviews',e.target.value)}><option value="pre-open">Review once before the open</option><option value="off">Wait for the open</option><option value="keep">Keep the schedule</option></select></Row>
+      <Row title="Price move trigger" hint={config.watchlistAlerts==='on'?'Review early when a holding moves this much':'Review early when a price moves this much'}><NumberField label="Price move trigger" min={.1} max={50} step={.1} unit="%" disabled={busy} value={config.eventTolerancePct} onChange={v=>edit('eventTolerancePct',v)}/></Row>
+      <Row title="Watchlist alerts" hint={config.watchlistAlerts==='on'?'Stocks you don’t hold: entry levels when crossed, wider moves, grouped':config.watchlistAlerts==='observe'?'Logged beside the current rule; nothing changes':'Every quoted stock uses the price move trigger'}><select aria-label="Watchlist alerts" disabled={busy} value={config.watchlistAlerts} onChange={e=>edit('watchlistAlerts',e.target.value)}><option value="observe">Observe only</option><option value="on">On</option><option value="off">Off</option></select></Row>
+      {config.watchlistAlerts!=='off'&&<Row title="Watchlist move trigger" hint={`Default ${2*config.eventTolerancePct}%, twice the price move trigger`}><NumberField label="Watchlist move trigger" min={.1} max={50} step={.1} unit="%" disabled={busy} value={config.watchlistMovePct??2*config.eventTolerancePct} onChange={v=>edit('watchlistMovePct',v)}/></Row>}
+      {config.watchlistAlerts==='observe'&&<Row title="Watchlist alert trial" hint={config.alertTrial==='on'?'Price reviews use watchlist alerts; the current rule runs in shadow. Ends by itself on a rollback condition, after $2.50 of added reviews, or after 5 trading days per market':'Off: nothing changes. Only price-move reviews would change; protection and every other trigger stay as they are'}><select aria-label="Watchlist alert trial" disabled={busy} value={config.alertTrial??'off'} onChange={e=>edit('alertTrial',e.target.value)}><option value="off">Off</option><option value="on">On</option></select></Row>}
+      {state.watchlistAlerts?.trial&&(()=>{const t=state.watchlistAlerts.trial;return <p className="muted" aria-label="Watchlist alert trial status">Trial {t.status}{t.endReason?` (${t.endReason})`:''}: {t.days.KR} Korean and {t.days.US} U.S. qualifying trading days{t.partialDays.KR.length+t.partialDays.US.length?` (${t.partialDays.KR.length+t.partialDays.US.length} not fully watched, not counted)`:''}, {t.priceReviews} price reviews, {t.addedReviews} the current rule would not have started (${t.addedUSD.toFixed(2)}).{t.endDetail?` ${t.endDetail}`:''}</p>;})()}
+      {config.watchlistAlerts!=='off'&&state.watchlistAlerts?.summary&&(()=>{const s=state.watchlistAlerts.summary;return <p className="muted" aria-label="Watchlist alert observation">Last 7 days: {s.reviewsStarted??'?'} price reviews started. Checks that would alert: {s.checks.current} current rule, {s.checks.proposed} watchlist alerts, in {s.episodes.total} episodes ({s.episodes.oldOnly} current rule only, {s.episodes.newOnly} watchlist alerts only, {s.episodes.both} both){s.notHeldAlerts.length?` · ${s.delayed} of ${s.notHeldAlerts.length} alerts on stocks you don’t hold later, ${s.notAlerted} not alerted`:''}.</p>;})()}
+    </Card>
+    <Card id="eng-scout" title="AI scout runs" label="Scout settings" hint={state.scout?.blocked??'When the scout researches the market. Its model is on the Agents tab.'}>
+      <Row title="Scheduled scout runs" hint="Weekdays, Seoul time. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
+      <Row title="Reviews can ask for a scout run" hint="When the plan looks stale. Up to 3 a day, at least 2 hours apart."><Switch label="Reviews can request a scout run" disabled={busy} checked={config.scoutAiRequests} onChange={v=>edit('scoutAiRequests',v)}/></Row>
+      {config.scoutEnabled&&<Row title="When"><select aria-label="Scout schedule" disabled={busy} value={config.scoutSchedule} onChange={e=>edit('scoutSchedule',e.target.value)}><option value="daily">09:10</option><option value="twice">09:10 and 13:00</option><option value="kr-us">09:10 and 22:40 (U.S. open)</option><option value="three">09:10, 13:00 and 22:40</option></select></Row>}
+    </Card>
+    <TokenSaving id="eng-saving" state={state} config={config} busy={busy} edit={edit}/>
+  </>;
+}
+
+function AlertsTab({state,config,busy,dirty,edit,onState}:Props){
+  const [preview,setPreview]=useState<string|null>(null);const [phoneNote,setPhoneNote]=useState('');
+  const testPhone=async()=>{setPhoneNote('');try{const r=await window.portfolio?.testPhoneSnapshot();setPhoneNote(r?.ok?'Test snapshot queued. It should reach your phone within a few seconds.':r?.error==='NO_WEBHOOK'?'Add a webhook in Connections first.':'Turn on phone alerts and save first.');}catch{setPhoneNote('Could not reach the engine.');}};
+  const loadPreview=async()=>{try{const digest=await window.portfolio?.previewDigest();setPreview(digest?.text??'Preview unavailable.');}catch{setPreview('Preview unavailable.');}};
+  return <>
     <Card id="eng-alerts" title="Alerts">
       <Row title="Desktop alerts" hint="When orders fill, cancel or stop"><Switch label="Desktop alerts" disabled={busy} checked={config.desktopAlerts} onChange={v=>edit('desktopAlerts',v)}/></Row>
       <Row title="Phone alerts" hint={state.providerStatus.pushConnected?'Sent to your webhook':'Needs a webhook in Connections'}><Switch label="Phone alerts" disabled={busy} checked={config.mobileAlerts} onChange={v=>edit('mobileAlerts',v)}/></Row>
@@ -100,11 +159,10 @@ export function EngineSettings({state,config,busy,dirty,edit,setModel,onReview,o
       {config.mobileAlerts&&!state.providerStatus.pushConnected&&<div className="notice error">Phone alerts are on, but no webhook is set. Alerts are queued, not sent.</div>}
       {state.notifications.length>0&&<details className="inline-help"><summary>Phone alert outbox · {state.notifications.length}</summary>{state.notifications.map(item=><p key={item.id}>{item.delivered?'Delivered':item.attempts>=99?'Expired':item.attempts>=5?'Failed':'Queued'} · {item.message}</p>)}</details>}
     </Card>
-
     <Card title="AI review alerts" hint="Price levels and moves the AI asked to be woken up for." aside={<button onClick={async()=>{const value=await window.portfolio?.resetReviewWatches();if(value)onState(value);}}>Reset to default alerts</button>}>
       {state.watches?.length?<ul className="watch-list">{state.watches.map(w=><li key={w.symbol}><b>{w.symbol}</b><span>{w.percent??state.config.eventTolerancePct}% move{w.price!=null?` · ${w.direction} ${w.price.toLocaleString()} ${/^\d{6}$/.test(w.symbol)?'KRW':'USD'}${w.priceFired?' (triggered)':''}`:''}</span><small>{w.reason}</small></li>)}</ul>:<p className="muted">Default movement threshold: {state.config.eventTolerancePct}%</p>}
     </Card>
-  </div>;
+  </>;
 }
 
 // Extended-hours trading, one switch per session. Live accounts only (KIS offers none of these sessions on mock accounts).
