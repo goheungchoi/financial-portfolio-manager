@@ -22,17 +22,18 @@ function transport(...replies){
 }
 const client=(t,opts)=>new A.AnthropicClient(KEY,t,opts);
 
-test('request shape: system cached, Claude tools, auto then none, effort and format, adaptive thinking with drop_block, one beta, no fallback',async()=>{
+test('request shape: system cached with the shape block, Claude tools, auto then none, effort without a grammar, adaptive thinking with drop_block, one beta, no fallback',async()=>{
   const t=transport(claudeReply());await client(t).decide(FULL,{...OPTS,research:true});
   const {body,headers,url}=t.sent[0];
   assert.match(url,/^https:\/\/api\.anthropic\.com\/v1\/messages/);
   assert.equal(body.model,'claude-opus-5-5');assert.equal(body.max_tokens,32000);// B2: thinking counts toward max_tokensassert.equal(body.service_tier,'standard_only');
-  assert.deepEqual(body.system,[{type:'text',text:C.REVIEW_INSTRUCTIONS,cache_control:{type:'ephemeral'}}]);
+  // Grammar design option A: the instructions, then the shape block (the app's schema with its bounds), cached together.
+  assert.deepEqual(body.system,[{type:'text',text:C.REVIEW_INSTRUCTIONS},{type:'text',text:A.shapeText(A.decisionShape(C.decisionSchema(false,false))),cache_control:{type:'ephemeral'}}]);
   assert.equal(body.tools.length,C.reviewTools(FULL).length);assert.deepEqual(body.tools.map(x=>x.name),C.reviewTools(FULL).map(x=>x.name),'same tools, same order');
   for(const tool of body.tools)assert.deepEqual(Object.keys(tool).sort(),['description','input_schema','name']);
   assert.deepEqual(body.tool_choice,{type:'auto'});
   assert.deepEqual(body.thinking,{type:'adaptive',block_binding:{prefix_mismatch_behavior:'drop_block'}});
-  assert.equal(body.output_config.effort,'medium');assert.equal(body.output_config.format.type,'json_schema');assert.deepEqual(body.output_config.format.schema,A.toAnthropicSchema(C.decisionSchema(false,false)));
+  assert.deepEqual(body.output_config,{effort:'medium'},'no output_config.format: the app checks the shape');
   assert.equal(headers.get('anthropic-beta'),'thinking-binding-controls-2026-08-01','the only beta');
   for(const k of ['fallbacks','temperature','top_p','top_k','store','prompt_cache_key','max_output_tokens','reasoning','instructions','text','input','parallel_tool_calls','betas','cache_control'])assert.ok(!(k in body),k);
   assert.ok(!('budget_tokens' in body.thinking));assert.ok(!['any','tool'].includes(body.tool_choice.type),'never forced tool choice');
@@ -42,7 +43,7 @@ test('request shape: system cached, Claude tools, auto then none, effort and for
   const f=transport(claudeReply());await client(f).decide(FULL,{...OPTS,research:true,final:true});assert.deepEqual(f.sent[0].body.tool_choice,{type:'none'});assert.deepEqual(f.sent[0].body.tools,body.tools);
   const p=transport(claudeReply());await client(p).decide(CTX,OPTS);assert.ok(!('tools' in p.sent[0].body)&&!('tool_choice' in p.sent[0].body));
   // Effort follows the settings; the scout-plan schema variant follows the context.
-  const h=transport(claudeReply());await client(h).decide({...CTX,scoutBrief:{},scoutPlan:{targets:[{symbol:'x'}]}},{...OPTS,reasoningEffort:'high'}).catch(()=>{});assert.equal(h.sent[0].body.output_config.effort,'high');assert.deepEqual(h.sent[0].body.output_config.format.schema,A.toAnthropicSchema(C.decisionSchema(true,true)));
+  const h=transport(claudeReply());await client(h).decide({...CTX,scoutBrief:{},scoutPlan:{targets:[{symbol:'x'}]}},{...OPTS,reasoningEffort:'high'}).catch(()=>{});assert.equal(h.sent[0].body.output_config.effort,'high');assert.equal(h.sent[0].body.output_config.format,undefined);assert.equal(h.sent[0].body.system[1].text,A.shapeText(A.decisionShape(C.decisionSchema(true,true))),'the shape follows the context');
 });
 const init=t=>t.sent[0].init;
 test('every schema after translation has no unsupported keyword, no union type, and closed objects',()=>{
