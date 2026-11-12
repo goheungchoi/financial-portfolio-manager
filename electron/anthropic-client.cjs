@@ -122,6 +122,28 @@ function refusalRecord(error,call,keys=[]){
   return {status,...lookupKeys,anthropicError,...(contentType?{contentType}:{}),...(message?{message}:{}),noCharge:refused&&call?.errorBody!=null};
 }
 
+// Claude decision and scout without a grammar (artifacts/reviews/2026-11-12-claude-dry-run/design-grammar.md, option A;
+// review G1 to G6). Anthropic refused the decision's structured-output grammar as too large (1.5.55 dry run), so these
+// two requests carry no output_config.format. The shape is stated in a Claude-only system block: the app's own schema,
+// with its real limits, and one sentence, format only (G4). It is the same text for every round of a review and sits
+// inside the cached system prefix. The answer is parsed strictly (G1): the whole text is one JSON object, or exactly one
+// ```json fence around one object with only whitespace outside; no searching, no repair. The app's validators then
+// check every field as before (checkDecision rejects unknown top-level keys and any coercion; validatePlan fails closed).
+const SHAPE_SENTENCE='Answer with only one JSON object that matches this JSON Schema, with no text before or after it.';
+const shapeText=schema=>`${SHAPE_SENTENCE}\n${JSON.stringify(schema)}`;
+// G4: the decision shape the model reads carries the bounds the app refuses on (checkDecision, the execution checks) or
+// caps at (the list limits), which the grammar could not hold. A copy: the schema the OpenAI request sends is unchanged.
+function decisionShape(schema){const s=JSON.parse(JSON.stringify(schema));const p=s.properties??{};const obj=n=>n?.anyOf?.find(b=>b?.type==='object')??(n?.type==='object'?n:null);
+  if(p.explanation)p.explanation.maxLength=1500;if(p.quantity)Object.assign(p.quantity,{minimum:0,maximum:1000});if(p.loanDate)p.loanDate.maxLength=10;
+  const hd=obj(p.plan)?.properties?.horizonDays;if(hd)Object.assign(hd,{minimum:1,maximum:3650});
+  const ex=obj(p.execution)?.properties;if(ex?.cancelAfter)ex.cancelAfter.maxLength=40;if(ex?.cancelIf){ex.cancelIf.maxItems=5;if(ex.cancelIf.items?.properties?.expr)ex.cancelIf.items.properties.expr.maxLength=200;}
+  const score=obj(p.complexity)?.properties?.score;if(score)Object.assign(score,{minimum:0,maximum:100});
+  if(p.strategyCheck)p.strategyCheck.maxItems=8;if(p.planVerdicts)p.planVerdicts.maxItems=12;return s;}
+function onlyObject(text,{empty,invalid}){const t=String(text??'').trim();if(!t)throw fail(empty,{status:'end_turn'});
+  const fence=/^```json[ \t]*\r?\n([\s\S]*)\r?\n```$/.exec(t);if(!fence&&t.startsWith('```'))throw fail(invalid,{status:'end_turn'});
+  let value;try{value=JSON.parse(fence?fence[1]:t);}catch{throw fail(invalid,{status:'end_turn'});}
+  if(!value||typeof value!=='object'||Array.isArray(value))throw fail(invalid,{status:'end_turn'});return value;}
+
 const hasToolHistory=items=>items.some(i=>i?.type==='function_call_output'||i?.type==='anthropic_turn'&&Array.isArray(i.content)&&i.content.some(b=>b?.type==='tool_use'));
 class AnthropicClient {
   #key;
@@ -143,17 +165,17 @@ class AnthropicClient {
   // B3: one Claude request with a structured answer for the agents other than the trading review: the same locked client,
   // headers, recording and stop-reason handling as decide; adaptive thinking (bound with drop_block only where a history
   // with thinking blocks is replayed, the scout); effort explicit; json_schema output; the agent's output cap and timeout.
-  async structured({kind,system,input,schema,options,maxBytes,tools=null,final=false}){
+  async structured({kind,system,input,schema,options,maxBytes,tools=null,final=false,textFormat=false}){
     const selected=M.settings(options);if(M.vendorOf(selected.model)!=='anthropic')throw new Error('INVALID_MODEL_SETTINGS');
     let reportedUsage=null,returnedModel=selected.model;const call={responseChars:null,sizes:null};
     const inputBytes=Buffer.byteLength(JSON.stringify(input));if(inputBytes>maxBytes)throw Object.assign(new Error('CONTEXT_TOO_LARGE'),{detail:{rule:`the ${kind} request is ${inputBytes} bytes, over its ${maxBytes}-byte limit`}});
     try{
       const replayed=Boolean(tools)&&hasToolHistory(input);
       const body={model:selected.model,max_tokens:M.outputCap(options,kind),service_tier:'standard_only',...(tools?{betas:[BETA]}:{}),
-        system:[{type:'text',text:system,cache_control:{type:'ephemeral'}}],
+        system:textFormat?[{type:'text',text:system},{type:'text',text:shapeText(schema),cache_control:{type:'ephemeral'}}]:[{type:'text',text:system,cache_control:{type:'ephemeral'}}],
         ...(tools?{tools:toTools(tools),tool_choice:final?{type:'none'}:{type:'auto'}}:{}),
         thinking:tools?{type:'adaptive',block_binding:{prefix_mismatch_behavior:'drop_block'}}:{type:'adaptive'},
-        output_config:{effort:selected.effort,format:{type:'json_schema',schema:toAnthropicSchema(schema)}},
+        output_config:textFormat?{effort:selected.effort}:{effort:selected.effort,format:{type:'json_schema',schema:toAnthropicSchema(schema)}},
         ...(replayed?{cache_control:{type:'ephemeral'}}:{}),
         messages:toMessages(input)};
       let reply;try{reply=await this.client(this.timeoutMs[kind],call).beta.messages.create(body);}catch(error){
@@ -175,7 +197,8 @@ class AnthropicClient {
         return {...base,toolCalls:calls.map(c=>({name:offered.includes(c.name)?c.name:'unknown:'+String(c.name).slice(0,40),callId:c.id,args:c.input})),continuation:[...input,{type:'anthropic_turn',content:blocks},...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};}
       if(reply.stop_reason!=='end_turn')throw fail(`a response that stopped with ${String(reply.stop_reason??'no reason').replace(/[^a-z_ ]/g,'').slice(0,30)}`,{status:String(reply.stop_reason??'missing').slice(0,30)});
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');
-      let parsed;try{parsed=JSON.parse(output);}catch{throw fail(output.trim()?`a ${kind} answer that is not valid JSON`:`no ${kind} answer`,{status:'end_turn'});}
+      let parsed;if(textFormat)parsed=onlyObject(output,{empty:`no ${kind} answer`,invalid:`a ${kind} answer that is not one JSON object`});
+      else{try{parsed=JSON.parse(output);}catch{throw fail(output.trim()?`a ${kind} answer that is not valid JSON`:`no ${kind} answer`,{status:'end_turn'});}}
       return {...base,parsed};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
   }
@@ -183,7 +206,7 @@ class AnthropicClient {
   async compact(payload,options={}){const f=require('./context-fit.cjs');const {parsed,...r}=await this.structured({kind:'compact',system:f.COMPACT_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(payload)}],schema:f.COMPACT_SCHEMA,options,maxBytes:400000});return {...parsed,...r};}
   async reflect(context,options={}){const {parsed,...r}=await this.structured({kind:'reflect',system:require('./ai-client.cjs').REFLECTION_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:require('./reflection.cjs').SCHEMA,options,maxBytes:70000});return {...r,reflection:require('./reflection.cjs').validate(parsed)};}
   async scout(context,options={}){const scout=require('./scout.cjs');const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];
-    const r=await this.structured({kind:'scout',system:scout.INSTRUCTIONS,input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final)});
+    const r=await this.structured({kind:'scout',system:scout.INSTRUCTIONS,input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:true});
     if(r.toolCalls)return r;const {parsed,...rest}=r;
     try{return {...rest,plan:scout.validatePlan(parsed)};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}}
   client(timeout,call){
@@ -214,8 +237,11 @@ class AnthropicClient {
       // Cache (design 5.5): one breakpoint on the system block caches the tools and the instructions; in research rounds
       // the top-level breakpoint caches the conversation so far, so rounds 2 to 4 read it. The messages are not edited
       // for caching, so a replayed thinking block always meets the conversation it was made in.
+      // Option A (grammar design): the decision's shape as a Claude-only system block after the instructions; the cache
+      // breakpoint on it caches the tools, the instructions and the shape together.
+      const shape=decisionShape(C.decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length)));
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:C.REVIEW_INSTRUCTIONS,cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:C.REVIEW_INSTRUCTIONS},{type:'text',text:shapeText(shape),cache_control:{type:'ephemeral'}}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may
@@ -224,7 +250,7 @@ class AnthropicClient {
         // Thinking is always adaptive on Claude Opus 5.5; drop_block keeps a review going when condensing rewrote an older
         // tool result (a thinking block after the change is dropped instead of failing the request).
         thinking:{type:'adaptive',block_binding:{prefix_mismatch_behavior:'drop_block'}},
-        output_config:{effort:selected.effort,format:{type:'json_schema',schema:toAnthropicSchema(C.decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length)))}},
+        output_config:{effort:selected.effort},
         ...(options.continuation?{cache_control:{type:'ephemeral'}}:{}),
         messages};
       let reply;try{reply=await this.client(this.timeoutMs.decide,call).beta.messages.create(body);}catch(error){
@@ -255,7 +281,9 @@ class AnthropicClient {
       if(reply.stop_reason!=='end_turn')throw fail(`a response that stopped with ${String(reply.stop_reason??'no reason').replace(/[^a-z_ ]/g,'').slice(0,30)}`,{status:String(reply.stop_reason??'missing').slice(0,30)});
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');
       if(output.length>C.DECISION_OUTPUT_CHAR_LIMIT)throw fail(`a decision of ${C.kb(output.length)}, above the ${C.kb(C.DECISION_OUTPUT_CHAR_LIMIT)} limit`,{status:'end_turn'});
-      let raw;try{raw=JSON.parse(output);}catch{throw fail(output.trim()?'a decision that is not valid JSON':'no decision and no tool request',{status:'end_turn'});}
+      // G1: the whole answer is one JSON object (or one json fence around it); G5: a round that ends in prose is a failed
+      // review with this rule, never a retry (decisionWithRetry retries request failures only).
+      const raw=onlyObject(output,{empty:'no decision and no tool request',invalid:'a decision that is not valid JSON'});
       const memory=C.validationMemory(context,options);const decision=C.validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {...base,decision,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
@@ -267,4 +295,4 @@ class AnthropicClient {
   // every client it holds before the message leaves the worker. The key itself never leaves this object.
   redact(text){return String(text??'').split(this.#key).join('[redacted]');}
 }
-module.exports={AnthropicClient,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};
+module.exports={AnthropicClient,onlyObject,shapeText,decisionShape,SHAPE_SENTENCE,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};
