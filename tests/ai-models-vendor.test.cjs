@@ -20,6 +20,10 @@ test('pin: the OpenAI decide request body is byte-identical to 1.5.49',async()=>
     // Those two sentences are put back as they were, so every other byte is still compared with 1.5.49.
     for(const [now,then] of [['(Nextrade pre- or after-market, or a U.S. pre-market, after-market or KIS daytime session)','(Nextrade pre- or after-market, the KRX after-hours single-price auction, or a U.S. pre-market, after-market or KIS daytime session)'],
       [', and prefer protecting or trimming positions over opening large new ones. U.S.',', prefer protecting or trimming positions over opening large new ones, and note that the KRX single-price auction fills every ten minutes within a tight band around the close. U.S.']]){const e=JSON.stringify(now).slice(1,-1);if(body.includes(e))body=body.split(e).join(JSON.stringify(then).slice(1,-1));}
+    // Instructions 'review 2026-11-12' (step A-R): set_conditional_order gained replaces (one sentence, one property,
+    // one required entry). Exactly those are taken out; each must be present once in a body with tools.
+    for(const part of [JSON.stringify(' replaces is null, or with action "add" the id of an armed stop loss for the same symbol and side: the new stop loss is armed and that order cancelled together, and if the new one is refused, that order stays armed unchanged.').slice(1,-1),'"replaces":{"type":["string","null"]},','"replaces",']){
+      if(name!=='plain')assert.equal(body.split(part).length,2,name+': sent once: '+part.slice(0,40));body=body.split(part).join('');}
     assert.deepEqual({sha256:crypto.createHash('sha256').update(body).digest('hex'),length:body.length},PIN[name],name);
   }
 });
