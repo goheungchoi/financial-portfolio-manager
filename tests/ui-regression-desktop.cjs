@@ -715,11 +715,16 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     await check('Token saving settings save and show today\'s review counts',async()=>{
       await navigate('Engine settings');await until('Boolean(document.querySelector(`[aria-label="Token saving"]`))','Token saving section missing');
       assert.equal(await run('document.querySelector(`[aria-label="Skip unchanged reviews"]`).checked'),true);
-      await run('(()=>{const el=document.querySelector(`[aria-label="Model routing"]`);Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value").set.call(el,"auto");el.dispatchEvent(new Event("change",{bubbles:true}));})()');
-      await click('Save changes');await until('(async()=>(await window.portfolio.getRuntime()).config.modelRouting==="auto")()','Routing not saved');
-      assert.ok(await run('document.querySelector(`[aria-label="Token saving"]`).textContent.includes("routing changes nothing")||document.querySelector(`[aria-label="Token saving"]`).textContent.includes("checks it before any order proposal")'));
+      // Step A1 (2026-11-12): shadow evaluation and model routing are gone; near the budget only the interval slows down.
+      const card=()=>run('document.querySelector(`[aria-label="Token saving"]`).textContent');const text=await card();
+      for(const gone of ['Shadow evaluation','Reviews to shadow','Shadow budget','Main model from','Spot checks','Cheaper model limit','Save near the budget'])assert.ok(!text.includes(gone),`${gone} row removed`);
+      assert.equal(await run('Boolean(document.querySelector(`[aria-label="Model routing"]`))'),false);
+      assert.ok(text.includes('Slow down near the budget')&&text.includes('scheduled reviews run half as often'));assert.ok(text.includes('Condensing model'));
+      assert.equal(await run('document.querySelector(`[aria-label="Slow down near the budget"]`).checked'),true,'on by default');
+      await run('document.querySelector(`[aria-label="Slow down near the budget"]`).click()');await click('Save changes');
+      await until('(async()=>(await window.portfolio.getRuntime()).config.degradeNearBudget===false)()','Slow down not saved');
       await run('document.querySelector(`[aria-label="Token saving"]`).scrollIntoView({block:"start"})');await wait(200);await capture('token-saving');
-      await run("window.portfolio.configureRuntime({modelRouting:'fixed'})");
+      await run("window.portfolio.configureRuntime({degradeNearBudget:true})");
     });
     await check('Short & leverage allows leveraged ETFs per market with approval and records product overrides',async()=>{
       await navigate('Short & leverage');await until('Boolean(document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`))','Korea leverage settings missing');

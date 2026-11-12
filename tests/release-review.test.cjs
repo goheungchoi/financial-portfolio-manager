@@ -30,7 +30,7 @@ test('finding 1: the execution boundary holds back the same decision; reductions
   assert.equal(PM.enforce(buy,[],{now}).action,'Buy','no recorded exit');
   const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');
   assert.ok(src.includes("require('./position-memory.cjs').enforce(result.decision,context.positionMemory??[]"),'the review applies it before execution');
-  for(const s of ['options={...options,...modelConfig,validation};','validation:dryValidation};','...(validation?{validation}:{})'])assert.ok(src.includes(s),`every request carries the snapshot: ${s}`);
+  for(const s of ['options={...options,...modelConfig,validation};','validation:dryValidation};'])assert.ok(src.includes(s),`every request carries the snapshot: ${s}`);
 });
 
 // 2. One settlement movement is used once.

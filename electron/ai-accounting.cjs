@@ -3,7 +3,7 @@ const {costDetails}=require('./ai-models.cjs');
 // failed call's error carries no vendor, so its model decides. Unknown models record none.
 const vendorOf=(response,record)=>{if(['openai','anthropic'].includes(response?.vendor))return response.vendor;try{return require('./ai-models.cjs').vendorOf(response?.model??record.model);}catch{return null;}};
 function settle(db,table,day,callId,response,status){
-  if(!['ai_usage','reflection_usage','shadow_usage'].includes(table))throw Error('INVALID_USAGE_TABLE');
+  if(!['ai_usage','reflection_usage'].includes(table))throw Error('INVALID_USAGE_TABLE');
   const row=db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);if(!row)throw Error('UNKNOWN_API_CALL');const record=JSON.parse(row.payload);
   const cost=costDetails(response.model??record.model,response.usage);
   const accountedMicro=cost?.micro??record.accountedMicro??record.reservedMicro;

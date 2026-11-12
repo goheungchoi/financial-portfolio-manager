@@ -54,7 +54,7 @@ Each step is planned, implemented, tested and committed on its own before the ne
 | 6 | ~~Charts: U.S. candles and pop-out window (item 6)~~ Done | U.S. candles in New York time and a pop-out chart window. |
 | 7 | ~~Macro inputs (item 14)~~ Done | Official rates, inflation, FX and volatility now reach the AI. |
 | 7b | ~~Accurate fees and taxes (item 21)~~ Done | Broker-reported order costs and a KRW tax ledger for overseas gains. |
-| 8 | ~~Token saving (item 20)~~ Done | Skips unchanged reviews, routes routine ones to a cheaper model and uses the prompt cache. |
+| 8 | ~~Token saving (item 20)~~ Done | Skips unchanged reviews and uses the prompt cache. (Routing routine reviews to a cheaper model was removed on 2026-11-12.) |
 | 8b | ~~Short selling and leverage (item 22)~~ Done (credit orders await a live credit account) | Requested by the user; leveraged/inverse ETFs work on mock. |
 | 9 | ~~Installer and auto-update (item 19)~~ Done, unsigned | NSIS installer and GitHub Releases updates; publishing needs a GitHub repository and token. |
 
