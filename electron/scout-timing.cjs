@@ -45,13 +45,29 @@ function validate(c){
   if(!Number.isInteger(c.scoutAfterOpenMinutes)||c.scoutAfterOpenMinutes<OFFSET.min||c.scoutAfterOpenMinutes>OFFSET.max)throw new Error('INVALID_SETTINGS');
 }
 const regularOn=(market,day,opts)=>S.sessionsOn(market,day,market==='KR'?opts:{...opts,closedDays:undefined}).find(x=>x.regular)??null;
-const seoulDay=now=>S.localDay(now,'Asia/Seoul');
+// Seoul has no daylight saving: its date is UTC+9 (cheaper than formatting through the time zone database).
+const seoulDay=now=>new Date(now+9*3600000).toISOString().slice(0,10);
 const addDays=(day,n)=>new Date(Date.parse(day+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);
-const hhmm=t=>new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(t));
+// One formatter, made once: building an Intl.DateTimeFormat costs far more than formatting with it.
+const HHMM=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+const hhmm=t=>HHMM.format(new Date(t));
+
+// A day's slots depend only on the day, the switches, the offset, the markets and the Korean closed days; reading
+// them from the session calendar costs about 1 ms per market. They are kept per key (next version, step 1: the 1.5.53
+// gate G7 found the scout's tick and state reads cost about 0.6% of a core), so the tick and every state read reuse
+// them. Each result is a fresh copy, so a caller cannot change the kept one.
+const SLOT_CACHE=new Map(),SLOT_CACHE_MAX=32;let calendarReads=0;
+const closedKey=opts=>opts?.closedDays instanceof Set?[...opts.closedDays].sort().join(','):'';
+const slotKey=(config,day,markets,opts)=>[day,SLOTS.map(s=>config[s.key]?1:0).join(''),config.scoutAfterOpenMinutes,[...markets].sort().join('+'),closedKey(opts)].join('|');
 
 /** The switched-on slots of one Seoul day for the given markets, in time order: {id, slot, label, market, at}. */
 function slotsOn(config,day,markets,opts={}){
-  const out=[];
+  const key=slotKey(config,day,markets,opts);let kept=SLOT_CACHE.get(key);
+  if(!kept){kept=readSlots(config,day,markets,opts);SLOT_CACHE.set(key,kept);if(SLOT_CACHE.size>SLOT_CACHE_MAX)SLOT_CACHE.delete(SLOT_CACHE.keys().next().value);}
+  return kept.map(x=>({...x}));
+}
+function readSlots(config,day,markets,opts){
+  calendarReads++;const out=[];
   for(const s of SLOTS){if(!config[s.key]||!markets.includes(s.market))continue;const regular=regularOn(s.market,day,opts);if(!regular)continue;
     out.push({id:`${day} ${s.id}`,slot:s.id,label:s.label,market:s.market,at:s.at(regular.startAt,config)});}
   return out.sort((a,b)=>a.at-b.at);
@@ -93,4 +109,4 @@ function skipRule(slot,last,now=Date.now(),opts={}){
   if(!isOpen(slot.market,lastFinishedAt,opts)&&isOpen(slot.market,now,opts))return {skip:false,reason:`${name} opened since the last scout run (${minutes} min ago)`};
   return {skip:true,reason:`A scout run that researched ${slot.market==='KR'?'Korea':'the U.S.'} finished at ${hhmm(lastFinishedAt)} KST, ${minutes} min ago, and ${slot.market==='KR'?'Korea':'the U.S.'} has not opened since: no new market data to research. Skipped "${slot.label}".`};
 }
-module.exports={SLOTS,TIMING_DEFAULTS,PRESETS,OFFSET,SKIP_WITHIN_MINUTES,ON_TIME_MINUTES,lateness,migrate,validate,slotsOn,dueSlot,nextTimes,skipRule,isOpen};
+module.exports={calendarReads:()=>calendarReads,clearCache:()=>SLOT_CACHE.clear(),cacheSize:()=>SLOT_CACHE.size,seoulDay,readSlots,SLOTS,TIMING_DEFAULTS,PRESETS,OFFSET,SKIP_WITHIN_MINUTES,ON_TIME_MINUTES,lateness,migrate,validate,slotsOn,dueSlot,nextTimes,skipRule,isOpen};
