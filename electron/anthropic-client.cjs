@@ -98,6 +98,30 @@ function errorDetail(error){
   return Object.keys(out).length?out:null;
 }
 
+// A refused request's local record (artifacts/reviews/2026-11-12-claude-dry-run, design and review): what the provider
+// answered, kept on this computer only (the call record, the dry-run record and the Dry-run panel). It never enters the
+// error code, `detail`, the log, the phone, the review context or a later request (review C1).
+// - status, errorType, requestId: always, for any answer with an HTTP status.
+// - message: for every 4xx except 401 and 429 (the provider's error.message, or for a body that is not an Anthropic error
+//   object, its text), with the loaded key removed by value and anything shaped like a credential removed, then cut to
+//   300 characters (review C2). The shapes are narrow so the diagnosis survives (diff review F1): `sk-` only at the
+//   start of a token, and a long run only when it looks like a key (32 or more letters and digits with no - or _
+//   separator, mixing both), so a beta name, a model id, a tool or field name stays readable.
+// - anthropicError: whether the body was an Anthropic error object ({type:'error', error:{type, message}}); contentType.
+// - noCharge: a 4xx with a received body and no usage, which the provider refuses before the model runs (review ruling 2).
+const SECRET_SHAPES=[/(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]+/g,/(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}/g,/Bearer\s+[A-Za-z0-9._~+\/=-]+/gi,/(?<![A-Za-z0-9_-])(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{32,}(?![A-Za-z0-9_-])/g];
+function cleanText(text,keys=[]){let s=String(text??'');for(const k of keys)if(typeof k==='string'&&k.length>=10)s=s.split(k).join('[redacted]');
+  s=s.replace(/[\u0000-\u001f\u007f-\u009f]/g,' ');for(const r of SECRET_SHAPES)s=s.replace(r,'[redacted]');return s.replace(/\s+/g,' ').trim().slice(0,300);}
+function refusalRecord(error,call,keys=[]){
+  const S=SDK();if(!(error instanceof S.APIError)||!Number.isInteger(error.status))return null;const status=error.status;if(status<400||status>599)return null;
+  const lookupKeys=errorDetail(error)??{};let parsed=null;try{parsed=JSON.parse(call?.errorBody??'');}catch{}
+  const anthropicError=Boolean(parsed&&parsed.type==='error'&&parsed.error&&typeof parsed.error.type==='string');
+  const contentType=String(call?.contentType??'').toLowerCase().replace(/[^a-z0-9\/+.;= -]/g,'').slice(0,60);
+  const refused=status>=400&&status<500,withMessage=refused&&status!==401&&status!==429;
+  const message=withMessage?cleanText(anthropicError?parsed.error.message:(call?.errorBody??error.message),keys):'';
+  return {status,...lookupKeys,anthropicError,...(contentType?{contentType}:{}),...(message?{message}:{}),noCharge:refused&&call?.errorBody!=null};
+}
+
 const hasToolHistory=items=>items.some(i=>i?.type==='function_call_output'||i?.type==='anthropic_turn'&&Array.isArray(i.content)&&i.content.some(b=>b?.type==='tool_use'));
 class AnthropicClient {
   #key;
@@ -134,7 +158,7 @@ class AnthropicClient {
         messages:toMessages(input)};
       let reply;try{reply=await this.client(this.timeoutMs[kind],call).beta.messages.create(body);}catch(error){
         if(call.refused)throw Object.assign(new Error('AI_REQUEST_FAILED'),{detail:{rule:call.refused}});
-        const detail=errorDetail(error);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{});}
+        const detail=errorDetail(error),providerError=refusalRecord(error,call,[this.#key]);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{},providerError?{providerError}:{});}
       if(call.responseChars>C.RESPONSE_CHAR_LIMIT)throw fail(`a response of ${C.kb(call.responseChars)}, above the ${C.kb(C.RESPONSE_CHAR_LIMIT)} limit`);
       reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;
       const blocks=Array.isArray(reply.content)?reply.content:[];
@@ -153,7 +177,7 @@ class AnthropicClient {
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');
       let parsed;try{parsed=JSON.parse(output);}catch{throw fail(output.trim()?`a ${kind} answer that is not valid JSON`:`no ${kind} answer`,{status:'end_turn'});}
       return {...base,parsed};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
   }
   async narrative(context,options={}){const n=require('./narrative.cjs');const {parsed,...r}=await this.structured({kind:'narrative',system:n.INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:n.SCHEMA,options,maxBytes:120000});return {...r,narrative:parsed};}
   async compact(payload,options={}){const f=require('./context-fit.cjs');const {parsed,...r}=await this.structured({kind:'compact',system:f.COMPACT_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(payload)}],schema:f.COMPACT_SCHEMA,options,maxBytes:400000});return {...parsed,...r};}
@@ -174,6 +198,8 @@ class AnthropicClient {
       try{const b=JSON.parse(init.body),n=v=>Buffer.byteLength(JSON.stringify(v??null));call.sizes={totalBytes:Buffer.byteLength(init.body),inputBytes:n(b.messages),instructionsBytes:n(b.system),toolsBytes:n(b.tools)};}catch{}
       const response=await this.transport(url,{...init,redirect:'error'});const text=await response.text();call.responseChars=text.length;
       const headers=new Headers(response.headers instanceof Headers?response.headers:{'content-type':'application/json',...(response.headers??{})});
+      // A refused answer's body (bounded) and content type, for the refused request's local record (refusalRecord).
+      if((response.status??200)>=400){call.errorBody=text.slice(0,8000);call.contentType=headers.get('content-type')??'';}
       return new Response(text,{status:response.status??(response.ok===false?500:200),headers});
     };
     return new S({...LOCKED,apiKey:this.#key,maxRetries:0,timeout,fetch:fetchFn});
@@ -203,7 +229,7 @@ class AnthropicClient {
         messages};
       let reply;try{reply=await this.client(this.timeoutMs.decide,call).beta.messages.create(body);}catch(error){
         if(call.refused)throw Object.assign(new Error('AI_REQUEST_FAILED'),{detail:{rule:call.refused}});
-        const detail=errorDetail(error);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{});}
+        const detail=errorDetail(error),providerError=refusalRecord(error,call,[this.#key]);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{},providerError?{providerError}:{});}
       this.lastRequestSizes=call.sizes;
       if(call.responseChars>C.RESPONSE_CHAR_LIMIT)throw fail(`a response of ${C.kb(call.responseChars)}, above the ${C.kb(C.RESPONSE_CHAR_LIMIT)} limit`);
       reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;
@@ -235,7 +261,10 @@ class AnthropicClient {
       return {...base,decision,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;
       // B2: a failure keeps its stop reason and the measured request sizes for the dry run's measurement.
-      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;throw safe;}
+      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
   }
+  // The loaded key removed from a text by value (review C2): the provider worker runs a refused request's message through
+  // every client it holds before the message leaves the worker. The key itself never leaves this object.
+  redact(text){return String(text??'').split(this.#key).join('[redacted]');}
 }
-module.exports={AnthropicClient,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};
+module.exports={AnthropicClient,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};

@@ -176,6 +176,8 @@ const REFLECTION_INSTRUCTIONS='Review a completed sale using only supplied evide
 class AiClient {
   #key;
   constructor(key,transport=fetch){if(typeof key!=='string'||!/^[A-Za-z0-9_\-]{10,512}$/.test(key))throw new Error('INVALID_PROVIDER_FILE');this.#key=key;this.transport=transport;}
+  // The loaded key removed from a text by value (Claude refused-request review C2); the key never leaves this object.
+  redact(text){return String(text??'').split(this.#key).join('[redacted]');}
   async reflect(context,options={}) {
     const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;
     const input=[{role:'user',content:JSON.stringify(context)}];
