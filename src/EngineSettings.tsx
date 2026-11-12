@@ -20,6 +20,12 @@ const cap=(v:string)=>v[0].toUpperCase()+v.slice(1);
 const vendorName=(model:string)=>model.startsWith('claude-')?'Anthropic':'OpenAI';
 const receivers=(config:RuntimeConfig)=>[...new Set([config.openaiModel,config.routineModel,config.scoutModel,config.narrativeModel,config.reflectionModel].filter(m=>m&&m!=='same').map(m=>vendorName(String(m))))].join(' and ');
 const hourLabel=(h:number)=>String(h).padStart(2,'0')+':00 KST';
+// Scheduled scout runs by market event (step A4, electron/scout-timing.cjs): key, title, hint.
+const SCOUT_SLOTS:['scoutBeforeKrOpen'|'scoutAfterKrOpen'|'scoutKrMidday'|'scoutBeforeUsOpen',string,string][]=[
+  ['scoutBeforeKrOpen','Before Korea opens','20 minutes before the open. The plan is ready at the open, without the day\'s market data.'],
+  ['scoutAfterKrOpen','After Korea opens','Once the day\'s breadth and investor flows are in. Researches Korea.'],
+  ['scoutKrMidday','Korea midday','4 hours after the open. Researches Korea.'],
+  ['scoutBeforeUsOpen','Before the U.S. opens','30 minutes before the U.S. open. Researches the U.S.']];
 export function EngineSettings(props:Props){
   const {state,busy,dirty,onReview}=props;
   const [saved,setTab]=useDraftState<string>('engine:tab','Trading');const tab:Tab=(ENGINE_TABS as readonly string[]).includes(saved)?saved as Tab:'Trading';
@@ -131,10 +137,16 @@ function ScheduleTab({state,config,busy,edit}:Props){
       {state.watchlistAlerts?.trial&&(()=>{const t=state.watchlistAlerts.trial;return <p className="muted" aria-label="Watchlist alert trial status">Trial {t.status}{t.endReason?` (${t.endReason})`:''}: {t.days.KR} Korean and {t.days.US} U.S. qualifying trading days{t.partialDays.KR.length+t.partialDays.US.length?` (${t.partialDays.KR.length+t.partialDays.US.length} not fully watched, not counted)`:''}, {t.priceReviews} price reviews, {t.addedReviews} the current rule would not have started (${t.addedUSD.toFixed(2)}).{t.endDetail?` ${t.endDetail}`:''}</p>;})()}
       {config.watchlistAlerts!=='off'&&state.watchlistAlerts?.summary&&(()=>{const s=state.watchlistAlerts.summary;return <p className="muted" aria-label="Watchlist alert observation">Last 7 days: {s.reviewsStarted??'?'} price reviews started. Checks that would alert: {s.checks.current} current rule, {s.checks.proposed} watchlist alerts, in {s.episodes.total} episodes ({s.episodes.oldOnly} current rule only, {s.episodes.newOnly} watchlist alerts only, {s.episodes.both} both){s.notHeldAlerts.length?` · ${s.delayed} of ${s.notHeldAlerts.length} alerts on stocks you don’t hold later, ${s.notAlerted} not alerted`:''}.</p>;})()}
     </Card>
-    <Card id="eng-scout" title="AI scout runs" label="Scout settings" hint={state.scout?.blocked??'When the scout researches the market. Its model is on the Agents tab.'}>
-      <Row title="Scheduled scout runs" hint="Weekdays, Seoul time. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
+    <Card id="eng-scout" title="AI scout runs" label="Scout settings" hint={state.scout?.blocked??(state.scout?.times.length?`Next: ${state.scout.times.join(', ')} KST. Its model is on the Agents tab.`:'When the scout researches the market. Its model is on the Agents tab.')}>
+      <Row title="Scheduled scout runs" hint="On each market's trading days. Uses the daily AI budget."><Switch label="Scheduled scout runs" disabled={busy} checked={config.scoutEnabled} onChange={v=>edit('scoutEnabled',v)}/></Row>
       <Row title="Reviews can ask for a scout run" hint="When the plan looks stale. Up to 3 a day, at least 2 hours apart."><Switch label="Reviews can request a scout run" disabled={busy} checked={config.scoutAiRequests} onChange={v=>edit('scoutAiRequests',v)}/></Row>
-      {config.scoutEnabled&&<Row title="When"><select aria-label="Scout schedule" disabled={busy} value={config.scoutSchedule} onChange={e=>edit('scoutSchedule',e.target.value)}><option value="daily">09:10</option><option value="twice">09:10 and 13:00</option><option value="kr-us">09:10 and 22:40 (U.S. open)</option><option value="three">09:10, 13:00 and 22:40</option></select></Row>}
+      {config.scoutEnabled&&<>
+        {SCOUT_SLOTS.map(([key,title,hint])=><Row key={key} title={title} hint={hint}><Switch label={title} disabled={busy} checked={config[key]} onChange={v=>edit(key,v)}/></Row>)}
+        <details className="inline-help"><summary>More</summary>
+          <Row title="After Korea opens: minutes after the open" hint="Default 60. The investor-flow lists are empty until about 09:20; the institution list fills by about 10:00."><NumberField label="Minutes after the Korean open" min={10} max={240} unit="min" disabled={busy} value={config.scoutAfterOpenMinutes} onChange={v=>edit('scoutAfterOpenMinutes',v)}/></Row>
+          <p className="muted">Times follow each exchange's calendar, including daylight saving and holidays. A run the app misses by more than 30 minutes is dropped, except that After Korea opens and Korea midday still run until the Korean close. A run within an hour of another scout run that researched the same market is skipped unless that market opened in between. The console says why.</p>
+        </details>
+      </>}
     </Card>
     <TokenSaving id="eng-saving" state={state} config={config} busy={busy} edit={edit}/>
   </>;

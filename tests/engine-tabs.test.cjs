@@ -32,7 +32,7 @@ const CONTROLS=[
   ['Schedule and triggers','Auto review interval','autoReviewInterval'],['Schedule and triggers','Review interval','intervalMinutes'],
   ['Schedule and triggers','Reviews while markets are closed','closedMarketReviews'],['Schedule and triggers','Price move trigger','eventTolerancePct'],
   ['Schedule and triggers','Watchlist alerts','watchlistAlerts'],['Schedule and triggers','Watchlist move trigger','watchlistMovePct'],['Schedule and triggers','Watchlist alert trial','alertTrial'],
-  ['Schedule and triggers','Scheduled scout runs','scoutEnabled'],['Schedule and triggers','Reviews can request a scout run','scoutAiRequests'],['Schedule and triggers','Scout schedule','scoutSchedule'],
+  ['Schedule and triggers','Scheduled scout runs','scoutEnabled'],['Schedule and triggers','Reviews can request a scout run','scoutAiRequests'],['Schedule and triggers','Minutes after the Korean open','scoutAfterOpenMinutes'],
   ['Schedule and triggers','Skip unchanged reviews','skipUnchanged'],['Schedule and triggers','Review gate','reviewGate'],['Schedule and triggers','Research suppression','researchSuppression'],
   ['Schedule and triggers','Routine review scope','routineReviews'],['Schedule and triggers','Maximum skip minutes','maxSkipMinutes'],
   ['Schedule and triggers','Slow down near the budget','degradeNearBudget'],['Schedule and triggers','Recent review cost',null],
@@ -95,4 +95,12 @@ test('two edits in one event both apply (an agent model and its effort)',()=>{
 
 test('the KIS consent names every provider that receives data, from the trading model and each agent with its own',()=>{
   assert.ok(engine.includes("[config.openaiModel,config.routineModel,config.scoutModel,config.narrativeModel,config.reflectionModel].filter(m=>m&&m!=='same')"));
+});
+
+test('step A4: the scout timing switches and the after-open offset are on Schedule and triggers, keyed as in scout-timing.cjs',()=>{
+  const s=fn('ScheduleTab');const T=require('../electron/scout-timing.cjs');
+  assert.ok(s.includes('{SCOUT_SLOTS.map(([key,title,hint])=><Row key={key} title={title} hint={hint}><Switch label={title} disabled={busy} checked={config[key]} onChange={v=>edit(key,v)}/></Row>)}'));
+  for(const slot of T.SLOTS)assert.ok(engine.includes(`['${slot.key}','${slot.label}',`),slot.key);
+  assert.ok(s.includes('<details className="inline-help"><summary>More</summary>')&&s.includes(`label="Minutes after the Korean open" min={${T.OFFSET.min}} max={${T.OFFSET.max}}`)&&s.includes("edit('scoutAfterOpenMinutes',v)"),'the offset is behind More with the engine range');
+  assert.ok(!engine.includes('scoutSchedule'),'the preset select is gone');
 });

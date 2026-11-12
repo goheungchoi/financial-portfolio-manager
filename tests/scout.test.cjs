@@ -23,13 +23,13 @@ test('plans are validated: bad targets dropped, text shortened, duplicates remov
   assert.ok(plan.summary.length<=900);assert.deepEqual(plan.targets.map(t=>t.symbol),['005930','NYSE:KO']);
   assert.throws(()=>validatePlan({summary:'',focus:'',cashTargetPct:120,targets:[]}),/INVALID_AI_RESPONSE/);
 });
-test('scout slots run on weekdays at the preset Seoul times, once each',()=>{
+test('the market narrative runs on weekdays at its Seoul times, once each (the scout: scout-timing.test.cjs)',()=>{
   const at=iso=>Date.parse(iso);
-  assert.equal(dueSlot('twice',at('2026-10-16T00:05:00Z')),null,'Friday 09:05 KST is before the first slot');
-  assert.equal(dueSlot('twice',at('2026-10-16T00:15:00Z')),'2026-10-16 09:10');
-  assert.equal(dueSlot('twice',at('2026-10-16T06:00:00Z')),'2026-10-16 13:00','the latest passed slot');
-  assert.equal(dueSlot('kr-us',at('2026-10-16T14:00:00Z')),'2026-10-16 22:40');
-  assert.equal(dueSlot('daily',at('2026-10-17T02:00:00Z')),null,'Saturday');
+  assert.equal(dueSlot('narrative',at('2026-10-15T23:25:00Z')),null,'Friday 08:25 KST is before the first slot');
+  assert.equal(dueSlot('narrative',at('2026-10-15T23:35:00Z')),'2026-10-16 08:30');
+  assert.equal(dueSlot('narrative',at('2026-10-16T08:00:00Z')),'2026-10-16 16:30','the latest passed slot');
+  assert.equal(dueSlot('narrative',at('2026-10-17T02:00:00Z')),null,'Saturday');
+  assert.equal(dueSlot('twice',at('2026-10-16T06:00:00Z')),null,'the old scout presets are gone');
 });
 test('the research loop runs tools until the plan, reports tool failures as data and enforces limits',async()=>{
   const calls=[];let round=0;const logs=[];
