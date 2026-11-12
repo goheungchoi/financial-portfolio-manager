@@ -53,6 +53,18 @@ function providerConsent(saved){if(!saved||typeof saved!=='object'||!Object.hasO
 // already has (maxCallsPerDay, maxUSDPerDay and their No limit switches).
 function vendorLimits(config,vendor){return vendor==='anthropic'?{maxCallsPerDay:config.anthropicCallsPerDay,maxUSDPerDay:config.anthropicUSDPerDay,unlimitedCalls:config.anthropicUnlimitedCalls,unlimitedBudget:config.anthropicUnlimitedBudget}:{maxCallsPerDay:config.maxCallsPerDay,maxUSDPerDay:config.maxUSDPerDay,unlimitedCalls:config.unlimitedCalls,unlimitedBudget:config.unlimitedBudget};}
 const VENDOR_NAMES={openai:'OpenAI',anthropic:'Anthropic'};
+// B2: the measurement of one dry run, from its own AI call records: per request, the kind (dry-run or compact), model,
+// status, stop reason, tokens (cache read and write apart), service tier, reserved and settled cost and sizes; and the
+// totals. Built for GPT and Claude runs alike; a record made before B2 has no block and still opens.
+function dryRunMeasurement(db,reviewId){
+  try{const rows=db.prepare('SELECT payload FROM ai_calls ORDER BY rowid').all().map(r=>JSON.parse(r.payload)).filter(p=>p.reviewId===reviewId);
+    const usd=m=>m==null?null:Math.round(m)/1e6;const requests=rows.map((p,i)=>({request:i+1,kind:p.kind??'review',model:p.model??null,status:p.status??null,stopReason:p.stopReason??null,
+      inputTokens:p.usage?.inputTokens??null,outputTokens:p.usage?.outputTokens??null,cacheReadTokens:p.usage?.cachedTokens??null,cacheWriteTokens:p.usage?.cacheWriteTokens??null,serviceTier:p.usage?.serviceTier??null,
+      reservedUSD:usd(p.reservedMicro),costUSD:usd(p.accountedMicro??p.estimatedMicro),requestBytes:p.requestSizes?.totalBytes??null,responseChars:p.responseChars??null,...(p.droppedThinking?{droppedThinking:p.droppedThinking}:{})}));
+    const sum=k=>requests.reduce((n,r)=>n+(Number.isFinite(r[k])?r[k]:0),0);
+    return {requests,totals:{requests:requests.length,inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reservedUSD:Math.round(sum('reservedUSD')*1e6)/1e6,costUSD:Math.round(sum('costUSD')*1e6)/1e6}};}
+  catch{return null;}
+}
 class Automation {
   constructor(db,paper,provider,log) {
     this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
@@ -248,7 +260,7 @@ class Automation {
   // unchanged and it runs again after a restart, as the status says. Trading reviews and order safety are separate.
   setBackgroundPaused(paused){if(typeof paused!=='boolean')throw new Error('INVALID_REQUEST');this.backgroundPaused=paused;this.log(randomUUID(),'System',paused?'Background AI paused':'Background AI resumed',paused?'Scout, reflection and narrative runs are paused for this session; your saved settings are unchanged.':'Scout, reflection and narrative runs follow your settings again.');return this.getState();}
   backgroundAi(){const c=this.config;return {paused:Boolean(this.backgroundPaused),enabled:[c.scoutEnabled&&'scout',c.reflectionEnabled&&'reflections',c.narrativeEnabled&&'market narrative'].filter(Boolean)};}
-  getState(){this.syncLearning();return {agentModels:require('./agent-models.cjs').agentModels(this.config),usageByVendor:this.usageByVendor(),backgroundAi:this.backgroundAi(),lastErrorAt:this.lastError?this.lastErrorAt??null:null,reviewBackoff:this.reviewBackoffState(),accountEnvironment:this.live?.getConnection?.()?.snapshot?.environment??null,calendar:this.calendarState(),regime:this.regimeState(),exposure:this.exposureState(),narrative:this.narrativeState(),desk:this.deskState(),scout:this.scoutState(),tokenSaving:{...this.tokenSavingState(),reviewGate:this.reviewGateState()},watchlistAlerts:this.watchlistAlertsState(),newsEvents:this.stateCached('newsEvents',()=>this.newsEvents.list(100)),lastNewsTrigger:this.lastNewsTrigger??null,guardrails:this.guardrails.state(this.config,Date.now(),{autoOrders:this.stateCached('autoOrdersToday',()=>this.guardrails.autoOrdersToday())}),digests:this.digest.list(),lessonTrials:this.trials.list(),reviewInterval:this.reviewInterval.get(this.watchScope(),this.config),reflections:this.reflections.state(),aiCalls:this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)),learning:{...this.memory.summary(),lastRun:this.learningLastRun??null,error:this.learningError??null},watches:this.watches.list(this.watchScope()),outcomes:this.outcomes.list(),execution:this.executionState(),emergency:this.emergencyState(),config:this.config,sessionArmed:this.sessionArmed,savedAt:this.savedAt,heartbeat:Date.now(),scheduler:this.schedulerStatus(),lastAttempt:this.lastRun||null,lastSuccess:this.lastSuccess||null,lastError:this.lastError,lastErrorDetail:this.lastErrorDetail??null,nextReview:this.nextReviewAt(),providerStatus:this.providerStatus,busy:this.busy,news:this.news,newsUpdatedAt:this.newsUpdatedAt??null,newsError:this.newsError,account:this.accountTag(),reviews:this.stateCached('reviews',()=>this.reviewHistory(50)),allReviews:this.stateCached('allReviews',()=>this.reviewHistory(50,true)),lessons:this.memory.list(),usage:this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0}};}
+  getState(){this.syncLearning();return {claudeReservation:this.stateCached?this.stateCached('claudeReservation',()=>{try{return this.claudeReservation('claude-opus-5-5',vendorLimits(this.config,'anthropic'));}catch{return null;}}):null,claudeDryRun:this.completedClaudeDryRunCached(),agentModels:require('./agent-models.cjs').agentModels(this.config),usageByVendor:this.usageByVendor(),backgroundAi:this.backgroundAi(),lastErrorAt:this.lastError?this.lastErrorAt??null:null,reviewBackoff:this.reviewBackoffState(),accountEnvironment:this.live?.getConnection?.()?.snapshot?.environment??null,calendar:this.calendarState(),regime:this.regimeState(),exposure:this.exposureState(),narrative:this.narrativeState(),desk:this.deskState(),scout:this.scoutState(),tokenSaving:{...this.tokenSavingState(),reviewGate:this.reviewGateState()},watchlistAlerts:this.watchlistAlertsState(),newsEvents:this.stateCached('newsEvents',()=>this.newsEvents.list(100)),lastNewsTrigger:this.lastNewsTrigger??null,guardrails:this.guardrails.state(this.config,Date.now(),{autoOrders:this.stateCached('autoOrdersToday',()=>this.guardrails.autoOrdersToday())}),digests:this.digest.list(),lessonTrials:this.trials.list(),reviewInterval:this.reviewInterval.get(this.watchScope(),this.config),reflections:this.reflections.state(),aiCalls:this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)),learning:{...this.memory.summary(),lastRun:this.learningLastRun??null,error:this.learningError??null},watches:this.watches.list(this.watchScope()),outcomes:this.outcomes.list(),execution:this.executionState(),emergency:this.emergencyState(),config:this.config,sessionArmed:this.sessionArmed,savedAt:this.savedAt,heartbeat:Date.now(),scheduler:this.schedulerStatus(),lastAttempt:this.lastRun||null,lastSuccess:this.lastSuccess||null,lastError:this.lastError,lastErrorDetail:this.lastErrorDetail??null,nextReview:this.nextReviewAt(),providerStatus:this.providerStatus,busy:this.busy,news:this.news,newsUpdatedAt:this.newsUpdatedAt??null,newsError:this.newsError,account:this.accountTag(),reviews:this.stateCached('reviews',()=>this.reviewHistory(50)),allReviews:this.stateCached('allReviews',()=>this.reviewHistory(50,true)),lessons:this.memory.list(),usage:this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(seoulDate())??{calls:0,reservedMicro:0}};}
   localDecision(context) {
     if(context.currency==='USD'||context.currency==='MULTI')return {action:'Hold',symbol:'',quantity:0,explanation:'U.S. portfolio requires an AI review or a manual proposal; the domestic demonstration rule does not trade USD assets.'};
     if(context.orders.some(order=>['Pending','Partially filled','Accepted','Submitting','Uncertain'].includes(order.status)))return {action:'Hold',symbol:'',quantity:0,explanation:'Wait for pending orders to reconcile before another rebalance.'};
@@ -302,7 +314,7 @@ class Automation {
         this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
         const providerContext=shapedDry.context;const transcript=[],requests=[];
         const trace=()=>({size,requests,transcript,detailReads:transcript.filter(t=>t.title.startsWith('Context detail')).map(t=>t.title.replace(/^Context detail · /,'')+' → '+t.body),condensed:transcript.filter(t=>t.title==='Research context condensed').map(t=>t.body)});
-        const failed=error=>{const at=Date.now();const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',...trace(),...(error?.metrics?{research:error.metrics}:{})}};
+        const failed=error=>{const at=Date.now();const record={id,timestamp:at,mode,summary,review:{failed:/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'DRY_RUN_FAILED',measurement:dryRunMeasurement(this.db,id),...trace(),...(error?.metrics?{research:error.metrics}:{})}};
           try{this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,at,JSON.stringify({...record,snapshot}));}catch{}return error;};
         if(!shapedDry.fits){const failure=require('./review-context.cjs').sizeFailure(shapedDry,{stage:'dry-run first request'});this.saveSizeFailure(id,failure,{report:size,steps:shapedDry.steps,input:providerContext});throw failed(failure);}
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
@@ -322,7 +334,7 @@ class Automation {
         let r;try{r=await require('./research-review.cjs').researchReview({context:providerContext,detail:shapedDry.detail,watched:watchedIn(this.discovery,providerContext),wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log,compact:this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request});}
         catch(error){throw failed(error);}
         const micro=this.db.prepare('SELECT payload FROM ai_calls').all().map(row=>JSON.parse(row.payload)).filter(p=>p.reviewId===id).reduce((sum,p)=>sum+(p.accountedMicro??p.estimatedMicro??0),0);
-        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,research:r.metrics??null,calls,costUSD:Math.round(micro)/1e6,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
+        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,research:r.metrics??null,calls,costUSD:Math.round(micro)/1e6,measurement:dryRunMeasurement(this.db,id),tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
       }
       const record={id,timestamp:Date.now(),mode,summary,...(review?{review}:{})};
       this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify({...record,snapshot}));
@@ -403,7 +415,8 @@ class Automation {
     const byReview=new Map();for(const c of rows){const v=byReview.get(c.reviewId)??{micro:0,calls:0};v.micro+=c.accountedMicro;v.calls++;byReview.set(c.reviewId,v);}
     const recent=[...byReview.values()].slice(0,10);const sorted=recent.map(v=>v.micro).sort((a,b)=>a-b);const median=sorted.length?sorted[Math.floor(sorted.length/2)]:null;
     const usd=v=>v==null?null:Math.round(v)/1e6;
-    return {model:m,vendor:claude?'Anthropic':'OpenAI',ran:all.length>0,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${m} review${recent.length===1?'':'s'}`,
+    const reserveFigures=vendor==='anthropic'?this.claudeReservation(m,limits):null;
+    return {model:m,...(reserveFigures?{claude:reserveFigures}:{}),vendor:claude?'Anthropic':'OpenAI',ran:all.length>0,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${m} review${recent.length===1?'':'s'}`,
       today:{provider:VENDOR_NAMES[vendor],calls:usage.calls,usedUSD:usd(usage.reservedMicro),maxCalls:limits.unlimitedCalls?null:limits.maxCallsPerDay,maxUSD:limits.unlimitedBudget?null:limits.maxUSDPerDay},
       note:'A dry-run review counts against the same daily AI limits as live reviews.'};
   }
@@ -703,6 +716,31 @@ class Automation {
       if(seed)this.db.prepare('INSERT INTO ai_usage_vendor VALUES(?,?,?,?) ON CONFLICT(day,vendor) DO NOTHING').run(day,'openai',seed.calls,seed.reservedMicro);
       this.db.prepare('INSERT INTO ai_usage_vendor VALUES(?,?,?,?) ON CONFLICT(day,vendor) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(day,vendor,mine.calls+1,mine.reservedMicro+reserve);
       this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,record);this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}}
+  // B2: what a Claude dry run reserves with the current settings. firstRequestUSD from the size of the latest review's
+  // first request (the "Review size" log), else the first-request byte limit; upToUSD: four requests at the byte limits
+  // (the first at 70,000 bytes, three continuations at 140,000), the most one dry run can reserve. blocked: the
+  // provider's dollar limit is below the first request's reservation, so the run cannot start.
+  completedClaudeDryRunCached(){return this.stateCached?this.stateCached('claudeDryRun',()=>{try{return this.completedClaudeDryRun();}catch{return null;}}):null;}
+  claudeReservation(model,limits){const M=require('./ai-models.cjs');const cfg={openaiModel:model,reasoningEffort:'medium'};
+    let bytes=null;try{const row=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.title')='Review size' ORDER BY seq DESC LIMIT 1").get();const w=row?JSON.parse(JSON.parse(row.payload).body??'{}').wireBytes:null;if(Number.isInteger(w)&&w>0)bytes=w;}catch{}
+    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({}),M.reviewByteLimit({})));const upTo=M.reservationAt(cfg,M.reviewByteLimit({}))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]}));
+    const usd=m=>Math.round(m/1e4)/100;return {firstRequestUSD:usd(first),firstRequestBasis:bytes?`the latest review's first request, ${bytes.toLocaleString('en-US')} bytes`:'the first-request size limit',upToUSD:usd(upTo),requestsUpTo:4,
+      blocked:!limits.unlimitedBudget&&limits.maxUSDPerDay*1e6<first,limitUSD:limits.unlimitedBudget?null:limits.maxUSDPerDay};}
+  // The card's figures and the gate are cached with stateCached: its key (historyVersion) holds the database's total
+  // changes, the settings revision, the scope and the minute, so a finished dry run (a new dry_runs row), a new review
+  // size line or a changed limit shows on the next state read, and otherwise they are read at most once a minute.
+  // B2: the latest completed Claude dry run on this account, or null. Completed: a review-mode run on a Claude model,
+  // not failed, with a decision; its account is the current one; every Claude call it made completed with usage and a
+  // settled cost; at least one call; and it has the measurement block. B3 and C gate on it.
+  completedClaudeDryRun(){const tag=this.accountTag();if(!tag?.key)return null;
+    const rows=this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT 50').all();
+    for(const row of rows){let r;try{r=JSON.parse(row.payload);}catch{continue;}const v=r.review;
+      if(r.mode!=='review'||!v||!String(v.model??'').startsWith('claude-')||v.failed||!v.decision?.action||!(v.calls>=1)||!v.measurement)continue;
+      if(r.summary?.account?.key!==tag.key)continue;
+      const calls=this.db.prepare('SELECT payload FROM ai_calls').all().map(c=>JSON.parse(c.payload)).filter(c=>c.reviewId===r.id&&String(c.model??'').startsWith('claude-'));
+      if(!calls.length||calls.some(c=>c.status!=='completed'||!c.usage||!Number.isFinite(c.accountedMicro)))continue;
+      return {id:r.id,timestamp:r.timestamp,model:v.model,calls:v.calls,costUSD:v.measurement.totals?.costUSD??v.costUSD??null,account:tag.label??null};}
+    return null;}
   // The vendor name whose key a model needs, when that key is not connected; null when it is (Anthropic A5). A status
   // without per-vendor flags (before the provider file is read, or a test double) counts aiConnected as OpenAI.
   missingKey(model){let vendor;try{vendor=require('./ai-models.cjs').vendorOf(model);}catch{return 'AI';}const s=this.providerStatus??{};
@@ -1327,4 +1365,4 @@ class Automation {
   }
   approveLesson(id,approved){if(typeof id!=='string'||typeof approved!=='boolean')throw new Error('INVALID_REQUEST');this.syncLearning();if(this.learningError)throw new Error('LESSON_REVIEW_FAILED');const lifecycle=this.memory.lifecycle(id);if(lifecycle)this.memory.review(id,{expectedSignature:lifecycle.signature,action:approved?'approve':'retire'});else this.db.prepare('UPDATE lessons SET approved=? WHERE id=?').run(approved?1:0,id);return this.getState();}
 }
-module.exports={loggableContext,dryRunSummary,Automation,DEFAULTS};
+module.exports={loggableContext,dryRunSummary,dryRunMeasurement,Automation,DEFAULTS};

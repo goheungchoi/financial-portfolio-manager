@@ -4,7 +4,9 @@
 const models=require('./ai-models.cjs');
 const KEY=/^[A-Za-z0-9_\-]{10,512}$/;
 // Claude call timeouts (design 5.6): Opus thinks before answering, so a call may run longer than GPT's 75 to 85 s.
-const CLAUDE_TIMEOUT_MS=Object.freeze({decide:150000,scout:150000,narrative:120000,compact:90000,reflect:120000});
+// B2: a Claude decision may now write up to 32,000 tokens (thinking included); 300 s, at the SDK's own planning rate of
+// 128,000 tokens an hour, is about 10,700 tokens, twice what 150 s allowed. The worker's cap follows (+15 s).
+const CLAUDE_TIMEOUT_MS=Object.freeze({decide:300000,scout:150000,narrative:120000,compact:90000,reflect:120000});
 const METHOD={decision:'decide',reflection:'reflect',scout:'scout',narrative:'narrative',compact:'compact'};
 // The worker's hard cap for one request (kis-service.cjs): 90 s as before, or for a Claude call its own timeout plus
 // 15 s, so the client's timeout ends the call first and is reported as AI_TIMEOUT, not a broken worker.
