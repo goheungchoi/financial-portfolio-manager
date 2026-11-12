@@ -52,7 +52,7 @@ test('building the narrative is metered, keeps cited drivers, records an episode
   const a=new Automation(db,paper,provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};
   const d=days('2026-09-21',20);a.indexCloses=()=>({SOX:d.map((day,i)=>({day,close:day==='2026-10-15'?10000:11000+i})),KOSPI:d.map((day,i)=>({day,close:5600+i}))});
   a.news=[{title:'AI stocks plunge',published:new Date().toISOString(),source:'CNBC',url:'https://cnbc.example/a'}];
-  assert.match(a.narrativeAvailable(),/OpenAI/);a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'none'});
+  assert.match(a.narrativeAvailable(),/OpenAI/);a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'none'});
   const saved=await a.buildNarrative();assert.equal(saved.regime,'risk_off');assert.equal(saved.drivers.filter(x=>x.confirmed).length,1);
   const call=supplied.find(([op])=>op==='narrative')[1];assert.ok(call.context.signals.some(s=>s.id==='IDX_SOX'));assert.equal(call.context.headlines[0].title,'AI stocks plunge');assert.equal(call.options.reasoningEffort,'low');
   assert.equal(db.prepare('SELECT calls FROM ai_usage').get().calls,1);assert.equal(a.episodes.list().length,1,'the SOX drop became an episode');

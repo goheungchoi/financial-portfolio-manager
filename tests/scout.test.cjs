@@ -57,7 +57,7 @@ test('a scout run is metered, saves the plan and the next trading review receive
   const automation=new Automation(db,paper,provider,(id,kind,title,body)=>events.push({id,kind,title,body}));automation.live=live;automation.providerStatus.aiConnected=true;
   const watch=[];automation.discovery={list:()=>watch,symbols:()=>watch.map(w=>w.symbol),screen_market:async()=>({rows:[]}),search_securities:async()=>({rows:[]}),research:async({symbol})=>({symbol,analysts:{brokerages:3}}),update_watchlist:async args=>{watch.push(...args.entries.map(e=>({symbol:e.symbol,name:'Samsung',source:'ai',reason:e.reason})));return {results:[{symbol:'005930',status:'added'}]};}};
   assert.match(automation.getState().scout.blocked,/OpenAI/,'needs the OpenAI decision maker');
-  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'none'});
+  automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'none'});
   assert.equal(automation.getState().scout.blocked,null);
   const saved=await automation.scout();
   assert.equal(saved.plan.targets[0].symbol,'005930');assert.equal(saved.rounds,2);assert.deepEqual(watch.map(w=>w.symbol),['005930']);
@@ -110,7 +110,7 @@ test('a trading review can brief the scout and ask for a run, which starts after
     if(operation==='scout'){scoutStarted();const id=payload.context.briefs[0].id;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[{briefId:id,answer:'Found two banks below book.'},{briefId:'B-nope',answer:'x'}],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
   automation.discovery={list:()=>[],symbols:()=>[],screen_market:async()=>({}),search_securities:async()=>({}),research:async()=>({}),update_watchlist:async()=>({})};
-  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.review();
   const first=supplied.find(([op])=>op==='decision')[1];assert.equal(first.context.scoutBrief.runAllowed,true);assert.equal(first.context.scoutBrief.remainingRunsToday,3);
   await scoutDone;await new Promise(resolve=>setImmediate(resolve));
@@ -139,7 +139,7 @@ test('the scout reports a disconnected KIS account instead of starting',()=>{
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
   const automation=new Automation(db,paper,{request:async()=>{throw new Error('unexpected');}},()=>{});automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[]};
   automation.live=new LiveEngine(db,{request:async()=>{throw new Error('unexpected');}},()=>({status:'disconnected',snapshot:null}));
-  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   assert.equal(automation.getState().scout.blocked,'Connect your KIS account');assert.rejects(automation.scout(),/SCOUT_UNAVAILABLE/);
 });
 test('with both markets, a failed U.S. account check does not stop the scout',async()=>{
@@ -149,7 +149,7 @@ test('with both markets, a failed U.S. account check does not stop the scout',as
   let context;const provider={request:async(operation,payload)=>{context=payload.context;return {plan:{summary:'Korea only today.',cashTargetPct:null,focus:'',targets:[]},usage:{inputTokens:1,outputTokens:1}};}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.usLive={identity:()=>'acct:US',context:async()=>({}),getState:()=>({})};automation.refreshUS=async()=>{throw new Error('US_CASH_BROKER_REJECTED');};automation.providerStatus.aiConnected=true;
   automation.discovery={list:()=>[],symbols:()=>[]};
-  automation.configure({scope:'both',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  automation.configure({scope:'both',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   const saved=await automation.scout();assert.equal(saved.plan.summary,'Korea only today.');
   assert.deepEqual(context.accounts.map(a=>a.market),['KR','US']);assert.equal(context.accounts[1].status,'unavailable');assert.equal(context.accounts[1].reason,'US_CASH_BROKER_REJECTED');
 });
@@ -196,7 +196,7 @@ test('the scout reads its scorecard and earlier self-reviews, and plans carry an
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
   const contexts=[];let n=0;const provider={request:async(operation,payload)=>{contexts.push(payload.context);n++;return {plan:{summary:'s'+n,cashTargetPct:null,focus:'',targets:[{symbol:'005930',name:'Samsung',role:'candidate',targetWeightPct:10,thesis:'Upside.',risks:''}],briefAnswers:[],retrospective:n===1?'Too few results to judge yet.':''},usage:{inputTokens:1,outputTokens:1}};}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[],symbols:()=>[]};
-  automation.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.scout();assert.equal(contexts[0].scorecard,undefined,'no picks yet');assert.equal(contexts[0].retrospectives,undefined);
   await automation.scout();assert.equal(contexts[1].scorecard.picks[0].symbol,'005930');assert.equal(contexts[1].scorecard.picks[0].tradingReviews,'not yet');assert.equal(contexts[1].retrospectives[0].note,'Too few results to judge yet.');
   const state=automation.getState().scout;assert.equal(state.scorecard.picks.length,1,'the same pick across runs');assert.deepEqual(state.briefs,[]);
@@ -226,7 +226,7 @@ test('a trading review sees a carried target flagged once a later review recomme
   const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[{symbol:'005930',name:'Samsung',quantity:2,cost:140000,price:70000}]};
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[{symbol:'005930',price:70000,retrievedAt:Date.now()}],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot}));
   const supplied=[];let action='Sell';const provider={request:async(operation,payload)=>{supplied.push([operation,payload]);return {decision:{action,symbol:action==='Sell'?'005930':'',quantity:action==='Sell'?1:0,explanation:'Results cut the thesis.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
-  const a=new Automation(db,paper,provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
+  const a=new Automation(db,paper,provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   a.scoutStore.save(a.watchScope(),{summary:'s',cashTargetPct:10,focus:'f',targets:[{symbol:'005930',name:'Samsung',role:'hold',targetWeightPct:20,thesis:'Accept the results risk.',risks:'r',carriedFrom:new Date(Date.now()-3600000).toISOString()}]},{runId:'r',trigger:'t',model:'m',usage:{},rounds:1,answered:[]});
   await a.review();assert.equal(supplied.at(-1)[1].context.scoutPlan.targets[0].needsReassessment,undefined,'nothing contradicts it yet');
   action='Hold';await a.review();const target=supplied.at(-1)[1].context.scoutPlan.targets[0];assert.match(target.needsReassessment[0],/recommended Sell/);

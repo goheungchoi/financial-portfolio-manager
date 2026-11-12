@@ -588,3 +588,5 @@ table.discover-table{table-layout:auto}
 .movement-more{font-size:12px}.movement-more ul{margin:6px 0;padding-left:18px}
 .movement-more .movement-tables{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;max-height:220px;overflow:auto}
 .movement-more table{width:100%;font-size:11.5px;font-variant-numeric:tabular-nums;border-collapse:collapse}.movement-more th,.movement-more td{padding:2px 4px;text-align:right}.movement-more th:first-child,.movement-more td:first-child{text-align:left}
+/* B1: the AI provider cards in Connections keep the normal card spacing. */
+.provider-cards{display:flex;flex-direction:column;gap:16px}

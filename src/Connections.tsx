@@ -4,6 +4,8 @@ import {useEffect,useState} from 'react';
 import type {ReactNode} from 'react';
 import type {KisState} from './KisAccount';
 import type {RuntimeState,RuntimeReply} from './RuntimeSettings';
+import {ProviderCards} from './ProviderCards';
+import {takeDraft} from './useDraftState';
 
 const money=(n:number)=>new Intl.NumberFormat('ko-KR',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const kisErrors:Record<string,string>={INVALID_CREDENTIAL_FILE:'Check the credential JSON format.',AUTH_FAILED:'Authentication failed. Check your KIS credentials and API access.',RATE_LIMITED:'KIS rate limit reached. Wait before refreshing.',BROKER_REJECTED:'KIS rejected the query. Check account permissions and environment.',INCOMPLETE_BALANCE:'The complete balance could not be retrieved. No partial balance is displayed.',INVALID_RESPONSE:'KIS returned an unexpected response.',REQUEST_FAILED:'The request failed. Check connectivity and retry.',BROKER_UNAVAILABLE:'Broker process unavailable. Import credentials again.',BUSY:'A request is already running.'};
@@ -15,6 +17,8 @@ function StatusPill({tone,children}:{tone:'ok'|'warn'|'off'|'error';children:Rea
 /** One place for every private connection: the KIS brokerage account and the optional provider keys. */
 export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavigate}:{kis:KisState;kisBusy:boolean;onImport():void;onRefresh():void;onDisconnect():void;onNavigate(tab:string):void}){
   const [runtime,setRuntime]=useState<RuntimeState|null>(null);const [busy,setBusy]=useState(false);const [message,setMessage]=useState('');
+  // B1: Engine settings → Trading links here for data sharing; the AI providers section is brought into view once.
+  useEffect(()=>{if(takeDraft<boolean>('connections:ai-providers'))setTimeout(()=>document.getElementById('ai-providers')?.scrollIntoView({block:'start'}),300);},[]);
   useEffect(()=>{let alive=true,pending=false;const load=async()=>{if(pending)return;pending=true;try{const next=await window.portfolio?.getRuntime();if(alive&&next)setRuntime(next);}catch{if(alive)setMessage('Could not load connection status.');}finally{pending=false;}};void load();const timer=setInterval(load,2000);return()=>{alive=false;clearInterval(timer);};},[]);
   // A reconnect reports how it ended, from the connection's own status: the request returns once it has finished, or,
   // when another connect was already running, the status polled every 2 seconds settles it. A success note clears itself.
@@ -61,12 +65,12 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
     </section>
     <CalendarKeyCard file={runtime?.connections.calendar} busy={busy} onImport={async()=>{const api=window.portfolio;if(!api)return;setBusy(true);setMessage('');try{const r=await api.importCalendarKey();if(r.state)setRuntime(r.state);if(!r.ok&&r.error)setMessage(r.error);}catch{setMessage('Could not import the calendar key.');}finally{setBusy(false);}}} onAction={action=>void fileAction('calendar',action)}/>
 
+    <ProviderCards runtime={runtime} providerFile={providerFile?.name??null} busy={busy} onState={setRuntime}/>
+
     <section className="settings-card connection-card" aria-label="Provider keys">
       <div className="card-head"><div><h2>AI, news and alert keys</h2><small>Optional · one JSON file</small></div><StatusPill tone={providerTone}>{providerFile?.status==='connecting'?'Loading…':providerCount?`${providerCount} of 3 loaded`:'Not configured'}</StatusPill></div>
       <div className="setting-rows">
         {providerFile?.error&&<div role="alert" className="notice error">{providerFile.error}</div>}
-        {keyRow('OpenAI',providers?.openaiConnected??providers?.aiConnected,'Not set','Turns on AI reviews')}
-        {keyRow('Anthropic',providers?.anthropicConnected,'Not set','Claude dry-run reviews')}
         {keyRow('Open DART',providers?.dartConnected,'Not set','Korean disclosures')}
         {keyRow('Bank of Korea ECOS',providers?.ecosConnected,'Sample access','Korean macro data')}
         {keyRow('FRED',providers?.fredConnected,'Not set','U.S. release calendar')}

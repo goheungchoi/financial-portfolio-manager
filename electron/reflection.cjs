@@ -20,7 +20,7 @@ class ReflectionQueue {
   async tick(config,connected,provider,log=()=>{}){
     if(this.busy)return;this.sync();
     if(!config.reflectionEnabled){this.reason='Disabled';return;}if(!connected){this.reason='API key required';return;}
-    const job=this.jobs().find(j=>['queued','retry'].includes(j.status)&&j.nextAt<=Date.now()&&this.memory.lifecycle(j.lessonId)?.status!=='retired'&&(this.memory.describe(j.lessonId)?.source==='paper'||config.shareKisWithAI));
+    const job=this.jobs().find(j=>['queued','retry'].includes(j.status)&&j.nextAt<=Date.now()&&this.memory.lifecycle(j.lessonId)?.status!=='retired'&&(this.memory.describe(j.lessonId)?.source==='paper'||config.shareKisAllowed===true));
     if(!job){this.reason='Waiting for eligible sales or data-sharing permission';return;}
     const evidence=this.memory.describe(job.lessonId);
     // Whitelisted normalized evidence only; account identities and raw broker payloads never leave this process.

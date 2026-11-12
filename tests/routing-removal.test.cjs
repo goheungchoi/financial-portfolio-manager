@@ -18,7 +18,7 @@ function harness({saved=null,prepare=()=>{}}={}){
   const provider={request:async(op,payload)=>{calls.push({op,model:payload?.options?.openaiModel,effort:payload?.options?.reasoningEffort,confirmation:payload?.context?.confirmation});if(op!=='decision')throw new Error('PROVIDER_REQUEST_FAILED');return {decision:decide(),usage:{inputTokens:1,outputTokens:1},provider:'openai',model:payload?.options?.openaiModel};}};
   const logs=[];const a=new Automation(db,paper,provider,(id,kind,title,body)=>logs.push({kind,title,body}));a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({status:'ok'})};
   a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',autoSubmit:false,skipUnchanged:false});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',autoSubmit:false,skipUnchanged:false});
   return {a,db,calls,logs,setDecision:f=>{decide=f;}};
 }
 

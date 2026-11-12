@@ -26,7 +26,7 @@ test('a replay runs baseline and variant per review, meters both calls and saves
   const provider={request:async(op,payload)=>{calls.push(payload);const variant=/Replay variant/.test(payload.context.userGuidelines??'');return {decision:variant?{action:'Buy',symbol:'005930',quantity:1,credit:'none',loanDate:'',explanation:'Buy.'}:hold,usage:{inputTokens:10,outputTokens:2},provider:'openai'};}};
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};
   const d=days(30,'2026-09-25');a.series={closes:()=>d.map((date,i)=>({date,close:100+i})),ensure:async()=>{}};a.indexCloses=()=>({KOSPI:d.map((date)=>({date,close:1000}))});
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',guidelines:'Grow.'});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',guidelines:'Grow.'});
   await a.review();const reviewId=a.getState().reviews[0].id;assert.ok(a.replays.context(reviewId),'the review saved the context it sent');
   await assert.rejects(a.replay({}),/REPLAY_NO_CHANGE/);
   const before=calls.length;const run=await a.replay({instructions:'Buy Samsung on any dip.',limit:3});
@@ -41,7 +41,7 @@ test('a model change runs the variant on another model and records tokens for ea
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot}));const calls=[];
   const provider={request:async(op,payload)=>{calls.push(payload);return {decision:{action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'Hold on '+payload.options.openaiModel,planVerdicts:[{symbol:'005930',verdict:'waiting',reason:'r'}]},usage:{inputTokens:payload.options.openaiModel==='gpt-6-luna'?100:200,outputTokens:5},provider:'openai'};}};
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',guidelines:'Grow.'});await a.review();
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',guidelines:'Grow.'});await a.review();
   await assert.rejects(a.replay({model:{openaiModel:'gpt-6-sol',reasoningEffort:'medium'}}),/REPLAY_NO_CHANGE/,'the same model is no change');
   await assert.rejects(a.replay({model:{openaiModel:'gpt-6-astra',reasoningEffort:'none'}}),/INVALID_MODEL_SETTINGS/);
   const before=calls.length;const run=await a.replay({model:{openaiModel:'gpt-6-luna',reasoningEffort:'none'},limit:3});

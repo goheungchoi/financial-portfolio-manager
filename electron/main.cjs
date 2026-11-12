@@ -349,6 +349,11 @@ app.whenReady().then(async () => {
     if(['us','both'].includes(scope)){const hit=research.cached('MARKET','market');if(hit?.value?.kospiSectors?.length)out.korea={asOf:new Date(hit.at).toISOString(),sectors:hit.value.kospiSectors.map(({name,changePct})=>({sector:name,changePct})).filter(s=>s.changePct!=null).sort((a,b)=>b.changePct-a.changePct)};}
     return Object.keys(out).length?{...out,note:'Latest sector moves in the other market (change against its previous close, read at asOf). A sharp move in a sector there often carries into the same sector in the next session here, but it is a lead to check against news, flows and the open, not a certainty.'}:null;};
   automation.freshenMarket=async()=>{if(!kisState.snapshot)return;const F=require('./market-freshness.cjs');if(!F.krOpen(Date.now(),{closedDays:new Set([...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])])}))return;await research.market();};
+  // B1: the key Test, only on the user's click (key-test.cjs). The renderer gets one of the fixed results and texts.
+  ipcMain.handle('providers:test',async(event,vendor)=>{authorize(event);const K=require('./key-test.cjs');if(!Object.hasOwn(K.VENDORS,vendor))return {result:'unreachable',text:'Invalid request.'};
+    let result='unreachable';try{const r=await providerService.request('test-key',{vendor});if(K.RESULTS.includes(r?.result))result=r.result;}catch{}
+    try{automation.log('provider-test-'+Date.now(),'System',`Provider key test · ${K.VENDORS[vendor]} · ${result}`,K.text(vendor,result));}catch{}
+    return {vendor,result,text:K.text(vendor,result)};});
   ipcMain.handle('narrative:refresh',async event=>{authorize(event);try{await automation.buildNarrative();return {ok:true,state:automation.narrativeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'NARRATIVE_FAILED',state:automation.narrativeState()};}});
   ipcMain.handle('narrative:hide',(event,id,hidden)=>{authorize(event);automation.narratives.hide(String(id),hidden!==false);return automation.narrativeState();});
   // Holdings for exposure and sizing; sector names come from cached quotes.

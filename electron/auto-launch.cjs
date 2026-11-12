@@ -14,9 +14,9 @@ async function start(a,token){
   if(a.config.provider==='external')throw new Error('Choose an AI model in Engine settings to start automatic reviews.');
   if(a.config.provider==='openai'){const missing=a.missingKey?a.missingKey(a.config.openaiModel):(a.providerStatus.aiConnected?null:'OpenAI');if(missing)throw new Error(`Import your ${missing} key in Connections first.`);}
   if(a.config.scope!=='paper'&&a.config.provider!=='openai')throw new Error('Select an AI model for broker auto trading. Local rules are for paper practice.');
-  if(a.config.scope!=='paper'&&!a.config.shareKisWithAI)throw new Error('Allow portfolio sharing with the AI provider in Engine settings first.');
-  const usage=a.getState().usage;
-  if(a.config.provider==='openai'&&require('./ai-models.cjs').budgetExceeded(a.config,usage,require('./ai-models.cjs').reservation(a.config)))throw new Error('Daily API budget reached. Update your budget or wait for the next day.');
+  // B1: the consent and the daily limits of the trading model's provider.
+  if(a.config.scope!=='paper'&&!(a.consentFor?a.consentFor(a.config.openaiModel):a.config.shareKisWithOpenAI))throw new Error(a.consentMessage?a.consentMessage(a.config.openaiModel):'Allow sharing KIS data with OpenAI in Connections.');
+  if(a.config.provider==='openai'&&(a.budgetBlocked?a.budgetBlocked(a.config.openaiModel,require('./ai-models.cjs').reservation(a.config)):require('./ai-models.cjs').budgetExceeded(a.config,a.getState().usage,require('./ai-models.cjs').reservation(a.config))))throw new Error('Daily API budget reached. Update your budget or wait for the next day.');
   a.launching=true;const generation=a.launchGeneration??0;const selected=engines(a);const prior=selected.map(e=>({e,enabled:e.enabled,autoEnabled:e.autoEnabled}));
   try{
     if(['us','both'].includes(a.config.scope))await a.refreshUS();

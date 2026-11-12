@@ -57,7 +57,7 @@ function automation(){
   const a=new Automation(db,paper,provider,()=>{});a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({status:'ok'})};a.series={closes:()=>null,ensure:async()=>{}};
   a.discovery={list:()=>[],symbols:()=>[],screen_market:async()=>({rows:[]}),search_securities:async()=>({rows:[]}),research:async()=>({status:'unavailable'}),update_watchlist:async()=>({results:[]})};
   a.indexCloses=()=>({});a.news=[];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',skipUnchanged:false,scoutModel:'gpt-6-luna',scoutEffort:'high',narrativeModel:'gpt-6-astra',narrativeEffort:'same',routineModel:'gpt-6-sol',routineEffort:'low',reflectionModel:'gpt-6-luna',reflectionEffort:'none'});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',skipUnchanged:false,scoutModel:'gpt-6-luna',scoutEffort:'high',narrativeModel:'gpt-6-astra',narrativeEffort:'same',routineModel:'gpt-6-sol',routineEffort:'low',reflectionModel:'gpt-6-luna',reflectionEffort:'none'});
   const calls=()=>db.prepare('SELECT payload FROM ai_calls ORDER BY rowid').all().map(r=>JSON.parse(r.payload));
   return {a,db,supplied,calls};
 }

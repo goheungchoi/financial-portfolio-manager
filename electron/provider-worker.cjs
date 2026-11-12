@@ -12,6 +12,7 @@ process.parentPort.on('message',async({data})=>{
       const value=R.parseProviderFile(text);ecosKey=value.ecosApiKey;fredKey=value.fredApiKey;secContact=value.secContactEmail;dartKey=value.dartApiKey;pushURL=value.pushURL;
       router=R.createRouter({openai:value.openaiApiKey?new AiClient(value.openaiApiKey):null,anthropic:value.anthropicApiKey?R.claudeClient(value.anthropicApiKey):null});
       result={...router.flags(),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey),secConnected:Boolean(secContact)};
+    } else if(data.operation==='test-key') {result=await router.testKey(data.vendor);
     } else if(data.operation==='decision') {result=await router.clientFor(data.options?.openaiModel).decide(data.context,data.options);}
     else if(data.operation==='reflection') {result=await router.clientFor(data.options?.openaiModel).reflect(data.context,data.options);}
     else if(data.operation==='scout') {result=await router.clientFor(data.options?.openaiModel).scout(data.context,data.options);}

@@ -44,7 +44,7 @@ function reviewHarness(perf){
   const supplied=[],events=[];const provider={request:async(op,payload)=>{supplied.push([op,payload]);return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
   const a=new Automation(db,paper,provider,(id,kind,title,body)=>events.push({kind,title,body}));a.live=live;a.providerStatus.aiConnected=true;a.evidence={get:async()=>({})};a.series={closes:()=>null,ensure:async()=>{}};
   a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];
-  a.configure({scope:'kis',provider:'openai',shareKisWithAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',reviewGate:'off'});
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',reviewGate:'off'});
   a.performanceSummary=market=>{const kind=market==='US'?'USD':'KRW';const s=perf.summary('acct',kind,P.benchmarkFor(kind));if(!s.start)return null;return reviewPerformance(s,{unconfirmed:[],checking:[]});};
   const context=()=>supplied.filter(([op])=>op==='decision').at(-1)?.[1]?.context;
   return {a,supplied,events,context};
