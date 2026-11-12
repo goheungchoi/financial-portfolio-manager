@@ -668,7 +668,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:stop',event=>{authorize(event);const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};});
   ipcMain.handle('runtime:get',event=>{authorize(event);return runtimeState();});
   ipcMain.handle('runtime:history',event=>{authorize(event);return historyOf(automation.getState());});
-  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});
+  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')?error.message:'INVALID_SETTINGS'};}});
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
   ipcMain.handle('scout:run',async event=>{authorize(event);try{await automation.scout();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.scoutError??'SCOUT_FAILED',state:runtimeState()};}});

@@ -28,14 +28,18 @@ function agentModels(config){return Object.fromEntries(AGENTS.map(a=>[a,agentMod
 // Throws INVALID_SETTINGS for a malformed value, INVALID_MODEL_SETTINGS (ai-models.cjs) for a model and effort that do
 // not go together, and CLAUDE_NOT_ENABLED_FOR_TRADING for a model not yet allowed. Checked on the resolved values, so a
 // change of the trading model is refused when an agent that follows it would end up with an invalid pair.
-function validate(config){
+function validate(config,{claudeAllowed=false}={}){
   const models=require('./ai-models.cjs');
   for(const [agent,[mk,ek]] of Object.entries(KEYS)){
     const m=config[mk],e=config[ek];
     if(typeof m!=='string'||!m||m.length>60)throw new Error('INVALID_SETTINGS');
     if(typeof e!=='string'||!(e==='same'||EFFORTS.includes(e)))throw new Error('INVALID_SETTINGS');
     if(RAISED.has(agent)&&e==='none')throw new Error('INVALID_SETTINGS');
-    const r=agentModel(config,agent);models.settings(r);models.assertTradingModel(r.openaiModel);
+    const r=agentModel(config,agent);models.settings(r);
+    // B3: a Claude model for these agents only after a completed Claude dry run on this account (automation's
+    // completedClaudeDryRun). The refusal names the first such agent (CLAUDE_DRY_RUN_REQUIRED:<agent>), so the settings
+    // window can say which agent to change. The trading model keeps assertTradingModel until C2.
+    if(models.vendorOf(r.openaiModel)==='anthropic'){if(!claudeAllowed)throw new Error(`CLAUDE_DRY_RUN_REQUIRED:${agent}`);}else models.assertTradingModel(r.openaiModel);
   }
 }
 module.exports={AGENTS,KEYS,AGENT_DEFAULTS,agentModel,agentModels,validate};

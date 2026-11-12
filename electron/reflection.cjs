@@ -24,11 +24,13 @@ class ReflectionQueue {
     if(!job){this.reason='Waiting for eligible sales or data-sharing permission';return;}
     const evidence=this.memory.describe(job.lessonId);
     // Whitelisted normalized evidence only; account identities and raw broker payloads never leave this process.
-    const context={evidence};const reserve=models.reservation(config,context),day=seoulDate();const usage=this.db.prepare('SELECT calls,reservedMicro FROM reflection_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
+    const context={evidence};const reserve=models.reservation(config,context,{kind:'reflect'}),day=seoulDate();const budget=config.providerBudget??null;
+    // B3: on Claude, the Anthropic key and the Anthropic daily limits as well as the reflection's own.
+    if(budget?.gateClosed){this.reason='Run one dry run on Claude on this account first';return;}if(budget?.missing){this.reason=`${budget.missing} key not loaded`;return;}if(budget?.blocked(reserve)){this.reason='Anthropic daily limit reached';return;}const usage=this.db.prepare('SELECT calls,reservedMicro FROM reflection_usage WHERE day=?').get(day)??{calls:0,reservedMicro:0};
     if(models.budgetExceeded(config,usage,reserve,true)){this.reason='Reflection daily budget reached';return;}
     const callId=randomUUID(),callRecord={source:'reflection',model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now()};this.busy=true;this.reason='Reflecting';const running={...job,status:'running',attempts:job.attempts+1,model:config.openaiModel,startedAt:Date.now(),reservedMicro:(job.reservedMicro??0)+reserve};
     try{
-      this.db.exec('BEGIN IMMEDIATE');try{this.save(running);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,JSON.stringify(callRecord));this.db.prepare('INSERT OR REPLACE INTO reflection_usage VALUES(?,?,?)').run(day,usage.calls+1,usage.reservedMicro+reserve);this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
+      this.db.exec('BEGIN IMMEDIATE');try{this.save(running);this.db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(callId,day,JSON.stringify(callRecord));this.db.prepare('INSERT OR REPLACE INTO reflection_usage VALUES(?,?,?)').run(day,usage.calls+1,usage.reservedMicro+reserve);if(budget)budget.add(day,reserve);this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
       log(job.id,'System','Post-trade reflection started',job.symbol);
       const reply=await provider.request('reflection',{context,options:{openaiModel:config.openaiModel,reasoningEffort:config.reasoningEffort}});const {cost}=require('./ai-accounting.cjs').settle(this.db,'reflection_usage',day,callId,reply,'completed');const result=validate(reply.reflection);
       const current=this.memory.lifecycle(job.lessonId);const stale=current?.signature!==job.signature;

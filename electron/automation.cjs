@@ -53,6 +53,8 @@ function providerConsent(saved){if(!saved||typeof saved!=='object'||!Object.hasO
 // already has (maxCallsPerDay, maxUSDPerDay and their No limit switches).
 function vendorLimits(config,vendor){return vendor==='anthropic'?{maxCallsPerDay:config.anthropicCallsPerDay,maxUSDPerDay:config.anthropicUSDPerDay,unlimitedCalls:config.anthropicUnlimitedCalls,unlimitedBudget:config.anthropicUnlimitedBudget}:{maxCallsPerDay:config.maxCallsPerDay,maxUSDPerDay:config.maxUSDPerDay,unlimitedCalls:config.unlimitedCalls,unlimitedBudget:config.unlimitedBudget};}
 const VENDOR_NAMES={openai:'OpenAI',anthropic:'Anthropic'};
+// B3 review F1: the reason a Claude agent does not run on an account with no completed Claude dry run.
+const CLAUDE_GATE_REASON='Run one dry run on Claude on this account first';
 // B2: the measurement of one dry run, from its own AI call records: per request, the kind (dry-run or compact), model,
 // status, stop reason, tokens (cache read and write apart), service tier, reserved and settled cost and sizes; and the
 // totals. Built for GPT and Claude runs alike; a record made before B2 has no block and still opens.
@@ -130,7 +132,7 @@ class Automation {
     require('./ai-models.cjs').settings(next);
     // A Claude model is not a trading model yet (Anthropic provider A1b): refused for the trading review and, through each
     // agent's resolved model, for every other agent (step A2) before anything is saved.
-    require('./ai-models.cjs').assertTradingModel(next.openaiModel);require('./agent-models.cjs').validate(next);
+    require('./ai-models.cjs').assertTradingModel(next.openaiModel);{const AM=require('./agent-models.cjs');const claude=AM.AGENTS.filter(a=>a!=='trading').some(a=>this.vendorOf(AM.agentModel(next,a).openaiModel)==='anthropic');AM.validate(next,{claudeAllowed:claude&&Boolean(this.completedClaudeDryRun())});}
     if(['sessionKrNxt','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
     if(typeof next.scoutAiRequests!=='boolean'||typeof next.scoutEnabled!=='boolean')throw new Error('INVALID_SETTINGS');require('./scout-timing.cjs').validate(next);
     if(!Array.isArray(next.newsFeeds)||next.newsFeeds.length>10||next.newsFeeds.some(f=>!f||typeof f.url!=='string'||!/^https:\/\//.test(f.url)||f.url.length>500||typeof(f.label??'')!=='string'||String(f.label??'').length>60)||typeof next.kisNews!=='boolean'||typeof next.usTickerNews!=='boolean'||typeof next.narrativeEnabled!=='boolean'||!Number.isFinite(next.sizingRiskPct)||next.sizingRiskPct<0.1||next.sizingRiskPct>20||!Number.isFinite(next.sizingAtrMultiple)||next.sizingAtrMultiple<0.5||next.sizingAtrMultiple>5)throw new Error('INVALID_SETTINGS');
@@ -702,6 +704,10 @@ class Automation {
     const row=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage_vendor WHERE day=? AND vendor=?').get(day,vendor);if(row)return {calls:row.calls,reservedMicro:row.reservedMicro};
     const any=this.db.prepare('SELECT COUNT(*) n FROM ai_usage_vendor WHERE day=?').get(day).n;const total=this.db.prepare('SELECT calls,reservedMicro FROM ai_usage WHERE day=?').get(day);
     if(!any&&total&&vendor==='openai')return {calls:total.calls,reservedMicro:total.reservedMicro};return {calls:0,reservedMicro:0};}
+  // B3: reflection on Claude also counts against the Anthropic limits: the check, and the provider row written in the
+  // reflection's own transaction. On OpenAI there is none, and reflection stays exactly as before.
+  reflectionProviderBudget(){const model=this.agentModel('reflection').openaiModel;const vendor=this.vendorOf(model);if(vendor!=='anthropic')return null;
+    return {vendor,gateClosed:this.claudeGateClosed('reflection'),missing:this.missingKey(model),blocked:reserve=>this.budgetBlocked(model,reserve),add:(day,reserve)=>{const mine=this.vendorUsage(vendor,day);this.db.prepare('INSERT INTO ai_usage_vendor VALUES(?,?,?,?) ON CONFLICT(day,vendor) DO UPDATE SET calls=excluded.calls,reservedMicro=excluded.reservedMicro').run(day,vendor,mine.calls+1,mine.reservedMicro+reserve);}};}
   usageByVendor(day=seoulDate()){return Object.fromEntries(Object.keys(VENDOR_NAMES).map(v=>[v,this.vendorUsage(v,day)]));}
   budgetBlocked(model,reserve){return require('./ai-models.cjs').budgetExceeded(vendorLimits(this.config,this.vendorOf(model)),this.vendorUsage(this.vendorOf(model)),reserve);}
   // One reservation for every AI call (B1): the provider's limits, then in one transaction the all-provider total
@@ -720,11 +726,15 @@ class Automation {
   // first request (the "Review size" log), else the first-request byte limit; upToUSD: four requests at the byte limits
   // (the first at 70,000 bytes, three continuations at 140,000), the most one dry run can reserve. blocked: the
   // provider's dollar limit is below the first request's reservation, so the run cannot start.
+  // B3 review F1: the gate holds at call time too, not only when settings are saved. An agent saved on Claude while one
+  // account had a completed dry run must not call Claude after the connection changes to an account without one. The
+  // cached value is keyed by historyVersion, which carries the account identity through watchScope.
+  claudeGateClosed(agent){return this.vendorOf(this.agentModel(agent).openaiModel)==='anthropic'&&!this.completedClaudeDryRunCached();}
   completedClaudeDryRunCached(){return this.stateCached?this.stateCached('claudeDryRun',()=>{try{return this.completedClaudeDryRun();}catch{return null;}}):null;}
   claudeReservation(model,limits){const M=require('./ai-models.cjs');const cfg={openaiModel:model,reasoningEffort:'medium'};
     let bytes=null;try{const row=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.title')='Review size' ORDER BY seq DESC LIMIT 1").get();const w=row?JSON.parse(JSON.parse(row.payload).body??'{}').wireBytes:null;if(Number.isInteger(w)&&w>0)bytes=w;}catch{}
-    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({}),M.reviewByteLimit({})));const upTo=M.reservationAt(cfg,M.reviewByteLimit({}))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]}));
-    const usd=m=>Math.round(m/1e4)/100;return {firstRequestUSD:usd(first),firstRequestBasis:bytes?`the latest review's first request, ${bytes.toLocaleString('en-US')} bytes`:'the first-request size limit',upToUSD:usd(upTo),requestsUpTo:4,
+    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({}),M.reviewByteLimit({})));const compactUpTo=M.reservationAt(cfg,400000,'compact');const upTo=M.reservationAt(cfg,M.reviewByteLimit({}))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]}));
+    const usd=m=>Math.round(m/1e4)/100;return {firstRequestUSD:usd(first),firstRequestBasis:bytes?`the latest review's first request, ${bytes.toLocaleString('en-US')} bytes`:'the first-request size limit',upToUSD:usd(upTo),requestsUpTo:4,compactUpToUSD:usd(compactUpTo),
       blocked:!limits.unlimitedBudget&&limits.maxUSDPerDay*1e6<first,limitUSD:limits.unlimitedBudget?null:limits.maxUSDPerDay};}
   // The card's figures and the gate are cached with stateCached: its key (historyVersion) holds the database's total
   // changes, the settings revision, the scope and the minute, so a finished dry run (a new dry_runs row), a new review
@@ -752,7 +762,10 @@ class Automation {
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){
     const modelConfig=this.agentModel('compacting');const models=require('./ai-models.cjs');
-    const reserve=models.reservation(modelConfig,payload,{maxBytes:400000});const day=seoulDate();
+    // B3: condensing on Claude needs the Anthropic key and its sharing switch (research results can carry order and holding
+    // details). Refused before any request; the review then carries the result by reference, as on any condensing failure.
+    if(this.vendorOf(modelConfig.openaiModel)==='anthropic'){if(this.claudeGateClosed('compacting'))throw new Error('CLAUDE_DRY_RUN_REQUIRED');if(this.missingKey(modelConfig.openaiModel))throw new Error('AI_NOT_CONNECTED');if(!this.consentFor(modelConfig.openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');}
+    const reserve=models.reservation(modelConfig,payload,{maxBytes:400000,kind:'compact'});const day=seoulDate();
     
     const callId=randomUUID(),record={reviewId,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'compact'};
     this.reserveCall(modelConfig,reserve,callId,day,JSON.stringify(record));
@@ -1168,7 +1181,8 @@ class Automation {
   }
   // Market narrative and similar past episodes, as the agents read them.
   storyContext(){const n=require('./narrative.cjs');const latest=this.narratives.latest();const view=n.agentView(latest);if(!view)return {};const vix=this.indexCloses?.()?.VIX?.at(-1)?.close??null;return {marketNarrative:view,similarEpisodes:this.episodes.similar(latest,{vix})};}
-  narrativeAvailable(){if(this.config.provider!=='openai')return 'Choose OpenAI as the decision maker';if(!this.providerStatus.aiConnected)return 'Add an OpenAI key in Connections';return null;}
+  // B3: the narrative's own model's key; it carries no account data, so no sharing switch (tests/claude-agents pins that).
+  narrativeAvailable(){if(this.config.provider!=='openai')return 'Choose OpenAI as the decision maker';const missing=this.missingKey(this.agentModel('narrative').openaiModel);if(missing)return `Add an ${missing} key in Connections`;if(this.claudeGateClosed('narrative'))return CLAUDE_GATE_REASON;return null;}
   // Builds the narrative from recent headlines and numeric signals; metered like any other AI call.
   async buildNarrative(trigger='User request'){
     if(this.narrating)throw new Error('NARRATIVE_BUSY');const blocked=this.narrativeAvailable();if(blocked){this.narrativeError=blocked;throw new Error('NARRATIVE_UNAVAILABLE');}
@@ -1182,7 +1196,7 @@ class Automation {
       const context={today:seoulDate(),signals:signalList,headlines:headlineList.map(({url,...h})=>h),...(stories.length?{topStories:stories.map((s,k)=>({story:k,terms:s.terms,outlets:s.outlets,timesUsual:s.timesUsual,firstSeen:s.firstSeen,latest:s.latest}))}:{}),previousNarrative:previous?{asOf:new Date(previous.timestamp).toISOString(),drivers:previous.drivers.map(({id,kind,title,themes,since})=>({id,kind,title,themes,since}))}:null};
       this.log(id,'Program',trigger==='User request'?'Market narrative':'Market narrative · '+trigger,`Summarizing ${headlineList.length} recent headlines against ${signalList.length} market signals.`);
       const modelConfig=this.agentModel('narrative');const models=require('./ai-models.cjs');
-      const reserve=models.reservation(modelConfig,context,{maxBytes:120000});const day=seoulDate();
+      const reserve=models.reservation(modelConfig,context,{maxBytes:120000,kind:'narrative'});const day=seoulDate();
       
       const callId=require('node:crypto').randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'narrative'};
       this.reserveCall(modelConfig,reserve,callId,day,JSON.stringify(record));
@@ -1202,7 +1216,8 @@ class Automation {
   // AI scout: research the market, update the shortlist and write a portfolio plan. Runs alongside reviews; it never trades.
   scoutAvailable(){
     if(this.config.provider!=='openai')return 'Choose OpenAI as the decision maker';
-    if(!this.providerStatus.aiConnected)return 'Add an OpenAI key in Connections';
+    {const missing=this.missingKey(this.agentModel('scout').openaiModel);if(missing)return `Add an ${missing} key in Connections`;}
+    if(this.claudeGateClosed('scout'))return CLAUDE_GATE_REASON;
     if(this.config.scope==='paper')return 'The scout works with KIS accounts';
     if(!this.consentFor(this.agentModel('scout').openaiModel))return `Allow sharing KIS data with ${VENDOR_NAMES[this.vendorOf(this.agentModel('scout').openaiModel)]}`;
     if(!this.discovery)return 'Connect your KIS account';
@@ -1276,7 +1291,7 @@ class Automation {
       const modelConfig=this.agentModel('scout');
       const request=async({final,continuation})=>{
         const options={final,continuation,...modelConfig,maxBytes:scoutLib.SCOUT_REQUEST_BYTES};const models=require('./ai-models.cjs');
-        const reserve=models.reservation(modelConfig,context,options);
+        const reserve=models.reservation(modelConfig,context,{...options,kind:'scout'});
         const day=seoulDate();
         
         const callId=randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'scout'};
@@ -1299,7 +1314,7 @@ class Automation {
   tick() {
     this.restoreClock();
     if(!this.learningLastRun||Date.now()-this.learningLastRun>=15000)this.syncLearning();
-    if(!this.busy&&!this.learningError&&!this.backgroundPaused)void this.reflections.tick({...this.config,...this.agentModel('reflection'),shareKisAllowed:this.consentFor(this.agentModel('reflection').openaiModel)},this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
+    if(!this.busy&&!this.learningError&&!this.backgroundPaused)void this.reflections.tick({...this.config,...this.agentModel('reflection'),shareKisAllowed:this.consentFor(this.agentModel('reflection').openaiModel),providerBudget:this.reflectionProviderBudget()},this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
     const emergency=this.emergencyState();
     this.observeEmergency(emergency);
     if(emergency.active&&this.config.lossAction==='stop'&&(this.config.enabled||this.config.autoSubmit)&&!this.busy)this.trip('auto-stopped',`Auto trading stopped: daily loss limit reached in ${this.config.scope==='paper'?'the paper portfolio':emergency.activeMarkets.map(m=>m==='US'?'U.S.':'Korea').join(' and ')}. Positions and accepted broker orders are unchanged.`);

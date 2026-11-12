@@ -77,7 +77,8 @@ test('the Agents tab: one card per agent, each with Model and Effort; the narrat
   assert.ok(rows.includes('<option value="same">Same as the trading agent</option>'));
   assert.ok(rows.includes('const efforts=effortOptions(config,agent);'),'None is not offered where the engine refuses it (agent-draft.test.mjs)');
   assert.ok(rows.includes('value={effort} onChange')&&rows.includes('{!efforts.includes(effort)&&<option value={effort} disabled>{cap(effort)} · not allowed with this model</option>}'),'the select always shows the draft value (review F1)');
-  assert.ok(!/claude-/.test(rows),'no Claude model for the other agents before release B');
+  // B3: Claude Opus 5.5 is listed, and can be chosen only once the key is loaded and a Claude dry run completed here.
+  assert.ok(rows.includes('const claudeOpen=anthropicKey&&measured;')&&rows.includes("<option value=\"claude-opus-5-5\" disabled={!claudeOpen&&model!=='claude-opus-5-5'}>{claudeLabel}</option>"),'the Claude option is gated');
 });
 
 test('the condensing model row is now the Context compacting card; token saving lost only that row',()=>{
