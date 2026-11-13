@@ -270,7 +270,8 @@ class Automation {
   // Per-review token use and estimated cost from recorded AI calls, newest first.
   tokenSavingState(){
     this.db.exec('CREATE TABLE IF NOT EXISTS token_savings(day TEXT PRIMARY KEY,payload TEXT NOT NULL)');const row=this.db.prepare('SELECT payload FROM token_savings WHERE day=?').get(seoulDate());
-    const calls=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 120').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId);const reviews=new Map();
+    // Completed calls only (fix R2): a refused or failed call has no measured cost, and its reservation is not a review's cost.
+    const calls=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 120').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId&&c.status==='completed');const reviews=new Map();
     for(const call of calls){const r=reviews.get(call.reviewId)??{reviewId:call.reviewId,timestamp:call.timestamp,calls:0,inputTokens:0,cachedTokens:0,outputTokens:0,micro:0,models:[]};r.calls++;r.timestamp=Math.min(r.timestamp,call.timestamp);r.inputTokens+=call.usage?.inputTokens??0;r.cachedTokens+=call.usage?.cachedTokens??0;r.outputTokens+=call.usage?.outputTokens??0;r.micro+=call.estimatedMicro??call.accountedMicro??call.reservedMicro??0;if(!r.models.includes(call.model))r.models.push(call.model);reviews.set(call.reviewId,r);}
     const recent=[...reviews.values()].sort((a,b)=>b.timestamp-a.timestamp).slice(0,20);
     return {today:row?JSON.parse(row.payload):{},recent,averageMicro:recent.length?Math.round(recent.reduce((n,r)=>n+r.micro,0)/recent.length):null};
@@ -504,13 +505,50 @@ class Automation {
   reviewBackoffState(){let b;try{b=this.reviewBackoff();}catch{b={until:0};}return b.until>Date.now()?{until:b.until,count:b.count,lastCode:b.lastCode??null,lastRule:b.lastRule??null}:null;}
   reviewBackoff(){this.db.exec('CREATE TABLE IF NOT EXISTS review_backoff(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)');const r=this.db.prepare('SELECT payload FROM review_backoff WHERE id=1').get();return r?JSON.parse(r.payload):{count:0,until:0};}
   setReviewBackoff(next){this.reviewBackoff();this.db.prepare('INSERT INTO review_backoff VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(next));}
+  // OpenAI refusal fix R2 (artifacts/reviews/2026-11-13-openai-rate-limit: design 5, review Q2, the user's emergency
+  // decision): one wait per AI provider, shared by every automatic path. A rate limit, a server error, a timeout or a
+  // connection failure ('rate') waits max(Retry-After + up to 20 %, 2 min x 2^(n-1)), at most 30 min; used-up credit or a
+  // spend limit ('quota') waits 60 min. Failures within a minute of each other count as one (a retry inside one call).
+  // The first completed call to that provider ends the wait. Accounting is not touched here (ai-accounting.cjs).
+  providerBackoff(vendor){this.db.exec('CREATE TABLE IF NOT EXISTS provider_backoff(vendor TEXT PRIMARY KEY,payload TEXT NOT NULL)');const r=this.db.prepare('SELECT payload FROM provider_backoff WHERE vendor=?').get(vendor);return r?JSON.parse(r.payload):{count:0,until:0};}
+  setProviderBackoff(vendor,next){this.providerBackoff(vendor);this.db.prepare('INSERT INTO provider_backoff VALUES(?,?) ON CONFLICT(vendor) DO UPDATE SET payload=excluded.payload').run(vendor,JSON.stringify(next));}
+  providerWaitKind(error){const code=error?.message,p=error?.providerError;const E=require('./ai-errors.cjs');
+    if(code==='AI_QUOTA_EXHAUSTED'||p&&(E.QUOTA_CODES.includes(p.errorCode)||p.errorType==='insufficient_quota'))return 'quota';
+    if(['AI_RATE_LIMITED','AI_SERVER_ERROR','AI_TIMEOUT','AI_REQUEST_FAILED'].includes(code)||p&&(p.status===429||p.status>=500))return 'rate';return null;}
+  noteProviderOutcome(vendor,error,now=Date.now()){try{
+    const prev=this.providerBackoff(vendor);
+    if(!error){if(prev.count||!prev.lastOkAt||now-prev.lastOkAt>60000)this.setProviderBackoff(vendor,{count:0,until:0,lastOkAt:now,...(prev.count?{lastOutage:{kind:prev.kind,firstAt:prev.firstAt,lastAt:prev.lastAt,failures:prev.failures,lastCode:prev.lastCode,endedAt:now}}:prev.lastOutage?{lastOutage:prev.lastOutage}:{})});return;}
+    const kind=this.providerWaitKind(error);if(!kind)return;const p=error.providerError??null;
+    const same=prev.count&&prev.lastAt&&now-prev.lastAt<60000;const count=same?prev.count:(prev.count??0)+1;
+    const retryMs=Number.isInteger(p?.retryAfterSec)?p.retryAfterSec*1000*(1+0.2*(this.random??Math.random)()):0;
+    const wait=kind==='quota'?60*60000:Math.max(retryMs,Math.min(30*60000,2*60000*2**(count-1)));
+    this.setProviderBackoff(vendor,{...prev,count,kind,firstAt:prev.count?prev.firstAt:now,lastAt:now,until:now+wait,failures:(prev.count?prev.failures??0:0)+1,lastCode:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'AI_REQUEST_FAILED',
+      ...(p?{lastRefusal:{status:p.status,...(p.errorCode?{errorCode:p.errorCode}:{}),...(p.errorType?{errorType:p.errorType}:{}),...(p.requestId?{requestId:p.requestId}:{}),...(p.message?{message:p.message}:{}),...(Number.isInteger(p.retryAfterSec)?{retryAfterSec:p.retryAfterSec}:{})}}:{lastRefusal:null}),retryAfterSec:Number.isInteger(p?.retryAfterSec)?p.retryAfterSec:null});
+  }catch{}}
+  // When automatic calls to this provider may run again (0: now). An emergency review waits at most max(Retry-After,
+  // 2 min) after the last failure of a rate wait, without growth; for used-up credit it waits like the rest.
+  providerWaitUntil(vendor,{emergency=false}={},now=Date.now()){let b;try{b=this.providerBackoff(vendor);}catch{return 0;}if(!b.count||!(b.until>now))return 0;
+    const until=emergency&&b.kind==='rate'?Math.min(b.until,b.lastAt+Math.max(120000,(b.retryAfterSec??0)*1000)):b.until;return until>now?until:0;}
+  // One line for a skipped run: which provider, why it waits, and when it tries again (KST).
+  providerWaitText(model,until){let v=null;try{v=this.vendorOf(model);}catch{}const b=v?this.providerBackoff(v):{};const name=VENDOR_NAMES[v]??'The AI provider';
+    return `${name} is ${b.kind==='quota'?'refusing requests: the account credit or spend limit is used up':'limiting requests or unavailable'}; automatic runs wait until ${new Date(until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST.`;}
+  providerWaitFor(model,opts={}){let vendor;try{vendor=this.vendorOf(model);}catch{return 0;}return vendor?this.providerWaitUntil(vendor,opts):0;}
+  // Every AI call goes through this wrapper, which records its outcome for the provider wait; nothing else changes.
+  get provider(){return this.guardedProvider;}
+  set provider(p){this.rawProvider=p;if(!p||typeof p.request!=='function'){this.guardedProvider=p;return;}const self=this,AI=new Set(['decision','scout','narrative','compact','reflection']);
+    const g=Object.create(p);g.request=async(op,payload)=>{let vendor=null;if(AI.has(op))try{vendor=require('./ai-models.cjs').vendorOf(payload?.options?.openaiModel);}catch{}
+      let result;try{result=await p.request(op,payload);}catch(error){if(vendor)self.noteProviderOutcome(vendor,error);throw error;}if(vendor)self.noteProviderOutcome(vendor,null);return result;};this.guardedProvider=g;}
   noteReviewOutcome(code,error=null,now=Date.now()){const E=require('./ai-errors.cjs');
     if(code==null){if(this.reviewBackoff().count)this.setReviewBackoff({count:0,until:0,clearedAt:now});return;}
     if(!E.FORMAT_CODES.includes(code))return;const prev=this.reviewBackoff(),count=(prev.count??0)+1,until=count>=2?now+Math.min(6*3600000,15*60000*2**(count-2)):0;
     this.setReviewBackoff({count,until,lastAt:now,lastCode:code,lastRule:E.ruleDetail(error).trim().slice(0,220)||null});
     if(until)this.log(randomUUID(),'System','Automatic reviews paused',`${count} reviews in a row failed on the response's format (${code}). Automatic reviews wait until ${new Date(until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST. Your own review requests still run; order tracking, conditional orders and the loss guardrails continue.`);}
   async review(trigger='User request',externalDecision) {
-    if(!['User request','External agent'].includes(trigger)){const b=this.reviewBackoff();if(b.until>Date.now()){if(EVIDENCE_TRIGGERS.includes(trigger)&&this.triggerEvidence)this.restoreEvents(this.watchScope(),this.triggerEvidence);throw new Error('REVIEW_BACKOFF');}}
+    if(!['User request','External agent'].includes(trigger)){const b=this.reviewBackoff();if(b.until>Date.now()){if(EVIDENCE_TRIGGERS.includes(trigger)&&this.triggerEvidence)this.restoreEvents(this.watchScope(),this.triggerEvidence);throw new Error('REVIEW_BACKOFF');}
+      // The provider wait (fix R2): an automatic review does not call a provider that is waiting; its one-off events are
+      // kept and held until the wait ends. Your own review requests still run.
+      const until=this.config.provider==='openai'?this.providerWaitFor(this.agentModel('trading').openaiModel,{emergency:trigger==='Emergency loss response'}):0;
+      if(until){if(EVIDENCE_TRIGGERS.includes(trigger)&&this.triggerEvidence){const scope=this.watchScope(),evidence=this.triggerEvidence;this.restoreEvents(scope,evidence);this.holdEvents(scope,require('./size-retry.cjs').eventKeys(evidence),until);}throw new Error('REVIEW_PROVIDER_WAIT');}}
     // The evidence that started this review, captured before anything is awaited: a later trigger replaces
     // this.triggerEvidence, and a review that fails before its context is built (account data) still puts it back.
     // Review of 8ef1be1, P1: an agent trigger followed by INCOMPLETE_BALANCE was used up with no decision.
@@ -701,7 +739,7 @@ class Automation {
       // size failure they are held until it clears; after any other failure, for EVENT_RETRY_MS, so a failing provider
       // is not called again every minute.
       if(!decided&&entryEvidence){this.restoreEvents(watchScope,entryEvidence);const keys=require('./size-retry.cjs').eventKeys(entryEvidence);
-        if(!sizeFailed&&keys.length){const before=this.eventHold?.scope===watchScope&&Date.now()<this.eventHold.until?this.eventHold.keys:[];this.eventHold={scope:watchScope,keys:new Set([...before,...keys]),until:Date.now()+EVENT_RETRY_MS};if(!this.disposed)this.log(id,'System','Trigger kept for a later review',`No decision was made, so ${require('./size-retry.cjs').eventItems(entryEvidence).map(e=>e.label).join('; ')} ${keys.length>1?'are':'is'} kept and tried again from ${new Date(this.eventHold.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST.`);}}
+        if(!sizeFailed&&keys.length){this.holdEvents(watchScope,keys,Math.max(Date.now()+EVENT_RETRY_MS,this.config.provider==='openai'?this.providerWaitFor(this.agentModel('trading').openaiModel):0));if(!this.disposed)this.log(id,'System','Trigger kept for a later review',`No decision was made, so ${require('./size-retry.cjs').eventItems(entryEvidence).map(e=>e.label).join('; ')} ${keys.length>1?'are':'is'} kept and tried again from ${new Date(this.eventHold.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST.`);}}
       if(!this.disposed){this.log(id,'System','Review failed',this.lastError+' · '+this.lastErrorDetail);if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));const streak=this.guardrails.failed(),limit=this.config.maxConsecutiveFailures;if(limit>0&&streak>=limit&&(this.config.enabled||this.config.autoSubmit))this.trip('auto-stopped',`Auto trading stopped after ${streak} consecutive failed reviews (latest: ${this.lastError}).`);}throw new Error('REVIEW_FAILED');}
     finally{this.busy=false;this.researchSeen?.delete(id);this.firstAfterStart=false;this.saveClock();this.startRequestedScout();}
   }
@@ -891,6 +929,14 @@ class Automation {
     else if(e.type==='order'){const o=this.orderTaken?.get(e.id);if(o){this.orderQueue??={scope:this.config.scope,orders:new Map()};if(!this.orderQueue.orders.has(e.id))this.orderQueue.orders.set(e.id,o);}}else{this.watches.unfire(scope,e.symbol,e.revision);if(e.revision&&this.config.watchlistAlerts==='on')this.watchAlerts.restore(e.revision);}}catch{}}}
   // Events held in this scope: those a size failure already had, until it clears, and those kept after any other
   // failure, until their retry time (EVENT_RETRY_MS).
+  // Q7 (fix R2): the console line for order updates that start a review. An order kept after a review that decided
+  // nothing comes back as a retry with the time it was first announced, never as a new event.
+  orderUpdateLine(list,t=Date.now()){const fresh=list.filter(o=>!o.announcedAt),again=list.filter(o=>o.announcedAt);for(const o of fresh)o.announcedAt=t;
+    const line=o=>`${o.status}: ${o.side} ${o.symbol}, ${o.filled??0}/${o.quantity} shares`,hm=x=>new Date(x).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'});
+    return {title:fresh.length?'Order update':'Order update · retry',body:[fresh.length?fresh.map(line).join('; ')+'.':'',again.length?`Retrying the review for: ${again.map(o=>`${line(o)} (update at ${hm(o.announcedAt)} KST)`).join('; ')}.`:''].filter(Boolean).join(' ')+' A review starts now.'};}
+  // Holds events in this scope until a time (kept with any still held): EVENT_RETRY_MS after a failure, or the end of a
+  // provider wait (fix R2), whichever is later.
+  holdEvents(scope,keys,until,now=Date.now()){const before=this.eventHold?.scope===scope&&now<this.eventHold.until?this.eventHold:null;this.eventHold={scope,keys:new Set([...(before?.keys??[]),...keys]),until:Math.max(until,before?.until??0)};}
   heldEvents(scope,now=Date.now()){const f=this.failedInput,h=this.eventHold;return new Set([...(f?.scope===scope?f.eventKeys??[]:[]),...(h?.scope===scope&&now<h.until?h.keys:[])]);}
   // The installed app version (a size failure is tried again after an update).
   appVersion(){try{return require('../package.json').version;}catch{return null;}}
@@ -1280,6 +1326,7 @@ class Automation {
   // Builds the narrative from recent headlines and numeric signals; metered like any other AI call.
   async buildNarrative(trigger='User request'){
     if(this.narrating)throw new Error('NARRATIVE_BUSY');const blocked=this.narrativeAvailable();if(blocked){this.narrativeError=blocked;throw new Error('NARRATIVE_UNAVAILABLE');}
+    if(trigger!=='User request'&&this.providerWaitFor(this.agentModel('narrative').openaiModel))throw new Error('PROVIDER_WAIT');// fix R2
     this.narrating=true;const id=require('node:crypto').randomUUID();const n=require('./narrative.cjs');
     try{
       const closes=this.indexCloses?.()??{};const labels=Object.fromEntries(Object.entries(require('./performance.cjs').INDEXES).map(([k,v])=>[k,v.label]));
@@ -1344,7 +1391,9 @@ class Automation {
   startRequestedScout(){const pending=this.pendingScout;this.pendingScout=null;if(!pending||this.disposed||pending.scope!==this.watchScope()||this.scouting)return;void this.scout('Requested by review · '+pending.reason.slice(0,80)).catch(()=>{});}
   // Scout timing (step A4): the markets a scheduled run can be for, and the calendar options its times are read with.
   // One check for a due scheduled scout run (called from the tick); returns what it did, for tests.
-  scoutTick(now=Date.now()){if(!(this.config.scoutEnabled&&!this.backgroundPaused&&!this.scouting&&!this.scoutAvailable()))return null;const scope=this.watchScope();const timing=require('./scout-timing.cjs');const opts=this.scoutSessionOpts();const slot=timing.dueSlot(this.config,this.scoutMarkets(),now,opts);if(slot&&this.scoutStore.lastSlot(scope)!==slot.id&&now-(this.lastScoutAttempt??0)>=600000){this.scoutStore.markSlot(scope,slot.id);const late=timing.lateness(slot,now,opts);if(!late.onTime){this.log(randomUUID(),'Program','Scout run dropped · '+slot.label,late.reason);return {slot,dropped:late.reason};}const rule=timing.skipRule(slot,this.lastScoutRun(scope,opts),now,opts);if(rule.skip){this.log(randomUUID(),'Program','Scout run skipped · '+slot.label,rule.reason);return {slot,skipped:rule.reason};}this.lastScoutAttempt=now;const note=[late.note,rule.reason].filter(Boolean).join('. ');void this.scout('Scheduled',{slot:{market:slot.market,label:slot.label,...(note?{note}:{})}}).catch(()=>{});return {slot,ran:true};}return null;}
+  scoutTick(now=Date.now()){if(!(this.config.scoutEnabled&&!this.backgroundPaused&&!this.scouting&&!this.scoutAvailable()))return null;const scope=this.watchScope();const timing=require('./scout-timing.cjs');const opts=this.scoutSessionOpts();const slot=timing.dueSlot(this.config,this.scoutMarkets(),now,opts);if(slot&&this.scoutStore.lastSlot(scope)!==slot.id&&now-(this.lastScoutAttempt??0)>=600000){this.scoutStore.markSlot(scope,slot.id);const late=timing.lateness(slot,now,opts);if(!late.onTime){this.log(randomUUID(),'Program','Scout run dropped · '+slot.label,late.reason);return {slot,dropped:late.reason};}const rule=timing.skipRule(slot,this.lastScoutRun(scope,opts),now,opts);if(rule.skip){this.log(randomUUID(),'Program','Scout run skipped · '+slot.label,rule.reason);return {slot,skipped:rule.reason};}
+    {const wait=this.providerWaitFor(this.agentModel('scout').openaiModel,{},now);if(wait){const why=this.providerWaitText(this.agentModel('scout').openaiModel,wait);this.log(randomUUID(),'Program','Scout run skipped · '+slot.label,why);return {slot,skipped:why};}}// fix R2
+    this.lastScoutAttempt=now;const note=[late.note,rule.reason].filter(Boolean).join('. ');void this.scout('Scheduled',{slot:{market:slot.market,label:slot.label,...(note?{note}:{})}}).catch(()=>{});return {slot,ran:true};}return null;}
   // The latest scout run for the skip rule: when it finished and which markets its research covered. Plans saved before
   // A4 have no focus recorded; theirs is the clock rule at the time they finished (what those runs used).
   lastScoutRun(scope,opts=this.scoutSessionOpts()){const p=this.scoutStore.latest(scope);if(!p)return null;return {finishedAt:p.timestamp,focus:Array.isArray(p.focus)?p.focus:require('./scout.cjs').researchFocus(this.scoutMarkets(),p.timestamp,opts).markets};}
@@ -1364,6 +1413,8 @@ class Automation {
   }
   async scout(trigger='User request',{slot=null}={}){
     if(this.scouting)throw new Error('SCOUT_BUSY');const blocked=this.scoutAvailable();if(blocked){this.scoutError=blocked;throw new Error('SCOUT_UNAVAILABLE');}
+    // The provider wait (fix R2): an automatic scout run does not call a waiting provider; your own run still does.
+    if(trigger!=='User request'&&this.providerWaitFor(this.agentModel('scout').openaiModel))throw new Error('PROVIDER_WAIT');
     this.scouting=true;const id=randomUUID();const scope=this.watchScope();
     try{
       const previous=this.scoutStore.latest(scope);
@@ -1408,7 +1459,7 @@ class Automation {
   tick() {
     this.restoreClock();
     if(!this.learningLastRun||Date.now()-this.learningLastRun>=15000)this.syncLearning();
-    if(!this.busy&&!this.learningError&&!this.backgroundPaused)void this.reflections.tick({...this.config,...this.agentModel('reflection'),shareKisAllowed:this.consentFor(this.agentModel('reflection').openaiModel),providerBudget:this.reflectionProviderBudget()},this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
+    if(!this.busy&&!this.learningError&&!this.backgroundPaused&&!this.providerWaitFor(this.agentModel('reflection').openaiModel))void this.reflections.tick({...this.config,...this.agentModel('reflection'),shareKisAllowed:this.consentFor(this.agentModel('reflection').openaiModel),providerBudget:this.reflectionProviderBudget()},this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});
     const emergency=this.emergencyState();
     this.observeEmergency(emergency);
     if(emergency.active&&this.config.lossAction==='stop'&&(this.config.enabled||this.config.autoSubmit)&&!this.busy)this.trip('auto-stopped',`Auto trading stopped: daily loss limit reached in ${this.config.scope==='paper'?'the paper portfolio':emergency.activeMarkets.map(m=>m==='US'?'U.S.':'Korea').join(' and ')}. Positions and accepted broker orders are unchanged.`);
@@ -1418,7 +1469,7 @@ class Automation {
       if(fill.side==='Sell'&&fill.realized<0&&!this.db.prepare('SELECT id FROM paper_orders WHERE id=?').get(fill.orderId??''))this.db.prepare('INSERT INTO lessons(id,text) VALUES(?,?)').run(randomUUID(),`Candidate lesson: paper sale ${fill.symbol} realized a loss of KRW ${Math.abs(fill.realized)} after simulated fees. Inspect the linked decision, entry cost, slippage and market movement before drawing a causal conclusion. A loss alone does not establish a decision mistake.`);
     }
     // The narrative refreshes before the Korean open and after the close on weekdays, once per slot.
-    if(this.config.narrativeEnabled&&!this.backgroundPaused&&!this.narrating&&!this.narrativeAvailable()){const slot=require('./scout.cjs').dueSlot('narrative');const last=this.db.prepare('SELECT slot FROM narrative_slots WHERE id=1').get()?.slot;if(slot&&slot!==last&&Date.now()-(this.lastNarrativeAttempt??0)>=600000){this.lastNarrativeAttempt=Date.now();this.db.prepare('INSERT INTO narrative_slots VALUES(1,?) ON CONFLICT(id) DO UPDATE SET slot=excluded.slot').run(slot);void this.buildNarrative('Scheduled').catch(()=>{});}}
+    if(this.config.narrativeEnabled&&!this.backgroundPaused&&!this.narrating&&!this.narrativeAvailable()){const slot=require('./scout.cjs').dueSlot('narrative');const last=this.db.prepare('SELECT slot FROM narrative_slots WHERE id=1').get()?.slot;if(slot&&slot!==last&&Date.now()-(this.lastNarrativeAttempt??0)>=600000){this.lastNarrativeAttempt=Date.now();this.db.prepare('INSERT INTO narrative_slots VALUES(1,?) ON CONFLICT(id) DO UPDATE SET slot=excluded.slot').run(slot);{const wait=this.providerWaitFor(this.agentModel('narrative').openaiModel);if(wait)this.log(randomUUID(),'Program','Market narrative skipped · '+slot,this.providerWaitText(this.agentModel('narrative').openaiModel,wait));else void this.buildNarrative('Scheduled').catch(()=>{});}}}
     // Scout runs follow their own weekday schedule, independent of trading reviews; each slot runs once.
     // Scheduled scout runs (step A4): the most recent switched-on slot of today from the session calendar, once. A slot
     // shortly after another scout run is skipped and logged, unless its market opened in between (scout-timing.cjs).
@@ -1453,7 +1504,7 @@ class Automation {
       return;}}
     if(this.orderQueue?.orders.size&&!this.busy&&Date.now()-this.lastRun>=30000&&(held=>[...this.orderQueue.orders.values()].some(o=>!held.has(require('./size-retry.cjs').orderEventKey(o))))(this.heldEvents(this.watchScope()))){const list=[...this.orderQueue.orders.values()];this.orderQueue=null;this.orderTaken=new Map(list.map(o=>[o.id,o]));
       this.triggerEvidence={kind:'order',orders:list.map(o=>({id:o.id,symbol:o.symbol,market:o.market??'KR',side:o.side,quantity:o.quantity,filled:o.filled??0,status:o.status,fillPrice:o.fillPrice??null,placedAt:o.createdAt?new Date(o.createdAt).toISOString():null}))};
-      this.log(list[0].id,'System','Order update',list.map(o=>`${o.status}: ${o.side} ${o.symbol}, ${o.filled??0}/${o.quantity} shares`).join('; ')+'. A review starts now.');void this.review('Order update').catch(()=>{});return;}
+      {const {title,body}=this.orderUpdateLine(list);this.log(list[0].id,'System',title,body);}void this.review('Order update').catch(()=>{});return;}
     // Agent triggers: met conditions start a review with the values that met them.
     if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const open={KR:this.sessionOpen('KR'),US:this.sessionOpen('US')};const held=this.heldEvents(this.watchScope());const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData(),t=>!held.has('agent:'+t.id)&&(t.symbols??[]).every(sym=>open[/:/.test(sym)?'US':'KR']));if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
     const elapsed=Date.now()-this.lastRun;
