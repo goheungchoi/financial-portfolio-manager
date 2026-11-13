@@ -1,6 +1,7 @@
 // Anthropic provider, step A4: whole simulated reviews on Claude through researchReview and Automation, on fake
 // transports and the paper and mock engines only. Design: artifacts/reviews/2026-11-10-anthropic-provider/.
 const test=require('node:test'),assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
+const {adapt}=require('./fixtures/claude-flat.cjs');// the enforced Claude decision form: nested fixture answers sent flat
 const {AnthropicClient}=require('../electron/anthropic-client.cjs');const {AiClient}=require('../electron/ai-client.cjs');const {researchReview}=require('../electron/research-review.cjs');const {errorReply}=require('../electron/provider-error-reply.cjs');
 const KEY='sk-ant-api03-'+'k'.repeat(40);const CLAUDE={openaiModel:'claude-opus-5-5',reasoningEffort:'medium'};
 const USAGE={input_tokens:1200,cache_read_input_tokens:9000,cache_creation_input_tokens:3000,output_tokens:400};
@@ -8,7 +9,7 @@ const thinking=n=>({type:'thinking',thinking:'',signature:'sig_'+n});const text=
 const hold={action:'Hold',symbol:'',quantity:0,explanation:'No trade.'};
 const evidenceCall=(id,symbol='005930')=>({type:'tool_use',id,name:'get_market_evidence',input:{symbol,dataset:'company'}});
 const reply=({content=[thinking('f'),text(JSON.stringify(hold))],stop_reason='end_turn',input_transformations=[]}={})=>({id:'msg',type:'message',role:'assistant',model:'claude-opus-5-5',content,stop_reason,stop_details:null,usage:USAGE,input_transformations});
-function transport(...replies){const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));const r=replies.length>1?replies.shift():replies[0];const status=r.status??200;return new Response(JSON.stringify(r.status?r.body:r),{status,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;}
+function transport(...replies){const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));const r=replies.length>1?replies.shift():replies[0];const status=r.status??200;return new Response(JSON.stringify(r.status?r.body:adapt(r,JSON.parse(init.body))),{status,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;}
 // The worker's path: the client's error becomes the reply the main process rebuilds (provider-error-reply.cjs, kis-service.cjs).
 const viaWorker=async fn=>{try{return await fn();}catch(e){const r=errorReply('decision',e);throw Object.assign(new Error(r.code),{usage:r.usage,model:r.model,responseChars:r.responseChars,...(r.detail?{detail:r.detail}:{})});}};
 const CTX={universe:[{symbol:'005930'},{symbol:'NASD:GOOGL'}],quotes:[{symbol:'005930',price:217000},{symbol:'NASD:GOOGL',price:323.68}]};
@@ -53,7 +54,8 @@ test('A4: plan correction on Claude: a withheld Buy, one correction request that
   assert.ok(logs.includes('Plan correction requested')&&logs.includes('Plan correction accepted'),logs.join(', '));
   assert.equal(r.decision.action,'Buy');assert.equal(r.decision.plan.horizonDays,365);assert.deepEqual(r.decision.planCorrected,{missing:'no horizon'});
   const fix=t.sent[2];assert.ok(Array.isArray(fix.tools)&&fix.tools.length>0,'the correction keeps the tools: the history holds tool calls');assert.deepEqual(fix.tool_choice,{type:'none'},'and calls none');
-  assert.deepEqual(fix.messages.at(-2),{role:'assistant',content:withheld},'the withheld turn is replayed as it was');assert.equal(fix.messages.at(-1).role,'user');assert.match(fix.messages.at(-1).content,/held back your Buy of 1 NASD:GOOGL because its plan is incomplete: no horizon/);
+  // The withheld turn as the client received it (in the enforced form the fake answered flat) is replayed as it was.
+  assert.deepEqual(fix.messages.at(-2),{role:'assistant',content:adapt(reply({content:withheld}),t.sent[1]).content},'the withheld turn is replayed as it was');assert.equal(fix.messages.at(-1).role,'user');assert.match(fix.messages.at(-1).content,/held back your Buy of 1 NASD:GOOGL because its plan is incomplete: no horizon/);
   assert.deepEqual(fix.tools,t.sent[1].tools,'the same tools as the review rounds');
   // A plain review without research or tool history sends no tools on its correction.
   const t2=transport(reply({content:withheld}),reply({content:[thinking(3),text(JSON.stringify(raw(365)))]}));const c2=new AnthropicClient(KEY,t2);

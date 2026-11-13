@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   testProviderKey: vendor => ipcRenderer.invoke('providers:test', vendor),
   listReplays: () => ipcRenderer.invoke('replay:list'),
   runReplay: options => ipcRenderer.invoke('replay:run',options),
+  estimateReplay: options => ipcRenderer.invoke('replay:estimate',options),
   hideNarrativeDriver: (id,hidden) => ipcRenderer.invoke('narrative:hide',id,hidden),
   cancelTrigger: id => ipcRenderer.invoke('desk:cancel-trigger',id),
   deleteNote: symbol => ipcRenderer.invoke('desk:delete-note',symbol),

@@ -4,11 +4,12 @@
 // request; the measurement block on every dry run; the reservation figures; completedClaudeDryRun, the gate for B3 and
 // C. No network: every transport is a fake.
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
+const {adapt}=require('./fixtures/claude-flat.cjs');// the enforced Claude decision form: nested fixture answers sent flat
 const A=require('../electron/anthropic-client.cjs');const M=require('../electron/ai-models.cjs');const R=require('../electron/ai-router.cjs');
 const {Automation,dryRunMeasurement}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {settle}=require('../electron/ai-accounting.cjs');
 const KEY='sk-ant-fixture-key-0000';const OPTS={openaiModel:'claude-opus-5-5',reasoningEffort:'medium'};const CTX={universe:[{symbol:'005930'}],quotes:[{symbol:'005930',price:217000}]};
 const reply=(extra={})=>({id:'msg_fixture',type:'message',role:'assistant',model:'claude-opus-5-5',content:[{type:'thinking',thinking:'',signature:'sig'},{type:'text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,explanation:'No trade.'})}],stop_reason:'end_turn',stop_details:null,usage:{input_tokens:1200,cache_read_input_tokens:9000,cache_creation_input_tokens:3000,output_tokens:400,service_tier:'standard'},input_transformations:[],...extra});
-const transport=r=>{const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));return new Response(JSON.stringify(r),{status:200,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;};
+const transport=r=>{const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));return new Response(JSON.stringify(adapt(r,JSON.parse(init.body))),{status:200,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;};
 
 test('max_tokens 32,000 for a Claude decision, the reservation follows it, and a 300 s decision timeout',async()=>{
   const t=transport(reply());await new A.AnthropicClient(KEY,t).decide(CTX,OPTS);

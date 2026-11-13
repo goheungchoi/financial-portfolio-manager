@@ -361,6 +361,8 @@ app.whenReady().then(async () => {
   automation.portfolioHoldings=()=>{try{const st=portfolioState();const fx=st.fx?.usdKRW??null;return {holdings:st.rows.filter(r=>r.valueKRW>0).map(r=>({symbol:r.symbol,name:r.name,market:r.market,valueKRW:r.valueKRW})),cashKRW:(st.cash.KRW??0)+(fx?(st.cash.USD??0)*fx:0),equityKRW:st.totals.equityKRW??st.totals.KRW};}catch{return null;}};
   automation.loggedEvents=()=>events;
   ipcMain.handle('replay:list',event=>{authorize(event);return {runs:automation.replays.runs(),busy:Boolean(automation.replaying)};});
+  // C1: the confirmation's estimate for a Claude replay, with the run's refusals; nothing is sent.
+  ipcMain.handle('replay:estimate',(event,options)=>{authorize(event);try{return {ok:true,estimate:automation.replayEstimate(options&&typeof options==='object'?options:{})};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED'};}});
   ipcMain.handle('replay:run',async(event,options)=>{authorize(event);try{const run=await automation.replay(options&&typeof options==='object'?options:{});return {ok:true,run};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED'};}});
   // U.S. earnings dates for every listed company (Nasdaq's calendar, refreshed daily), and the 200 largest U.S. companies.
   const usCalendar=new (require('./us-calendar.cjs').UsCalendar)(store.db);automation.usCalendar=usCalendar;

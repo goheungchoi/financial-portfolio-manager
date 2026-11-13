@@ -61,7 +61,7 @@ const timer=setTimeout(()=>{report.errors.push('UI regression timed out');finish
 function finish(code){clearTimeout(timer);fs.writeFileSync(path.join(output,'ui-regression.json'),JSON.stringify(report,null,2));app.exit(code);}
 app.once('browser-window-created',(_event,created)=>{win=created;win.webContents.on('console-message',(...args)=>{const m=args[0]?.message??args[2];const level=args[0]?.level??args[1];if(level==='error'||level===3||/Error|Uncaught/.test(String(m)))console.log('RENDERER-ERROR '+String(m).slice(0,800));});win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{
   const run=code=>win.webContents.executeJavaScript(code),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-  const until=async(code,message)=>{for(let i=0;i<60;i++){if(await run(code))return;await wait(50);}throw new Error(message);};
+  const until=async(code,message,tries=60)=>{for(let i=0;i<tries;i++){if(await run(code))return;await wait(50);}throw new Error(message);};
   const click=async text=>{await run(`(()=>{const button=Array.from(document.querySelectorAll('button')).find(item=>item.textContent.trim()===${JSON.stringify(text)});if(!button)throw new Error('Missing UI button');button.click();})()`);await wait(80);};
   const navigate=async tab=>{await run(`(name=>(name==='Home'?document.querySelector('.brand'):Array.from(document.querySelectorAll('.nav')).find(b=>b.dataset.tab===name)))(${JSON.stringify(tab)}).click()`);await until(`document.querySelector('h1').textContent===${JSON.stringify(tab)}`,'Navigation failed');await wait(100);};
   // Step A3: Engine settings has four tabs; only the open one is rendered.
@@ -813,7 +813,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await until(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Place paper buy order'&&!b.disabled)`,'Order button not ready');await click('Place paper buy order');
       await until('document.querySelector(`[aria-label="Paper order ticket"]`).textContent.includes("placed")','Paper order not placed');
       await run('document.querySelector(`[aria-label="Simulation running"]`).click()');await until('!document.querySelector(`[aria-label="Simulation running"]`).checked','Simulation did not pause');
-      await navigate('AI console');await until('document.querySelectorAll(".run-item").length>0&&Boolean(document.querySelector(".bubble.from-ai"))','Conversation view missing');
+      await navigate('AI console');await until('document.querySelectorAll(".run-item").length>0&&Boolean(document.querySelector(".bubble.from-ai"))','Conversation view missing',200);// 10 s: it failed once in 322 runs at 3 s
       assert.equal(await run('document.querySelector(".run-item").getAttribute("aria-current")'),'true','latest run selected');
       await capture('ai-console-conversation');
     });

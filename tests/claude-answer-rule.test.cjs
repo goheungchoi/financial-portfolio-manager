@@ -4,6 +4,7 @@
 // The Claude answer runs through the real AnthropicClient over a fake transport, and its error through the provider
 // worker's reply, as in the app. No network.
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');const fs=require('node:fs');const path=require('node:path');
+const {adapt}=require('./fixtures/claude-flat.cjs');// the enforced Claude decision form: nested fixture answers sent flat
 require('./fixtures/order-book.cjs');
 const A=require('../electron/anthropic-client.cjs');const ER=require('../electron/provider-error-reply.cjs');const {answerRule}=require('../electron/automation.cjs');
 const KEY='sk-ant-fixture-answer-rule-0000';const CLAUDE={model:{openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}};
@@ -17,7 +18,7 @@ function harness(answer){
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[{symbol:'005930',price:217000,retrievedAt:Date.now()}],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
   const supplied=[];const events=[];
   const provider={request:async(op,payload)=>{supplied.push({op,payload:JSON.stringify(payload)});
-    if(String(payload?.options?.openaiModel??'').startsWith('claude-')){try{return await new A.AnthropicClient(KEY,async()=>new Response(JSON.stringify(reply(answer)),{status:200,headers:{'content-type':'application/json'}})).decide(payload.context,payload.options);}catch(error){throw viaWorker(error);}}
+    if(String(payload?.options?.openaiModel??'').startsWith('claude-')){try{return await new A.AnthropicClient(KEY,async(url,init)=>new Response(JSON.stringify(adapt(reply(answer),JSON.parse(init.body))),{status:200,headers:{'content-type':'application/json'}})).decide(payload.context,payload.options);}catch(error){throw viaWorker(error);}}
     return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
   const a=new Automation(db,paper,provider,(id,kind,title,body)=>events.push({id,kind,title,body}));a.live=live;a.providerStatus={...a.providerStatus,aiConnected:true,openaiConnected:true,anthropicConnected:true};a.evidence={get:async()=>({})};
   a.series={closes:()=>null,ensure:async()=>{}};a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];

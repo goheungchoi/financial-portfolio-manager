@@ -26,7 +26,7 @@ function errorReply(operation,error,{redact=null}={}){
   const ai=AI_USAGE.includes(operation);const refused=ai?providerError(error?.providerError,redact):null;
   return {ok:false,usage:ai?error?.usage??null:null,model:ai?error?.model??null:null,
     responseChars:ai&&Number.isInteger(error?.responseChars)&&error.responseChars>=0?error.responseChars:null,
-    ...(refused?{providerError:refused}:{}),...(ai&&sizes(error?.requestSizes)?{requestSizes:sizes(error.requestSizes)}:{}),...(ai&&typeof error?.stopReason==='string'?{stopReason:error.stopReason.replace(/[^a-z_]/g,'').slice(0,30)}:{}),
+    ...(refused?{providerError:refused}:{}),...(ai&&error?.formFallback===true?{formFallback:true}:{}),...(ai&&['enforced','text'].includes(error?.answerForm)?{answerForm:error.answerForm}:{}),...(ai&&sizes(error?.requestSizes)?{requestSizes:sizes(error.requestSizes)}:{}),...(ai&&typeof error?.stopReason==='string'?{stopReason:error.stopReason.replace(/[^a-z_]/g,'').slice(0,30)}:{}),
     detail:operation==='scout'&&typeof error?.detail==='string'?error.detail.slice(0,200):operation==='decision'&&error?decisionDetail(error):null,
     code:AI_CODES.includes(operation)?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):['dart-company','sec-company','sec-filings'].includes(operation)&&/^(DART|SEC)_[A-Z_]{3,30}$/.test(error?.message??'')?error.message:'PROVIDER_REQUEST_FAILED'};
 }

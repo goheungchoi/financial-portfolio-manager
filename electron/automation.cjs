@@ -75,7 +75,7 @@ function dryRunMeasurement(db,reviewId){
   try{const rows=db.prepare('SELECT payload FROM ai_calls ORDER BY rowid').all().map(r=>JSON.parse(r.payload)).filter(p=>p.reviewId===reviewId);
     const usd=m=>m==null?null:Math.round(m)/1e6;const requests=rows.map((p,i)=>({request:i+1,kind:p.kind??'review',model:p.model??null,status:p.status??null,stopReason:p.stopReason??null,
       inputTokens:p.usage?.inputTokens??null,outputTokens:p.usage?.outputTokens??null,cacheReadTokens:p.usage?.cachedTokens??null,cacheWriteTokens:p.usage?.cacheWriteTokens??null,serviceTier:p.usage?.serviceTier??null,
-      reservedUSD:usd(p.reservedMicro),costUSD:usd(p.accountedMicro??p.estimatedMicro),requestBytes:p.requestSizes?.totalBytes??null,responseChars:p.responseChars??null,...(p.droppedThinking?{droppedThinking:p.droppedThinking}:{})}));
+      reservedUSD:usd(p.reservedMicro),costUSD:usd(p.accountedMicro??p.estimatedMicro),requestBytes:p.requestSizes?.totalBytes??null,responseChars:p.responseChars??null,...(p.answerForm?{answerForm:p.answerForm}:{}),...(p.formFallback?{formFallback:true}:{}),...(p.textPartsDropped?{textPartsDropped:p.textPartsDropped}:{}),...(p.droppedThinking?{droppedThinking:p.droppedThinking}:{})}));
     const sum=k=>requests.reduce((n,r)=>n+(Number.isFinite(r[k])?r[k]:0),0);
     return {requests,totals:{requests:requests.length,inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reservedUSD:Math.round(sum('reservedUSD')*1e6)/1e6,costUSD:Math.round(sum('costUSD')*1e6)/1e6}};}
   catch{return null;}
@@ -776,12 +776,18 @@ class Automation {
   // without per-vendor flags (before the provider file is read, or a test double) counts aiConnected as OpenAI.
   missingKey(model){let vendor;try{vendor=require('./ai-models.cjs').vendorOf(model);}catch{return 'AI';}const s=this.providerStatus??{};
     const ok=vendor==='anthropic'?s.anthropicConnected===true:s.openaiConnected===true||Boolean(s.aiConnected)&&s.anthropicConnected!==true;return ok?null:vendor==='anthropic'?'Anthropic':'OpenAI';}
+  // The enforced decision form's two console lines (enforced-form review E1, E3): the fallback to text and a JSON-text part
+  // that was not accepted, each named without any of its content.
+  noteAnswerForm(r,source='review'){try{const id=require('node:crypto').randomUUID();
+    if(r?.formFallback===true)this.log(id+':form','System','Claude refused the enforced form; sent as text',`The ${source} request was refused as too large for Anthropic's answer-format check and was sent once more as text. Requests stay in the text form for the rest of the day.`);
+    const parts=Array.isArray(r?.textPartsDropped)?r.textPartsDropped.filter(k=>['strategyCheck','scoutBrief','planVerdicts'].includes(k)):[];
+    if(parts.length)this.log(id+':text','System','Claude answer: text part not accepted',`${parts.join(', ')} ${parts.length===1?'was':'were'} not valid JSON of the expected kind and ${parts.length===1?'was':'were'} dropped; the decision stands.`);}catch{}}
   async decisionWithRetry(context,options,pauseMs=3000){
-    try{return await this.provider.request('decision',{context,options});}
+    try{const r=await this.provider.request('decision',{context,options});this.noteAnswerForm(r);return r;}
     catch(error){if(!['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'].includes(error?.message)||this.disposed)throw error;await new Promise(r=>setTimeout(r,pauseMs));
       // The retry's failure follows an uncertain attempt on the same call record: settle never takes it as a certain
       // refusal at zero (Claude refused-request diff review F2).
-      try{return await this.provider.request('decision',{context,options});}catch(retry){if(retry&&typeof retry==='object')retry.earlierUncertain=true;throw retry;}}
+      try{const r=await this.provider.request('decision',{context,options});this.noteAnswerForm(r);return r;}catch(retry){if(retry&&typeof retry==='object')retry.earlierUncertain=true;throw retry;}}
   }
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){
@@ -1175,22 +1181,41 @@ class Automation {
     return pr.regime({vix:closes.VIX?.at(-1)?.close??series('US_VIX')?.value??null,vix5dChangePct:ch(closes.VIX,5),hySpread:hy?.value??null,hySpreadChange:hy?.change??null,advanceRatioPct:market?.breadth?.find(b=>b.index==='KOSPI')?.advanceRatioPct??null,kospiVs50dPct:sma50?(kospi.at(-1).close/sma50-1)*100:null,sox20dPct:ch(closes.SOX,20),oil20dPct:oilHist.length>=2?(oilHist.at(-1).value/oilHist[0].value-1)*100:null,breadth});
   }
   // Replays saved reviews with a change next to an unchanged baseline; no tools, no orders. Each call is metered.
-  async replay(options={}){
-    if(this.replaying)throw new Error('REPLAY_BUSY');const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');
+  // C1 (artifacts/reviews/2026-11-13-c1-replay/review.md): the change may be Claude Opus 5.5 (medium) once a Claude dry run
+  // has completed on this account, with the Anthropic key and its sharing switch; every refusal comes before any request,
+  // the OpenAI baseline included (R5). A Claude run fails a row, not the run, on an answer the app does not accept or a
+  // refusal (R6), and stops before a request that would take its measured spending past its cap (R3).
+  replayPlan(options={}){
     const R=require('./replay.cjs');const instructions=typeof options.instructions==='string'?options.instructions.trim().slice(0,R.LIMITS.instructions):'';
     const models=require('./ai-models.cjs');const modelConfig=this.agentModel('trading');
     // A model change: the variant runs on another model and effort, the baseline on the configured one.
-    let model=null;if(options.model&&typeof options.model==='object'){const m={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};try{models.settings(m);if(models.vendorOf(m.openaiModel)!=='openai')throw 0;}catch{throw new Error('INVALID_MODEL_SETTINGS');}if(m.openaiModel!==modelConfig.openaiModel||m.reasoningEffort!==modelConfig.reasoningEffort)model=m;}
+    let model=null;if(options.model&&typeof options.model==='object'){const m={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};
+      let vendor=null;try{models.settings(m);vendor=models.vendorOf(m.openaiModel);if(vendor==='anthropic'?m.openaiModel!=='claude-opus-5-5'||m.reasoningEffort!=='medium':vendor!=='openai')throw 0;}catch{throw new Error('INVALID_MODEL_SETTINGS');}
+      if(vendor==='anthropic'){if(!this.completedClaudeDryRun())throw new Error('CLAUDE_DRY_RUN_REQUIRED');if(this.missingKey(m.openaiModel))throw new Error('AI_NOT_CONNECTED');if(!this.consentFor(m.openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');}
+      if(m.openaiModel!==modelConfig.openaiModel||m.reasoningEffort!==modelConfig.reasoningEffort)model=m;}
     const variant={instructions,withoutNarrative:options.withoutNarrative===true,withoutEpisodes:options.withoutEpisodes===true,withoutRegime:options.withoutRegime===true,...(model?{model}:{})};
     if(!variant.instructions&&!variant.withoutNarrative&&!variant.withoutEpisodes&&!variant.withoutRegime&&!variant.model)throw new Error('REPLAY_NO_CHANGE');
     const limit=Math.max(1,Math.min(R.LIMITS.reviews,Number(options.limit)||6));const day=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v:null;
     const reviews=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload));
     const picks=R.candidates({reviews,store:this.replays,events:this.loggedEvents?.()??[],from:day(options.from),to:day(options.to),limit});if(!picks.length)throw new Error('REPLAY_NOTHING');
+    const claude=Boolean(variant.model)&&models.vendorOf(variant.model.openaiModel)==='anthropic';
+    const capMicro=claude?Math.round(Math.max(0.01,Math.min(100,Number.isFinite(Number(options.capUSD))&&Number(options.capUSD)>0?Number(options.capUSD):3))*1e6):null;
+    let estimate=null;if(claude){const bytes=c=>Buffer.byteLength(JSON.stringify(c));let c=0,o=0,reserved=0;
+      picks.forEach((pick,i)=>{const v=R.applyVariant(pick.context,variant);c+=R.estimateMicro(variant.model.openaiModel,bytes(v),{first:i===0})??0;o+=R.estimateMicro(modelConfig.openaiModel,bytes(pick.context))??0;reserved=Math.max(reserved,models.reservation(variant.model,v,{}));});
+      estimate={reviews:picks.length,claudeUSD:Math.round(c)/1e6,openaiUSD:Math.round(o)/1e6,totalUSD:Math.round(c+o)/1e6,reservedPerClaudeUSD:Math.round(reserved)/1e6,capUSD:capMicro/1e6,basis:R.EST.basis};}
+    return {R,models,modelConfig,variant,instructions,picks,claude,capMicro,estimate};
+  }
+  // The confirmation's figures for a Claude replay, with the same refusals as the run (nothing is sent).
+  replayEstimate(options={}){const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');const plan=this.replayPlan(options);if(!plan.claude)return null;return plan.estimate;}
+  async replay(options={}){
+    if(this.replaying)throw new Error('REPLAY_BUSY');const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');
+    const {R,models,modelConfig,variant,instructions,picks,claude,capMicro,estimate}=this.replayPlan(options);
     this.replaying=true;const id=R.newId();
     const decide=async(context,config=modelConfig)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();
       const callId=require('node:crypto').randomUUID();this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
       try{const r=await this.provider.request('decision',{context,options:{...config,research:false}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,r,'completed');const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);const cost=row?JSON.parse(row.payload).accountedMicro??null:null;return {...r.decision,_usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:cost}};}catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');throw error;}};
     this.log(id,'Program','Replay',`Replaying ${picks.length} saved review${picks.length===1?'':'s'} with a change: ${[instructions&&'extra instructions',variant.withoutNarrative&&'without the narrative',variant.withoutEpisodes&&'without episodes',variant.withoutRegime&&'without the regime gauge and sizing',variant.model&&`on ${variant.model.openaiModel} (${variant.model.reasoningEffort} effort) instead of ${modelConfig.openaiModel} (${modelConfig.reasoningEffort})`].filter(Boolean).join(', ')}. No orders are placed.`);
+    if(claude)return this.replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate});
     try{
       const closes=this.indexCloses?.()??{};const rows=[];
       for(const pick of picks){
@@ -1200,6 +1225,47 @@ class Automation {
         rows.push({reviewId:pick.review.id,day:pick.day,approximate:pick.approximate,original:R.brief(pick.review.decision),baseline:{decision:R.brief(baseline),explanation:baseline?.explanation?.slice(0,1200)??null,verdicts:baseline?.planVerdicts??[],usage:baseline?._usage??null,outcome:score(baseline)},variant:{decision:R.brief(changed),explanation:changed?.explanation?.slice(0,1200)??null,verdicts:changed?.planVerdicts??[],usage:changed?._usage??null,outcome:score(changed)},changed:JSON.stringify(R.brief(baseline))!==JSON.stringify(R.brief(changed))});
       }
       const run=this.replays.saveRun({id,timestamp:Date.now(),variant,rows,summary:R.summarize(rows)});this.log(id,'System','Replay finished',JSON.stringify(run.summary));return run;
+    }catch(error){this.log(id,'System','Replay failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED');throw error;}
+    finally{this.replaying=false;}
+  }
+  // C1: a replay whose change is Claude. Each call is measured (cost, time); a failed side is kept with its reason (the
+  // app's rule or the refusal record, local only) and the run goes on; the cap is checked before each request against the
+  // measured spending so far plus that request's estimate; the Anthropic limit is checked by reserveCall as for any call.
+  async replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate}){
+    const {settle}=require('./ai-accounting.cjs');const bytes=c=>Buffer.byteLength(JSON.stringify(c));let spentMicro=0,stopped=null;const rows=[];
+    const call=async(context,config)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();const callId=require('node:crypto').randomUUID();
+      this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
+      const t0=Date.now();const record=()=>{const r=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);return r?JSON.parse(r.payload):null;};
+      try{const r=await this.provider.request('decision',{context,options:{...config,research:false}});settle(this.db,'ai_usage',d,callId,r,'completed');const rec=record();
+        if(models.vendorOf(config.openaiModel)==='anthropic')this.noteAnswerForm(r,'replay');
+        return {decision:r.decision,usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:rec?.accountedMicro??null,ms:Date.now()-t0,...(r.answerForm?{answerForm:r.answerForm}:{}),...(r.formFallback?{formFallback:true}:{}),...(r.textPartsDropped?.length?{textPartsDropped:r.textPartsDropped}:{})}};}
+      catch(error){settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');const rec=record();const usage={model:config.openaiModel,effort:config.reasoningEffort,inputTokens:rec?.usage?.inputTokens??null,outputTokens:rec?.usage?.outputTokens??null,costMicro:rec?.accountedMicro??null,ms:Date.now()-t0,...(error?.formFallback?{formFallback:true}:{}),...(['enforced','text'].includes(error?.answerForm)?{answerForm:error.answerForm}:{})};
+        const code=/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'AI_REQUEST_FAILED';
+        if(rec?.status==='refused'&&rec.providerError)return {failure:{kind:'refused',code,providerError:rec.providerError},usage};
+        const rule=answerRule(error);if(rule)return {failure:{kind:'not-accepted',...rule},usage};
+        return {failure:{kind:'uncertain',code},usage};}};
+    const side=(res,score)=>res.failure?{decision:null,explanation:null,verdicts:[],usage:res.usage,outcome:{excessPct:null,basis:'failed'},failure:res.failure}
+      :{decision:R.brief(res.decision),explanation:res.decision?.explanation?.slice(0,1200)??null,verdicts:res.decision?.planVerdicts??[],usage:res.usage,outcome:score(res.decision)};
+    const blockedSide=kind=>({decision:null,explanation:null,verdicts:[],usage:null,outcome:{excessPct:null,basis:'failed'},failure:{kind,code:kind==='limit'?'AI_BUDGET_EXHAUSTED':'REPLAY_CAP'}});
+    try{
+      const closes=this.indexCloses?.()??{};
+      for(const [i,pick] of picks.entries()){
+        const vctx=R.applyVariant(pick.context,variant);const score=d=>R.outcome(d,pick.day,d?.symbol?this.series?.closes(d.symbol):null,/:/.test(d?.symbol??'')?closes.SPX:closes.KOSPI);
+        if(spentMicro+(R.estimateMicro(modelConfig.openaiModel,bytes(pick.context))??0)>capMicro){stopped={reason:'cap',left:picks.length-i};break;}
+        let base;try{base=await call(pick.context,modelConfig);}catch(error){if(error?.message==='AI_BUDGET_EXHAUSTED'){stopped={reason:'limit',left:picks.length-i};break;}throw error;}
+        spentMicro+=base.usage?.costMicro??0;
+        let changed=null;
+        if(spentMicro+(R.estimateMicro(variant.model.openaiModel,bytes(vctx),{first:i===0})??0)>capMicro){stopped={reason:'cap',left:picks.length-i-1};changed=blockedSide('stopped');}
+        else{try{changed=await call(vctx,variant.model);spentMicro+=changed.usage?.costMicro??0;}catch(error){if(error?.message!=='AI_BUDGET_EXHAUSTED')throw error;stopped={reason:'limit',left:picks.length-i-1};changed=blockedSide('limit');}}
+        for(const r of [base,changed])if(r?.decision?.symbol)await this.warmSeries([r.decision.symbol]);
+        const b=side(base,score),v=changed.failure&&!changed.usage?changed:side(changed,score);
+        rows.push({reviewId:pick.review.id,day:pick.day,approximate:pick.approximate,original:R.brief(pick.review.decision),baseline:b,variant:v,changed:Boolean(b.decision&&v.decision)&&JSON.stringify(b.decision)!==JSON.stringify(v.decision)});
+        if(stopped)break;
+      }
+      const claudeResult=R.claudeSummary(rows,{estimate,stopped,capMicro});
+      const run=this.replays.saveRun({id,timestamp:Date.now(),variant,rows,summary:{...R.summarize(rows),claude:claudeResult}});
+      // The log line carries counts only: the rule texts stay on the stored run (local only, review R6).
+      const {byRule:_rules,...counts}=claudeResult.answers;this.log(id,'System','Replay finished',JSON.stringify({reviews:rows.length,changed:run.summary.changed,claude:{answers:counts,basis:claudeResult.basis,formatFailures:claudeResult.formatFailures,measured:claudeResult.measured,...(stopped?{stopped}:{})}}));return run;
     }catch(error){this.log(id,'System','Replay failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REPLAY_FAILED');throw error;}
     finally{this.replaying=false;}
   }
@@ -1320,7 +1386,7 @@ class Automation {
         
         const callId=randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'scout'};
         this.reserveCall(modelConfig,reserve,callId,day,JSON.stringify(record));
-        try{const response=await this.provider.request('scout',{context,options:{final,continuation,...modelConfig}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,response,'completed');return response;}
+        try{const response=await this.provider.request('scout',{context,options:{final,continuation,...modelConfig}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,response,'completed');this.noteAnswerForm(response,'scout');return response;}
         catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
       };
       const tools=scoutLib.focusTools(this.discovery,focus,{reassess:(context.carriedNeedingReassessment??[]).map(s=>s.symbol),guard:()=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');}});

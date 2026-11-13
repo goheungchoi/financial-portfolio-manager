@@ -130,7 +130,9 @@ function refusalRecord(error,call,keys=[]){
 // ```json fence around one object with only whitespace outside; no searching, no repair. The app's validators then
 // check every field as before (checkDecision rejects unknown top-level keys and any coercion; validatePlan fails closed).
 const SHAPE_SENTENCE='Answer with only one JSON object that matches this JSON Schema, with no text before or after it.';
-const shapeText=schema=>`${SHAPE_SENTENCE}\n${JSON.stringify(schema)}`;
+// C1 review R8: Claude wrote its explanation with Markdown, which the Journal, the console and the phone show as plain text.
+const PLAIN_TEXT='Text fields are plain text, without Markdown.';
+const shapeText=schema=>`${SHAPE_SENTENCE} ${PLAIN_TEXT}\n${JSON.stringify(schema)}`;
 // G4: the decision shape the model reads carries the bounds the app refuses on (checkDecision, the execution checks) or
 // caps at (the list limits), which the grammar could not hold. A copy: the schema the OpenAI request sends is unchanged.
 function decisionShape(schema){const s=JSON.parse(JSON.stringify(schema));const p=s.properties??{};const obj=n=>n?.anyOf?.find(b=>b?.type==='object')??(n?.type==='object'?n:null);
@@ -144,11 +146,85 @@ function onlyObject(text,{empty,invalid}){const t=String(text??'').trim();if(!t)
   let value;try{value=JSON.parse(fence?fence[1]:t);}catch{throw fail(invalid,{status:'end_turn'});}
   if(!value||typeof value!=='object'||Array.isArray(value))throw fail(invalid,{status:'end_turn'});return value;}
 
+// The enforced decision form (artifacts/reviews/2026-11-13-enforced-form: design.md, review.md E1 to E10, verified on the
+// real API in verify/report.md). Anthropic compiles a structured-output grammar only up to a size measured as properties +
+// unions + arrays (at most 62 with callable tools, 69 without; undocumented). The app's nested decision schema counts 115,
+// so Claude gets a flat form built from it: nested parts become top-level fields named by their path (plan_stopPrice),
+// nullable values become plain ones with a "none" marker, and three list parts that never reach an order are JSON text in
+// a string. Largest shape 53, under the guard of 54 (tests/claude-enforced.test.cjs). The rebuild turns the flat answer
+// back into the nested decision before the unchanged validateDecision; a marker is never read as a value.
+const TEXT_PARTS=Object.freeze(['strategyCheck','scoutBrief','planVerdicts']);
+const objectOf=n=>n?.anyOf?.find(b=>b?.type==='object')??(n?.type==='object'?n:null);
+const plainType=n=>{if(Array.isArray(n.type)){const {type,...rest}=n;return {...rest,type:type.find(t=>t!=='null')};}if(n.anyOf){const b=n.anyOf.find(x=>x.type!=='null');const {anyOf,...rest}=n;return {...rest,...b};}return n;};
+function flatten(schema){const props={};
+  for(const [k,v] of Object.entries(schema.properties)){
+    if(TEXT_PARTS.includes(k)){props[k]={type:'string'};continue;}
+    const o=objectOf(v);if(!o){props[k]=plainType(v);continue;}
+    const walk=(node,prefix)=>{for(const [ck,cv] of Object.entries(node.properties)){const key=`${prefix}_${ck}`;const co=objectOf(cv);
+      if(co&&cv.type!=='array'){walk(co,key);continue;}
+      let leaf=cv.type==='array'?cv:plainType(cv);if(key==='reversal_basis')leaf={...leaf,enum:[...leaf.enum,'none']};props[key]=leaf;}};
+    walk(o,k);}
+  return toAnthropicSchema({type:'object',properties:props,required:Object.keys(props),additionalProperties:false});}
+const FLAT=new Map();
+function flatDecisionSchema(brief,targets){const key=`${Boolean(brief)}/${Boolean(targets)}`;if(!FLAT.has(key))FLAT.set(key,flatten(C.decisionSchema(Boolean(brief),Boolean(targets))));return FLAT.get(key);}
+// The count Anthropic's grammar limit follows (the probe's rule): properties + unions + arrays.
+function grammarCount(x){let n=0;const w=o=>{if(!o||typeof o!=='object')return;if(o.anyOf||Array.isArray(o.type))n++;if(o.type==='array'){n++;w(o.items);}if(o.properties)for(const v of Object.values(o.properties)){n++;w(v);}for(const b of o.anyOf??[])w(b);};w(x);return n;}
+// The format text for the enforced form (format only; review E9 adds the sentence on the instructions' null).
+const FORMAT_TEXT=(()=>{const shapes=decisionShape(C.decisionSchema(true,true)).properties;return [
+  'Answer in the JSON form the request enforces. Text fields are plain text, without Markdown.',
+  'A field name with an underscore is a part of one item: plan_stopPrice is the stop price of the plan, execution_cancelIf is the cancel conditions of the execution.',
+  'Where there is no value, write 0 for a number, an empty string for text, an empty list for a list, and none where the choices include it. A stop price, target price, number of holding days or execution bound of 0 means none.',
+  'No portfolio comparison: plan_portfolioImpact_why is empty. No valuation: plan_valuation_method is empty. No execution instruction: execution_bound 0, execution_cancelAfter empty and execution_cancelIf empty. No reversal: reversal_basis none.',
+  'Where the instructions say null, write the marker named here.',
+  ...TEXT_PARTS.map(k=>`${k} is JSON written as text in that string, matching this JSON Schema, or an empty string when there is nothing: ${JSON.stringify(shapes[k])}`)].join('\n');})();
+// Exactly 0 is "none"; a negative number is passed on, so the validators refuse or drop it as they do today.
+const zeroNone=v=>v===0?null:v;
+// A JSON-text part: the whole string is one JSON value of the expected kind; "" is none. No searching, no repair.
+function textPart(text,kind){const t=String(text??'').trim();if(!t)return {none:true};let v;try{v=JSON.parse(t);}catch{return {bad:true};}
+  if(kind==='array'?!Array.isArray(v):!v||typeof v!=='object'||Array.isArray(v))return {bad:true};return {value:v};}
+// The flat answer -> the app's nested decision. Unknown or missing keys: refused with checkDecision's wording. A text part
+// that does not parse is handled as its nested form is today when malformed (the lists keep no entries, the brief is
+// dropped) and named in `dropped` (review E1). Returns {decision, dropped}.
+function rebuildDecision(flat,schema){
+  if(!flat||typeof flat!=='object'||Array.isArray(flat))throw fail('a decision that is not an object');
+  const want=Object.keys(schema.properties),have=Object.keys(flat);const missing=want.filter(k=>!have.includes(k)),extra=have.filter(k=>!want.includes(k));
+  if(missing.length||extra.length)throw fail(`decision fields${missing.length?` missing ${missing.slice(0,6).join(', ')}`:''}${extra.length?` unexpected ${extra.slice(0,6).map(k=>String(k).slice(0,30)).join(', ')}`:''}`);
+  const f=flat,str=v=>typeof v==='string'?v.trim():'',dropped=[];
+  const d={action:f.action,symbol:f.symbol,quantity:f.quantity,credit:f.credit,loanDate:f.loanDate,explanation:f.explanation};
+  d.plan={horizon:f.plan_horizon,thesis:f.plan_thesis,invalidation:f.plan_invalidation,stopPrice:zeroNone(f.plan_stopPrice),targetPrice:zeroNone(f.plan_targetPrice),horizonDays:zeroNone(f.plan_horizonDays),confidence:f.plan_confidence,
+    portfolioImpact:str(f.plan_portfolioImpact_why)?{weightBeforePct:f.plan_portfolioImpact_weightBeforePct,weightAfterPct:f.plan_portfolioImpact_weightAfterPct,related:f.plan_portfolioImpact_related,relatedBeforePct:f.plan_portfolioImpact_relatedBeforePct,relatedAfterPct:f.plan_portfolioImpact_relatedAfterPct,equityReliable:f.plan_portfolioImpact_equityReliable,why:f.plan_portfolioImpact_why}:null,
+    evidence:f.plan_evidence,
+    valuation:str(f.plan_valuation_method)?{method:f.plan_valuation_method,inputs:f.plan_valuation_inputs,justification:f.plan_valuation_justification}:null,
+    uncertainty:str(f.plan_uncertainty_acceptableAtThisSize)||str(f.plan_uncertainty_beforeAddingMore)?{acceptableAtThisSize:f.plan_uncertainty_acceptableAtThisSize,beforeAddingMore:f.plan_uncertainty_beforeAddingMore}:null};
+  d.complexity={score:f.complexity_score,reason:f.complexity_reason};
+  const part=(k,kind)=>{const r=textPart(f[k],kind);if(r.bad)dropped.push(k);return r;};
+  d.strategyCheck=part('strategyCheck','array').value??[];
+  const noExecution=f.execution_bound===0&&!str(f.execution_cancelAfter)&&Array.isArray(f.execution_cancelIf)&&!f.execution_cancelIf.length;
+  d.execution=noExecution?null:{bound:zeroNone(f.execution_bound),cancelAfter:f.execution_cancelAfter,cancelIf:f.execution_cancelIf};
+  d.reversal=f.reversal_basis==='none'?null:{priorDecisionId:f.reversal_priorDecisionId,basis:f.reversal_basis,whatChanged:f.reversal_whatChanged,priorRequirement:f.reversal_priorRequirement,newEvidence:f.reversal_newEvidence,afterCost:f.reversal_afterCost};
+  if('scoutBrief' in schema.properties){const r=part('scoutBrief','object');if(r.value)d.scoutBrief=r.value;}
+  if('planVerdicts' in schema.properties)d.planVerdicts=part('planVerdicts','array').value??[];
+  return {decision:d,dropped};
+}
+// The grammar refusal that sends a request once more in the 1.5.56 text form (review E3).
+const GRAMMAR_REFUSAL=/compiled grammar is too large|too complex for compilation/i;
+const grammarRefused=e=>e?.message==='AI_BAD_REQUEST'&&GRAMMAR_REFUSAL.test(String(e?.providerError?.message??''));
+const seoulDay=t=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul'}).format(new Date(t));
+
 const hasToolHistory=items=>items.some(i=>i?.type==='function_call_output'||i?.type==='anthropic_turn'&&Array.isArray(i.content)&&i.content.some(b=>b?.type==='tool_use'));
 class AnthropicClient {
   #key;
   // timeoutMs: per-call timeouts, overridable for tests only.
-  constructor(key,transport=fetch,{timeoutMs=TIMEOUT_MS}={}){if(typeof key!=='string'||!/^[A-Za-z0-9_\-]{10,512}$/.test(key))throw new Error('INVALID_PROVIDER_FILE');this.#key=key;this.transport=transport;this.timeoutMs={...TIMEOUT_MS,...timeoutMs};}
+  // textDay: the KST day on which a kind (decide, scout) fell back to the text form; later requests that day go straight
+  // to it (review E3). clock: tests only.
+  #textDay={};
+  constructor(key,transport=fetch,{timeoutMs=TIMEOUT_MS,clock=Date.now}={}){if(typeof key!=='string'||!/^[A-Za-z0-9_\-]{10,512}$/.test(key))throw new Error('INVALID_PROVIDER_FILE');this.#key=key;this.transport=transport;this.timeoutMs={...TIMEOUT_MS,...timeoutMs};this.clock=clock;}
+  // The enforced form first; on a grammar refusal the same request once more in the text form, inside the same call
+  // (one call record; the refusal costs nothing), remembered for the rest of the KST day. Any other error as before.
+  async withFallback(kind,run){const day=seoulDay(this.clock());if(this.#textDay[kind]===day)return run('text');
+    try{return await run('enforced');}catch(error){if(!grammarRefused(error))throw error;this.#textDay[kind]=day;
+      try{return {...await run('text'),formFallback:true};}catch(retry){if(retry&&typeof retry==='object')retry.formFallback=true;throw retry;}}}
+  textFormToday(kind){return this.#textDay[kind]===seoulDay(this.clock());}
   // One SDK client per call: its fetch measures this call's request parts and response size, keeps redirect:'error',
   // and hands the SDK a plain Response built from the body text (the transport may return a Response-like object).
   // B1: the key Test (key-test.cjs) through the SDK's model list: no tokens, one attempt (maxRetries 0), the same
@@ -199,14 +275,15 @@ class AnthropicClient {
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');
       let parsed;if(textFormat)parsed=onlyObject(output,{empty:`no ${kind} answer`,invalid:`a ${kind} answer that is not one JSON object`});
       else{try{parsed=JSON.parse(output);}catch{throw fail(output.trim()?`a ${kind} answer that is not valid JSON`:`no ${kind} answer`,{status:'end_turn'});}}
-      return {...base,parsed};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
+      return {...base,parsed,answerForm:textFormat?'text':'enforced'};
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;safe.answerForm=textFormat?'text':'enforced';throw safe;}
   }
   async narrative(context,options={}){const n=require('./narrative.cjs');const {parsed,...r}=await this.structured({kind:'narrative',system:n.INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:n.SCHEMA,options,maxBytes:120000});return {...r,narrative:parsed};}
   async compact(payload,options={}){const f=require('./context-fit.cjs');const {parsed,...r}=await this.structured({kind:'compact',system:f.COMPACT_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(payload)}],schema:f.COMPACT_SCHEMA,options,maxBytes:400000});return {...parsed,...r};}
   async reflect(context,options={}){const {parsed,...r}=await this.structured({kind:'reflect',system:require('./ai-client.cjs').REFLECTION_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:require('./reflection.cjs').SCHEMA,options,maxBytes:70000});return {...r,reflection:require('./reflection.cjs').validate(parsed)};}
   async scout(context,options={}){const scout=require('./scout.cjs');const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];
-    const r=await this.structured({kind:'scout',system:scout.INSTRUCTIONS,input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:true});
+    // The scout's own schema counts 28 with its 6 tools: enforced as it is, with the same fallback (enforced-form design 6).
+    const r=await this.withFallback('scout',form=>this.structured({kind:'scout',system:scout.INSTRUCTIONS,input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:form==='text'}));
     if(r.toolCalls)return r;const {parsed,...rest}=r;
     try{return {...rest,plan:scout.validatePlan(parsed)};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}}
   client(timeout,call){
@@ -227,7 +304,8 @@ class AnthropicClient {
     };
     return new S({...LOCKED,apiKey:this.#key,maxRetries:0,timeout,fetch:fetchFn});
   }
-  async decide(context,options={}) {
+  async decide(context,options={}){return this.withFallback('decide',form=>this.decideAs(context,options,form));}
+  async decideAs(context,options={},form='enforced') {
     const selected=M.settings(options);if(M.vendorOf(selected.model)!=='anthropic')throw new Error('INVALID_MODEL_SETTINGS');
     let reportedUsage=null,returnedModel=selected.model;const call={responseChars:null,sizes:null};
     const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=M.reviewByteLimit(options);
@@ -239,9 +317,11 @@ class AnthropicClient {
       // for caching, so a replayed thinking block always meets the conversation it was made in.
       // Option A (grammar design): the decision's shape as a Claude-only system block after the instructions; the cache
       // breakpoint on it caches the tools, the instructions and the shape together.
-      const shape=decisionShape(C.decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length)));
+      // The enforced form: the flat schema as output_config.format and the format text as the second system block. The text
+      // form (1.5.56, the fallback): no format, the shape block. Either way one form for every round of a review.
+      const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const enforced=form!=='text';const flatSchema=enforced?flatDecisionSchema(brief,targets):null;
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:C.REVIEW_INSTRUCTIONS},{type:'text',text:shapeText(shape),cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:C.REVIEW_INSTRUCTIONS},{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets))),cache_control:{type:'ephemeral'}}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may
@@ -250,7 +330,7 @@ class AnthropicClient {
         // Thinking is always adaptive on Claude Opus 5.5; drop_block keeps a review going when condensing rewrote an older
         // tool result (a thinking block after the change is dropped instead of failing the request).
         thinking:{type:'adaptive',block_binding:{prefix_mismatch_behavior:'drop_block'}},
-        output_config:{effort:selected.effort},
+        output_config:enforced?{effort:selected.effort,format:{type:'json_schema',schema:flatSchema}}:{effort:selected.effort},
         ...(options.continuation?{cache_control:{type:'ephemeral'}}:{}),
         messages};
       let reply;try{reply=await this.client(this.timeoutMs.decide,call).beta.messages.create(body);}catch(error){
@@ -283,16 +363,17 @@ class AnthropicClient {
       if(output.length>C.DECISION_OUTPUT_CHAR_LIMIT)throw fail(`a decision of ${C.kb(output.length)}, above the ${C.kb(C.DECISION_OUTPUT_CHAR_LIMIT)} limit`,{status:'end_turn'});
       // G1: the whole answer is one JSON object (or one json fence around it); G5: a round that ends in prose is a failed
       // review with this rule, never a retry (decisionWithRetry retries request failures only).
-      const raw=onlyObject(output,{empty:'no decision and no tool request',invalid:'a decision that is not valid JSON'});
+      const answer=onlyObject(output,{empty:'no decision and no tool request',invalid:'a decision that is not valid JSON'});
+      let raw=answer,dropped=[];if(enforced){({decision:raw,dropped}=rebuildDecision(answer,flatSchema));}
       const memory=C.validationMemory(context,options);const decision=C.validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
-      return {...base,decision,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
+      return {...base,decision,answerForm:enforced?'enforced':'text',...(dropped.length?{textPartsDropped:dropped}:{}),...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;
       // B2: a failure keeps its stop reason and the measured request sizes for the dry run's measurement.
-      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;throw safe;}
+      if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;safe.answerForm=form==='text'?'text':'enforced';throw safe;}
   }
   // The loaded key removed from a text by value (review C2): the provider worker runs a refused request's message through
   // every client it holds before the message leaves the worker. The key itself never leaves this object.
   redact(text){return String(text??'').split(this.#key).join('[redacted]');}
 }
-module.exports={AnthropicClient,onlyObject,shapeText,decisionShape,SHAPE_SENTENCE,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};
+module.exports={AnthropicClient,TEXT_PARTS,flatDecisionSchema,grammarCount,FORMAT_TEXT,rebuildDecision,textPart,grammarRefused,onlyObject,shapeText,decisionShape,SHAPE_SENTENCE,PLAIN_TEXT,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};

@@ -1,11 +1,12 @@
 // Anthropic provider, step A5: the dry-run model override, Claude timeouts and the worker cap, vendor-aware key checks,
 // vendor on saved reviews, and the refusal message for a Claude trading model. Fake transports and the mock engine only.
 const test=require('node:test'),assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');const fs=require('node:fs'),path=require('node:path');
+const {adapt}=require('./fixtures/claude-flat.cjs');// the enforced Claude decision form: nested fixture answers sent flat
 const {AnthropicClient}=require('../electron/anthropic-client.cjs');const R=require('../electron/ai-router.cjs');const {errorReply}=require('../electron/provider-error-reply.cjs');
 const KEY='sk-ant-api03-'+'k'.repeat(40);const CLAUDE={openaiModel:'claude-opus-5-5',reasoningEffort:'medium'};
 const hold={action:'Hold',symbol:'',quantity:0,explanation:'No trade.'};
 const reply=()=>({id:'msg',type:'message',role:'assistant',model:'claude-opus-5-5',content:[{type:'thinking',thinking:'',signature:'s'},{type:'text',text:JSON.stringify(hold)}],stop_reason:'end_turn',stop_details:null,usage:{input_tokens:100,cache_read_input_tokens:0,cache_creation_input_tokens:0,output_tokens:50},input_transformations:[]});
-function transport(){const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));return new Response(JSON.stringify(reply()),{status:200,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;}
+function transport(){const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));return new Response(JSON.stringify(adapt(reply(),JSON.parse(init.body))),{status:200,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;}
 // Automation on the mock live engine with a provider that routes each call by its model, as the worker does.
 function harness(status){
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');

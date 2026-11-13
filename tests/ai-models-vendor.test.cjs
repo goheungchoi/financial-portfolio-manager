@@ -95,7 +95,10 @@ test('A1b: configure refuses a Claude id as the main or routine model and keeps 
 });
 test('A1b: a replay on a Claude model is refused as an invalid model; a GPT model change still passes that check',async()=>{
   const a=automation();a.narrativeAvailable=()=>null;
-  await assert.rejects(a.replay({model:{openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}}),/INVALID_MODEL_SETTINGS/);
+  // C1: Claude Opus 5.5 at medium is a replay model once the Claude gate is open; here it is closed, so it is refused for
+  // that (CLAUDE_DRY_RUN_REQUIRED). Any other Claude id or effort stays an invalid model.
+  await assert.rejects(a.replay({model:{openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}}),/CLAUDE_DRY_RUN_REQUIRED/);
+  await assert.rejects(a.replay({model:{openaiModel:'claude-opus-5-5',reasoningEffort:'low'}}),/INVALID_MODEL_SETTINGS/);
   await assert.rejects(a.replay({model:{openaiModel:'claude-opus-5-5-20260101',reasoningEffort:'medium'}}),/INVALID_MODEL_SETTINGS/);
   await assert.rejects(a.replay({model:{openaiModel:'gpt-6-sol',reasoningEffort:'low'}}),e=>e.message!=='INVALID_MODEL_SETTINGS','a GPT model passes the model check');
 });

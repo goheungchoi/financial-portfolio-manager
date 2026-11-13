@@ -41,4 +41,40 @@ function summarize(rows){
   return {reviews:rows.length,changed:rows.filter(r=>r.changed).length,scored:scored.length,baselineExcessPct:sum('baseline'),variantExcessPct:sum('variant'),originalDiffers:rows.filter(r=>JSON.stringify(r.original)!==JSON.stringify(r.baseline.decision)).length,
     note:`Excess returns are summed over decisions with ${HORIZON} trading days of prices after them. With few reviews the difference is mostly noise.`};
 }
-module.exports={ReplayStore,applyVariant,outcome,candidates,summarize,brief,LIMITS,HORIZON,newId:()=>'R-'+randomUUID().slice(0,6)};
+
+// C1, replay on Claude (artifacts/reviews/2026-11-13-c1-replay/review.md, R1 to R6). Estimates, not measurements: from
+// one measured Claude run (the user's dry run of 2026-11-13 00:21 KST, 1.5.56): about 2.6 bytes per token; a replay
+// request (research off, no tools) carries the instructions and the shape, about 15,000 tokens, cached after the run's
+// first request, and the saved context, uncached; the measured decision wrote about 2,500 tokens. The OpenAI baseline
+// is estimated the same way (about 12,000 tokens of instructions, about 1,500 written), with no cache.
+const EST=Object.freeze({basis:'Estimate from one measured Claude run (2026-11-13)',bytesPerToken:2.6,claudeSystemTokens:15000,claudeOutputTokens:2500,openaiSystemTokens:12000,openaiOutputTokens:1500});
+function estimateMicro(model,contextBytes,{first=false}={}){
+  const rate=require('./ai-models.cjs').MODELS[model];if(!rate)return null;const ctx=Math.ceil(contextBytes/EST.bytesPerToken);
+  if(rate.vendor==='anthropic')return Math.round(ctx*rate.input+(first?EST.claudeSystemTokens*rate.write:EST.claudeSystemTokens*rate.cached)+EST.claudeOutputTokens*rate.output);
+  return Math.round((ctx+EST.openaiSystemTokens)*rate.input+EST.openaiOutputTokens*rate.output);
+}
+const usd=m=>m==null?null:Math.round(m)/1e6;
+// Markdown markers in an explanation (R8: counted, not a failure).
+const markdown=t=>typeof t==='string'&&(/\*\*[^*]+\*\*/.test(t)||/^\s*[-*] \S/m.test(t)||/^\s*#{1,6} \S/m.test(t));
+// The Claude run's counts (R1, R2): answers received, accepted, not accepted by rule, refused, uncertain; measured cost
+// and time beside the estimate. Counts only, never a percentage alone; no ranking of the models from a handful of rows.
+// byRule holds the app's rule texts (local only: the run is stored, the log line gets counts without it).
+function claudeSummary(rows,{estimate=null,stopped=null,capMicro=null}={}){
+  const sides=rows.map(r=>r.variant);const failure=k=>sides.filter(s=>s.failure?.kind===k);
+  const accepted=sides.filter(s=>s.decision&&!s.failure).length,notAccepted=failure('not-accepted'),received=accepted+notAccepted.length;
+  const byRule={};for(const s of notAccepted){const k=s.failure.rule??s.failure.code;byRule[k]=(byRule[k]??0)+1;}
+  const sum=(list,f)=>list.reduce((n,x)=>n+(Number.isFinite(f(x))?f(x):0),0);
+  const claudeMicro=sum(sides,s=>s.usage?.costMicro),openaiMicro=sum(rows.map(r=>r.baseline),s=>s.usage?.costMicro);
+  const ms=sides.map(s=>s.usage?.ms).filter(Number.isFinite);
+  // The enforced decision form (E1, E3): how many answers came in it, how many fell back to text, and dropped text parts.
+  const answered=sides.filter(s=>s.usage&&(s.decision||s.failure?.kind==='not-accepted'));const dropped={};for(const s of sides)for(const k of s.usage?.textPartsDropped??[])dropped[k]=(dropped[k]??0)+1;
+  return {answers:{received,accepted,notAccepted:notAccepted.length,byRule,refused:failure('refused').length,uncertain:failure('uncertain').length,limit:failure('limit').length,stopped:failure('stopped').length},
+    basis:`From ${received} replayed answer${received===1?'':'s'}, without research rounds`,formatFailures:`${notAccepted.length} of ${received}`,
+    markdown:`${sides.filter(s=>s.decision&&markdown(s.explanation)).length} of ${accepted}`,
+    form:{enforced:`${answered.filter(s=>s.usage.answerForm==='enforced').length} of ${answered.length}`,fellBack:sides.filter(s=>s.usage?.formFallback).length,textPartsDropped:dropped},
+    comparison:'Too few to compare',
+    measured:{claudeUSD:usd(claudeMicro),openaiUSD:usd(openaiMicro),totalUSD:usd(claudeMicro+openaiMicro),claudeSecondsAvg:ms.length?Math.round(ms.reduce((a,b)=>a+b,0)/ms.length/100)/10:null},
+    ...(estimate?{estimate:{claudeUSD:estimate.claudeUSD,openaiUSD:estimate.openaiUSD,totalUSD:estimate.totalUSD,basis:estimate.basis}}:{}),
+    ...(capMicro!=null?{capUSD:usd(capMicro)}:{}),...(stopped?{stopped}:{})};
+}
+module.exports={ReplayStore,applyVariant,outcome,candidates,summarize,brief,LIMITS,HORIZON,EST,estimateMicro,claudeSummary,markdown,newId:()=>'R-'+randomUUID().slice(0,6)};
