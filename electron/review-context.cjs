@@ -114,9 +114,9 @@ const TYPES={environment:'string',market:'string',currency:'string',baseCurrency
   tradingCosts:'object',userGuidelines:'string',objective:'string',confirmation:'object',paperVersion:'number|string',
   agentDesk:'object',orderFollowUp:'object',pendingDecisions:'array',waits:'array',reviewWatches:'array',researchGaps:'array',
   sectorLeads:'object',discovery:'object',topStories:'array',similarEpisodes:'array',eventCalendar:'array',macro:'object|array',marketRegime:'object',portfolioExposure:'object',marketNarrative:'object',
-  decisionScoreboard:'object',reviewInterval:'object',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
+  decisionScoreboard:'object',reviewInterval:'object',extendedSessions:'array',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
   lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object'};
-const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','confirmation','paperVersion'];
+const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','confirmation','paperVersion','extendedSessions'];
 const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps'];
 const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes','eventCalendar','macro','marketRegime','portfolioExposure','marketNarrative','decisionScoreboard','reviewInterval','performance',
   'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','positionMemory','orderBooks','reviewScope','waits','pendingDecisions',

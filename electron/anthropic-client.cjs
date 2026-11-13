@@ -281,9 +281,9 @@ class AnthropicClient {
   async narrative(context,options={}){const n=require('./narrative.cjs');const {parsed,...r}=await this.structured({kind:'narrative',system:n.INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:n.SCHEMA,options,maxBytes:120000});return {...r,narrative:parsed};}
   async compact(payload,options={}){const f=require('./context-fit.cjs');const {parsed,...r}=await this.structured({kind:'compact',system:f.COMPACT_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(payload)}],schema:f.COMPACT_SCHEMA,options,maxBytes:400000});return {...parsed,...r};}
   async reflect(context,options={}){const {parsed,...r}=await this.structured({kind:'reflect',system:require('./ai-client.cjs').REFLECTION_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:require('./reflection.cjs').SCHEMA,options,maxBytes:70000});return {...r,reflection:require('./reflection.cjs').validate(parsed)};}
-  async scout(context,options={}){const scout=require('./scout.cjs');const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];
+  async scout(context,options={}){const scout=require('./scout.cjs'),RI=require('./review-instructions.cjs');const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];
     // The scout's own schema counts 28 with its 6 tools: enforced as it is, with the same fallback (enforced-form design 6).
-    const r=await this.withFallback('scout',form=>this.structured({kind:'scout',system:scout.INSTRUCTIONS,input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:form==='text'}));
+    const r=await this.withFallback('scout',form=>this.structured({kind:'scout',system:RI.scoutText(RI.scoutPartsFor(context)),input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:form==='text'}));
     if(r.toolCalls)return r;const {parsed,...rest}=r;
     try{return {...rest,plan:scout.validatePlan(parsed)};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}}
   client(timeout,call){
@@ -306,6 +306,7 @@ class AnthropicClient {
   }
   async decide(context,options={}){return this.withFallback('decide',form=>this.decideAs(context,options,form));}
   async decideAs(context,options={},form='enforced') {
+    const RI=require('./review-instructions.cjs');
     const selected=M.settings(options);if(M.vendorOf(selected.model)!=='anthropic')throw new Error('INVALID_MODEL_SETTINGS');
     let reportedUsage=null,returnedModel=selected.model;const call={responseChars:null,sizes:null};
     const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=M.reviewByteLimit(options);
@@ -321,7 +322,7 @@ class AnthropicClient {
       // form (1.5.56, the fallback): no format, the shape block. Either way one form for every round of a review.
       const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const enforced=form!=='text';const flatSchema=enforced?flatDecisionSchema(brief,targets):null;
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:C.REVIEW_INSTRUCTIONS},{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets))),cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:RI.reviewText(RI.partsFor(context))},{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets))),cache_control:{type:'ephemeral'}}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may

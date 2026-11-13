@@ -165,7 +165,7 @@ test('reviews get whole-holding quotes, and one scenario for selling every U.S. 
   assert.equal(all.annualTaxChangeKRW,rules.overseasGainsTax(all.taxableGainKRW,new Date().getFullYear()).totalKRW,'together the deduction is used once');assert.ok(all.annualTaxChangeKRW>300000);db.close();
 });
 test('review instructions: use the app tax figures and their status; no flat 22%, no refund, no tax-free ETF assumption',()=>{
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8');
   for(const re of [/never apply 22% to proceeds or to a gain yourself/,/never treat a loss as a guaranteed refund/,/never assume a Korean ETF is tax-free/,/it is not a reason to Hold and never a reason to drop a protective exit/,/one KRW 2\.5m deduction is shared by every sale this year/])assert.match(src,re);
 });
 test('without a saved indicative rate, a quote uses the current market rate and says so',()=>{

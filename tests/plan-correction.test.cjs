@@ -21,7 +21,7 @@ test('a complete Buy needs no correction',async()=>{
   let calls=0;const r=await researchReview({context,evidence:null,request:async()=>{calls++;return reply(365);},log:()=>{}});assert.equal(calls,1);assert.equal(r.decision.planCorrected,undefined);
 });
 test('reviews are told how to explain a reversal of the previous review',()=>{
-  const fs=require('node:fs'),path=require('node:path');const src=fs.readFileSync(path.join(__dirname,'..','electron','ai-client.cjs'),'utf8');
+  const fs=require('node:fs'),path=require('node:path');const src=fs.readFileSync(path.join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8');
   assert.match(src,/previousReview is the last review on this account; when your action or a verdict reverses it/);
   const auto=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(auto,/context\.previousReview=\{at:/);
   const {fingerprint}=require('../electron/token-saver.cjs');const base={universe:[],quotes:[]};assert.equal(fingerprint({...base,previousReview:{action:'Hold'}}).exact,fingerprint({...base,previousReview:{action:'Buy'}}).exact,'the previous review alone does not force a review');
@@ -39,5 +39,5 @@ test('a Buy without the before-and-after portfolio comparison is held back; the 
 });
 test('reviews are told whether equity is reliable for the comparison',()=>{
   const fs=require('node:fs'),path=require('node:path');const src=fs.readFileSync(path.join(__dirname,'..','electron','automation.cjs'),'utf8');
-  assert.match(src,/context\.equityReliability=\{reliable:!reasons\.length/);assert.match(fs.readFileSync(path.join(__dirname,'..','electron','ai-client.cjs'),'utf8'),/If equityReliability\.reliable is false, set equityReliable to false and say the comparison cannot be trusted/);
+  assert.match(src,/context\.equityReliability=\{reliable:!reasons\.length/);assert.match(fs.readFileSync(path.join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8'),/If equityReliability\.reliable is false, set equityReliable to false and say the comparison cannot be trusted/);
 });
