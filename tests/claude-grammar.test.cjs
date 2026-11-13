@@ -7,7 +7,11 @@ const KEY='sk-ant-fixture-grammar-key-0000';const OPTS={openaiModel:'claude-opus
 const CTX={universe:[{symbol:'005930'}],quotes:[{symbol:'005930',price:217000}]};
 const reply=(content,stop='end_turn')=>({id:'msg',type:'message',role:'assistant',model:'claude-opus-5-5',content:[{type:'thinking',thinking:'',signature:'sig'},...content],stop_reason:stop,stop_details:null,usage:{input_tokens:100,output_tokens:50,service_tier:'standard'},input_transformations:[]});
 const text=t=>({type:'text',text:t});
-const transport=(...replies)=>{const sent=[];const fn=async(url,init)=>{sent.push(JSON.parse(init.body));const r=replies.length>1?replies.shift():replies[0];return new Response(JSON.stringify(r),{status:200,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;};
+// The text form is the fallback since the enforced form (artifacts/reviews/2026-11-13-enforced-form, review E5): this fake
+// refuses the decision's and the scout's enforced form as Anthropic did ("compiled grammar is too large"), so the client
+// falls back for the day and every request here is in the 1.5.56 text form. Refused requests are not recorded in `sent`.
+const GRAMMAR_400=()=>new Response(JSON.stringify({type:'error',error:{type:'invalid_request_error',message:'The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.'}}),{status:400,headers:{'content-type':'application/json'}});
+const transport=(...replies)=>{const sent=[];const fn=async(url,init)=>{const b=JSON.parse(init.body);if(b.output_config?.format&&(b.tools||b.output_config.format.schema?.properties?.plan_horizon))return GRAMMAR_400();sent.push(b);const r=replies.length>1?replies.shift():replies[0];return new Response(JSON.stringify(r),{status:200,headers:{'content-type':'application/json'}});};fn.sent=sent;return fn;};
 const HOLD={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'No trade.'};
 const decide=async(answer,ctx=CTX,opts=OPTS)=>new A.AnthropicClient(KEY,transport(reply([text(answer)]))).decide(ctx,opts);
 const refused=async(answer,rule)=>{const e=await decide(answer).then(()=>null,x=>x);assert.ok(e,`refused: ${answer.slice(0,40)}`);assert.equal(e.message,'INVALID_AI_RESPONSE');if(rule)assert.match(String(e.detail?.rule),rule,answer.slice(0,40));return e;};
@@ -44,7 +48,7 @@ test('G4: the shape block is the app\'s schema with its bounds and one format se
   const [r1,r2]=t.sent;assert.deepEqual(r1.system,r2.system,'the same system for every round');
   assert.equal(r1.system.length,2);assert.equal(r1.system[0].cache_control,undefined);assert.deepEqual(r1.system[1].cache_control,{type:'ephemeral'},'one breakpoint after the shape: the instructions and the shape are cached together');
   const [sentence,json]=[r1.system[1].text.split('\n')[0],r1.system[1].text.slice(r1.system[1].text.indexOf('\n')+1)];
-  assert.equal(sentence,A.SHAPE_SENTENCE);assert.equal(sentence,'Answer with only one JSON object that matches this JSON Schema, with no text before or after it.','format only');
+  assert.equal(sentence,`${A.SHAPE_SENTENCE} ${A.PLAIN_TEXT}`);assert.equal(sentence,'Answer with only one JSON object that matches this JSON Schema, with no text before or after it. Text fields are plain text, without Markdown.','format only (C1 review R8 adds the plain-text sentence)');
   const shape=JSON.parse(json);assert.deepEqual(Object.keys(shape.properties),Object.keys(C.decisionSchema(false,false).properties),'the app\'s own schema');
   assert.equal(shape.properties.explanation.maxLength,1500);assert.deepEqual([shape.properties.quantity.minimum,shape.properties.quantity.maximum],[0,1000]);assert.equal(shape.properties.loanDate.maxLength,10);
   assert.deepEqual([shape.properties.plan.properties.horizonDays.minimum,shape.properties.plan.properties.horizonDays.maximum],[1,3650]);assert.equal(shape.properties.strategyCheck.maxItems,8);

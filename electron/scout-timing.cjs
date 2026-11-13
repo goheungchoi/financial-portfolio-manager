@@ -94,7 +94,7 @@ function lateness(slot,now=Date.now(),opts={}){
   const late=Math.round((now-slot.at)/60000);if(late<=ON_TIME_MINUTES)return {onTime:true};
   const session=sessionAt(slot.market,slot.at,opts);
   if(session&&now<session.endAt)return {onTime:true,note:`Due at ${hhmm(slot.at)} KST, run ${late} min late while ${slot.market==='KR'?'Korea':'the U.S.'} is still open`};
-  return {onTime:false,reason:`Due at ${hhmm(slot.at)} KST and found ${late} min late (the app was not running then). A scheduled run more than ${ON_TIME_MINUTES} min late is dropped, not run late, unless its time is in its market's session and that session is still open. Dropped "${slot.label}".`};
+  return {onTime:false,reason:`Due at ${hhmm(slot.at)} KST and found ${late} min late. A scheduled run more than ${ON_TIME_MINUTES} min late is dropped, not run late, unless its time is in its market's session and that session is still open. Dropped "${slot.label}".`};
 }
 /**
  * Whether a due scheduled run is skipped. last is the latest scout run: {finishedAt, focus} with focus the markets its

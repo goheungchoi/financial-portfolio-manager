@@ -123,7 +123,7 @@ test('A4 review F1: a slot more than 30 minutes late is dropped and logged, unle
   const pre=T.dueSlot(all,['KR'],at('2026-11-11T23:50:00Z'));assert.equal(pre.slot,'before-kr-open');
   assert.deepEqual(T.lateness(pre,at('2026-11-12T00:10:00Z')),{onTime:true},'09:10: exactly 30 minutes late is on time');
   const late=T.lateness(pre,at('2026-11-12T00:11:00Z'));assert.equal(late.onTime,false,'09:11: 31 minutes late, and 08:40 is not in the session');
-  assert.match(late.reason,/^Due at 08:40 KST and found 31 min late \(the app was not running then\)\. A scheduled run more than 30 min late is dropped, not run late, unless its time is in its market's session and that session is still open\. Dropped "Before Korea opens"\.$/);
+  assert.match(late.reason,/^Due at 08:40 KST and found 31 min late\. A scheduled run more than 30 min late is dropped, not run late, unless its time is in its market's session and that session is still open\. Dropped "Before Korea opens"\.$/);
   // After Korea opens (10:00): valid until the Korean close, with the lateness noted.
   const after={...T.dueSlot({...all,scoutKrMidday:false},['KR'],at('2026-11-12T01:40:00Z'))};assert.equal(after.slot,'after-kr-open');
   assert.deepEqual(T.lateness(after,at('2026-11-12T01:40:00Z')),{onTime:true,note:'Due at 10:00 KST, run 40 min late while Korea is still open'},'10:40 runs');

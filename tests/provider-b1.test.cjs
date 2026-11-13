@@ -86,7 +86,7 @@ test('the slowdown near the budget follows the trading model\'s provider (condit
   const {a}=automation();a.configure({provider:'openai',degradeNearBudget:true,maxCallsPerDay:10,anthropicCallsPerDay:2});const day=today();
   for(let i=0;i<2;i++)a.reserveCall({openaiModel:'claude-opus-5-5'},1,'c'+i,day,'{}');assert.equal(a.slowFactor(),1,'Anthropic at its limit does not slow the OpenAI reviews');
   for(let i=0;i<8;i++)a.reserveCall({openaiModel:'gpt-6-sol'},1,'o'+i,day,'{}');assert.equal(a.slowFactor(),2,'OpenAI at 80%');
-  const s=src('electron/automation.cjs');assert.equal((s.match(/this\.reserveCall\(/g)??[]).length,6,'the six call sites');assert.ok(!/budgetExceeded\(this\.config,usage/.test(s));
+  const s=src('electron/automation.cjs');assert.equal((s.match(/this\.reserveCall\(/g)??[]).length,7,'the seven call sites (C1 adds the Claude replay)');assert.ok(!/budgetExceeded\(this\.config,usage/.test(s));
 });
 
 test('the key Test: one request, fixed answers, the key never in an answer or a log (condition d)',async()=>{
