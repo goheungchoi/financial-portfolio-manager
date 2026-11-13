@@ -8,7 +8,8 @@ const subsets=list=>list.reduce((all,id)=>all.flatMap(s=>[s,[...s,id]]),[[]]);
 
 test('step 1: today\'s texts, whatever parts apply',()=>{
   assert.deepEqual(ids,['two-markets','extended','leveraged','credit','discovery','scout-plan','scout-brief','interval','conditional','desk']);
-  assert.equal(RI.REVIEW_CORE.length,31533);assert.equal(sha(RI.REVIEW_CORE),'b0afae298315cefb');
+  // Step 2: the 1.5.57 text (31,533 characters, b0afae298315cefb) without its complexity sentence (530 characters).
+  assert.equal(RI.REVIEW_CORE.length,31003);assert.equal(sha(RI.REVIEW_CORE),'137131132eea8ab3');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
   assert.equal(RI.SCOUT_CORE.length,9322);assert.equal(sha(RI.SCOUT_CORE),'ed636750c54c3942');
   for(const s of subsets(ids))assert.equal(RI.reviewText(s),RI.REVIEW_CORE);
   for(const s of subsets(RI.SCOUT_PARTS.map(p=>p.id)))assert.equal(RI.scoutText(s),RI.SCOUT_CORE);
@@ -67,8 +68,10 @@ test('a live review context always carries the extended sessions the user switch
   a.configure({scope:'both'});wire();
   let {context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'});
   assert.deepEqual(context.extendedSessions,[]);assert.ok(!RI.partsFor(context).includes('extended'));
+  // What the provider receives is the compacted context (automation: saver.compact): the empty list survives it.
+  const sent=require('../electron/token-saver.cjs').compact(context);assert.deepEqual(sent.extendedSessions,[]);assert.ok(!RI.partsFor(sent).includes('extended'),'no extended part when none is on');
   a.configure({scope:'both',sessionKrNxt:true,sessionUsPre:true});wire();({context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'}));
-  assert.deepEqual(context.extendedSessions,['Nextrade pre- and after-market','U.S. pre-market']);assert.ok(RI.partsFor(context).includes('extended'));
+  assert.deepEqual(context.extendedSessions,['Nextrade pre- and after-market','U.S. pre-market']);assert.ok(RI.partsFor(context).includes('extended'));assert.ok(RI.partsFor(require('../electron/token-saver.cjs').compact(context)).includes('extended'));
   a.configure({scope:'us',sessionKrNxt:true,sessionUsPre:false});assert.deepEqual(a.extendedSessions(),[],'a Korean switch does not count for a U.S. account');
   assert.equal(require('../electron/review-context.cjs').classOf('extendedSessions'),'mandatory','never condensed away');
 });

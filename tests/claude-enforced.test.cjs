@@ -5,7 +5,7 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 require('./fixtures/order-book.cjs');
 const A=require('../electron/anthropic-client.cjs');const C=require('../electron/ai-client.cjs');const ER=require('../electron/provider-error-reply.cjs');
 const KEY='sk-ant-fixture-enforced-key-0000';const OPTS={openaiModel:'claude-opus-5-5',reasoningEffort:'medium'};
-const LIMIT=54;const DIR=path.join(__dirname,'../artifacts/reviews/2026-11-13-enforced-form');
+const LIMIT=54;const FIXED=require('./fixtures/claude-flat-schemas.json');// the forms as built (moved from git-ignored artifacts/)
 const reply=(content,stop='end_turn')=>({id:'msg',type:'message',role:'assistant',model:'claude-opus-5-5',content:[{type:'thinking',thinking:'',signature:'sig'},...content],stop_reason:stop,stop_details:null,usage:{input_tokens:1000,output_tokens:200,service_tier:'standard'},input_transformations:[]});
 const text=t=>({type:'text',text:t});
 const GRAMMAR={status:400,body:{type:'error',error:{type:'invalid_request_error',message:'The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.'},request_id:'req_fixture_grammar'}};
@@ -15,7 +15,7 @@ const transport=(...replies)=>{const sent=[];const fn=async(url,init)=>{const b=
 // A complete flat answer: every field present, the markers where nothing is meant.
 const FLAT=Object.freeze({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'No trade.',plan_horizon:'none',plan_thesis:'',plan_invalidation:'',plan_stopPrice:0,plan_targetPrice:0,plan_horizonDays:0,plan_confidence:'low',
   plan_portfolioImpact_weightBeforePct:0,plan_portfolioImpact_weightAfterPct:0,plan_portfolioImpact_related:[],plan_portfolioImpact_relatedBeforePct:0,plan_portfolioImpact_relatedAfterPct:0,plan_portfolioImpact_equityReliable:true,plan_portfolioImpact_why:'',
-  plan_evidence:[],plan_valuation_method:'',plan_valuation_inputs:'',plan_valuation_justification:'',plan_uncertainty_acceptableAtThisSize:'',plan_uncertainty_beforeAddingMore:'',complexity_score:20,complexity_reason:'quiet',strategyCheck:'',
+  plan_evidence:[],plan_valuation_method:'',plan_valuation_inputs:'',plan_valuation_justification:'',plan_uncertainty_acceptableAtThisSize:'',plan_uncertainty_beforeAddingMore:'',strategyCheck:'',
   execution_bound:0,execution_cancelAfter:'',execution_cancelIf:[],reversal_priorDecisionId:'',reversal_basis:'none',reversal_whatChanged:'',reversal_priorRequirement:'',reversal_newEvidence:[],reversal_afterCost:'',scoutBrief:'',planVerdicts:''});
 const plain=f=>{const {scoutBrief,planVerdicts,...rest}=f;return rest;};
 // An opening the app accepts: a Buy with a complete plan and sourced, verified evidence.
@@ -28,7 +28,7 @@ test('E4: every Claude schema the app can send counts at most 54; the decision c
   const all=[['decision brief+targets',A.flatDecisionSchema(true,true)],['decision brief',A.flatDecisionSchema(true,false)],['decision targets',A.flatDecisionSchema(false,true)],['decision plain',A.flatDecisionSchema(false,false)],
     ['scout',A.toAnthropicSchema(require('../electron/scout.cjs').SCHEMA)],['narrative',A.toAnthropicSchema(require('../electron/narrative.cjs').SCHEMA)],['compacting',A.toAnthropicSchema(require('../electron/context-fit.cjs').COMPACT_SCHEMA)],['reflection',A.toAnthropicSchema(require('../electron/reflection.cjs').SCHEMA)]];
   for(const [name,s] of all)assert.ok(A.grammarCount(s)<=LIMIT,`${name}: ${A.grammarCount(s)} over ${LIMIT}`);
-  assert.deepEqual(all.slice(0,4).map(([,s])=>A.grammarCount(s)),[53,52,52,51]);
+  assert.deepEqual(all.slice(0,4).map(([,s])=>A.grammarCount(s)),[51,50,50,49]);
   // Every leaf of the nested schema has a flat key or sits inside a JSON-text part.
   for(const [b,t] of [[true,true],[false,false]]){const nested=C.decisionSchema(b,t),flat=A.flatDecisionSchema(b,t).properties;const leaves=[];
     const obj=n=>n?.anyOf?.find(x=>x?.type==='object')??(n?.type==='object'?n:null);
@@ -36,9 +36,10 @@ test('E4: every Claude schema the app can send counts at most 54; the decision c
     for(const l of leaves)assert.ok(l in flat,`${l} has a place`);for(const k of A.TEXT_PARTS)if(k in nested.properties)assert.deepEqual(flat[k],{type:'string'},k);}
   const s=JSON.stringify(A.flatDecisionSchema(true,true));assert.ok(!s.includes('anyOf')&&!s.includes('"null"'));
   for(const v of Object.values(A.flatDecisionSchema(true,true).properties))assert.ok(v.type!=='object','no nested object');
-  // The schema the app sends is the one verified on the real API; the format text is the verified one plus the E9 sentence.
-  assert.equal(JSON.stringify(A.flatDecisionSchema(true,true)),JSON.stringify(JSON.parse(fs.readFileSync(path.join(DIR,'claude-decision-brief-targets.json'),'utf8')).schema));
-  const verified=fs.readFileSync(path.join(DIR,'claude-decision-format-text.txt'),'utf8').split('\n');const lines=A.FORMAT_TEXT.split('\n');
+  // The schemas the app sends are the fixture's: the forms verified on the real API (2026-11-13) without complexity_score and
+  // complexity_reason (instruction rewrite, step 2). The format text is the verified one plus the E9 sentence.
+  for(const [k,[b,t]] of Object.entries({'brief-targets':[true,true],'brief-only':[true,false],'targets-only':[false,true],plain:[false,false]}))assert.equal(JSON.stringify(A.flatDecisionSchema(b,t)),JSON.stringify(FIXED.schemas[k]),k);
+  const verified=FIXED.formatText.split('\n');const lines=A.FORMAT_TEXT.split('\n');
   assert.deepEqual(lines.filter(l=>!verified.includes(l)),['Where the instructions say null, write the marker named here.']);assert.equal(lines.length,verified.length+1);
 });
 

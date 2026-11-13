@@ -139,7 +139,6 @@ function decisionShape(schema){const s=JSON.parse(JSON.stringify(schema));const 
   if(p.explanation)p.explanation.maxLength=1500;if(p.quantity)Object.assign(p.quantity,{minimum:0,maximum:1000});if(p.loanDate)p.loanDate.maxLength=10;
   const hd=obj(p.plan)?.properties?.horizonDays;if(hd)Object.assign(hd,{minimum:1,maximum:3650});
   const ex=obj(p.execution)?.properties;if(ex?.cancelAfter)ex.cancelAfter.maxLength=40;if(ex?.cancelIf){ex.cancelIf.maxItems=5;if(ex.cancelIf.items?.properties?.expr)ex.cancelIf.items.properties.expr.maxLength=200;}
-  const score=obj(p.complexity)?.properties?.score;if(score)Object.assign(score,{minimum:0,maximum:100});
   if(p.strategyCheck)p.strategyCheck.maxItems=8;if(p.planVerdicts)p.planVerdicts.maxItems=12;return s;}
 function onlyObject(text,{empty,invalid}){const t=String(text??'').trim();if(!t)throw fail(empty,{status:'end_turn'});
   const fence=/^```json[ \t]*\r?\n([\s\S]*)\r?\n```$/.exec(t);if(!fence&&t.startsWith('```'))throw fail(invalid,{status:'end_turn'});
@@ -151,7 +150,7 @@ function onlyObject(text,{empty,invalid}){const t=String(text??'').trim();if(!t)
 // unions + arrays (at most 62 with callable tools, 69 without; undocumented). The app's nested decision schema counts 115,
 // so Claude gets a flat form built from it: nested parts become top-level fields named by their path (plan_stopPrice),
 // nullable values become plain ones with a "none" marker, and three list parts that never reach an order are JSON text in
-// a string. Largest shape 53, under the guard of 54 (tests/claude-enforced.test.cjs). The rebuild turns the flat answer
+// a string. Largest shape 51 (53 before complexity was removed), under the guard of 54 (tests/claude-enforced.test.cjs). The rebuild turns the flat answer
 // back into the nested decision before the unchanged validateDecision; a marker is never read as a value.
 const TEXT_PARTS=Object.freeze(['strategyCheck','scoutBrief','planVerdicts']);
 const objectOf=n=>n?.anyOf?.find(b=>b?.type==='object')??(n?.type==='object'?n:null);
@@ -196,7 +195,6 @@ function rebuildDecision(flat,schema){
     evidence:f.plan_evidence,
     valuation:str(f.plan_valuation_method)?{method:f.plan_valuation_method,inputs:f.plan_valuation_inputs,justification:f.plan_valuation_justification}:null,
     uncertainty:str(f.plan_uncertainty_acceptableAtThisSize)||str(f.plan_uncertainty_beforeAddingMore)?{acceptableAtThisSize:f.plan_uncertainty_acceptableAtThisSize,beforeAddingMore:f.plan_uncertainty_beforeAddingMore}:null};
-  d.complexity={score:f.complexity_score,reason:f.complexity_reason};
   const part=(k,kind)=>{const r=textPart(f[k],kind);if(r.bad)dropped.push(k);return r;};
   d.strategyCheck=part('strategyCheck','array').value??[];
   const noExecution=f.execution_bound===0&&!str(f.execution_cancelAfter)&&Array.isArray(f.execution_cancelIf)&&!f.execution_cancelIf.length;

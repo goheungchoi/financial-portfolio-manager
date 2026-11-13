@@ -124,7 +124,7 @@ test('the tool: replaces is a required nullable field and the description says w
   const p=ORDER_TOOL.parameters;assert.deepEqual(p.properties.replaces,{type:['string','null']});assert.ok(p.required.includes('replaces'));
   assert.ok(ORDER_TOOL.description.includes('replaces is null, or with action "add" the id of an armed stop loss for the same symbol and side: the new stop loss is armed and that order cancelled together, and if the new one is refused, that order stays armed unchanged.'));
   assert.ok(!/should|prefer|always use/i.test(ORDER_TOOL.description.match(/replaces is null[^.]*\.[^.]*\./)[0]));
-  assert.equal(require('../electron/ai-client.cjs').INSTRUCTIONS_VERSION,'review 2026-11-12');
+  assert.equal(require('../electron/ai-client.cjs').INSTRUCTIONS_VERSION,'review 2026-11-13');
 });
 
 test('the console gets one entry with both ids and both levels',()=>{

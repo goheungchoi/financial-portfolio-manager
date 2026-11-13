@@ -111,12 +111,12 @@ const setPath=(o,p,v)=>{const [k,...rest]=p.split('.');return rest.length?{...o,
 const TYPES={environment:'string',market:'string',currency:'string',baseCurrency:'string',equity:'number',cash:'number|object',depositCash:'number',pendingSaleProceeds:'number',unsettledKRW:'number',
   unsettledUncertainKRW:'number',unsettledUSBuysKRW:'number',positions:'object',orders:'array',orderReconciliation:'array|object',equityReliability:'object',equityUncertainty:'object',markets:'array',risk:'object',
   emergency:'object',marketSession:'object',executionEnabled:'boolean',automaticExecutionEnabled:'boolean',buyingPower:'object',productRisk:'object',quotes:'array',universe:'array',triggerEvidence:'object',fx:'object',
-  tradingCosts:'object',userGuidelines:'string',objective:'string',confirmation:'object',paperVersion:'number|string',
+  tradingCosts:'object',userGuidelines:'string',objective:'string',paperVersion:'number|string',
   agentDesk:'object',orderFollowUp:'object',pendingDecisions:'array',waits:'array',reviewWatches:'array',researchGaps:'array',
   sectorLeads:'object',discovery:'object',topStories:'array',similarEpisodes:'array',eventCalendar:'array',macro:'object|array',marketRegime:'object',portfolioExposure:'object',marketNarrative:'object',
   decisionScoreboard:'object',reviewInterval:'object',extendedSessions:'array',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
   lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object'};
-const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','confirmation','paperVersion','extendedSessions'];
+const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','paperVersion','extendedSessions'];
 const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps'];
 const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes','eventCalendar','macro','marketRegime','portfolioExposure','marketNarrative','decisionScoreboard','reviewInterval','performance',
   'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','positionMemory','orderBooks','reviewScope','waits','pendingDecisions',
@@ -130,7 +130,7 @@ const typeOf=v=>Array.isArray(v)?'array':typeof v;
 function focusSymbols(context){
   const out=new Set(Object.entries(context.positions??{}).filter(([,p])=>!(p?.quantity<=0)).map(([s])=>s));const add=s=>{if(typeof s==='string'&&s)out.add(s);};
   const t=context.triggerEvidence;add(t?.symbol);(t?.symbols??[]).forEach(add);(t?.events??[]).forEach(e=>{add(e?.symbol);(e?.symbols??[]).forEach(add);});(t?.results??[]).forEach(r=>String(r?.expr??'').replace(/"([^"]+)"/g,(m,s)=>{add(s);return m;}));
-  for(const o of [...(context.orders??[]),...(context.orderFollowUp?.orders??[]),...(context.pendingDecisions??[]),...(context.agentDesk?.conditionalOrders?.armed??[])])add(o?.symbol);add(context.confirmation?.decision?.symbol);
+  for(const o of [...(context.orders??[]),...(context.orderFollowUp?.orders??[]),...(context.pendingDecisions??[]),...(context.agentDesk?.conditionalOrders?.armed??[])])add(o?.symbol);
   return out;
 }
 const about=(row,focus)=>Boolean(row&&typeof row==='object'&&(focus.has(row.symbol)||Array.isArray(row.symbols)&&row.symbols.some(s=>focus.has(s))));

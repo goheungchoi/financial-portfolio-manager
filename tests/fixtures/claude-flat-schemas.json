@@ -1,0 +1,1018 @@
+{
+ "note": "The enforced Claude decision form as the app builds it (tests/claude-enforced.test.cjs). Moved from git-ignored artifacts/reviews/2026-11-13-enforced-form by the instruction rewrite, step 2. The 2026-11-13 forms were verified on the real API; these are the same with complexity_score and complexity_reason removed, unverified on the API until the next Claude dry run.",
+ "schemas": {
+  "brief-targets": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "Hold",
+      "Buy",
+      "Sell"
+     ]
+    },
+    "symbol": {
+     "type": "string"
+    },
+    "quantity": {
+     "type": "integer"
+    },
+    "credit": {
+     "type": "string",
+     "enum": [
+      "none",
+      "margin-buy",
+      "margin-sell",
+      "short",
+      "cover"
+     ]
+    },
+    "loanDate": {
+     "type": "string"
+    },
+    "explanation": {
+     "type": "string"
+    },
+    "plan_horizon": {
+     "type": "string",
+     "enum": [
+      "long-term",
+      "swing",
+      "short-term",
+      "none"
+     ]
+    },
+    "plan_thesis": {
+     "type": "string"
+    },
+    "plan_invalidation": {
+     "type": "string"
+    },
+    "plan_stopPrice": {
+     "type": "number"
+    },
+    "plan_targetPrice": {
+     "type": "number"
+    },
+    "plan_horizonDays": {
+     "type": "integer"
+    },
+    "plan_confidence": {
+     "type": "string",
+     "enum": [
+      "low",
+      "medium",
+      "high"
+     ]
+    },
+    "plan_portfolioImpact_weightBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_weightAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_related": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "plan_portfolioImpact_relatedBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_relatedAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_equityReliable": {
+     "type": "boolean"
+    },
+    "plan_portfolioImpact_why": {
+     "type": "string"
+    },
+    "plan_evidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "verified": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "verified"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "plan_valuation_method": {
+     "type": "string"
+    },
+    "plan_valuation_inputs": {
+     "type": "string"
+    },
+    "plan_valuation_justification": {
+     "type": "string"
+    },
+    "plan_uncertainty_acceptableAtThisSize": {
+     "type": "string"
+    },
+    "plan_uncertainty_beforeAddingMore": {
+     "type": "string"
+    },
+    "strategyCheck": {
+     "type": "string"
+    },
+    "execution_bound": {
+     "type": "number"
+    },
+    "execution_cancelAfter": {
+     "type": "string"
+    },
+    "execution_cancelIf": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "expr": {
+        "type": "string"
+       },
+       "op": {
+        "type": "string",
+        "enum": [
+         ">",
+         ">=",
+         "<",
+         "<="
+        ]
+       },
+       "value": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "expr",
+       "op",
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_priorDecisionId": {
+     "type": "string"
+    },
+    "reversal_basis": {
+     "type": "string",
+     "enum": [
+      "new-evidence",
+      "corrected-reasoning",
+      "none"
+     ]
+    },
+    "reversal_whatChanged": {
+     "type": "string"
+    },
+    "reversal_priorRequirement": {
+     "type": "string"
+    },
+    "reversal_newEvidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "date": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "date"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_afterCost": {
+     "type": "string"
+    },
+    "scoutBrief": {
+     "type": "string"
+    },
+    "planVerdicts": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "action",
+    "symbol",
+    "quantity",
+    "credit",
+    "loanDate",
+    "explanation",
+    "plan_horizon",
+    "plan_thesis",
+    "plan_invalidation",
+    "plan_stopPrice",
+    "plan_targetPrice",
+    "plan_horizonDays",
+    "plan_confidence",
+    "plan_portfolioImpact_weightBeforePct",
+    "plan_portfolioImpact_weightAfterPct",
+    "plan_portfolioImpact_related",
+    "plan_portfolioImpact_relatedBeforePct",
+    "plan_portfolioImpact_relatedAfterPct",
+    "plan_portfolioImpact_equityReliable",
+    "plan_portfolioImpact_why",
+    "plan_evidence",
+    "plan_valuation_method",
+    "plan_valuation_inputs",
+    "plan_valuation_justification",
+    "plan_uncertainty_acceptableAtThisSize",
+    "plan_uncertainty_beforeAddingMore",
+    "strategyCheck",
+    "execution_bound",
+    "execution_cancelAfter",
+    "execution_cancelIf",
+    "reversal_priorDecisionId",
+    "reversal_basis",
+    "reversal_whatChanged",
+    "reversal_priorRequirement",
+    "reversal_newEvidence",
+    "reversal_afterCost",
+    "scoutBrief",
+    "planVerdicts"
+   ],
+   "additionalProperties": false
+  },
+  "brief-only": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "Hold",
+      "Buy",
+      "Sell"
+     ]
+    },
+    "symbol": {
+     "type": "string"
+    },
+    "quantity": {
+     "type": "integer"
+    },
+    "credit": {
+     "type": "string",
+     "enum": [
+      "none",
+      "margin-buy",
+      "margin-sell",
+      "short",
+      "cover"
+     ]
+    },
+    "loanDate": {
+     "type": "string"
+    },
+    "explanation": {
+     "type": "string"
+    },
+    "plan_horizon": {
+     "type": "string",
+     "enum": [
+      "long-term",
+      "swing",
+      "short-term",
+      "none"
+     ]
+    },
+    "plan_thesis": {
+     "type": "string"
+    },
+    "plan_invalidation": {
+     "type": "string"
+    },
+    "plan_stopPrice": {
+     "type": "number"
+    },
+    "plan_targetPrice": {
+     "type": "number"
+    },
+    "plan_horizonDays": {
+     "type": "integer"
+    },
+    "plan_confidence": {
+     "type": "string",
+     "enum": [
+      "low",
+      "medium",
+      "high"
+     ]
+    },
+    "plan_portfolioImpact_weightBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_weightAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_related": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "plan_portfolioImpact_relatedBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_relatedAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_equityReliable": {
+     "type": "boolean"
+    },
+    "plan_portfolioImpact_why": {
+     "type": "string"
+    },
+    "plan_evidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "verified": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "verified"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "plan_valuation_method": {
+     "type": "string"
+    },
+    "plan_valuation_inputs": {
+     "type": "string"
+    },
+    "plan_valuation_justification": {
+     "type": "string"
+    },
+    "plan_uncertainty_acceptableAtThisSize": {
+     "type": "string"
+    },
+    "plan_uncertainty_beforeAddingMore": {
+     "type": "string"
+    },
+    "strategyCheck": {
+     "type": "string"
+    },
+    "execution_bound": {
+     "type": "number"
+    },
+    "execution_cancelAfter": {
+     "type": "string"
+    },
+    "execution_cancelIf": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "expr": {
+        "type": "string"
+       },
+       "op": {
+        "type": "string",
+        "enum": [
+         ">",
+         ">=",
+         "<",
+         "<="
+        ]
+       },
+       "value": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "expr",
+       "op",
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_priorDecisionId": {
+     "type": "string"
+    },
+    "reversal_basis": {
+     "type": "string",
+     "enum": [
+      "new-evidence",
+      "corrected-reasoning",
+      "none"
+     ]
+    },
+    "reversal_whatChanged": {
+     "type": "string"
+    },
+    "reversal_priorRequirement": {
+     "type": "string"
+    },
+    "reversal_newEvidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "date": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "date"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_afterCost": {
+     "type": "string"
+    },
+    "scoutBrief": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "action",
+    "symbol",
+    "quantity",
+    "credit",
+    "loanDate",
+    "explanation",
+    "plan_horizon",
+    "plan_thesis",
+    "plan_invalidation",
+    "plan_stopPrice",
+    "plan_targetPrice",
+    "plan_horizonDays",
+    "plan_confidence",
+    "plan_portfolioImpact_weightBeforePct",
+    "plan_portfolioImpact_weightAfterPct",
+    "plan_portfolioImpact_related",
+    "plan_portfolioImpact_relatedBeforePct",
+    "plan_portfolioImpact_relatedAfterPct",
+    "plan_portfolioImpact_equityReliable",
+    "plan_portfolioImpact_why",
+    "plan_evidence",
+    "plan_valuation_method",
+    "plan_valuation_inputs",
+    "plan_valuation_justification",
+    "plan_uncertainty_acceptableAtThisSize",
+    "plan_uncertainty_beforeAddingMore",
+    "strategyCheck",
+    "execution_bound",
+    "execution_cancelAfter",
+    "execution_cancelIf",
+    "reversal_priorDecisionId",
+    "reversal_basis",
+    "reversal_whatChanged",
+    "reversal_priorRequirement",
+    "reversal_newEvidence",
+    "reversal_afterCost",
+    "scoutBrief"
+   ],
+   "additionalProperties": false
+  },
+  "targets-only": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "Hold",
+      "Buy",
+      "Sell"
+     ]
+    },
+    "symbol": {
+     "type": "string"
+    },
+    "quantity": {
+     "type": "integer"
+    },
+    "credit": {
+     "type": "string",
+     "enum": [
+      "none",
+      "margin-buy",
+      "margin-sell",
+      "short",
+      "cover"
+     ]
+    },
+    "loanDate": {
+     "type": "string"
+    },
+    "explanation": {
+     "type": "string"
+    },
+    "plan_horizon": {
+     "type": "string",
+     "enum": [
+      "long-term",
+      "swing",
+      "short-term",
+      "none"
+     ]
+    },
+    "plan_thesis": {
+     "type": "string"
+    },
+    "plan_invalidation": {
+     "type": "string"
+    },
+    "plan_stopPrice": {
+     "type": "number"
+    },
+    "plan_targetPrice": {
+     "type": "number"
+    },
+    "plan_horizonDays": {
+     "type": "integer"
+    },
+    "plan_confidence": {
+     "type": "string",
+     "enum": [
+      "low",
+      "medium",
+      "high"
+     ]
+    },
+    "plan_portfolioImpact_weightBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_weightAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_related": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "plan_portfolioImpact_relatedBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_relatedAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_equityReliable": {
+     "type": "boolean"
+    },
+    "plan_portfolioImpact_why": {
+     "type": "string"
+    },
+    "plan_evidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "verified": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "verified"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "plan_valuation_method": {
+     "type": "string"
+    },
+    "plan_valuation_inputs": {
+     "type": "string"
+    },
+    "plan_valuation_justification": {
+     "type": "string"
+    },
+    "plan_uncertainty_acceptableAtThisSize": {
+     "type": "string"
+    },
+    "plan_uncertainty_beforeAddingMore": {
+     "type": "string"
+    },
+    "strategyCheck": {
+     "type": "string"
+    },
+    "execution_bound": {
+     "type": "number"
+    },
+    "execution_cancelAfter": {
+     "type": "string"
+    },
+    "execution_cancelIf": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "expr": {
+        "type": "string"
+       },
+       "op": {
+        "type": "string",
+        "enum": [
+         ">",
+         ">=",
+         "<",
+         "<="
+        ]
+       },
+       "value": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "expr",
+       "op",
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_priorDecisionId": {
+     "type": "string"
+    },
+    "reversal_basis": {
+     "type": "string",
+     "enum": [
+      "new-evidence",
+      "corrected-reasoning",
+      "none"
+     ]
+    },
+    "reversal_whatChanged": {
+     "type": "string"
+    },
+    "reversal_priorRequirement": {
+     "type": "string"
+    },
+    "reversal_newEvidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "date": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "date"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_afterCost": {
+     "type": "string"
+    },
+    "planVerdicts": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "action",
+    "symbol",
+    "quantity",
+    "credit",
+    "loanDate",
+    "explanation",
+    "plan_horizon",
+    "plan_thesis",
+    "plan_invalidation",
+    "plan_stopPrice",
+    "plan_targetPrice",
+    "plan_horizonDays",
+    "plan_confidence",
+    "plan_portfolioImpact_weightBeforePct",
+    "plan_portfolioImpact_weightAfterPct",
+    "plan_portfolioImpact_related",
+    "plan_portfolioImpact_relatedBeforePct",
+    "plan_portfolioImpact_relatedAfterPct",
+    "plan_portfolioImpact_equityReliable",
+    "plan_portfolioImpact_why",
+    "plan_evidence",
+    "plan_valuation_method",
+    "plan_valuation_inputs",
+    "plan_valuation_justification",
+    "plan_uncertainty_acceptableAtThisSize",
+    "plan_uncertainty_beforeAddingMore",
+    "strategyCheck",
+    "execution_bound",
+    "execution_cancelAfter",
+    "execution_cancelIf",
+    "reversal_priorDecisionId",
+    "reversal_basis",
+    "reversal_whatChanged",
+    "reversal_priorRequirement",
+    "reversal_newEvidence",
+    "reversal_afterCost",
+    "planVerdicts"
+   ],
+   "additionalProperties": false
+  },
+  "plain": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "Hold",
+      "Buy",
+      "Sell"
+     ]
+    },
+    "symbol": {
+     "type": "string"
+    },
+    "quantity": {
+     "type": "integer"
+    },
+    "credit": {
+     "type": "string",
+     "enum": [
+      "none",
+      "margin-buy",
+      "margin-sell",
+      "short",
+      "cover"
+     ]
+    },
+    "loanDate": {
+     "type": "string"
+    },
+    "explanation": {
+     "type": "string"
+    },
+    "plan_horizon": {
+     "type": "string",
+     "enum": [
+      "long-term",
+      "swing",
+      "short-term",
+      "none"
+     ]
+    },
+    "plan_thesis": {
+     "type": "string"
+    },
+    "plan_invalidation": {
+     "type": "string"
+    },
+    "plan_stopPrice": {
+     "type": "number"
+    },
+    "plan_targetPrice": {
+     "type": "number"
+    },
+    "plan_horizonDays": {
+     "type": "integer"
+    },
+    "plan_confidence": {
+     "type": "string",
+     "enum": [
+      "low",
+      "medium",
+      "high"
+     ]
+    },
+    "plan_portfolioImpact_weightBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_weightAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_related": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "plan_portfolioImpact_relatedBeforePct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_relatedAfterPct": {
+     "type": "number"
+    },
+    "plan_portfolioImpact_equityReliable": {
+     "type": "boolean"
+    },
+    "plan_portfolioImpact_why": {
+     "type": "string"
+    },
+    "plan_evidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "verified": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "verified"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "plan_valuation_method": {
+     "type": "string"
+    },
+    "plan_valuation_inputs": {
+     "type": "string"
+    },
+    "plan_valuation_justification": {
+     "type": "string"
+    },
+    "plan_uncertainty_acceptableAtThisSize": {
+     "type": "string"
+    },
+    "plan_uncertainty_beforeAddingMore": {
+     "type": "string"
+    },
+    "strategyCheck": {
+     "type": "string"
+    },
+    "execution_bound": {
+     "type": "number"
+    },
+    "execution_cancelAfter": {
+     "type": "string"
+    },
+    "execution_cancelIf": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "expr": {
+        "type": "string"
+       },
+       "op": {
+        "type": "string",
+        "enum": [
+         ">",
+         ">=",
+         "<",
+         "<="
+        ]
+       },
+       "value": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "expr",
+       "op",
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_priorDecisionId": {
+     "type": "string"
+    },
+    "reversal_basis": {
+     "type": "string",
+     "enum": [
+      "new-evidence",
+      "corrected-reasoning",
+      "none"
+     ]
+    },
+    "reversal_whatChanged": {
+     "type": "string"
+    },
+    "reversal_priorRequirement": {
+     "type": "string"
+    },
+    "reversal_newEvidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "claim": {
+        "type": "string"
+       },
+       "source": {
+        "type": "string"
+       },
+       "date": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "claim",
+       "source",
+       "date"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "reversal_afterCost": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "action",
+    "symbol",
+    "quantity",
+    "credit",
+    "loanDate",
+    "explanation",
+    "plan_horizon",
+    "plan_thesis",
+    "plan_invalidation",
+    "plan_stopPrice",
+    "plan_targetPrice",
+    "plan_horizonDays",
+    "plan_confidence",
+    "plan_portfolioImpact_weightBeforePct",
+    "plan_portfolioImpact_weightAfterPct",
+    "plan_portfolioImpact_related",
+    "plan_portfolioImpact_relatedBeforePct",
+    "plan_portfolioImpact_relatedAfterPct",
+    "plan_portfolioImpact_equityReliable",
+    "plan_portfolioImpact_why",
+    "plan_evidence",
+    "plan_valuation_method",
+    "plan_valuation_inputs",
+    "plan_valuation_justification",
+    "plan_uncertainty_acceptableAtThisSize",
+    "plan_uncertainty_beforeAddingMore",
+    "strategyCheck",
+    "execution_bound",
+    "execution_cancelAfter",
+    "execution_cancelIf",
+    "reversal_priorDecisionId",
+    "reversal_basis",
+    "reversal_whatChanged",
+    "reversal_priorRequirement",
+    "reversal_newEvidence",
+    "reversal_afterCost"
+   ],
+   "additionalProperties": false
+  }
+ },
+ "formatText": "Answer in the JSON form the request enforces. Text fields are plain text, without Markdown.\nA field name with an underscore is a part of one item: plan_stopPrice is the stop price of the plan, execution_cancelIf is the cancel conditions of the execution.\nWhere there is no value, write 0 for a number, an empty string for text, an empty list for a list, and none where the choices include it. A stop price, target price, number of holding days or execution bound of 0 means none.\nNo portfolio comparison: plan_portfolioImpact_why is empty. No valuation: plan_valuation_method is empty. No execution instruction: execution_bound 0, execution_cancelAfter empty and execution_cancelIf empty. No reversal: reversal_basis none.\nstrategyCheck is JSON written as text in that string, matching this JSON Schema, or an empty string when there is nothing: {\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"horizon\":{\"type\":\"string\",\"enum\":[\"long-term\",\"swing\",\"short-term\"]},\"instrument\":{\"type\":\"string\",\"enum\":[\"unleveraged\",\"leveraged\",\"inverse\"]},\"direction\":{\"type\":\"string\",\"enum\":[\"long\",\"short\"]},\"funding\":{\"type\":\"string\",\"enum\":[\"cash\",\"margin\"]},\"idea\":{\"type\":\"string\"},\"verdict\":{\"type\":\"string\",\"enum\":[\"acted\",\"watching\",\"rejected\",\"none-found\",\"not-permitted\",\"carried\"]},\"reason\":{\"type\":\"string\"}},\"required\":[\"horizon\",\"instrument\",\"direction\",\"funding\",\"idea\",\"verdict\",\"reason\"],\"additionalProperties\":false},\"maxItems\":8}\nscoutBrief is JSON written as text in that string, matching this JSON Schema, or an empty string when there is nothing: {\"type\":\"object\",\"properties\":{\"request\":{\"type\":\"string\",\"enum\":[\"none\",\"note\",\"run\"]},\"reason\":{\"type\":\"string\"},\"lookingFor\":{\"type\":\"string\"},\"avoid\":{\"type\":\"string\"},\"questions\":{\"type\":\"string\"},\"feedback\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"symbol\":{\"type\":\"string\"},\"verdict\":{\"type\":\"string\",\"enum\":[\"acted\",\"passed\",\"waiting\"]},\"reason\":{\"type\":\"string\"}},\"required\":[\"symbol\",\"verdict\",\"reason\"],\"additionalProperties\":false}}},\"required\":[\"request\",\"reason\",\"lookingFor\",\"avoid\",\"questions\",\"feedback\"],\"additionalProperties\":false}\nplanVerdicts is JSON written as text in that string, matching this JSON Schema, or an empty string when there is nothing: {\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"symbol\":{\"type\":\"string\"},\"verdict\":{\"type\":\"string\",\"enum\":[\"acted\",\"waiting\",\"passed\"]},\"reason\":{\"type\":\"string\"},\"condition\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"market\",\"data\",\"event\",\"none\"]},\"unresolved\":{\"type\":\"string\"},\"evidence\":{\"type\":\"string\"},\"recheck\":{\"type\":\"string\"},\"waitReason\":{\"type\":\"string\",\"enum\":[\"market_closed\",\"publication_pending\",\"entry_condition\",\"missing_data\",\"none\"]},\"earliestCheck\":{\"type\":\"string\"}},\"required\":[\"kind\",\"unresolved\",\"evidence\",\"recheck\",\"waitReason\",\"earliestCheck\"],\"additionalProperties\":false},\"dataGap\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"material\":{\"type\":\"boolean\"},\"why\":{\"type\":\"string\"},\"otherSource\":{\"type\":\"string\"},\"alternative\":{\"type\":\"string\"},\"retry\":{\"type\":\"string\"},\"metric\":{\"type\":\"string\"},\"period\":{\"type\":\"string\"},\"document\":{\"type\":\"string\"},\"cause\":{\"type\":\"string\",\"enum\":[\"not-yet-published\",\"not-retrievable\",\"insufficient\"]}},\"required\":[\"material\",\"why\",\"otherSource\",\"alternative\",\"retry\",\"metric\",\"period\",\"document\",\"cause\"],\"additionalProperties\":false},{\"type\":\"null\"}]},\"minimumPosition\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"bull\":{\"type\":\"string\"},\"base\":{\"type\":\"string\"},\"bear\":{\"type\":\"string\"},\"conclusion\":{\"type\":\"string\"}},\"required\":[\"bull\",\"base\",\"bear\",\"conclusion\"],\"additionalProperties\":false},{\"type\":\"null\"}]}},\"required\":[\"symbol\",\"verdict\",\"reason\",\"condition\",\"dataGap\",\"minimumPosition\"],\"additionalProperties\":false},\"maxItems\":12}"
+}
