@@ -137,7 +137,8 @@ test('the message stays local: not in the code, lastErrorDetail, the log, the ph
   assert.ok(JSON.stringify(db.prepare('SELECT payload FROM ai_calls').all()).includes(MARK));assert.ok(JSON.stringify(db.prepare('SELECT payload FROM dry_runs').all()).includes(MARK));
   // In the code: only these files read providerError.
   const readers=fs.readdirSync(path.join(__dirname,'../electron')).filter(f=>f.endsWith('.cjs')&&fs.readFileSync(path.join(__dirname,'../electron',f),'utf8').includes('providerError')).sort();
-  assert.deepEqual(readers,['ai-accounting.cjs','anthropic-client.cjs','automation.cjs','kis-service.cjs','provider-error-reply.cjs']);
+  // OpenAI refusal fix R1: the OpenAI client and its error mapping build and carry the same record.
+  assert.deepEqual(readers,['ai-accounting.cjs','ai-client.cjs','ai-errors.cjs','anthropic-client.cjs','automation.cjs','kis-service.cjs','provider-error-reply.cjs']);
 });
 
 test('the Dry-run panel says $0.00, refused and the reservation released; the request id is shown (C5)',()=>{

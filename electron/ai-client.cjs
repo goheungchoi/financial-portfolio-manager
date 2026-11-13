@@ -178,10 +178,10 @@ class AiClient {
     if(Buffer.byteLength(JSON.stringify(input))>70000)throw new Error('CONTEXT_TOO_LARGE');
     try {
       const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(75000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'trade-reflection-v1',max_output_tokens:selected.maxOutput,reasoning:{effort:selected.effort},instructions:REFLECTION_INSTRUCTIONS,input,text:{format:{type:'json_schema',name:'trade_reflection',strict:true,schema:require('./reflection.cjs').SCHEMA}}})});
-      if(!response.ok)throw 0;const raw=await response.text();if(raw.length>RESPONSE_CHAR_LIMIT)throw 0;const body=JSON.parse(raw);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;if(body.status!=='completed'||(body.output??[]).some(i=>i.type==='function_call'))throw 0;
+      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response,[this.#key]);const raw=await response.text();if(raw.length>RESPONSE_CHAR_LIMIT)throw 0;const body=JSON.parse(raw);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;if(body.status!=='completed'||(body.output??[]).some(i=>i.type==='function_call'))throw 0;
       const output=(body.output??[]).filter(i=>i.type==='message').flatMap(i=>i.content??[]).filter(i=>i.type==='output_text').map(i=>i.text).join('');
       return {reflection:require('./reflection.cjs').validate(JSON.parse(output)),usage:require('./ai-models.cjs').normalizeUsage(body),model:body.model??selected.model};
-    }catch{const error=new Error('REFLECTION_REQUEST_FAILED');error.usage=reportedUsage;error.model=returnedModel;throw error;}
+    }catch(failure){const error=new Error('REFLECTION_REQUEST_FAILED');error.usage=reportedUsage;error.model=returnedModel;if(failure?.providerError)error.providerError=failure.providerError;throw error;}
   }
   // Market narrative: one structured answer from headlines and signals; no tools.
   // Condenses older research results inside a review that is near its size limit (cheap model; see context-fit.cjs).
@@ -190,25 +190,25 @@ class AiClient {
     const input=[{role:'user',content:JSON.stringify(payload)}];if(Buffer.byteLength(JSON.stringify(input))>400000)throw new Error('CONTEXT_TOO_LARGE');
     try {
       const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(60000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'research-compact-v1',max_output_tokens:Math.max(selected.maxOutput,4000),reasoning:{effort:selected.effort},instructions:f.COMPACT_INSTRUCTIONS,text:{format:{type:'json_schema',name:'research_compact',strict:true,schema:f.COMPACT_SCHEMA}},input})});
-      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response);
+      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response,[this.#key]);
       const text=await response.text();if(text.length>RESPONSE_CHAR_LIMIT)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
       const output=(body.output??[]).filter(i=>i.type==='message').flatMap(i=>i.content??[]).filter(i=>i.type==='output_text').map(i=>i.text).join('');
       return {...JSON.parse(output),usage:reportedUsage,provider:'openai',model:returnedModel};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;throw safe;}
   }
   async narrative(context,options={}) {
     const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;const n=require('./narrative.cjs');
     const input=[{role:'user',content:JSON.stringify(context)}];if(Buffer.byteLength(JSON.stringify(input))>120000)throw new Error('CONTEXT_TOO_LARGE');
     try {
       const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(85000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'market-narrative-v1',max_output_tokens:selected.maxOutput,reasoning:{effort:selected.effort},instructions:n.INSTRUCTIONS,text:{format:{type:'json_schema',name:'market_narrative',strict:true,schema:n.SCHEMA}},input})});
-      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response);
+      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response,[this.#key]);
       const text=await response.text();if(text.length>RESPONSE_CHAR_LIMIT)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
       if((body.output??[]).some(i=>(i.content??[]).some(c=>c.type==='refusal')))throw new Error('AI_REFUSED');
       const output=(body.output??[]).filter(i=>i.type==='message').flatMap(i=>i.content??[]).filter(i=>i.type==='output_text').map(i=>i.text).join('');
       return {narrative:JSON.parse(output),usage:reportedUsage,provider:'openai',model:returnedModel};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;throw safe;}
   }
   // Scout research run: discovery and company-research tools, answered with a portfolio plan. The size limit applies to
   // the whole request as sent (instructions, tool definitions, schema and input), not to the input alone.
@@ -219,7 +219,7 @@ class AiClient {
     const limit=options.maxBytes??scout.SCOUT_REQUEST_BYTES;if(Buffer.byteLength(payload)>limit)throw Object.assign(new Error('CONTEXT_TOO_LARGE'),{detail:`the scout request is ${Buffer.byteLength(payload)} bytes, over its ${limit}-byte limit (instructions and tools ${scoutOverheadBytes()}, input ${Buffer.byteLength(JSON.stringify(input))})`});
     try {
       const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(85000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:payload});
-      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response);
+      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response,[this.#key]);
       const text=await response.text();if(text.length>RESPONSE_CHAR_LIMIT)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
       if((body.output??[]).some(i=>(i.content??[]).some(c=>c.type==='refusal')))throw new Error('AI_REFUSED');
@@ -236,7 +236,7 @@ class AiClient {
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       let parsed;try{parsed=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:output.trim()?'the plan was not valid JSON':'the model returned no plan and no tool request'});}
       try{return {plan:scout.validatePlan(parsed),usage:reportedUsage,provider:'openai',model:returnedModel};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error.detail)safe.detail=error.detail;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;if(error.detail)safe.detail=error.detail;throw safe;}
   }
   // Sends a request and keeps the size of its parts (input, instructions, tool definitions) for size reports.
   measured(url,init){try{const b=JSON.parse(init.body),n=v=>Buffer.byteLength(JSON.stringify(v??null));this.lastRequestSizes={totalBytes:Buffer.byteLength(init.body),inputBytes:n(b.input),instructionsBytes:n(b.instructions),toolsBytes:n(b.tools)};}catch{}return this.transport(url,init);}
@@ -252,7 +252,7 @@ class AiClient {
     try {
       if(input.some(fromAnthropic))throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:'a conversation from another provider'}});
       const response=await this.measured('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(75000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'portfolio-review-v1',max_output_tokens:selected.maxOutput,...(options.research?{tools:reviewTools(context),parallel_tool_calls:true,tool_choice:options.final?'none':'auto'}:{}),reasoning:{effort:selected.effort},instructions:require('./review-instructions.cjs').reviewText(require('./review-instructions.cjs').partsFor(context)),input,text:{format:{type:'json_schema',name:'portfolio_decision',strict:true,schema:decisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length))}}})});
-      if(!response.ok){const e=await require('./ai-errors.cjs').responseError(response);if(e.message==='AI_CONTEXT_LIMIT'){const z=this.lastRequestSizes??{};e.detail={limit:'model context window',wireBytes:z.totalBytes,limitBytes:'model',largest:[`input:${z.inputBytes}`,`instructions:${z.instructionsBytes}`,`tools:${z.toolsBytes}`]};}throw e;}
+      if(!response.ok){const e=await require('./ai-errors.cjs').responseError(response,[this.#key]);if(e.message==='AI_CONTEXT_LIMIT'){const z=this.lastRequestSizes??{};e.detail={limit:'model context window',wireBytes:z.totalBytes,limitBytes:'model',largest:[`input:${z.inputBytes}`,`instructions:${z.instructionsBytes}`,`tools:${z.toolsBytes}`]};}throw e;}
       // The body is parsed before any refusal, so every refusal carries the usage it cost; its size is recorded per call.
       const text=await response.text();responseChars=text.length;const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(text.length>RESPONSE_CHAR_LIMIT)throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:`a response of ${kb(text.length)}, above the ${kb(RESPONSE_CHAR_LIMIT)} limit`,status:String(body.status??'missing').slice(0,30)}});
@@ -282,7 +282,7 @@ class AiClient {
       const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
-    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }
 module.exports={REFLECTION_INSTRUCTIONS,scoutTools,RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,kb,offeredToolNames,deskTools,fromAnthropic,fromOpenAI,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};

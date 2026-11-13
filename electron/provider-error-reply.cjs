@@ -19,7 +19,12 @@ function providerError(p,redact){
   if(!p||typeof p!=='object'||!Number.isInteger(p.status)||p.status<400||p.status>599)return null;
   const keys=lookup(p);const message=typeof p.message==='string'?String(redact?redact(p.message):p.message).slice(0,300):'';
   const contentType=typeof p.contentType==='string'&&/^[a-z0-9\/+.;= -]{1,60}$/.test(p.contentType)?p.contentType:null;
-  return {status:p.status,...keys,anthropicError:p.anthropicError===true,...(contentType?{contentType}:{}),...(message?{message}:{}),noCharge:p.noCharge===true&&p.status<500};
+  // OpenAI refusal fix R1: the vendor, the error code, Retry-After and the rate-limit headers, each checked again.
+  const vendor=['openai','anthropic'].includes(p.vendor)?p.vendor:null,errorCode=typeof p.errorCode==='string'&&/^[a-z0-9_]{1,60}$/.test(p.errorCode)?p.errorCode:null;
+  const retryAfterSec=Number.isInteger(p.retryAfterSec)&&p.retryAfterSec>=0&&p.retryAfterSec<=86400?p.retryAfterSec:null;
+  const n=v=>Number.isSafeInteger(v)&&v>=0?v:null,r=v=>typeof v==='string'&&/^[0-9hms.]{1,12}$/.test(v)?v:null;
+  const limits=p.limits&&typeof p.limits==='object'?Object.fromEntries(['requests','tokens','projectTokens'].map(k=>[k,p.limits[k]]).filter(([,v])=>v&&typeof v==='object').map(([k,v])=>[k,{limit:n(v.limit),remaining:n(v.remaining),reset:r(v.reset)}])):{};
+  return {status:p.status,...(vendor?{vendor}:{}),...keys,...(errorCode?{errorCode}:{}),anthropicError:p.anthropicError===true,...(contentType?{contentType}:{}),...(message?{message}:{}),...(retryAfterSec!=null?{retryAfterSec}:{}),...(Object.keys(limits).length?{limits}:{}),noCharge:p.noCharge===true&&p.status<500};
 }
 const sizes=v=>v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k,n])=>/^[a-zA-Z]{1,30}$/.test(k)&&Number.isInteger(n)).slice(0,8)):null;
 function errorReply(operation,error,{redact=null}={}){
