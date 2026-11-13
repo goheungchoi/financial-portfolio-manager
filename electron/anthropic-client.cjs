@@ -109,9 +109,7 @@ function errorDetail(error){
 //   separator, mixing both), so a beta name, a model id, a tool or field name stays readable.
 // - anthropicError: whether the body was an Anthropic error object ({type:'error', error:{type, message}}); contentType.
 // - noCharge: a 4xx with a received body and no usage, which the provider refuses before the model runs (review ruling 2).
-const SECRET_SHAPES=[/(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]+/g,/(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}/g,/Bearer\s+[A-Za-z0-9._~+\/=-]+/gi,/(?<![A-Za-z0-9_-])(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{32,}(?![A-Za-z0-9_-])/g];
-function cleanText(text,keys=[]){let s=String(text??'');for(const k of keys)if(typeof k==='string'&&k.length>=10)s=s.split(k).join('[redacted]');
-  s=s.replace(/[\u0000-\u001f\u007f-\u009f]/g,' ');for(const r of SECRET_SHAPES)s=s.replace(r,'[redacted]');return s.replace(/\s+/g,' ').trim().slice(0,300);}
+const {SECRET_SHAPES,cleanText}=require('./ai-errors.cjs');// shared with the OpenAI refusal record (fix R1)
 function refusalRecord(error,call,keys=[]){
   const S=SDK();if(!(error instanceof S.APIError)||!Number.isInteger(error.status))return null;const status=error.status;if(status<400||status>599)return null;
   const lookupKeys=errorDetail(error)??{};let parsed=null;try{parsed=JSON.parse(call?.errorBody??'');}catch{}

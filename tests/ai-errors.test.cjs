@@ -3,7 +3,7 @@ const {AiClient}=require('../electron/ai-client.cjs');
 const {detail}=require('../electron/ai-errors.cjs');
 test('API failures retain useful allowlisted causes without exposing response text',async()=>{
  for(const [status,code,expected] of [[401,'invalid_api_key','AI_AUTH_FAILED'],[404,'model_not_found','AI_MODEL_UNAVAILABLE'],[429,'insufficient_quota','AI_QUOTA_EXHAUSTED'],[429,'rate_limit_exceeded','AI_RATE_LIMITED'],[400,'invalid_request_error','AI_BAD_REQUEST'],[500,null,'AI_SERVER_ERROR']]){
- const client=new AiClient('fixture_private_key',async()=>new Response(JSON.stringify({error:{code,message:'fixture_private_key PRIVATE_ACCOUNT'}}),{status}));await assert.rejects(client.decide({universe:[]}),e=>e.message===expected&&!JSON.stringify(e).includes('PRIVATE_ACCOUNT'));
+ const client=new AiClient('fixture_private_key',async()=>new Response(JSON.stringify({error:{code,message:'fixture_private_key PRIVATE_ACCOUNT'}}),{status}));await assert.rejects(client.decide({universe:[]}),e=>{const {providerError,...rest}=e;return e.message===expected&&!JSON.stringify(rest).includes('PRIVATE_ACCOUNT')&&!String(e.detail??'').includes('PRIVATE_ACCOUNT')&&!JSON.stringify(providerError??{}).includes('fixture_private_key');});// the message is kept only in the local refusal record (fix R1), with the key removed
  }
 });
 test('incomplete outputs and refusals are distinguished from invalid decisions',async()=>{
