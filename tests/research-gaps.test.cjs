@@ -46,7 +46,7 @@ test('review fix: a gap is identified by metric, period and document, not wordin
 test('reviews are asked to name the missing metric, period and document for a data wait',()=>{
   const {validateDecision}=require('../electron/ai-client.cjs');const d=validateDecision({action:'Hold',symbol:'',quantity:0,explanation:'x',credit:'none',loanDate:'',planVerdicts:[{...wait('NASD:AMZN'),dataGap:{material:true,why:'w',otherSource:'o',alternative:'a',retry:'r',metric:'Operating income',period:'FY2026 Q3',document:'10-Q'},minimumPosition:null}]},['NASD:AMZN']);
   assert.deepEqual([d.planVerdicts[0].dataGap.metric,d.planVerdicts[0].dataGap.period,d.planVerdicts[0].dataGap.document],['Operating income','FY2026 Q3','10-Q']);
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');assert.match(src,/required:\['material','why','otherSource','alternative','retry','metric','period','document','cause'\]/);assert.match(src,/a different metric, period or document is a different gap/);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8');assert.match(src,/required:\['material','why','otherSource','alternative','retry','metric','period','document','cause'\]/);assert.match(src,/a different metric, period or document is a different gap/);
 });
 test('rewording, event waits and market waits do not reset a symbol wait; it reaches the limit and acting closes it',()=>{
   // 2026-10-29, Samsung E&A as reviewed: event waits all morning, then data waits under four wordings with two market waits

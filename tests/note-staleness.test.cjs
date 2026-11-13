@@ -55,5 +55,5 @@ test('a corrected note keeps the original in history and its expiry; reviews are
   assert.equal(fixed.expiresAt,original.expiresAt);assert.equal(fixed.corrected.reason,'pending-order claim superseded by reconciled fill');
   const [h]=desk.noteHistory('s','028050');assert.equal(h.note,STALE);assert.equal(h.reason,'pending-order claim superseded by reconciled fill');
   now=3000;desk.saveNote('s',{action:'set',symbol:'028050',note:'later',expiresInDays:5});assert.equal(desk.noteHistory('s','028050').length,2,'replacements are archived too');
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');assert.match(src,/take precedence over any note about holdings, orders or stop coverage/);
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8');assert.match(src,/take precedence over any note about holdings, orders or stop coverage/);
 });

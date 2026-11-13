@@ -218,7 +218,7 @@ test('a repeated call id keeps each result its own section; from is for lists an
   assert.deepEqual(rc.detailPart({rows:list},{section:'rows',part:'000100',from:0}).data,[{symbol:'000100',name:'Yuhan'}]);
 });
 test('the trading review describes reading by position and stored references',()=>{
-  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8');
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8');
   assert.doesNotMatch(src,/parts and pages|paths or pages/);assert.match(src,/continues from the next\.from each reply gives until a reply says last/);assert.match(src,/read it again with get_context_detail from its fullResult\.section/);
   assert.match(rc.DETAIL_TOOL.description,/last true ends that list or text/);
 });
