@@ -132,7 +132,7 @@ test('finding 2: across Korean midnight, a U.S. session baseline, a transfer pai
   x=detector('2026-11-05T08:00:00+09:00');x.read('2026-11-05T08:00:00+09:00',1000000,0);x.read('2026-11-05T08:30:00+09:00',870000,0);const pair=x.read('2026-11-05T09:30:00+09:00',870000,100);
   assert.deepEqual(pair.map(f=>[f.market,f.transfer,f.occurredAfter,f.occurredBy]),[['KR',true,at('2026-11-05T08:00:00+09:00'),at('2026-11-05T09:30:00+09:00')],['US',true,at('2026-11-05T08:00:00+09:00'),at('2026-11-05T09:30:00+09:00')]]);
   // Held by an earlier build (one amount, no parts): its window runs to the last reading, so it straddles the baseline.
-  x=detector('2026-11-05T10:30:00+09:00');x.db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('a',JSON.stringify({at:at('2026-11-05T09:30:00+09:00'),krCash:2000000,usCash:null,basis:{KR:'net-of-confirmed',US:'with-pending-and-in-flight'},provisionalKRW:0,unsettledKRW:0,fills:{},
+  x=detector('2026-11-05T10:30:00+09:00');x.db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('a',JSON.stringify({at:at('2026-11-05T09:30:00+09:00'),krCash:2000000,usCash:null,basis:require('../electron/flow-detector.cjs').BASIS,provisionalKRW:0,unsettledKRW:0,fills:{},
     pending:{KR:{amount:1000000,since:at('2026-11-05T08:30:00+09:00'),after:at('2026-11-05T08:00:00+09:00'),funding:false}},settled:[]}));
   const old=x.read('2026-11-05T10:30:00+09:00',2000000);assert.deepEqual(old.map(f=>[f.amount,f.occurredBy]),[[1000000,at('2026-11-05T09:30:00+09:00')]]);
   assert.equal(x.perf.flowsSince('a','KR',at('2026-11-05T09:00:00+09:00')).uncertain.unresolved,1000000);

@@ -46,7 +46,9 @@ class PerformanceHistory {
       const openPids=[...new Set([...(prior.settlement?.openPids??[]),...(snap?.open?.pids??[])])];
       return {last:snap,seen,openBuysMaxUSD:openMax,...(snap?.open?.pids?{openPids}:{}),...(openUnknown?{openUnknown:true}:{}),...(error||prior.settlement?.error?{error:error??prior.settlement.error}:{})};})():null;
     const row={day,at:this.clock(),...(state.valuation?{valuation:bounds(state.valuation,prior.valuation??this.lastValuation(account,day))}:{}),KRW:KRW==null?prior.KRW??null:band(prior.KRW,KRW,state.cash?.KRW??null,'KR'),USD:USD==null?prior.USD??null:band(prior.USD,USD,state.cash?.USD??null,'US'),fx:state.fx?.usdKRW??prior.fx??null,equityKRW:combined,
-      equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined),...(settlement?{settlement}:{})};
+      equityKRWHigh:combined==null?null:Math.max(prior.equityKRWHigh??combined,combined),equityKRWLow:combined==null?null:Math.min(prior.equityKRWLow??combined,combined),...(settlement?{settlement}:{}),
+      // C1d-2: a U.S. buy whose funding route KIS had not shown at any reading of the day (the day's per-market split is an estimate).
+      ...(state.fundingRoute||prior.fundingRoute?{fundingRoute:{open:Math.max(prior.fundingRoute?.open??0,state.fundingRoute?.open??0)}}:{})};
     this.db.prepare('INSERT INTO nav_history VALUES(?,?,?) ON CONFLICT(account,day) DO UPDATE SET payload=excluded.payload').run(account,day,JSON.stringify(row));return row;
   }
   // The last valuation recorded before day (yesterday's last reading): where today's resolution is measured from.
@@ -66,9 +68,11 @@ class PerformanceHistory {
   addFlow(account,value){
     const today=seoulDate(this.clock());
     if(typeof account!=='string'||!account||!value||!isDay(value.day)||value.day>today||!['KR','US'].includes(value.market)||!Number.isFinite(value.amount)||value.amount===0||Math.abs(value.amount)>1e12||typeof(value.note??'')!=='string'||String(value.note??'').length>200)throw new Error('INVALID_FLOW');
-    const flow={id:randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{}),...(value.transfer?{transfer:true}:{}),
+    // C1d-2: a funding transfer has a deterministic id (funding:<order key>:<leg>), so it can never be written twice.
+    const fixed=typeof value.id==='string'&&/^funding:[^\s]{1,160}$/.test(value.id)?value.id:null;
+    const flow={id:fixed??randomUUID(),day:value.day,market:value.market,currency:value.market==='US'?'USD':'KRW',amount:value.market==='US'?Math.round(value.amount*100)/100:Math.round(value.amount),note:String(value.note??'').trim(),createdAt:this.clock(),...(value.detected?{detected:true}:{}),...(value.transfer?{transfer:true}:{}),
       ...(Array.isArray(value.pendingIds)&&value.pendingIds.length?{pendingIds:value.pendingIds.slice(0,40).map(String)}:{}),
-      ...(value.transfer&&value.awaitingExchange?{awaitingExchange:true}:{}),...(value.transfer&&value.source==='exchange'?{source:'exchange'}:{}),
+      ...(value.transfer&&value.awaitingExchange?{awaitingExchange:true}:{}),...(value.transfer&&value.source==='exchange'?{source:'exchange'}:{}),...(value.transfer&&value.source==='funding'&&fixed?{source:'funding'}:{}),
       // When the money moved, if known (release review 2026-11-05, P1): after one balance reading and by the next. A flow
       // entered by hand has only its date. createdAt and confirmedAt say when it was recorded, never when it happened.
       ...(Number.isFinite(value.occurredBy)?{occurredBy:value.occurredBy}:{}),...(Number.isFinite(value.occurredAfter)?{occurredAfter:value.occurredAfter}:{})};
@@ -170,8 +174,10 @@ class PerformanceHistory {
       // Stage 3.4: how the settlement treatment touched the day (consumers label such days and never call them verified).
       // pending (stage 3.4 review, CN5): U.S. buys awaiting settlement evidence during the day; a payment made meanwhile is
       // counted twice until it is matched or reconciled, so the day's return is shown but not verified.
-      const settlement=[...(previous&&cx?.pending?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(historical?['restated']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[]),...(bounded?['bounded']:[])];
-      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
+      // C1d-2 (M8): a day with a U.S. buy whose funding route KIS had not shown is an estimate in the market series.
+      const routeOpen=kind!=='COMBINED'&&Boolean(row.fundingRoute?.open)&&Boolean(previous);
+      const settlement=[...(previous&&cx?.pending||routeOpen?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(historical?['restated']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[]),...(bounded?['bounded']:[])];
+      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),...(routeOpen?{fundingRouteOpen:true}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
         ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
         ...(bounded?{bounded:{pieceId:bounded.pieceId,usd:bounded.usd,states,returnRange:{low:Math.min(states.real,states.notReal),high:Math.max(states.real,states.notReal)},label:`one uncertain obligation of $${Number(bounded.usd).toFixed(2)}: the return is a range (real, or not real)`}}:{}),
         ...(noBase?{returnOnly:true}:{}),...(offset?{returnBase}:{}),dailyReturn,index,pnl,...(lost||(blocked.length&&!noBase)?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,...(bandAdj?{bandCorrected:bandAdj.version??true,...(bandAdj.band.estimated?{bandEstimated:true}:{})}:{}),cash,unrealized,positions});

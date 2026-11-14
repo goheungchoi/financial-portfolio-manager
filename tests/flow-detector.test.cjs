@@ -1,5 +1,5 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
-const {FlowDetector,flowsFrom}=require('../electron/flow-detector.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');
+const {FlowDetector,flowsFrom,BASIS}=require('../electron/flow-detector.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');
 const at=s=>Date.parse(s);
 function setup(){let now=at('2026-10-23T08:00:00+09:00');const db=new DatabaseSync(':memory:');const perf=new PerformanceHistory(db,()=>now);const d=new FlowDetector(db,perf,()=>now);return {d,perf,tick:s=>{now=at(s);}};}
 const buy=(createdAt,filled,price,extra={})=>({market:'KR',side:'Buy',status:'Filled',filled,fillPrice:price,createdAt:at(createdAt),...extra});
@@ -148,7 +148,7 @@ test('fills matched by change: an order filled before it was tracked is not coun
     assert.deepEqual(read('2026-10-28T09:01:00+09:00',{krCash:500000,usCash:0,orders:[late]}),[]);read('2026-10-28T11:30:00+09:00',{krCash:500000,usCash:0,orders:[late]});
     assert.equal(perf.flows('acct').length,0,'no phantom U.S. deposit from an old fill');}
   {const db=new DatabaseSync(':memory:');let now=at('2026-10-28T09:00:00+09:00');const perf=new PerformanceHistory(db,()=>now);const d=new FlowDetector(db,perf,()=>now);
-    db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('acct',JSON.stringify({at:now,krCash:1000000,usCash:0,basis:'net-of-confirmed',provisionalKRW:0,unsettledKRW:0}));now+=60000;
+    db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('acct',JSON.stringify({at:now,krCash:1000000,usCash:0,basis:BASIS.KR,provisionalKRW:0,unsettledKRW:0}));now+=60000;
     const kr={id:'k',market:'KR',side:'Buy',symbol:'005930',status:'Filled',filled:1,fillPrice:200000,resultCosts:{netCash:-200030},createdAt:now-30000};
     assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[],'an older saved reading falls back to orders placed in between');
     now+=60000;assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[]);now+=3*3600000;assert.deepEqual(d.observe('acct',{krCash:799970,usCash:0,orders:[kr]}),[]);}
@@ -215,7 +215,7 @@ test('an unsettled U.S. sale is not a withdrawal: the U.S. reading counts its pe
     return {flows:out,pending:d.pending('acct')};};
   const before=run(0);assert.equal(before.flows[0]?.amount,-279.85,'cash alone: the false withdrawal, reproduced');
   const now=run(0+279.01);assert.deepEqual(now.flows,[],'cash plus pending proceeds: nothing to record, through the sale and its settlement');assert.deepEqual(now.pending,[]);
-  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'&&!usSnapshot\.settlementProvisional\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-\(f\?\.buysUSD\?\?0\)\+\(f\?\.sellsUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'&&!usSnapshot\.settlementProvisional\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-\(f\?\.buysUSD\?\?0\)\+\(f\?\.sellsUSD\?\?0\)-\(route\?\.usUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);
 });
 // 2026-10-30: 1.5.46 added unsettled U.S. sale proceeds to U.S. cash without a new basis. The saved reading ($0.84, cash
 // alone) met the first new one ($279.85 with the $279.01 of Alphabet proceeds), and two hours later a $279.85 deposit was
@@ -224,7 +224,7 @@ function saved(basis,payload){let now=at('2026-10-30T08:15:00+09:00');const db=n
   db.prepare('INSERT INTO flow_watch VALUES(?,?)').run('acct',JSON.stringify({at:now,krCash:414148,usCash:0.84,provisionalKRW:0,unsettledKRW:0,fills:{},...(basis===undefined?{}:{basis}),...payload}));
   return {d,perf,db,read:(s,r)=>{now=at(s);return d.observe('acct',{fx:1336.3,...r});}};}
 test('a change in what U.S. cash includes is not a deposit; detection carries on from the new reading',()=>{
-  const {d,perf,read}=saved({KR:'net-of-confirmed',US:'cash-only'});
+  const {d,perf,read}=saved({KR:BASIS.KR,US:'cash-only'});
   assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(d.pending('acct'),[],'nothing held');
   assert.deepEqual(read('2026-10-30T10:17:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(read('2026-10-30T12:00:00+09:00',{krCash:414148,usCash:279.85}),[]);
   assert.equal(perf.flows('acct').length,0,'no $279.85 deposit');
@@ -233,7 +233,7 @@ test('a change in what U.S. cash includes is not a deposit; detection carries on
   assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['US',100,true]]);
 });
 test('a U.S. basis change still compares Korean cash in the same interval, and drops a U.S. change held on the old basis',()=>{
-  const {perf,read}=saved({KR:'net-of-confirmed',US:'cash-only'},{pending:{US:{amount:-279.85,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+  const {perf,read}=saved({KR:BASIS.KR,US:'cash-only'},{pending:{US:{amount:-279.85,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
   assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:1414148,usCash:279.85}),[]);
   const found=read('2026-10-30T10:30:00+09:00',{krCash:1414148,usCash:279.85});
   assert.deepEqual(found.map(f=>[f.market,f.amount]),[['KR',1000000]],'the Korean deposit, not the old U.S. fall');assert.equal(perf.flows('acct').filter(f=>f.market==='US').length,0);
@@ -247,17 +247,17 @@ test('a Korean basis change starts again and drops every held change; no basis a
 // Review of 4bf7185..1dfddb9, P2: builds before 1.5.46 wrote the same single name for U.S. cash alone, so an upgrade
 // straight from one of them took $0.84 -> $279.85 (cash plus the $279.01 unsettled) for a deposit.
 test('a reading saved under the single name has an unknown U.S. basis: upgrading from before 1.5.46 records no false deposit',()=>{
-  const {d,perf,db,read}=saved('net-of-confirmed',{pending:{US:{amount:-279.01,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+  const {d,perf,db,read}=saved(BASIS.KR,{pending:{US:{amount:-279.01,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
   assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(d.pending('acct'),[],'the U.S. change held on the old basis is dropped');
   assert.deepEqual(read('2026-10-30T10:20:00+09:00',{krCash:414148,usCash:279.85}),[]);assert.deepEqual(read('2026-10-30T13:00:00+09:00',{krCash:414148,usCash:279.85}),[]);
   assert.equal(perf.flows('acct').length,0,'no $279.01 or $279.85 deposit, no withdrawal');
-  assert.deepEqual(JSON.parse(db.prepare('SELECT payload FROM flow_watch').get().payload).basis,{KR:'net-of-confirmed',US:'with-pending-and-in-flight'},'saved under the new names');
+  assert.deepEqual(JSON.parse(db.prepare('SELECT payload FROM flow_watch').get().payload).basis,{KR:BASIS.KR,US:BASIS.US},'saved under the new names');
   // A genuine U.S. deposit afterwards is found.
   read('2026-10-30T13:30:00+09:00',{krCash:414148,usCash:379.85});const found=read('2026-10-30T15:31:00+09:00',{krCash:414148,usCash:379.85});
   assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['US',100,true]]);
 });
 test('the single-name upgrade still compares Korean cash, marked as unchecked against the U.S. side, and keeps a held Korean change',()=>{
-  const {perf,read}=saved('net-of-confirmed',{pending:{KR:{amount:200000,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
+  const {perf,read}=saved(BASIS.KR,{pending:{KR:{amount:200000,since:at('2026-10-30T07:00:00+09:00'),funding:false}}});
   assert.deepEqual(read('2026-10-30T08:16:00+09:00',{krCash:1214148,usCash:279.85}),[]);
   const found=read('2026-10-30T10:30:00+09:00',{krCash:1214148,usCash:279.85});
   // Fix review 2026-11-05, P1: the ₩200k held and the ₩800k now stay two flows, each with its own window.

@@ -28,7 +28,9 @@ const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=1
 // yet, plus sales filled that it does not reflect yet (electron/valuation.cjs InFlight). Before, a buy paid from
 // unsettled proceeds was counted as spent at the fill while KIS moved nothing until settlement, and the difference
 // (+$97.66 on 2026-10-31) was recorded as a deposit.
-const BASIS={KR:'net-of-confirmed',US:'with-pending-and-in-flight'};
+// 2026-11-14 (settlement clean-up C1d-2): Korean cash is net of the KRW KIS has shown for U.S. buys (funding-transfers.cjs),
+// and U.S. cash also less the U.S. buys whose funding route KIS has not shown; the recorder's own bookings come as funding.
+const BASIS={KR:'net-of-shown-funding',US:'with-pending-in-flight-and-route'};
 // Readings saved under the single name name only the Korean basis: builds before 1.5.46 wrote it for U.S. cash alone and
 // 1.5.46 for cash plus unsettled proceeds, and nothing saved tells them apart, so their U.S. basis is unknown (an upgrade
 // need not pass through 1.5.46). Readings without a name predate both.
@@ -59,7 +61,10 @@ function unexplained(prev,now,orders){
   // usAdjust: the settlement tracker's own changes to the U.S. basis since the previous reading (stage 2b.4), less a
   // pre-tracking fill's part for an order whose fill this comparison explains already (usPretracking, by order).
   const pre=now.usPretracking??{},overlap=orders.filter(o=>(o.market??'KR')==='US'&&Math.abs(change(o))>=0.005&&Number.isFinite(pre[String(orderKey(o))])).reduce((n,o)=>n+pre[String(orderKey(o))],0);
-  return {KR:now.krCash-prev.krCash-explained('KR'),US:usKnown?now.usCash-prev.usCash-explained('US')-((Number(now.usAdjust)||0)-overlap):0,usTraded};
+  // C1d-2: what the funding-transfer recorder booked or saw settle in between (cumulative amounts, so a reading the
+  // detector did not judge loses nothing).
+  const fund=m=>(Number(now.funding?.[m])||0)-(Number(prev.funding?.[m])||0);
+  return {KR:now.krCash-prev.krCash-explained('KR')-fund('KR'),US:usKnown?now.usCash-prev.usCash-explained('US')-((Number(now.usAdjust)||0)-overlap)-fund('US'):0,usTraded};
 }
 // Whether an amount in a market's currency is large enough to matter (U.S. amounts at the rate, or $10 without one).
 const big=(market,amount,fx)=>market==='US'?(fx>0?Math.abs(amount*fx)>=THRESHOLD_KRW:Math.abs(amount)>=10):Math.abs(amount)>=THRESHOLD_KRW;
@@ -104,14 +109,15 @@ class FlowDetector {
   // ledger event the previous reading accounted for (or since its time) without cash or a fill (InFlight.explained);
   // usReview: its coverage under review now ({buysUSD, sellsUSD}), compared with the last reading (stage 2b.4: a
   // reconciliation, a late pre-tracking fill or a correction is no deposit or withdrawal).
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0,usExplained=null,usReview=null}){
+  // funding: the recorder's cumulative explained amounts {KR, US} (electron/funding-transfers.cjs explained).
+  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0,usExplained=null,usReview=null,funding=null}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     const reviewEffect=usReview?Math.round(((Number(usReview.sellsUSD)||0)-(Number(usReview.buysUSD)||0))*100)/100:0;
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
     let usAdjust=0,usPretracking={},usCandidate={usd:0,ids:[],items:[]},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};usCandidate={usd:Number(x?.candidates?.usd)||0,ids:x?.candidates?.ids??[],items:x?.candidates?.items??[]};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usReview:reviewEffect,usEvent};
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usReview:reviewEffect,usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{})};
     // Provisional changes and settlement evidence carry over between readings.
     // timing: U.S. changes whose reading depends on when a reconciled payment was made (kept until resolved).
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS),timing:[...(prev?.timing??[])],timingResolved:prev?.timingResolved??[],timingWithdrawn:prev?.timingWithdrawn??[]};
@@ -299,4 +305,4 @@ function withdrawTiming(db,{performance=null,clock=Date.now}={},account,reconcil
   if(!out.length)return out;
   const withdrawn=[...(w.timingWithdrawn??[]),...out.map(o=>({id:o.entryId,candidate:reconciliationId,by,at:clock()}))].slice(-200);
   db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify({...w,timing,timingWithdrawn:withdrawn}),account);return out;}
-module.exports={withdrawTiming,FlowDetector,unexplained,flowsFrom,cashEffect,THRESHOLD_KRW,HOLD_MS,MAX_HOLD_MS};
+module.exports={withdrawTiming,FlowDetector,unexplained,flowsFrom,cashEffect,THRESHOLD_KRW,HOLD_MS,MAX_HOLD_MS,BASIS};
