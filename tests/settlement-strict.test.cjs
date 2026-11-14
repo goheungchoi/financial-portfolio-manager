@@ -11,15 +11,17 @@ const buy=(id,usd,extra={})=>({id,side:'Buy',filled:1,fillPrice:usd,...extra}),s
 const R=(usd,fx=1300)=>({buyKRW:Math.round(usd*fx),sellKRW:0});
 
 test('T1: four pre-tracking buys and one sale, none verified: buys in the low bound, the sale in the high bound only; provisional, never exact',()=>{
-  const x=tracker();const orders=[buy('G',323.64,{createdAt:Date.parse('2026-10-23T15:00:00Z')}),buy('N',212.73),buy('P',150),buy('R',97.66),sell('S',279.01)];
+  const x=tracker();const orders=[buy('G',323.64,{createdAt:Date.parse('2026-11-05T13:00:00Z')}),buy('N',212.73),buy('P',150),buy('R',97.66),sell('S',279.01)];
   const us={cash:500,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:1000}]};const r=x.see(us,orders);
-  assert.equal(r.open.length,5);assert.ok(r.open.every(f=>f.pretracking&&f.unresolved.why==='awaiting verification'),'no age, order time or K record makes history');
+  assert.equal(r.open.length,5);assert.ok(r.open.every(f=>f.pretracking&&f.unresolved.why==='awaiting verification'),'no order time or K record makes history');
   assert.deepEqual(r.pretracking,{count:5,buysUSD:784.03,sellsUSD:279.01});
   const v=value({us:{...us,timestamp:new Date(x.now()).toISOString()},fx:{usdKRW:1300},inFlight:r,now:x.now()}).markets.US;
   assert.equal(v.equity.low,1500-784.03,'the four buys lower the low bound');assert.equal(v.equity.high,1500+279.01,'the sale raises only the high bound');
   assert.equal(v.exact,false);assert.ok(v.reasons.includes('5 pre-tracking U.S. fills awaiting verification: the value is provisional'));
-  // S1a: the first reading never settles by age (bootstrap B1); ten days later, after a restart, every one of them is
-  // settled by age, buys and the sale alike, and the value is exact again.
+  // C1b: an order already past the age rule at the first reading is settled by age at that reading (a fresh tracker).
+  {const y=tracker();const old=y.see(us,[buy('O',323.64,{createdAt:Date.parse('2026-10-23T15:00:00Z')})]);assert.equal(old.buysUSD,0);assert.equal(old.notes.filter(n=>/settled by age/.test(n)).length,1);}
+  // S1a: ten days later, after a restart, every one of them is settled by age, buys and the sale alike, and the value is
+  // exact again.
   x.later(10*DAY);x.restart();const again=x.see(us,orders);assert.equal(again.buysUSD,0);assert.equal(again.sellsUSD,0);assert.equal(again.notes.filter(n=>/settled by age/.test(n)).length,5);
 });
 test('T11: a $95 cash fall against a $100 obligation allocates $95; $5 stays until the order\'s own amount is corrected to $95',()=>{

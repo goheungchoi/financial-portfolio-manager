@@ -100,7 +100,9 @@ test('S2b (a): the live shape: pre-tracking buys open as a correction on day 1 m
   // Day 0 $560 with nothing pending; tracking then finds $697.07 of pre-tracking buys (value -$137.07); two days later they
   // settle by age. The planner's figures: 11-10 -8.13 / 532.05, 11-11 -1.73 / 523.92 (here with this fixture's prices).
   const w=world(Date.parse('2026-11-04T05:00:00Z'));w.us.cash=0;w.us.price=560;w.record();w.nextDay();
-  const old=Date.parse('2026-10-23T15:00:00Z');w.see([order('P',697.07,{createdAt:old,filledObservedAt:old,day:'2026-10-23'})]);w.record();
+  // C1b: a fill already past the age rule now closes at the first reading itself, so this fixture's fill is younger
+  // (New York 11-03): open from tracking's start on day 1, settled by age at day 3's reading. The mechanism is the same.
+  const old=Date.parse('2026-11-03T15:00:00Z');w.see([order('P',697.07,{createdAt:old,filledObservedAt:old,day:'2026-11-03'})]);w.record();
   w.nextDay();w.us.price=551.87;w.record();w.nextDay();w.us.price=550.14;w.see();w.record();
   const [,d1,d2,d3]=w.points();assert.equal(Math.round(d1.value*100)/100,-137.07);assert.equal(d1.correction,-697.07);close(d1.dailyReturn,0,'the opening is a correction, not a loss');
   close(d2.pnl,-8.13);assert.equal(Math.round(d2.returnBase*100)/100,560);close(d2.dailyReturn,-8.13/560);assert.equal(d2.unavailable,undefined);

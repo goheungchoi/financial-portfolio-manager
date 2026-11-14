@@ -96,9 +96,9 @@ test('U.S. fills in flight are decided by evidence: the RDDT gap, cash already m
   // A sale filled but not yet in pending proceeds; then KIS shows the proceeds.
   f=fresh();f.observe('a',{us:{cash:10},orders:[],fx:1335});assert.equal(f.observe('a',{us:{cash:10},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:279.01}}],fx:1335}).sellsUSD,279.01);
   assert.equal(f.observe('a',{us:{cash:10,pendingSaleProceeds:279.01},orders:[{id:'S',side:'Sell',filled:1,fillPrice:279.6,resultCosts:{netCash:279.01}}],fx:1335}).sellsUSD,0);
-  // At the first reading every fill stays in flight, awaiting verification, however old (bootstrap B1, stage 2b S1; the
-  // five-day history rule of a7d075a is gone). A fill with no signal for MAX_DAYS is overdue, not dropped.
-  const old={...buy(),createdAt:t-10*86400000};f=fresh();const o1=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[old],fx:1335});assert.equal(o1.buysUSD,97.66,'ten days old: still awaiting verification');assert.equal(o1.open[0].unresolved.why,'awaiting verification');assert.equal(o1.pretracking.count,1);
+  // At the first reading a fill stays in flight, awaiting verification (bootstrap B1, stage 2b S1), unless it is already
+  // past the age rule (C1b): a fill ten days old is opened and settled by age at that same reading.
+  const old={...buy(),createdAt:t-10*86400000};f=fresh();const o1=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[old],fx:1335});assert.equal(o1.buysUSD,0,'ten days old: settled by age at the first reading');assert.equal(o1.pretracking.count,0);assert.ok(o1.notes.some(n=>/settled by age/.test(n)));
   f=fresh();const first=f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[{...buy(),createdAt:t-3600000}],fx:1335});assert.equal(first.buysUSD,97.66);assert.equal(first.unresolved.buysUSD,97.66);
   f=fresh();f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[],fx:1335});f.observe('a',{us:{cash:0,pendingSaleProceeds:279.85},orders:[buy()],fx:1335});
   // S1a: past 3 U.S. business days with no evidence it is settled by age, once (it replaces the overdue state).

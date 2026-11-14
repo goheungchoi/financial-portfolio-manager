@@ -21,11 +21,16 @@ test('first launch: a recent unreflected buy stays an obligation; the value is a
   // Restart during the bootstrap: the obligation is kept.
   a.restart();a.later(60000);assert.equal(a.read({cash:500,holdings:[share(100)]},[recent]).v.combined.low,650000);
 });
-test('first launch: no age makes history (B1); a reported buy of unknown funding and a sale without proceeds stay open',()=>{
-  // A buy filled ten days ago: still awaiting verification (stage 2b S1), in the low bound, and the value is provisional.
+test('first launch: a fill past the age rule closes at once (C1b); a reported buy of unknown funding and a sale without proceeds stay open',()=>{
+  // A buy filled ten days ago: opened awaiting verification and closed by age at the same first reading (settlement
+  // clean-up C1b, W3): it is not in the low bound and the value is exact. Nothing else is history by schedule.
   let a=account();let {r,v}=a.read({cash:400,holdings:[share(100)]},[{id:'H',side:'Buy',filled:1,fillPrice:100,createdAt:a.now()-10*DAY}]);
-  assert.equal(r.buysUSD,100);assert.equal(r.open[0].unresolved.why,'awaiting verification');assert.equal(v.combined.low,520000);assert.equal(v.combined.high,650000);assert.equal(v.combined.exact,false);
-  assert.ok(v.combined.reasons.some(x=>/1 pre-tracking U.S. fill awaiting verification: the value is provisional/.test(x)));assert.equal(a.state().evidence.find(e=>e.kind==='history'),undefined,'nothing is history by schedule');
+  assert.equal(r.buysUSD,0);assert.equal(v.combined.low,650000);assert.equal(v.combined.high,650000);
+  assert.ok(r.notes.some(n=>/settled by age/.test(n)));assert.equal(a.state().evidence.find(e=>e.kind==='history'),undefined,'nothing is history by schedule');
+  // A buy filled an hour ago: still awaiting verification (stage 2b S1), in the low bound, and the value is provisional.
+  a=account();({r,v}=a.read({cash:400,holdings:[share(100)]},[{id:'H2',side:'Buy',filled:1,fillPrice:100,createdAt:a.now()-HOUR}]));
+  assert.equal(r.buysUSD,100);assert.equal(r.open[0].unresolved.why,'awaiting verification');assert.equal(v.combined.low,520000);assert.equal(v.combined.exact,false);
+  assert.ok(v.combined.reasons.some(x=>/1 pre-tracking U.S. fill awaiting verification: the value is provisional/.test(x)));
   // KIS reports $100 awaiting settlement, funding unknown: possibly this buy, unproven; both obligations in the low bound.
   a=account();const korea={cash:1300000,settledCash:1300000,holdings:[],timestamp:new Date(a.now()).toISOString()};
   const us={cash:500,pendingSaleProceeds:0,holdings:[share(100)],unsettled:{buyKRW:130000,sellKRW:0,krwFundedKRW:0},timestamp:new Date(a.now()).toISOString()};

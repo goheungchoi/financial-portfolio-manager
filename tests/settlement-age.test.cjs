@@ -37,13 +37,15 @@ const buy=(id,usd,at)=>({id,side:'Buy',filled:1,fillPrice:usd,createdAt:at,fille
 test('the live case: five pre-tracking fills (buys and a sale) close by age as corrections; a new remainder waits its own 3 days',()=>{
   const settled=[];const x=tracker(Date.parse('2026-11-09T00:00:00Z'),{settled});
   const orders=[buy('GOOGL',324.44,ny('2026-10-23')),buy('NVDA',213.26,ny('2026-10-23')),buy('PNR',61.71,ny('2026-10-27')),sell('GOOGLs',279.85,ny('2026-10-29')),buy('RDDT',97.66,ny('2026-10-30'))];
-  const first=x.see({cash:182.19},orders);assert.equal(first.open.length,5,'the first reading never settles by age (bootstrap)');
-  const r=x.see({cash:182.19},orders);assert.equal(r.open.length,0);assert.equal(r.notes.filter(n=>/settled by age/.test(n)).length,5);
-  assert.deepEqual(settled.map(s=>[s.orderId,s.why]).sort(),[['GOOGL','age'],['GOOGLs','age'],['NVDA','age'],['PNR','age'],['RDDT','age']]);
-  // Each close is an age event with its side and amount; explained counts them: +buys −sale, no cash.
-  const ev=x.f.evidence.events('a').filter(e=>e.kind==='piece-closed');assert.ok(ev.every(e=>e.why==='age'&&Number.isFinite(e.usd)&&['Buy','Sell'].includes(e.side)));
-  const opened=x.f.explained('a',{until:first.open.length?Date.parse('2026-11-09T00:00:30Z'):0}).usd;const after=x.f.explained('a').usd;
-  assert.equal(Math.round((after-opened)*100)/100,Math.round((324.44+213.26+61.71+97.66-279.85)*100)/100,'the closes undo the openings');assert.equal(Math.round(after*100),0,'net zero over open and close');
+  // C1b (settlement clean-up, W3): fills already past the age rule close at the first reading itself, opened and closed
+  // in the same reading, so its value never subtracts them.
+  const first=x.see({cash:182.19},orders);assert.equal(first.open.length,0,'closed at the first reading');assert.equal(first.buysUSD,0);assert.equal(first.notes.filter(n=>/settled by age/.test(n)).length,5);
+  const r=x.see({cash:182.19},orders);assert.equal(r.open.length,0);assert.equal(r.notes.filter(n=>/settled by age/.test(n)).length,0,'nothing closes twice');
+  assert.deepEqual(settled.map(s=>[s.orderId,s.why]).sort(),[['GOOGL','age'],['GOOGLs','age'],['NVDA','age'],['PNR','age'],['RDDT','age']],'one release call per order');
+  // Each close is an age event with its side and amount, at the same time as its opening; explained nets them to zero.
+  const evs=x.f.evidence.events('a'),ev=evs.filter(e=>e.kind==='piece-closed');assert.ok(ev.every(e=>e.why==='age'&&Number.isFinite(e.usd)&&['Buy','Sell'].includes(e.side)));
+  for(const c of ev){const o=evs.find(e=>e.kind==='piece-opened'&&e.pieceId===c.pieceId);assert.ok(o&&o.at===c.at&&o.seq<c.seq,c.pieceId);}
+  const after=x.f.explained('a').usd;assert.equal(Math.round(after*100),0,'net zero over open and close');assert.equal(x.f.openCorrections('a'),0,'no correction left open');
   // The value is a single figure again.
   const v=value({us:{cash:182.19,pendingSaleProceeds:0,holdings:[],timestamp:new Date(x.now()).toISOString()},fx:{usdKRW:1300},inFlight:x.f.current('a'),now:x.now()}).markets.US;assert.equal(v.exact,true);assert.ok(!v.reasons.some(r=>/overdue|awaiting/.test(r)));
   // A sale remainder opened today ("evidence short", no fill time) waits 3 business days from its opening.
@@ -63,8 +65,10 @@ test('an evidence close reports why:evidence; onSettled fires once the order has
   const s2=[];const y=tracker(ny('2026-11-10',9),{settled:s2});y.see({cash:1000});const p1={id:'P',side:'Buy',filled:1,fillPrice:100,createdAt:y.now()-MIN};y.see({cash:1000},[p1]);const p2={...p1,filled:2};y.see({cash:1000},[p2]);
   y.see({cash:900},[p2]);assert.deepEqual(s2,[],'one piece of two settled');y.later(4*DAY);y.see({cash:900},[p2]);assert.deepEqual(s2,[{orderId:'P',why:'age'}]);
   // A failing release rolls the reading back: the piece is still open, nothing is lost.
-  const z=tracker(ny('2026-11-02',9));const old=buy('O',50,ny('2026-10-20'));assert.equal(z.see({cash:500},[old]).open.length,1,'bootstrap');z.f.onSettled=()=>{throw new Error('LEDGER_DOWN');};
-  assert.throws(()=>z.see({cash:500},[old]),/LEDGER_DOWN/);assert.equal(z.f.state('a').open.length,1);z.f.onSettled=null;assert.equal(z.see({cash:500},[old]).open.length,0);
+  // C1b: an old fill closes at the first reading, so the failing release rolls that first reading back whole.
+  const z=tracker(ny('2026-11-02',9));const old=buy('O',50,ny('2026-10-20'));z.f.onSettled=()=>{throw new Error('LEDGER_DOWN');};
+  assert.throws(()=>z.see({cash:500},[old]),/LEDGER_DOWN/);assert.equal(z.f.state('a').basis,null,'the first reading rolled back');assert.equal(z.f.evidence.events('a').length,0,'no event kept');
+  z.f.onSettled=null;assert.equal(z.see({cash:500},[old]).open.length,0);
   // The age rule off (only the tests of code S3/S4 remove): nothing closes by age.
   const off=new InFlight(new DatabaseSync(':memory:'),()=>ny('2026-11-10'),{settleDays:null});off.observe('a',{us:{cash:1,pendingSaleProceeds:0,holdings:[]},orders:[buy('Q',5,ny('2026-10-01'))],fx:1300});assert.equal(off.observe('a',{us:{cash:1,pendingSaleProceeds:0,holdings:[]},orders:[buy('Q',5,ny('2026-10-01'))],fx:1300}).open.length,1);
 });
