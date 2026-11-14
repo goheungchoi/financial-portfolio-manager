@@ -316,9 +316,13 @@ class AnthropicClient {
       // breakpoint on it caches the tools, the instructions and the shape together.
       // The enforced form: the flat schema as output_config.format and the format text as the second system block. The text
       // form (1.5.56, the fallback): no format, the shape block. Either way one form for every round of a review.
+      // Instruction rewrite step 3: the core and the parts as separate blocks. The core keeps its own breakpoint when parts
+      // follow, so a part change (a setting) still reads the tools and the core from the cache; with no part text the system
+      // is the two blocks it was. options.instructionSet is 'proposed' only in the replay.
+      const textBlocks=RI.reviewBlocks(RI.partsFor(context),options.instructionSet);
       const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const enforced=form!=='text';const flatSchema=enforced?flatDecisionSchema(brief,targets):null;
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:RI.reviewText(RI.partsFor(context))},{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets))),cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:{type:'ephemeral'}}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets))),cache_control:{type:'ephemeral'}}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may

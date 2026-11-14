@@ -77,4 +77,8 @@ function claudeSummary(rows,{estimate=null,stopped=null,capMicro=null}={}){
     ...(estimate?{estimate:{claudeUSD:estimate.claudeUSD,openaiUSD:estimate.openaiUSD,totalUSD:estimate.totalUSD,basis:estimate.basis}}:{}),
     ...(capMicro!=null?{capUSD:usd(capMicro)}:{}),...(stopped?{stopped}:{})};
 }
-module.exports={ReplayStore,applyVariant,outcome,candidates,summarize,brief,LIMITS,HORIZON,EST,estimateMicro,claudeSummary,markdown,newId:()=>'R-'+randomUUID().slice(0,6)};
+// Each row records the text of each side (instruction rewrite design 6): the set's version and the parts its context was
+// given, and which context fields the replay filled, so a run is never read as a comparison of something it was not.
+function textOf(pick,variant){const RI=require('./review-instructions.cjs');const side=(context,set)=>({version:RI.setOf(set).version,parts:RI.partsFor(context)});
+  return {instructions:{baseline:side(pick.context),variant:side(applyVariant(pick.context,variant),variant.proposedText?'proposed':undefined)},...(pick.filled?{filled:pick.filled}:{})};}
+module.exports={ReplayStore,applyVariant,textOf,outcome,candidates,summarize,brief,LIMITS,HORIZON,EST,estimateMicro,claudeSummary,markdown,newId:()=>'R-'+randomUUID().slice(0,6)};

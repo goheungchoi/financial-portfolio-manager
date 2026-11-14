@@ -176,7 +176,8 @@ test('through the scheduler: focused reviews work with the review gate off, and 
   a.configure({skipUnchanged:false,reviewGate:'off',routineReviews:'focused'});await a.review('User request');await a.review('Scheduled review');
   assert.deepEqual(contexts.map(c=>c.reviewScope?.kind),['broad','routine'],'the gate is off, the scope is still computed');
   const saved=db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(r=>JSON.parse(r.payload));assert.deepEqual(saved.map(r=>r.reviewScope),['broad','routine']);
-  assert.deepEqual(saved.map(r=>r.instructions),saved.map(()=>require('../electron/ai-client.cjs').instructions()),'each model review keeps its instruction version');
+  assert.deepEqual(saved.map(r=>r.instructions),contexts.map(c=>require('../electron/ai-client.cjs').instructions(c)),'each model review keeps its instruction version and the parts of the context it sent');
+  assert.ok(saved.every(r=>Array.isArray(r.instructions.parts)&&r.instructions.version===require('../electron/review-instructions.cjs').INSTRUCTIONS_VERSION));
 });
 // Audit 2026-11-04, Stage 5: a review records the symbols that started it and the symbols it assessed, so observation
 // episodes end only on a review that actually looked at their symbol.
