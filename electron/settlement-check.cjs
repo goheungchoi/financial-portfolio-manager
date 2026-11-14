@@ -64,4 +64,37 @@ class BalanceHold {
     return {balance:snapshot,held:false,provisional:true,reason};
   }
 }
-module.exports={krCheck,BalanceHold,BOUND_MS};
+// C1d-1 (settlement clean-up, W6): a KIS U.S. reading taken while KIS moves the settlement of a KRW-funded U.S. buy. On
+// 2026-10-27 at about 08:24 one reading showed the settlement debit in U.S. cash (-$537.70) with the amount awaiting
+// settlement already 0, before KIS credited the KRW exchange; the Korean deposit still held the KRW. That reading set
+// a U.S. low of -$4.90 and a Korean high of 1,497,571, and the flow detector then saw a U.S. "deposit" and a Korean
+// "withdrawal" the user removed by hand. The state: U.S. cash below 0, while the last consistent reading reported a U.S.
+// buy amount awaiting settlement (ustl_buy_amt_smtl) and this one reports less. A real overdraft with nothing awaiting
+// settlement before is not this state and is used as is.
+function usDebit(snapshot,previous){
+  const cash=Number(snapshot?.cash),before=Number(previous?.unsettled?.buyKRW)||0,now=Number(snapshot?.unsettled?.buyKRW)||0;
+  return Number.isFinite(cash)&&cash<0&&before>0&&now<before?{cashUSD:cash,unsettledBeforeKRW:before,unsettledNowKRW:now}:null;
+}
+/**
+ * Decides which U.S. reading the app uses, as BalanceHold does for Korean readings. accept(snapshot) returns {balance,
+ * held, provisional, reason}: held, the last consistent reading in place of one in the settlement-debit state (used for
+ * the account value, the day's record, the graph and the flow detector, never for an order check); provisional, the new
+ * reading after 3 hours or with no earlier one, which sets no record, band or graph point. The hold ends at the first
+ * reading with U.S. cash at or above 0.
+ */
+class UsBalanceHold {
+  constructor({log=()=>{},clock=Date.now,boundMs=BOUND_MS}={}){this.log=log;this.clock=clock;this.boundMs=boundMs;this.heldSince=null;this.consistent=null;this.logged=new Set();}
+  once(key,title,body){if(this.logged.has(key))return;this.logged.add(key);if(this.logged.size>50)this.logged.delete(this.logged.values().next().value);try{this.log(title,body);}catch{}}
+  accept(snapshot){
+    const previous=this.consistent?.accountKey===snapshot?.accountKey?this.consistent:null;
+    const debit=this.heldSince!=null?(Number(snapshot?.cash)<0?{cashUSD:Number(snapshot.cash)}:null):usDebit(snapshot,previous);
+    if(!debit){if(this.heldSince!=null&&snapshot?.accountKey)this.once(`end|${this.heldSince}`,'KIS U.S. balance reading consistent again','The settlement hold ended; the new U.S. reading is used.');
+      this.heldSince=null;if(snapshot?.accountKey)this.consistent=snapshot;return {balance:snapshot,held:false,provisional:false,reason:null};}
+    const now=this.clock();if(this.heldSince==null)this.heldSince=now;
+    const reason=`KIS is moving a U.S. settlement: U.S. cash is $${debit.cashUSD.toFixed(2)} while the KRW for the buy has not yet been exchanged`;
+    if(previous&&now-this.heldSince<this.boundMs){this.once(`hold|${this.heldSince}`,'KIS U.S. balance reading held',`${reason}. Using the reading of ${previous.timestamp??'earlier'} until KIS completes it.`);return {balance:previous,held:true,provisional:false,reason};}
+    this.once(`provisional|${this.heldSince}|${previous?'bound':'none'}`,'KIS U.S. balance reading used provisionally',`${reason}. ${previous?'Held for 3 hours; the reading is now shown':'No earlier reading to hold; the reading is shown'}, but the day's record, high, low and graph do not take it.`);
+    return {balance:snapshot,held:false,provisional:true,reason};
+  }
+}
+module.exports={krCheck,BalanceHold,BOUND_MS,usDebit,UsBalanceHold};

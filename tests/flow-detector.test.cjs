@@ -215,7 +215,7 @@ test('an unsettled U.S. sale is not a withdrawal: the U.S. reading counts its pe
     return {flows:out,pending:d.pending('acct')};};
   const before=run(0);assert.equal(before.flows[0]?.amount,-279.85,'cash alone: the false withdrawal, reproduced');
   const now=run(0+279.01);assert.deepEqual(now.flows,[],'cash plus pending proceeds: nothing to record, through the sale and its settlement');assert.deepEqual(now.pending,[]);
-  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-\(f\?\.buysUSD\?\?0\)\+\(f\?\.sellsUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'&&!usSnapshot\.settlementProvisional\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-\(f\?\.buysUSD\?\?0\)\+\(f\?\.sellsUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);
 });
 // 2026-10-30: 1.5.46 added unsettled U.S. sale proceeds to U.S. cash without a new basis. The saved reading ($0.84, cash
 // alone) met the first new one ($279.85 with the $279.01 of Alphabet proceeds), and two hours later a $279.85 deposit was
