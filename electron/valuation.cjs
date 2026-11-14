@@ -221,8 +221,13 @@ class InFlight {
       for(const [side,key] of [['Buy','buys'],['Sell','sells']]){const mine=early.filter(f=>f.side===side);if(!mine.length)continue;
         const covered=InFlight.candidates(mine,reported[key]);for(const f of covered)f.unresolved={why:'reported before seen',at:now};
         log({side,amount:mine.reduce((n,f)=>n+cents(f.usd),0)/100,kind:'first reading',flagged:mine.map(f=>f.id),possiblyReported:covered.map(f=>f.id)});}
-      st.open.push(...early.map(opened));save();
-      return {...this.withReview(account,st),notes:['tracking of U.S. fills awaiting settlement starts with this reading',...(early.length?[`${early.length} fill(s) from before tracking stay in flight, awaiting verification, until KIS evidence or a reconciliation resolves them`]:[])]};}
+      st.open.push(...early.map(opened));
+      // C1b (W3): fills already past the age rule close at this first reading too (opened, then closed by age, in the same
+      // transaction), so the first reading's value never subtracts buys settled long ago.
+      const notes0=[],closed0=new Map();this.ageOut(account,st,now,notes0,closed0);
+      for(const [orderId,why] of closed0)if(!st.open.some(f=>String(f.id)===orderId))this.onSettled?.(account,{orderId,why});save();
+      const staying=st.open.length;
+      return {...this.withReview(account,st),notes:['tracking of U.S. fills awaiting settlement starts with this reading',...(staying?[`${staying} fill(s) from before tracking stay in flight, awaiting verification, until KIS evidence or the age rule resolves them`]:[]),...notes0]};}
     if(readAt!=null&&st.readAt!=null&&readAt<st.readAt)return {...this.withReview(account,st),notes:['a U.S. balance reading older than the last one was ignored']};
     // State saved before readings were kept: its reported baseline may hold an old unmatched total, so no reported change
     // is evidence at this first reading.
@@ -373,12 +378,7 @@ class InFlight {
         notes.push(`${o.side} ${id}: KIS's settled record says $${(k/100).toFixed(2)} where $${(base/100).toFixed(2)} was allocated; $${((base-k)/100).toFixed(2)} of that evidence is no longer explained by it (reduced coverage)`);}
       if(was.kCents!==k||was.version!==l.version)ledger.event(account,'conflict',{orderId:id,groupId:l.groupId,version:l.version,kCents:k,allocatedCents:ledger.allocatedToOrder(account,id),conflictCents:held(),releasedCents:c.released.reduce((n,r)=>n+r.cents,0)});
       if(!held()&&!c.released.length&&Math.abs(k-ledger.allocatedToOrder(account,id))<=1)c.settled=now;}
-    // Settlement by age (S1a): every piece still open SETTLE_DAYS U.S. business days after its trade date is closed.
-    const B=require('./business-days.cjs'),aged=[];
-    if(Number.isInteger(this.settleDays)&&this.settleDays>0)for(const f of st.open){const t=Number.isFinite(f.filledAt)?f.filledAt:f.at;const a=B.agedOut('US',{fillAt:t,now,n:this.settleDays});if(!a.aged)continue;aged.push(f);
-      ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'age',usd:f.usd,days:this.settleDays,tradeDay:a.tradeDay});
-      notes.push(`${f.side} ${f.id} ($${f.usd.toFixed(2)}): settled by age, ${this.settleDays} U.S. business days after its trade date ${a.tradeDay}`);}
-    if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');}
+    this.ageOut(account,st,now,notes,closedBy);
     // Orders whose last open piece closed in this reading: their funding commitment may release its filled part.
     for(const [orderId,why] of closedBy)if(!st.open.some(f=>String(f.id)===orderId))this.onSettled?.(account,{orderId,why});
     const newlyOverdue=[];
@@ -387,6 +387,15 @@ class InFlight {
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
     save();return {...this.withReview(account,st),notes,newlyOverdue};
   }
+  // Settlement by age (S1a): every piece still open SETTLE_DAYS U.S. business days after its trade date is closed, with
+  // its event and note; closedBy collects the orders. C1b: also called at the first reading.
+  ageOut(account,st,now,notes,closedBy){
+    const B=require('./business-days.cjs'),aged=[];
+    if(Number.isInteger(this.settleDays)&&this.settleDays>0)for(const f of st.open){const t=Number.isFinite(f.filledAt)?f.filledAt:f.at;const a=B.agedOut('US',{fillAt:t,now,n:this.settleDays});if(!a.aged)continue;aged.push(f);
+      this.evidence.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'age',usd:f.usd,days:this.settleDays,tradeDay:a.tradeDay});
+      notes.push(`${f.side} ${f.id} ($${f.usd.toFixed(2)}): settled by age, ${this.settleDays} U.S. business days after its trade date ${a.tradeDay}`);}
+    if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');}
+    return aged;}
   // The tracker's totals with coverage under review (electron/settlement-evidence.cjs underReview): unresolved again,
   // beside the open pieces, never matched by evidence here.
   withReview(account,st){const review=this.evidence.underReview(account).map(r=>({id:r.orderId,pid:'review:'+r.citationId,side:r.side,usd:r.usd,unresolved:{why:'under review',reason:r.reason}}));
