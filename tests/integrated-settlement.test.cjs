@@ -115,3 +115,29 @@ test('the startup skip does not depend on scope, and a reconnect forgets an old 
   assert.deepEqual(src.match(/;usSnapshot=null;(?!if\(usLive\)usLive\.refreshError=null)/g)??[],[],'every reset of the U.S. snapshot clears its error');
   assert.equal((src.match(/usSnapshot=null;if\(usLive\)usLive\.refreshError=null;/g)??[]).length,3);
 });
+
+// C1c (settlement clean-up, W5; review K3): after a failed U.S. refresh, may a U.S. buy be awaiting settlement? Then the
+// day's Korean record waits (a gap), because the Korean value would leave out the KRW KIS holds for it.
+const {usFundingMayBeOpen}=require('../electron/integrated-settlement.cjs');
+const NOW=Date.parse('2026-11-14T03:00:00Z'),reading=(buyKRW,at=NOW-3600000)=>({at,raw:{usd:{frcr_dncl_amt_2:354.09},summary:{ustl_buy_amt_smtl:buyKRW,ustl_sll_amt_smtl:0}}});
+const usBuy=(t,extra={})=>({id:'B',side:'Buy',filled:1,fillPrice:97.42,createdAt:t,filledObservedAt:t,...extra});
+test('C1c: each of the four signals on its own makes a U.S. buy possibly open; none makes it closed',()=>{
+  const old=usBuy(Date.parse('2026-10-30T23:12:00+09:00'));
+  assert.deepEqual(usFundingMayBeOpen({lastUS:reading(0),orders:[old],now:NOW}),{open:false,reasons:[]},'an old buy, a reading with nothing awaiting settlement after it');
+  assert.equal(usFundingMayBeOpen({lastUS:reading(130590),orders:[old],now:NOW}).open,true,'(a) the last reading reported a buy awaiting settlement');
+  assert.equal(usFundingMayBeOpen({lastUS:reading(0),openBuysUSD:97.66,orders:[old],now:NOW}).open,true,'(b) the tracker holds a buy');
+  assert.equal(usFundingMayBeOpen({lastUS:reading(0,NOW-7200000),orders:[usBuy(NOW-3600000)],now:NOW}).open,true,'(c) filled after the last reading');
+  assert.equal(usFundingMayBeOpen({lastUS:reading(0,NOW-60000),orders:[usBuy(Date.parse('2026-11-12T23:30:00+09:00'))],now:NOW}).open,true,'(c) within 3 U.S. business days');
+  assert.equal(usFundingMayBeOpen({lastUS:reading(0),orders:[usBuy(null,{createdAt:null,filledObservedAt:null})],now:NOW}).open,true,'(c) a fill time not known');
+  assert.equal(usFundingMayBeOpen({lastUS:null,orders:[old],now:NOW}).open,true,'(d) no stored reading with U.S. orders');
+  assert.deepEqual(usFundingMayBeOpen({lastUS:null,orders:[],now:NOW}),{open:false,reasons:[]},'an account with no U.S. orders and no reading');
+  assert.equal(usFundingMayBeOpen({lastUS:reading(0),orders:[{...old,side:'Sell'},{id:'U',side:'Buy',filled:0,createdAt:NOW-60000}],now:NOW}).open,false,'sales and unfilled buys are not U.S. buys awaiting settlement');
+});
+test('C1c: main holds the record after a failed U.S. refresh when a buy may be open, with one log line a day',()=>{
+  const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/main.cjs'),'utf8');const i=src.indexOf('const recordValue=()=>');assert.ok(i>0);const body=src.slice(i,src.indexOf('setInterval(recordValue',i));
+  assert.match(body,/if\(!usSnapshot&&usLive\.refreshError\)\{const g=usFundingOpen\(account\);if\(g\.open\)\{/);assert.ok(body.indexOf('return;}}')<body.indexOf('performance.record('),'it returns before the record is written');
+  assert.match(body,/if\(usHoldLogged!==day\)\{usHoldLogged=day;automation\.log\(/,'one log line per Seoul day');
+  // Replay C of C0 (11-02 09:10): the last U.S. reading reported the RDDT buy's KRW (130,590): held, so the Korean value
+  // without the deduction (690,748 in C0) is never recorded.
+  assert.equal(usFundingMayBeOpen({lastUS:reading(130590,Date.parse('2026-11-02T08:50:00+09:00')),orders:[usBuy(Date.parse('2026-10-30T23:12:00+09:00'))],now:Date.parse('2026-11-02T09:10:00+09:00')}).open,true);
+});

@@ -116,7 +116,7 @@ test('D4: the app wiring: every Korean reading goes through the hold; the record
   const m=src('electron/main.cjs');
   assert.equal((m.match(/kisState=\{status:'connected',\.\.\.useKr\(snapshot\),error:null\}/g)??[]).length,2,'import and refresh');
   assert.ok(m.includes("try{brokerBalances.record(s.accountKey,'KR',kisState.heldReading??s);"),'the KIS reading itself is kept as evidence');
-  assert.ok(m.includes('if(kisState.snapshot?.accountKey&&!kisState.snapshot.settlementProvisional)performance.record('),'the day\'s value, high and low');
+  assert.ok(m.includes('const recordValue=()=>{try{const account=kisState.snapshot?.accountKey;if(!account||kisState.snapshot.settlementProvisional)return;'),'the day\'s value, high and low (C1c: the same guard, written first)');
   assert.ok(m.includes('if(kisState.snapshot?.accountKey&&!kisState.heldReading&&!kisState.snapshot.settlementProvisional&&v!=null)intraday.record('),'no graph point while held or provisional');
   assert.ok(m.includes('live.balanceHold=balanceHold;'));
   const k=src('electron/kis-client.cjs');assert.ok(k.includes("settlementCheck=require('./settlement-check.cjs').krCheck(raw);")&&k.includes('...(settlementCheck?{settlementCheck}:{})'));
