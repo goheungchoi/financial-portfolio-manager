@@ -441,6 +441,8 @@ app.whenReady().then(async () => {
   // keeps the tracker's uncertainty, and a day affected by an uncertain obligation or a misstatement window has no
   // return unless it is the one bounded case.
   const settlementCorrections=require('./performance-corrections.cjs').performanceCorrections(store.db,{inFlight,reconciliation});
+  // C1a: settlement pieces an approved valuation correction supersedes make no correction in the series.
+  settlementCorrections.superseded=account=>corrections.superseded(account);
   performance.corrections=(account,rows)=>settlementCorrections.byDay(account,rows);
   performance.settlement=account=>inFlight.snapshot(account);
   // Stage 3.3 backend; Stage 3.4 will expose preview and explicit approval in the UI.

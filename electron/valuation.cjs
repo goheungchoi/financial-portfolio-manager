@@ -425,8 +425,10 @@ class InFlight {
   // its reopening are both changes without cash, so it is never a timing candidate.
   // Stage 3 (performance corrections): until bounds the interval's end (events after it are left out, and a reversal
   // after it does not count yet); sides keeps only the pieces of those sides (the recorded low series moves with buys).
-  explained(account,{afterId=null,since=null,from=null,until=null,sides=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
-    const events=this.evidence.events(account).filter(e=>until==null||e.at<=until),reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target));
+  // C1a: excludePieces (the pieces an approved valuation correction supersedes, performance only; the flow detector never
+  // passes it) leaves every event of those pieces out.
+  explained(account,{afterId=null,since=null,from=null,until=null,sides=null,excludePieces=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
+    const events=this.evidence.events(account).filter(e=>(until==null||e.at<=until)&&!(excludePieces?.has(e.pieceId))),reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target));
     for(const e of events){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;const pieceSide=e.side??side.get(e.pieceId);if(sides&&!sides.includes(pieceSide))continue;const s=pieceSide==='Sell'?1:-1;
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
       else if(e.kind==='reconciliation'){const outside=reversed.has(e.id)||e.explanation==='rounding'||e.reclassified||typeof e.settledOn==='string'&&start!=null&&e.settledOn<start;if(outside)c-=s*e.cents;else cand.push({id:e.id,usd:-s*e.cents/100,settledOn:e.settledOn??null});}
@@ -444,7 +446,7 @@ class InFlight {
   // In hindsight a piece whose payment was seen after it opened was never a misstatement: one closed by KIS evidence (the
   // cash fell while it was tracked) or reconciled as paid within a recorded day (paidAfter: those reconciliation ids). It
   // is left out for every day. One closed by age, reconciled as paid earlier, or still open counts while open.
-  openCorrections(account,{until=null,paidAfter=new Set()}={}){const open=new Map(),side=new Map(),events=this.evidence.events(account);
+  openCorrections(account,{until=null,paidAfter=new Set(),excludePieces=null}={}){const open=new Map(),side=new Map(),events=this.evidence.events(account).filter(e=>!(excludePieces?.has(e.pieceId)));
     const never=new Set(events.filter(e=>e.kind==='piece-closed'&&e.why==='evidence'||e.kind==='reconciliation'&&paidAfter.has(e.id)).map(e=>e.pieceId));
     for(const e of events){if(until!=null&&e.at>until)break;if(never.has(e.pieceId))continue;if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if((e.side??side.get(e.pieceId))!=='Buy')continue;const c=open.get(e.pieceId);
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict'))open.set(e.pieceId,(c??0)+cents(e.usd));

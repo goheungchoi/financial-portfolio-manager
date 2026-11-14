@@ -159,7 +159,11 @@ class PerformanceHistory {
       const positions=parts.every(([m,f])=>!m||m.positions&&Number.isFinite(f))?parts.flatMap(([m,f])=>(m?.positions??[]).map(p=>({...p,value:p.value*f,cost:p.cost==null?null:p.cost*f}))):null;
       const unrealized=positions&&positions.length&&positions.every(p=>p.cost!=null)?positions.reduce((sum,p)=>sum+p.value-p.cost,0):positions&&!positions.length?0:null;
       const cash=parts.reduce((sum,[m,f])=>sum==null||!m||m.cash==null||!Number.isFinite(f)?null:sum+m.cash*f,0);
-      const high=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,low=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
+      // C1a: a band adjustment of the series' market replaces the recorded high and low. With the value adjusted, the band
+      // still contains it: the value is the day's last reading, so it cannot lie outside the day's range.
+      const bandAdj=adjustments.find(a=>a.day===row.day&&a.band&&a.market===(kind==='COMBINED'?'COMBINED':kind==='KRW'?'KR':'US'))??null;
+      const recHigh=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,recLow=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
+      const high=(h=>adj&&Number.isFinite(h)?Math.max(h,value):h)(bandAdj?.band?.high??recHigh),low=(l=>adj&&Number.isFinite(l)?Math.min(l,value):l)(bandAdj?.band?.low??recLow);
       const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost||(blocked.length&&!noBase)?null:known;
       const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
         :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
@@ -170,7 +174,7 @@ class PerformanceHistory {
       points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
         ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
         ...(bounded?{bounded:{pieceId:bounded.pieceId,usd:bounded.usd,states,returnRange:{low:Math.min(states.real,states.notReal),high:Math.max(states.real,states.notReal)},label:`one uncertain obligation of $${Number(bounded.usd).toFixed(2)}: the return is a range (real, or not real)`}}:{}),
-        ...(noBase?{returnOnly:true}:{}),...(offset?{returnBase}:{}),dailyReturn,index,pnl,...(lost||(blocked.length&&!noBase)?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,cash,unrealized,positions});
+        ...(noBase?{returnOnly:true}:{}),...(offset?{returnBase}:{}),dailyReturn,index,pnl,...(lost||(blocked.length&&!noBase)?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,...(bandAdj?{bandCorrected:bandAdj.version??true,...(bandAdj.band.estimated?{bandEstimated:true}:{})}:{}),cash,unrealized,positions});
       if(previous&&cx?.items?.length&&Number.isFinite(cx.usd))netUSD+=cx.usd;previous={day:row.day,value,openUSD:kind==='KRW'?0:corrections.get(row.day)?.openUSD??0,fx:lastFx};
     }
     // S2b (c): a correction day is an estimate only while the corrections have not netted to zero: a correction still open
@@ -217,14 +221,19 @@ function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)
 // Stage 3.4: an unavailable day (or a bounded one, which has no single return) breaks the time-weighted chain. The
 // window's return, its drawdowns from that day on and its gain (when a day is unavailable) are then unavailable, never
 // read from the flat index or the raw values. Day statistics use the days with a return and say how many lack one.
+// C1a: the points from the first one holding money, when every earlier one is exactly 0 (an account not yet funded is
+// not a fall: the U.S. series starts with zeros before its first transfer). A later 0 still counts. analyze takes the
+// peak, the trough and the intraday high and low from these; returns and drawdowns use the index, which those zeros do
+// not move, so the first funded day keeps its return.
+function funded(points){const i=points.findIndex(p=>p.value>0);return i>0&&points.slice(0,i).every(p=>p.value===0)?points.slice(i):points;}
 function analyze(points,from){
-  const pts=points.filter(p=>p.day>=from);if(!pts.length)return null;const first=pts[0],last=pts.at(-1);
+  const pts=points.filter(p=>p.day>=from);if(!pts.length)return null;const valued=funded(pts);const first=pts[0],last=pts.at(-1);
   const days=pts.slice(1);const rets=days.map(p=>p.dailyReturn).filter(Number.isFinite);
   const gaps=days.filter(p=>p.unavailable||p.bounded),blocked=days.filter(p=>p.unavailable),firstGap=gaps[0]?.day??null;
   let top=-Infinity,maxDd=0;const drawdown=pts.map(p=>{if(firstGap!=null&&p.day>=firstGap)return {day:p.day,drawdownPct:null};top=Math.max(top,p.index);const dd=p.index/top-1;maxDd=Math.min(maxDd,dd);return {day:p.day,drawdownPct:dd*100};});
   const by=(list,key,dir)=>list.reduce((best,p)=>best==null||dir*(p[key]-best[key])>0?p:best,null);
   const mean=rets.length?rets.reduce((a,b)=>a+b,0)/rets.length:null;const sd=rets.length>=5?Math.sqrt(rets.reduce((a,b)=>a+(b-mean)**2,0)/(rets.length-1)):null;
-  const peak=by(pts,'value',1),trough=by(pts,'value',-1),high=by(pts,'high',1),low=by(pts,'low',-1);
+  const peak=by(valued,'value',1),trough=by(valued,'value',-1),high=by(valued,'high',1),low=by(valued,'low',-1);
   const best=by(days.filter(p=>Number.isFinite(p.dailyReturn)),'dailyReturn',1),worst=by(days.filter(p=>Number.isFinite(p.dailyReturn)),'dailyReturn',-1);
   let contributions=null;
   if(first.positions&&last.positions){const map=new Map();const add=(list,key)=>{for(const p of list){if(p.cost==null)continue;const row=map.get(p.symbol)??{symbol:p.symbol,name:p.name,start:0,end:0,held:{}};row[key]=p.value-p.cost;row.held[key]=true;map.set(p.symbol,row);}};
@@ -234,7 +243,7 @@ function analyze(points,from){
   return {from:first.day,to:last.day,days:pts.length,startValue:first.value,endValue:last.value,twrPct:gaps.length?null:r2((last.index/first.index-1)*100),gain:blocked.some(p=>!p.returnOnly)?null:last.value-first.value-days.reduce((a,p)=>a+p.flow,0)-corrections,
     ...(corrections?{corrections}:{}),...(affected(days)?{settlementAffected:affected(days)}:{}),returnDays:rets.length,unavailableDays:blocked.map(p=>({day:p.day,reasons:p.unavailable})),...(gaps.length?{chainBrokenFrom:firstGap}:{}),
     // Values on restated days include the approved overlay (stage 3.4 review): flagged, never called recorded values.
-    peak:{value:peak.value,day:peak.day,...(peak.restated?{restated:peak.restated}:{})},trough:{value:trough.value,day:trough.day,...(trough.restated?{restated:trough.restated}:{})},intradayHigh:{value:high.high,day:high.day},intradayLow:{value:low.low,day:low.day},
+    peak:{value:peak.value,day:peak.day,...(peak.restated?{restated:peak.restated}:{})},trough:{value:trough.value,day:trough.day,...(trough.restated?{restated:trough.restated}:{})},intradayHigh:{value:high.high,day:high.day,...(high.bandEstimated?{estimated:true}:{})},intradayLow:{value:low.low,day:low.day,...(low.bandEstimated?{estimated:true}:{})},
     maxDrawdownPct:gaps.length?null:r2(maxDd*100),currentDrawdownPct:gaps.length?null:r2(drawdown.at(-1).drawdownPct),volatilityPct:sd==null?null:r2(sd*Math.sqrt(252)*100),
     bestDay:best?{day:best.day,returnPct:r2(best.dailyReturn*100),pnl:best.pnl}:null,worstDay:worst?{day:worst.day,returnPct:r2(worst.dailyReturn*100),pnl:worst.pnl}:null,
     positiveDaysPct:rets.length?r2(rets.filter(v=>v>0).length/rets.length*100):null,unrealized:last.unrealized,cashSharePct:last.cash!=null&&last.value>0?r2(last.cash/last.value*100):null,
@@ -249,7 +258,7 @@ function analyze(points,from){
 // null when the window has no invalid day: the section is then exactly as before.
 function riskBreak(points,from,to){
   // Days at exactly 0 before the account first holds money (an empty account, not a bad record) are left out first.
-  const all=points.filter(p=>p.day>=from&&p.day<=to),funded=all.findIndex(p=>p.value>0);const pts=funded>0&&all.slice(0,funded).every(p=>p.value===0)?all.slice(funded):all;const why=p=>p.unavailable?String(p.unavailable[0]).slice(0,120):p.bounded?'a range, not one value':!(p.value>0)?'value not positive':null;
+  const pts=funded(points.filter(p=>p.day>=from&&p.day<=to));const why=p=>p.unavailable?String(p.unavailable[0]).slice(0,120):p.bounded?'a range, not one value':!(p.value>0)?'value not positive':null;
   // The window's first day is only a starting value: its own missing return (from before the window) does not count.
   const bad=pts.map((p,i)=>({p,i,why:i===0?(!(p.value>0)?'value not positive':p.bounded?'a range, not one value':null):why(p)})).filter(x=>x.why);if(!bad.length)return null;
   const r2=v=>v==null?null:Math.round(v*100)/100;
