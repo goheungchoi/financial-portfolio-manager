@@ -41,4 +41,23 @@ class FundingTracker {
     balance.unsettled={...balance.unsettled,krwFundedKRW:next.krwFundedKRW};return balance;
   }
 }
-module.exports={settlement,confirmedKRW,fundingStep,FundingTracker,FRESH_MS};
+// C1c (settlement clean-up, W5): the Korean value nets the KRW KIS holds for unsettled U.S. buys, and that amount comes
+// only from the U.S. reading. While the U.S. balance is not loaded (a failed refresh), may such a buy be awaiting
+// settlement? Yes when any of these holds, and then the day's record waits (a gap, never a wrong record):
+// (a) the last stored U.S. reading of the account reported a U.S. buy amount awaiting settlement (ustl_buy_amt_smtl);
+// (b) the settlement tracker holds a U.S. buy in flight;
+// (c) a U.S. buy of the account filled after that reading, or within the last SETTLE_DAYS U.S. business days, or at a
+//     time not known;
+// (d) no U.S. reading is stored while the account has U.S. orders.
+// lastUS: {at, raw} (electron/broker-raw.cjs list); openBuysUSD: the tracker's buys in flight; orders: the account's
+// U.S. order records. Returns {open, reasons}.
+function usFundingMayBeOpen({lastUS=null,openBuysUSD=0,orders=[],now=Date.now()}={}){
+  const B=require('./business-days.cjs');const reasons=[];
+  if(lastUS&&Number(lastUS.raw?.summary?.ustl_buy_amt_smtl)>0)reasons.push('the last U.S. reading reported a U.S. buy awaiting settlement');
+  if(Number(openBuysUSD)>0.005)reasons.push('the settlement tracker holds a U.S. buy in flight');
+  const filledAt=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.isFinite(o.createdAt)?o.createdAt:null;
+  if(orders.some(o=>o?.side==='Buy'&&o.filled>0&&(t=>t==null||lastUS&&t>lastUS.at||!B.agedOut('US',{fillAt:t,now,n:B.SETTLE_DAYS}).aged)(filledAt(o))))reasons.push('a U.S. buy filled since the last U.S. reading or within 3 U.S. business days');
+  if(!lastUS&&orders.length)reasons.push('no U.S. reading is stored while the account has U.S. orders');
+  return {open:reasons.length>0,reasons};
+}
+module.exports={settlement,confirmedKRW,fundingStep,FundingTracker,FRESH_MS,usFundingMayBeOpen};

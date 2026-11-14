@@ -464,7 +464,17 @@ app.whenReady().then(async () => {
     return require('./valuation.cjs').marketValue(market,{korea:kr,us,fx:automation.fx?.(),inFlight:inFlightOf(k.accountKey)});};
   live.netEquityOf=snapshot=>marketValue('KR',snapshot);live.creditApproved=()=>automation.config.creditProtectionApproved===true;usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
-  const recordValue=()=>{try{if(kisState.snapshot?.accountKey&&!kisState.snapshot.settlementProvisional)performance.record(kisState.snapshot.accountKey,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
+  // C1c (W5): after a failed U.S. refresh, the day's record waits while a U.S. buy may be awaiting settlement
+  // (integrated-settlement.cjs usFundingMayBeOpen): the Korean value would leave out the KRW KIS holds for it. The day
+  // then has no record (a gap), never a wrong one; one log line per Seoul day says so.
+  let usHoldLogged=null;
+  const usFundingOpen=account=>{let orders=[];try{orders=store.db.prepare('SELECT payload FROM live_intents WHERE accountKey=?').all(account+':US').map(r=>JSON.parse(r.payload));}catch{}
+    let lastUS=null;try{lastUS=brokerBalances.list(account,'US',1)[0]??null;}catch{}
+    return require('./integrated-settlement.cjs').usFundingMayBeOpen({lastUS,openBuysUSD:inFlightOf(account)?.buysUSD??0,orders});};
+  const recordValue=()=>{try{const account=kisState.snapshot?.accountKey;if(!account||kisState.snapshot.settlementProvisional)return;
+    if(!usSnapshot&&usLive.refreshError){const g=usFundingOpen(account);if(g.open){const day=require('./kis-activity.cjs').seoulDate();
+      if(usHoldLogged!==day){usHoldLogged=day;automation.log(require('node:crypto').randomUUID(),'System','Daily record held',`The U.S. balance could not be loaded, and ${g.reasons[0]}. Today's Korean value would leave out the KRW KIS holds for it, so today's record waits until the U.S. balance loads (if it does not, the day has no record).`);}return;}}
+    performance.record(account,portfolioState(),{awaitingUS:!usSnapshot&&!usLive.refreshError});}catch{}};
   setInterval(recordValue,60000).unref();
   setInterval(()=>{if(Date.now()-calendarAt>6*3600000)void refreshKrCalendar();},600000).unref();
   automation.officialClosedDays=()=>officialKrCalendar().filter(r=>!r.open).map(r=>r.day);
