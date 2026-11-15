@@ -51,6 +51,9 @@ function reviewSymbols(context,decision){const t=context?.triggerEvidence;const 
 function providerConsent(saved){if(!saved||typeof saved!=='object'||!Object.hasOwn(saved,'shareKisWithAI')||Object.hasOwn(saved,'shareKisWithOpenAI'))return {};return {shareKisWithOpenAI:saved.shareKisWithAI===true,shareKisWithAnthropic:false};}
 // The daily limits of one provider, in the shape budgetExceeded and nearBudget read. OpenAI keeps the keys every profile
 // already has (maxCallsPerDay, maxUSDPerDay and their No limit switches).
+// Claude trading D-1: 1.5.60's publish time. A Claude dry run from before it used older request forms (review.md).
+const CLAUDE_FORMS_SINCE=Date.parse('2026-11-15T11:36:26Z');
+const versionAtLeast=(v,min)=>{const a=String(v).split('.').map(Number),b=String(min).split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;};
 function vendorLimits(config,vendor){return vendor==='anthropic'?{maxCallsPerDay:config.anthropicCallsPerDay,maxUSDPerDay:config.anthropicUSDPerDay,unlimitedCalls:config.anthropicUnlimitedCalls,unlimitedBudget:config.anthropicUnlimitedBudget}:{maxCallsPerDay:config.maxCallsPerDay,maxUSDPerDay:config.maxUSDPerDay,unlimitedCalls:config.unlimitedCalls,unlimitedBudget:config.unlimitedBudget};}
 const VENDOR_NAMES={openai:'OpenAI',anthropic:'Anthropic'};
 // B3 review F1: the reason a Claude agent does not run on an account with no completed Claude dry run.
@@ -133,7 +136,8 @@ class Automation {
   saveConfig(){this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(this.config));}
   configure(value) {
     value=value&&typeof value==='object'?Object.fromEntries(Object.entries(value).filter(([k])=>!LEGACY_SETTINGS.includes(k))):value;
-    if(!value || Object.keys(value).some(key=>!Object.hasOwn(DEFAULTS,key)))throw new Error('INVALID_SETTINGS');
+    // claudeTradingConfirmed (Claude trading D-1) is not a setting: it confirms one save and is removed before storing.
+    if(!value || Object.keys(value).some(key=>key!=='claudeTradingConfirmed'&&!Object.hasOwn(DEFAULTS,key)))throw new Error('INVALID_SETTINGS');
     const next={...this.config,...value};
     if(!['local','openai','external'].includes(next.provider)||!Number.isInteger(next.intervalMinutes)||next.intervalMinutes<1||next.intervalMinutes>1440||!Number.isFinite(next.eventTolerancePct)||next.eventTolerancePct<.1||next.eventTolerancePct>50||!Number.isInteger(next.maxCallsPerDay)||next.maxCallsPerDay<1||next.maxCallsPerDay>200||!Number.isFinite(next.maxUSDPerDay)||next.maxUSDPerDay<.01||next.maxUSDPerDay>100||typeof next.newsURL!=='string'||next.newsURL.length>1000||typeof next.guidelines!=='string'||next.guidelines.length>6000)throw new Error('INVALID_SETTINGS');
     if(!Number.isInteger(next.reflectionCallsPerDay)||next.reflectionCallsPerDay<1||next.reflectionCallsPerDay>200||!Number.isFinite(next.reflectionUSDPerDay)||next.reflectionUSDPerDay<.01||next.reflectionUSDPerDay>100)throw new Error('INVALID_SETTINGS');
@@ -145,7 +149,11 @@ class Automation {
     require('./ai-models.cjs').settings(next);
     // A Claude model is not a trading model yet (Anthropic provider A1b): refused for the trading review and, through each
     // agent's resolved model, for every other agent (step A2) before anything is saved.
-    require('./ai-models.cjs').assertTradingModel(next.openaiModel);{const AM=require('./agent-models.cjs');const claude=AM.AGENTS.filter(a=>a!=='trading').some(a=>this.vendorOf(AM.agentModel(next,a).openaiModel)==='anthropic');AM.validate(next,{claudeAllowed:claude&&Boolean(this.completedClaudeDryRun())});}
+    require('./ai-models.cjs').assertTradingModel(next.openaiModel);
+    // Claude trading D-1: with the gate open, a Claude trading model is saved only under the conditions of the D-0 note,
+    // section 2. claudeTradingConfirmed belongs to this save only and is never stored. Switching back is always allowed.
+    if(this.vendorOf(next.openaiModel)==='anthropic'){const why=this.claudeTradingRefusal(next,{saving:true,switching:this.vendorOf(this.config.openaiModel)!=='anthropic'});if(why)throw new Error(why.code);}
+    delete next.claudeTradingConfirmed;{const AM=require('./agent-models.cjs');const claude=AM.AGENTS.filter(a=>a!=='trading').some(a=>this.vendorOf(AM.agentModel(next,a).openaiModel)==='anthropic');AM.validate(next,{claudeAllowed:claude&&Boolean(this.completedClaudeDryRun())});}
     if(['sessionKrNxt','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
     if(typeof next.scoutAiRequests!=='boolean'||typeof next.scoutEnabled!=='boolean')throw new Error('INVALID_SETTINGS');require('./scout-timing.cjs').validate(next);
     if(!Array.isArray(next.newsFeeds)||next.newsFeeds.length>10||next.newsFeeds.some(f=>!f||typeof f.url!=='string'||!/^https:\/\//.test(f.url)||f.url.length>500||typeof(f.label??'')!=='string'||String(f.label??'').length>60)||typeof next.kisNews!=='boolean'||typeof next.usTickerNews!=='boolean'||typeof next.narrativeEnabled!=='boolean'||!Number.isFinite(next.sizingRiskPct)||next.sizingRiskPct<0.1||next.sizingRiskPct>20||!Number.isFinite(next.sizingAtrMultiple)||next.sizingAtrMultiple<0.5||next.sizingAtrMultiple>5)throw new Error('INVALID_SETTINGS');
@@ -364,7 +372,10 @@ class Automation {
         let r;try{r=await require('./research-review.cjs').researchReview({context:providerContext,detail:shapedDry.detail,watched:watchedIn(this.discovery,providerContext),wrap:null,evidence:this.evidence,discovery:providerContext.discovery?.enabled?read:null,setInterval:noop('set_review_interval'),setWatch:noop('set_review_watch'),actions:desk,log,compact:this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request});}
         catch(error){throw failed(error);}
         const micro=this.db.prepare('SELECT payload FROM ai_calls').all().map(row=>JSON.parse(row.payload)).filter(p=>p.reviewId===id).reduce((sum,p)=>sum+(p.accountedMicro??p.estimatedMicro??0),0);
-        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,research:r.metrics??null,calls,costUSD:Math.round(micro)/1e6,measurement:dryRunMeasurement(this.db,id),tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
+        // Claude trading D-1: what made this dry run (the app version, the instruction set and fingerprint of its
+        // context, and the form of its final answer), so the trading gate can ask for a new one after a text or schema change.
+        const measurement=dryRunMeasurement(this.db,id);let instructions=null;try{instructions=require('./ai-client.cjs').instructions(providerContext);}catch{}
+        review={model:model.openaiModel,effort:model.reasoningEffort,decision:r.decision,usage:r.usage??null,research:r.metrics??null,calls,costUSD:Math.round(micro)/1e6,measurement,appVersion:this.appVersion(),instructions,answerForm:measurement?.requests?.at(-1)?.answerForm??null,tools:transcript.filter(t=>/request/i.test(t.title)).map(t=>t.title+': '+t.body.slice(0,120)),...trace()};
       }
       const record={id,timestamp:Date.now(),mode,summary,...(review?{review}:{})};
       this.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run(id,record.timestamp,JSON.stringify({...record,snapshot}));
@@ -548,7 +559,8 @@ class Automation {
   // A connection failure without a provider record (AI_REQUEST_FAILED) is also the fallback for an unknown local failure,
   // so it names the code and does not say the provider is down. A 429 with an unknown code may be a new billing code.
   providerReason(vendor,b=this.providerBackoff(vendor)){const name=VENDOR_NAMES[vendor]??'The AI provider',r=b.lastRefusal??{},code=r.errorCode??r.errorType??b.lastCode??'unknown';
-    const unknown=r.status===429&&b.kind!=='quota'&&r.errorCode&&!['rate_limit_exceeded','slow_down'].includes(r.errorCode);
+    // Claude trading D-1: an Anthropic 429 has no errorCode, only its error type; one other than rate_limit_error is unfamiliar too.
+    const unknown=r.status===429&&b.kind!=='quota'&&(r.errorCode?!['rate_limit_exceeded','slow_down'].includes(r.errorCode):vendor==='anthropic'&&Boolean(r.errorType)&&r.errorType!=='rate_limit_error');
     const text=b.kind==='quota'?`${name} refuses requests: the account credit or spend limit is used up`:unknown?`${name} refused requests with an unfamiliar code`:r.status===429||b.lastCode==='AI_RATE_LIMITED'?`${name} is limiting requests`
       :b.lastCode==='AI_SERVER_ERROR'||r.status>=500?`${name} is unavailable`:b.lastCode==='AI_TIMEOUT'?`${name} did not answer in time`:`AI requests are failing`;
     return {text,code,unknown:Boolean(unknown)};}
@@ -590,6 +602,18 @@ class Automation {
       // kept and held until the wait ends. Your own review requests still run.
       const until=this.config.provider==='openai'?this.providerWaitFor(this.agentModel('trading').openaiModel,{emergency:trigger==='Emergency loss response'}):0;
       if(until){if(EVIDENCE_TRIGGERS.includes(trigger)&&this.triggerEvidence){const scope=this.watchScope(),evidence=this.triggerEvidence;this.restoreEvents(scope,evidence);this.holdEvents(scope,require('./size-retry.cjs').eventKeys(evidence),until);}throw new Error('REVIEW_PROVIDER_WAIT');}}
+    // Claude trading D-1, the check at review time (D-0 note section 3): a Claude trading model whose dry run, key or
+    // consent no longer holds does not review. Nothing is sent to any provider (no fallback); the Journal and an alert
+    // say why once per cause; the trigger's events are kept and held as for a failed review. Every trigger, yours too.
+    if(this.config.provider==='openai'&&this.vendorOf(this.agentModel('trading').openaiModel)==='anthropic'){const why=this.claudeTradingRefusal(this.config);
+      if(why){if(this.claudeRefusalShown!==why.code){this.claudeRefusalShown=why.code;this.log(randomUUID(),'System','Claude review not started',why.text);try{this.notify?.('claude-review-'+why.code,`Claude review not started: ${why.text}`);}catch{}}
+        if(EVIDENCE_TRIGGERS.includes(trigger)&&this.triggerEvidence){const scope=this.watchScope(),evidence=this.triggerEvidence;this.restoreEvents(scope,evidence);this.holdEvents(scope,require('./size-retry.cjs').eventKeys(evidence),Date.now()+EVENT_RETRY_MS);}
+        throw new Error('CLAUDE_TRADING_BLOCKED');}
+      this.claudeRefusalShown=null;
+      // Review F1: after an update whose instructions differ from those of the last Claude dry run, reviewing goes on; one
+      // Journal line and one alert (once per instruction fingerprint in a run) advise a new dry run.
+      try{const fp=require('./review-instructions.cjs').fingerprint();if(this.claudeAdviceShown!==fp&&!this.claudeTradingDryRun()){this.claudeAdviceShown=fp;const text='The review instructions changed in this version; a Claude dry run on it is advised (Dashboard → Dry run).';
+        this.log(randomUUID(),'System','Claude dry run advised',text);try{this.notify?.('claude-dry-run-advised',text);}catch{}}}catch{}}
     // The evidence that started this review, captured before anything is awaited: a later trigger replaces
     // this.triggerEvidence, and a review that fails before its context is built (account data) still puts it back.
     // Review of 8ef1be1, P1: an agent trigger followed by INCOMPLETE_BALANCE was used up with no decision.
@@ -853,7 +877,30 @@ class Automation {
       if(r.summary?.account?.key!==tag.key)continue;
       const calls=this.db.prepare('SELECT payload FROM ai_calls').all().map(c=>JSON.parse(c.payload)).filter(c=>c.reviewId===r.id&&String(c.model??'').startsWith('claude-'));
       if(!calls.length||calls.some(c=>c.status!=='completed'||!c.usage||!Number.isFinite(c.accountedMicro)))continue;
-      return {id:r.id,timestamp:r.timestamp,model:v.model,calls:v.calls,costUSD:v.measurement.totals?.costUSD??v.costUSD??null,account:tag.label??null};}
+      return {id:r.id,timestamp:r.timestamp,model:v.model,calls:v.calls,costUSD:v.measurement.totals?.costUSD??v.costUSD??null,account:tag.label??null,
+        appVersion:v.appVersion??null,instructions:v.instructions??null,answerForm:v.answerForm??v.measurement.requests?.at(-1)?.answerForm??null};}
+    return null;}
+  // Claude trading D-1 (review.md, the change to condition 1): the completed Claude dry run that allows trading on Claude,
+  // or null. A record with the instructions fingerprint must match the current set's (a later text, tool or schema change
+  // asks for a new dry run); one with only an app version needs 1.5.60 or later; an older-style record counts when it was
+  // made at or after 1.5.60's publish time and its final request recorded its answer form (the 1.5.60 forms record it).
+  claudeTradingDryRun(){const r=this.completedClaudeDryRun();if(!r)return null;
+    if(r.instructions?.fingerprint)return r.instructions.fingerprint===require('./review-instructions.cjs').fingerprint()?r:null;
+    if(r.appVersion)return versionAtLeast(r.appVersion,'1.5.60')?r:null;
+    return r.timestamp>=CLAUDE_FORMS_SINCE&&r.answerForm?r:null;}
+  // Why a Claude trading model may not trade, or null (D-0 note section 2). cfg: the settings being saved, or the saved
+  // ones at review time. Conditions 4 (the limits cover one review) and 5 (the confirmation) apply only when saving; 5 only
+  // when switching from another vendor's model.
+  // At review time (review F1) only the gate, the key and the consent are checked: the dry run is a condition of the
+  // switch, never of later reviews, so an update that changes the instructions does not stop trading (claudeTradingAdvice).
+  claudeTradingRefusal(cfg,{saving=false,switching=false}={}){const model=cfg.openaiModel;
+    if(!saving&&!require('./ai-models.cjs').claudeTradingEnabled())return {code:'CLAUDE_NOT_ENABLED_FOR_TRADING',text:'Claude models run dry-run reviews only for now; trading on Claude is not enabled yet.'};
+    if(saving&&!this.claudeTradingDryRun())return {code:'CLAUDE_TRADING_DRY_RUN',text:'Trading on Claude Opus 5.5 needs a dry run on this version first: Dashboard → Dry run → Claude Opus 5.5.'};
+    if(this.missingKey(model))return {code:'CLAUDE_TRADING_KEY',text:'Load your Anthropic key in Connections first.'};
+    if(cfg.shareKisWithAnthropic!==true)return {code:'CLAUDE_TRADING_CONSENT',text:'Allow sharing KIS data with Anthropic in Connections first.'};
+    if(saving){const r=this.claudeReservation(model,vendorLimits(cfg,'anthropic'));const calls=cfg.anthropicUnlimitedCalls===true||cfg.anthropicCallsPerDay>=(r?.requestsUpTo??4);const usd=cfg.anthropicUnlimitedBudget===true||(Number.isFinite(r?.upToUSD)&&cfg.anthropicUSDPerDay>=r.upToUSD);
+      if(!calls||!usd)return {code:'CLAUDE_TRADING_LIMITS',text:`Your Claude daily limits do not cover one review (about $${r?.upToUSD??'?'} and up to ${r?.requestsUpTo??4} requests). Raise them in Engine settings.`};
+      if(switching&&cfg.claudeTradingConfirmed!==true)return {code:'CLAUDE_TRADING_CONFIRM',text:'Confirm trading on Claude Opus 5.5 first.'};}
     return null;}
   // The vendor name whose key a model needs, when that key is not connected; null when it is (Anthropic A5). A status
   // without per-vendor flags (before the provider file is read, or a test double) counts aiConnected as OpenAI.

@@ -12,7 +12,10 @@ function vendorOf(model){const key=rowKey(model);if(!key)throw new Error('INVALI
 // Claude models may not be saved as a trading model (main or routine) until trading on Claude is approved (Anthropic
 // provider design 6.3, stage D). The one place to lift it is this constant, in a release, never by a setting.
 const CLAUDE_TRADING_ENABLED=false;
-function assertTradingModel(model){if(!CLAUDE_TRADING_ENABLED&&vendorOf(model)==='anthropic')throw new Error('CLAUDE_NOT_ENABLED_FOR_TRADING');}
+// Tests only (Claude trading D-1): the conditions behind the gate are tested before the constant flips. The app never
+// calls setClaudeTradingForTests; claudeTradingEnabled() is the constant unless a test set it.
+let testOverride=null;const claudeTradingEnabled=()=>testOverride??CLAUDE_TRADING_ENABLED;const setClaudeTradingForTests=v=>{testOverride=v==null?null:Boolean(v);};
+function assertTradingModel(model){if(!claudeTradingEnabled()&&vendorOf(model)==='anthropic')throw new Error('CLAUDE_NOT_ENABLED_FOR_TRADING');}
 // Claude: efforts low, medium or high (no "none": thinking is adaptive) and 16,000 output tokens, thinking included.
 function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort=config.reasoningEffort??'none';if(!Object.hasOwn(MODELS,model))throw new Error('INVALID_MODEL_SETTINGS');const vendor=MODELS[model].vendor;if(!EFFORTS[vendor].includes(effort)||model==='gpt-6-astra'&&effort==='none')throw new Error('INVALID_MODEL_SETTINGS');return {model,effort,maxOutput:vendor==='anthropic'?32000:effort==='none'?4096:8192};}
 // Request size limits for a portfolio review: the first request, and follow-up rounds that carry research results.
@@ -52,4 +55,4 @@ function costDetails(model,usage){
 }
 function usageEstimate(model,usage){return costDetails(model,usage)?.micro??null;}
 function budgetExceeded(config,usage,reserve,reflection=false){const calls=reflection?'reflectionCallsPerDay':'maxCallsPerDay',usd=reflection?'reflectionUSDPerDay':'maxUSDPerDay',prefix=reflection?'reflectionUnlimited':'unlimited';return (!config[prefix+'Calls']&&usage.calls>=config[calls])||(!config[prefix+'Budget']&&usage.reservedMicro+reserve>config[usd]*1e6);}
-module.exports={reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
+module.exports={reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};

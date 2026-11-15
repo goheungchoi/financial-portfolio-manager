@@ -117,7 +117,9 @@ function refusalRecord(error,call,keys=[]){
   const contentType=String(call?.contentType??'').toLowerCase().replace(/[^a-z0-9\/+.;= -]/g,'').slice(0,60);
   const refused=status>=400&&status<500,withMessage=refused&&status!==401&&status!==429;
   const message=withMessage?cleanText(anthropicError?parsed.error.message:(call?.errorBody??error.message),keys):'';
-  return {status,...lookupKeys,anthropicError,...(contentType?{contentType}:{}),...(message?{message}:{}),noCharge:refused&&call?.errorBody!=null};
+  // Claude trading D-1: Anthropic's retry-after (whole seconds) sets the earliest retry, as OpenAI's does (ai-errors.cjs).
+  let retryAfter=null;try{retryAfter=error.headers?.get?.('retry-after')??error.headers?.['retry-after']??null;}catch{}
+  return {status,...lookupKeys,anthropicError,...(contentType?{contentType}:{}),...(message?{message}:{}),...(retryAfter!=null&&/^\d{1,5}$/.test(String(retryAfter))?{retryAfterSec:Number(retryAfter)}:{}),noCharge:refused&&call?.errorBody!=null};
 }
 
 // Claude decision and scout without a grammar (artifacts/reviews/2026-11-12-claude-dry-run/design-grammar.md, option A;
