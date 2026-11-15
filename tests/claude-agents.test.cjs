@@ -67,7 +67,7 @@ test('the gate: Claude for the four agents only after a completed dry run on thi
   assert.throws(()=>closed.configure({routineModel:'claude-opus-5-5',routineEffort:'low'}),/CLAUDE_DRY_RUN_REQUIRED/);
   const open=world({claudeRun:true}).a;open.configure({scoutModel:'claude-opus-5-5',narrativeModel:'claude-opus-5-5',reflectionModel:'claude-opus-5-5',routineModel:'claude-opus-5-5',routineEffort:'low'});
   assert.equal(open.agentModel('scout').openaiModel,'claude-opus-5-5');assert.equal(open.agentModel('compacting').openaiModel,'claude-opus-5-5');
-  assert.throws(()=>open.configure({openaiModel:'claude-opus-5-5'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/,'trading waits for C2');
+  assert.throws(()=>open.configure({openaiModel:'claude-opus-5-5'}),/CLAUDE_TRADING_DRY_RUN/,'Claude trading D-3: trading on Claude needs the D-1 save conditions; this dry run (timestamp 1) is older than 1.5.60');
   const same=world().a;same.configure({scoutModel:'same'});assert.equal(same.agentModel('scout').openaiModel,'gpt-6-sol','an agent left on Same stays on the trading model, OpenAI');
   const other=world().a;other.db.prepare('INSERT INTO dry_runs VALUES(?,?,?)').run('d',1,JSON.stringify({id:'d',timestamp:1,mode:'review',summary:{account:{key:'another'}},review:{model:'claude-opus-5-5',decision:{action:'Hold'},calls:1,measurement:{totals:{}}}}));
   assert.throws(()=>other.configure({scoutModel:'claude-opus-5-5'}),/CLAUDE_DRY_RUN_REQUIRED/,'a run on another account does not open it');

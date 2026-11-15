@@ -11,7 +11,8 @@ function rowKey(model){if(typeof model!=='string')return null;return Object.keys
 function vendorOf(model){const key=rowKey(model);if(!key)throw new Error('INVALID_MODEL_SETTINGS');return MODELS[key].vendor;}
 // Claude models may not be saved as a trading model (main or routine) until trading on Claude is approved (Anthropic
 // provider design 6.3, stage D). The one place to lift it is this constant, in a release, never by a setting.
-const CLAUDE_TRADING_ENABLED=false;
+// Claude trading D-3, the last commit: the gate opens; the save conditions and the review-time check of D-1 apply.
+const CLAUDE_TRADING_ENABLED=true;
 // Tests only (Claude trading D-1): the conditions behind the gate are tested before the constant flips. The app never
 // calls setClaudeTradingForTests; claudeTradingEnabled() is the constant unless a test set it.
 let testOverride=null;const claudeTradingEnabled=()=>testOverride??CLAUDE_TRADING_ENABLED;const setClaudeTradingForTests=v=>{testOverride=v==null?null:Boolean(v);};

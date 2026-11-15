@@ -107,6 +107,7 @@ test('the key Test: one request, fixed answers, the key never in an answer or a 
 
 test('still refused after B1: a Claude model for any agent',()=>{
   const {a}=automation();a.configure({shareKisWithAnthropic:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium'});
-  // B3: the trading model stays refused until C2; the other agents are refused until a completed Claude dry run.
-  for(const k of ['openaiModel','scoutModel','narrativeModel','reflectionModel','routineModel'])assert.throws(()=>a.configure({[k]:'claude-opus-5-5',...(k==='openaiModel'?{reasoningEffort:'medium'}:{})}),k==='openaiModel'?/CLAUDE_NOT_ENABLED_FOR_TRADING/:k==='routineModel'?/INVALID_MODEL_SETTINGS|CLAUDE_DRY_RUN_REQUIRED/:/CLAUDE_DRY_RUN_REQUIRED/,k);
+  // B3: the other agents are refused until a completed Claude dry run. Claude trading D-3 opened the gate: the trading
+  // model is refused by the D-1 save conditions (no qualifying dry run here).
+  for(const k of ['openaiModel','scoutModel','narrativeModel','reflectionModel','routineModel'])assert.throws(()=>a.configure({[k]:'claude-opus-5-5',...(k==='openaiModel'?{reasoningEffort:'medium'}:{})}),k==='openaiModel'?/CLAUDE_TRADING_DRY_RUN/:k==='routineModel'?/INVALID_MODEL_SETTINGS|CLAUDE_DRY_RUN_REQUIRED/:/CLAUDE_DRY_RUN_REQUIRED/,k);
 });

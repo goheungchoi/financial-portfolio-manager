@@ -76,10 +76,11 @@ test('R3: the cap stops before a request that would pass it (measured so far plu
     assert.deepEqual(sent,{openai:1,claude:0},'the reservation does not fit under the Anthropic limit');assert.equal(run.rows[0].variant.failure.kind,'limit');assert.deepEqual(run.summary.claude.stopped,{reason:'limit',left:2});}
 });
 
-test('R7: an OpenAI change replays as before; trading on Claude stays refused',async()=>{
+// Claude trading D-3 opened the gate: trading on Claude is now refused only by the D-1 save conditions.
+test('R7: an OpenAI change replays as before; trading on Claude is refused without its conditions',async()=>{
   const {a,sent}=world();const run=await a.replay({model:{openaiModel:'gpt-6-luna',reasoningEffort:'low'},limit:2});
   assert.deepEqual(sent,{openai:4,claude:0});assert.equal(run.summary.claude,undefined);assert.equal(run.rows[0].variant.failure,undefined);
-  assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/);
+  assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5'}),/CLAUDE_TRADING_DRY_RUN/,'the stubbed dry run records no version or time');
 });
 
 test('the panel: a Claude replay is confirmed with its estimate and cap; failed rows say why; the summary says it cannot rank the models',()=>{

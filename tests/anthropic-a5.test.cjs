@@ -76,7 +76,8 @@ test('A5: saved reviews carry their vendor; a Claude trading model is refused wi
   // Claude trading D-1 added a review-time check (dry run, key, consent); it is tested in claude-trading.test.cjs. Here the
   // record's vendor is the subject, so the check is passed.
   const h=harness(BOTH);h.a.config.openaiModel='claude-opus-5-5';h.a.config.reasoningEffort='medium';h.a.claudeTradingRefusal=()=>null;await h.a.review('User request');const row2=JSON.parse(h.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);assert.equal(row2.vendor,'anthropic');
-  assert.throws(()=>harness(BOTH).a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/);
+  // Claude trading D-3 opened the gate: without a qualifying dry run the save is refused by the D-1 condition, in words.
+  assert.throws(()=>harness(BOTH).a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_TRADING_DRY_RUN/);
   // Claude trading D-1 added the save-condition codes (CLAUDE_TRADING_*) to what reaches the settings page.
   const main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');assert.ok(main.includes("error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')?error.message:'INVALID_SETTINGS'"),'the code, and the agent a Claude dry run is needed for (B3 review F1), reach the settings page');
   const ui=fs.readFileSync(path.join(__dirname,'../src/RuntimeSettings.tsx'),'utf8');assert.match(ui,/CLAUDE_NOT_ENABLED_FOR_TRADING:'Claude models run dry-run reviews only for now; trading on Claude is not enabled yet\.'/);

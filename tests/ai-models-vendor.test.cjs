@@ -87,10 +87,12 @@ test('the Opus reservation is finite and above GPT Sol for the same context',()=
 // A1b: a Claude model cannot be saved as a trading model, main or routine, and a replay cannot run on it, until trading
 // on Claude is approved. 1.5.49 refused these ids as unknown; A1 made them known, so the refusal is now explicit.
 const automation=()=>{const {DatabaseSync}=require('node:sqlite');const {Automation}=require('../electron/automation.cjs'),{PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');return new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),{},()=>{});};
+// Claude trading D-3 opened the gate (CLAUDE_TRADING_ENABLED true): a Claude trading model is now refused by the save
+// conditions of D-1 (here: no qualifying dry run), never by the gate. The settings stay as they were either way.
 test('A1b: configure refuses a Claude id as the main or routine model and keeps the saved settings',()=>{
-  assert.equal(m.CLAUDE_TRADING_ENABLED,false);assert.throws(()=>m.assertTradingModel('claude-opus-5-5'),/CLAUDE_NOT_ENABLED_FOR_TRADING/);m.assertTradingModel('gpt-6-sol');
+  assert.equal(m.CLAUDE_TRADING_ENABLED,true);m.assertTradingModel('claude-opus-5-5');m.assertTradingModel('gpt-6-sol');
   const a=automation();a.configure({openaiModel:'gpt-6-sol',reasoningEffort:'medium',routineModel:'gpt-6-luna',routineEffort:'none'});const before=JSON.stringify(a.config);
-  assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_NOT_ENABLED_FOR_TRADING/);
+  assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_TRADING_DRY_RUN/);
   assert.throws(()=>a.configure({routineModel:'claude-opus-5-5',routineEffort:'low'}),/CLAUDE_DRY_RUN_REQUIRED/);// B3: until a completed Claude dry run
   assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'none'}),/INVALID_MODEL_SETTINGS/,'an invalid effort is still the settings error');
   assert.equal(JSON.stringify(a.config),before,'nothing was saved');
