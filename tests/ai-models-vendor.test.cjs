@@ -45,9 +45,9 @@ test('pin: GPT costs, settings, reservation and usage are unchanged',()=>{
 test('each model names its vendor; unknown models are refused',()=>{
   assert.equal(m.vendorOf('gpt-6-sol'),'openai');assert.equal(m.vendorOf('gpt-6-luna'),'openai');assert.equal(m.vendorOf('gpt-6-sol-2026-10-01'),'openai','a dated GPT id keeps matching its row');
   assert.equal(m.vendorOf('claude-opus-5-5'),'anthropic');
-  for(const bad of ['claude-opus-5-5-20260101','claude-opus-5','claude-haiku-5-5','claude-sonnet-5-5','gpt-7',undefined,null,'',42])assert.throws(()=>m.vendorOf(bad),/INVALID_MODEL_SETTINGS/,String(bad));
+  for(const bad of ['claude-opus-5-5-20260101','claude-opus-5','claude-haiku-5-5-20261007','claude-sonnet-5-5','gpt-7',undefined,null,'',42])assert.throws(()=>m.vendorOf(bad),/INVALID_MODEL_SETTINGS/,String(bad));
   assert.equal(m.MODELS['claude-opus-5-5'].vendor,'anthropic');assert.ok(Object.entries(m.MODELS).every(([k,r])=>r.vendor===(k.startsWith('claude-')?'anthropic':'openai')));
-  assert.equal(Object.keys(m.MODELS).filter(k=>k.startsWith('claude-')).length,1,'only Opus 5.5 in step A1 (Haiku comes in stage B)');
+  assert.deepEqual(Object.keys(m.MODELS).filter(k=>k.startsWith('claude-')),['claude-opus-5-5','claude-haiku-5-5'],'Opus 5.5 (step A1) and Haiku 5.5 (Haiku compacting H-1, context compacting only)');
 });
 test('Claude settings: efforts low, medium and high; no "none"; 32,000 output tokens (B2)',()=>{
   assert.throws(()=>m.settings({openaiModel:'claude-opus-5-5',reasoningEffort:'none'}),/INVALID_MODEL_SETTINGS/);
@@ -75,7 +75,7 @@ test('Opus 5.5 cost uses its own cache rates and no long-input surcharge',()=>{
   assert.equal(m.costDetails('claude-opus-5-5',big).micro,50000*4+400000*0.2+50000*5+1000*20,'no 272,000-token surcharge on Claude');
   // Only the standard tier is priced for Claude in this step; anything else is an unknown cost (the reservation stays).
   assert.equal(m.costDetails('claude-opus-5-5',{...big,serviceTier:'priority'}),null);assert.equal(m.costDetails('claude-opus-5-5',{...big,serviceTier:'batch'}),null);
-  assert.equal(m.costDetails('claude-opus-5-5-20260101',big),null,'a dated id does not match the Claude row');assert.equal(m.costDetails('claude-haiku-5-5',big),null);
+  assert.equal(m.costDetails('claude-opus-5-5-20260101',big),null,'a dated id does not match the Claude row');assert.equal(m.costDetails('claude-sonnet-5-5',big),null,'Haiku compacting H-1 added a Haiku row; Sonnet is still unknown');
   assert.equal(m.costDetails('claude-opus-5-5',{...big,cachedTokens:600000}),null,'cache counts above the input are refused');
   assert.equal(m.usageEstimate('claude-opus-5-5',u),c.micro);
 });

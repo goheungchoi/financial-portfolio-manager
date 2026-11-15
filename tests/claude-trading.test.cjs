@@ -175,3 +175,44 @@ test('D-3: a completed first review on Claude ends the wait, and automatic revie
     const next=await a.review('Scheduled review').then(()=>null,e=>e.message);assert.notEqual(next,'CLAUDE_FIRST_REVIEW_PENDING','automatic reviews continue');
   }finally{M.setClaudeTradingForTests(null);}
 });
+
+// ---- Haiku compacting H-1 (artifacts/reviews/2026-11-15-haiku-compacting: h0/note.md, review.md A to C).
+test('H-1: Haiku 5.5 is priced by prompt length, counting cache reads and writes; reserved at the long rates past the threshold',()=>{
+  const cost=(i,read,write,out)=>M.costDetails('claude-haiku-5-5',{inputTokens:i,cachedTokens:read,cacheWriteTokens:write,outputTokens:out,serviceTier:'standard'});
+  const at=cost(100000,0,0,1000);assert.equal(at.micro,10500,'100,000 in total is not over: $0.10 / $0.50');assert.equal(at.longContext,false);
+  // Review A: 60,000 uncached + 50,000 cache read is a 110,000-token prompt (the app's inputTokens is the sum).
+  const over=cost(110000,50000,0,1000);assert.equal(over.longContext,true);assert.deepEqual(over.rates,{input:0.5,cached:0.05,write:0.625,output:2.5},'long rates on every category, output too');
+  assert.equal(over.ordinaryInputMicro,30000);assert.equal(over.cachedInputMicro,2500);assert.equal(over.outputMicro,2500);assert.equal(over.micro,35000);
+  assert.equal(cost(110000,0,50000,0).cacheWriteMicro,31250,'cache writes count toward the length and pay $0.625');
+  const norm=M.normalizeUsage({usage:{input_tokens:60000,cache_read_input_tokens:50000,cache_creation_input_tokens:0,output_tokens:1000}},'anthropic');assert.equal(norm.inputTokens,110000,'Anthropic input_tokens excludes cache counts; the app sums them');
+  const r=b=>M.reservationAt({openaiModel:'claude-haiku-5-5',reasoningEffort:'low'},b,'compact');assert.equal(r(80000),Math.ceil((100000*0.1+16000*0.5)*1.2),'at the threshold: base rates');assert.equal(r(80001),Math.ceil((100001*0.5+16000*2.5)*1.2),'past it: long rates');
+  assert.equal(M.costDetails('claude-opus-5-5',{inputTokens:500000,outputTokens:1,cachedTokens:0,cacheWriteTokens:0,serviceTier:'standard'}).rates.input,4,'Opus keeps one price');
+  for(const e of ['low','medium','high'])M.settings({openaiModel:'claude-haiku-5-5',reasoningEffort:e});assert.throws(()=>M.settings({openaiModel:'claude-haiku-5-5',reasoningEffort:'none'}),/INVALID_MODEL_SETTINGS/);
+});
+
+test('H-1: only Claude Opus 5.5 trades: Haiku is refused first at save and at review time; Haiku only for compacting',async()=>{
+  assert.throws(()=>M.assertTradingModel('claude-haiku-5-5'),/CLAUDE_MODEL_NOT_FOR_TRADING/);M.assertTradingModel('claude-opus-5-5');
+  const {a,events}=harness();a.completedClaudeDryRun=()=>null;assert.throws(()=>a.configure({openaiModel:'claude-haiku-5-5',reasoningEffort:'medium',claudeTradingConfirmed:true}),/^Error: CLAUDE_MODEL_NOT_FOR_TRADING$/,'before the D-1 conditions (no dry run here) and the confirmation');
+  a.config.openaiModel='claude-haiku-5-5';await assert.rejects(a.review('Scheduled review'),/CLAUDE_TRADING_BLOCKED/);assert.equal(events.filter(e=>e.title==='Claude review not started').at(-1).body,'Only Claude Opus 5.5 can be the trading model.');
+  const src=require('fs').readFileSync(require('path').join(__dirname,'../electron/main.cjs'),'utf8');assert.ok(src.includes("error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message"),'main passes the code');
+  assert.match(require('fs').readFileSync(require('path').join(__dirname,'../src/RuntimeSettings.tsx'),'utf8'),/CLAUDE_MODEL_NOT_FOR_TRADING:'Only Claude Opus 5\.5 can be the trading model\.'/);
+  const b=harness();b.a.completedClaudeDryRun=()=>dry({appVersion:'1.5.61'});b.a.configure({routineModel:'claude-haiku-5-5',routineEffort:'low'});assert.equal(b.a.agentModel('compacting').openaiModel,'claude-haiku-5-5');
+  for(const k of ['scoutModel','narrativeModel','reflectionModel'])assert.throws(()=>b.a.configure({[k]:'claude-haiku-5-5'}),/INVALID_MODEL_SETTINGS/,k);
+  assert.equal(b.a.claudeReservation('claude-opus-5-5',{}).compactUpToUSD,0.3,'the condensing figure is Haiku\'s: 400 KB at the long rates');
+});
+
+test('H-1: a failed condensing request is said once per model and code; the review goes on by reference',async()=>{
+  const {a,events}=harness();a.configure({routineModel:'gpt-6-luna',routineEffort:'none'});let n=0;a.provider={request:async()=>{n++;throw new Error('AI_RATE_LIMITED');}};a.providerWaitFor=()=>0;// the wait a 429 starts is D-2's; here, the line
+  for(let i=0;i<2;i++)await assert.rejects(a.compactResearch('R'+i,{items:[]}),/AI_RATE_LIMITED/);assert.equal(n,2);
+  assert.deepEqual(events.filter(e=>e.title==='Context compacting failed').map(e=>e.body),['GPT-6 Luna: AI_RATE_LIMITED. The review went on with older results by reference.']);
+  // context-fit.cjs:24-28: a compact that throws is a step with its code; the fit goes on and returns the items.
+  const {fit}=require('../electron/context-fit.cjs');const big='x'.repeat(4000);const items=[{type:'function_call',call_id:'c1',name:'tool',arguments:'{}'},{type:'function_call_output',call_id:'c1',output:JSON.stringify({data:big})},{type:'message',role:'user',content:'next'}];
+  const r=await fit(items,{keepFrom:2,limit:1000,targetBytes:500,compact:async()=>{throw new Error('AI_RATE_LIMITED');}});assert.ok(Array.isArray(r.items));assert.deepEqual(r.steps.find(s=>s.step==='compact'),{step:'compact',error:'AI_RATE_LIMITED'});
+});
+
+test('H-1: the confirmation names compacting on Claude Haiku 5.5; the decision maker reads "AI model"',async()=>{
+  const {claudeConfirmLines}=await import('../src/claudeConfirmLines.mjs');const lines=claudeConfirmLines({intervalMinutes:30,scope:'both',anthropicUnlimitedBudget:true,anthropicUnlimitedCalls:true,routineModel:'claude-haiku-5-5'},{});
+  assert.ok(lines.includes('Context compacting uses Claude Haiku 5.5.'));assert.ok(!lines.some(l=>/still uses OpenAI/.test(l)));
+  const es=require('fs').readFileSync(require('path').join(__dirname,'../src/EngineSettings.tsx'),'utf8');assert.ok(es.includes('<option value="openai">AI model</option>'));assert.ok(!es.includes('<option value="openai">OpenAI</option>'));
+  assert.ok(es.includes("{agent==='compacting'&&<option value=\"claude-haiku-5-5\""),'Haiku is offered on the compacting card only');
+});

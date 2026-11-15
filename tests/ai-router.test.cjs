@@ -10,7 +10,7 @@ test('the model id picks the client; no model means OpenAI; a vendor without a k
   const both=R.createRouter({openai:fake('openai'),anthropic:fake('anthropic')});
   assert.equal(both.clientFor('gpt-6-sol').name,'openai');assert.equal(both.clientFor('gpt-6-sol-2026-10-01').name,'openai');assert.equal(both.clientFor(undefined).name,'openai','older callers without a model');assert.equal(both.clientFor(null).name,'openai');
   assert.equal(both.clientFor('claude-opus-5-5').name,'anthropic');
-  for(const bad of ['claude-opus-5-5-20260101','claude-haiku-5-5','gpt-7',''])assert.throws(()=>both.clientFor(bad),/INVALID_MODEL_SETTINGS/,bad);
+  for(const bad of ['claude-opus-5-5-20260101','claude-haiku-5-5-20261007','claude-sonnet-5-5','gpt-7',''])assert.throws(()=>both.clientFor(bad),/INVALID_MODEL_SETTINGS/,bad);
   const openaiOnly=R.createRouter({openai:fake('openai')});assert.throws(()=>openaiOnly.clientFor('claude-opus-5-5'),/AI_NOT_CONNECTED/);assert.equal(openaiOnly.clientFor('gpt-6-luna').name,'openai');
   const claudeOnly=R.createRouter({anthropic:fake('anthropic')});assert.throws(()=>claudeOnly.clientFor('gpt-6-sol'),/AI_NOT_CONNECTED/);assert.throws(()=>claudeOnly.clientFor(undefined),/AI_NOT_CONNECTED/);
   assert.throws(()=>R.createRouter().clientFor('gpt-6-sol'),/AI_NOT_CONNECTED/,'before any import');

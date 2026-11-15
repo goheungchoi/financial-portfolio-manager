@@ -27,7 +27,7 @@ export type DeskState={monitoringActive?:boolean;planStopFailures?:{id:string;sy
 // the numbers, which the confirmation shows in D-3).
 const SAVE_ERRORS:Record<string,string>={CLAUDE_NOT_ENABLED_FOR_TRADING:'Claude models run dry-run reviews only for now; trading on Claude is not enabled yet.',
   CLAUDE_TRADING_DRY_RUN:'Trading on Claude Opus 5.5 needs a dry run on this version first: Dashboard → Dry run → Claude Opus 5.5.',CLAUDE_TRADING_KEY:'Load your Anthropic key in Connections first.',CLAUDE_TRADING_CONSENT:'Allow sharing KIS data with Anthropic in Connections first.',
-  CLAUDE_TRADING_LIMITS:'Your Claude daily limits do not cover one review. Raise them in Engine settings.',CLAUDE_TRADING_CONFIRM:'Confirm trading on Claude Opus 5.5 first.',INVALID_MODEL_SETTINGS:'A model and its effort don’t go together: GPT-6 Astra needs at least Low. Check the agents on the Agents tab.'};
+  CLAUDE_TRADING_LIMITS:'Your Claude daily limits do not cover one review. Raise them in Engine settings.',CLAUDE_TRADING_CONFIRM:'Confirm trading on Claude Opus 5.5 first.',CLAUDE_MODEL_NOT_FOR_TRADING:'Only Claude Opus 5.5 can be the trading model.',INVALID_MODEL_SETTINGS:'A model and its effort don’t go together: GPT-6 Astra needs at least Low. Check the agents on the Agents tab.'};
 // B3 review F1: a save refused because an agent is on Claude without a measured dry run on this account names the agent.
 function claudeGateMessage(error?:string){const m=/^CLAUDE_DRY_RUN_REQUIRED:(\w+)$/.exec(error??'');return m?claudeGateText(m[1]):undefined;}
 export type AgentModel={openaiModel:string;reasoningEffort:string};

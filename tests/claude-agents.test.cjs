@@ -166,3 +166,10 @@ test('the provider cards say what each provider is used for now, and the Anthrop
   assert.ok(card.includes('providerUses(vendor,runtime?.agentModels)')&&card.includes('{ANTHROPIC_NOTE}'),'the card shows both');
   assert.ok(!/until release B3|Every other agent stays on OpenAI/.test(card),'the old texts are gone');
 });
+
+test('Haiku compacting H-1: the compact request on Claude Haiku 5.5 sends only fields Haiku accepts',async()=>{
+  const t=transport(reply([text({summaries:[]})],{model:'claude-haiku-5-5'}));await new A.AnthropicClient(KEY,t).compact({items:[]},{openaiModel:'claude-haiku-5-5',reasoningEffort:'low'});
+  const b=t.sent[0].body;assert.equal(b.model,'claude-haiku-5-5');assert.equal(b.max_tokens,16000);assert.deepEqual(b.thinking,{type:'adaptive'});assert.equal(b.output_config.effort,'low');
+  assert.equal(b.output_config.format.type,'json_schema');assert.equal(b.service_tier,'standard_only');
+  for(const k of ['temperature','top_p','top_k','fallbacks','budget_tokens','tools','tool_choice'])assert.equal(b[k],undefined,k);assert.equal(b.thinking.budget_tokens,undefined);
+});

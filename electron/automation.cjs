@@ -875,7 +875,8 @@ class Automation {
   completedClaudeDryRunCached(){return this.stateCached?this.stateCached('claudeDryRun',()=>{try{return this.completedClaudeDryRun();}catch{return null;}}):null;}
   claudeReservation(model,limits){const M=require('./ai-models.cjs');const cfg={openaiModel:model,reasoningEffort:'medium'};
     let bytes=null;try{const row=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.title')='Review size' ORDER BY seq DESC LIMIT 1").get();const w=row?JSON.parse(JSON.parse(row.payload).body??'{}').wireBytes:null;if(Number.isInteger(w)&&w>0)bytes=w;}catch{}
-    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({}),M.reviewByteLimit({})));const compactUpTo=M.reservationAt(cfg,400000,'compact');const upTo=M.reservationAt(cfg,M.reviewByteLimit({}))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]}));
+    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({}),M.reviewByteLimit({})));// Haiku compacting H-1: the condensing figure is the compacting model's when it is a Claude model (Haiku or Opus).
+    const comp=(()=>{try{const c=this.agentModel('compacting');return M.vendorOf(c.openaiModel)==='anthropic'?c:cfg;}catch{return cfg;}})();const compactUpTo=M.reservationAt(comp,400000,'compact');const upTo=M.reservationAt(cfg,M.reviewByteLimit({}))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]}));
     const usd=m=>Math.round(m/1e4)/100;return {firstRequestUSD:usd(first),firstRequestBasis:bytes?`the latest review's first request, ${bytes.toLocaleString('en-US')} bytes`:'the first-request size limit',upToUSD:usd(upTo),requestsUpTo:4,compactUpToUSD:usd(compactUpTo),
       blocked:!limits.unlimitedBudget&&limits.maxUSDPerDay*1e6<first,limitUSD:limits.unlimitedBudget?null:limits.maxUSDPerDay};}
   // The card's figures and the gate are cached with stateCached: its key (historyVersion) holds the database's total
@@ -918,6 +919,8 @@ class Automation {
   setClaudeFirstReview(value){this.claudeFirstCache=value??null;try{if(value==null)this.db.prepare('DELETE FROM claude_trading_state WHERE id=1').run();else this.db.prepare('INSERT INTO claude_trading_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(value));}catch{}}
   claudeTradingRefusal(cfg,{saving=false,switching=false}={}){const model=cfg.openaiModel;
     if(!saving&&!require('./ai-models.cjs').claudeTradingEnabled())return {code:'CLAUDE_NOT_ENABLED_FOR_TRADING',text:'Claude models run dry-run reviews only for now; trading on Claude is not enabled yet.'};
+    // Haiku compacting H-1 (review C): only Claude Opus 5.5 trades; another Claude id in saved settings does not review.
+    if(model!==require('./ai-models.cjs').CLAUDE_TRADING_MODEL)return {code:'CLAUDE_MODEL_NOT_FOR_TRADING',text:'Only Claude Opus 5.5 can be the trading model.'};
     if(saving&&!this.claudeTradingDryRun())return {code:'CLAUDE_TRADING_DRY_RUN',text:'Trading on Claude Opus 5.5 needs a dry run on this version first: Dashboard → Dry run → Claude Opus 5.5.'};
     if(this.missingKey(model))return {code:'CLAUDE_TRADING_KEY',text:'Load your Anthropic key in Connections first.'};
     if(cfg.shareKisWithAnthropic!==true)return {code:'CLAUDE_TRADING_CONSENT',text:'Allow sharing KIS data with Anthropic in Connections first.'};
@@ -957,7 +960,13 @@ class Automation {
     const callId=randomUUID(),record={reviewId,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'compact'};
     this.reserveCall(modelConfig,reserve,callId,day,JSON.stringify(record));
     try{const response=await this.provider.request('compact',{payload,options:modelConfig});require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,response,'completed');return response;}
-    catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
+    catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');
+      // Haiku compacting H-1: a failed condensing request is said once per model and code in a run; the review goes on with
+      // the older results by reference (context-fit.cjs), as on any condensing failure.
+      try{const code=/^[A-Z_]{3,40}$/.test(error?.message)?error.message:'COMPACT_FAILED',key=modelConfig.openaiModel+':'+code;this.compactFailuresShown??=new Set();
+        if(!this.compactFailuresShown.has(key)){this.compactFailuresShown.add(key);const name={'claude-haiku-5-5':'Claude Haiku 5.5','claude-opus-5-5':'Claude Opus 5.5','gpt-6-luna':'GPT-6 Luna','gpt-6-sol':'GPT-6 Sol','gpt-6-astra':'GPT-6 Astra'}[modelConfig.openaiModel]??modelConfig.openaiModel;
+          this.log(reviewId,'System','Context compacting failed',`${name}: ${code}. The review went on with older results by reference.`);}}catch{}
+      throw error;}
   }
   // Formula inputs: the latest quotes the app holds and cached daily closes; tools may warm the cache first.
   liveQuotes(){return this.config.scope==='both'?[...(this.usQuotes??[]),...(this.marketQuotes?.()??[])]:this.config.scope==='us'?(this.usQuotes??[]):(this.marketQuotes?.()??[]);}

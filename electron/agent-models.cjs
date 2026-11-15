@@ -36,6 +36,8 @@ function validate(config,{claudeAllowed=false}={}){
     if(typeof e!=='string'||!(e==='same'||EFFORTS.includes(e)))throw new Error('INVALID_SETTINGS');
     if(RAISED.has(agent)&&e==='none')throw new Error('INVALID_SETTINGS');
     const r=agentModel(config,agent);models.settings(r);
+    // Haiku compacting H-1: Claude Haiku 5.5 only for context compacting (the trading model is refused by assertTradingModel).
+    if(r.openaiModel==='claude-haiku-5-5'&&agent!=='compacting'&&agent!=='trading')throw new Error('INVALID_MODEL_SETTINGS');
     // B3: a Claude model for these agents only after a completed Claude dry run on this account (automation's
     // completedClaudeDryRun). The refusal names the first such agent (CLAUDE_DRY_RUN_REQUIRED:<agent>), so the settings
     // window can say which agent to change. The trading model keeps assertTradingModel until C2.
