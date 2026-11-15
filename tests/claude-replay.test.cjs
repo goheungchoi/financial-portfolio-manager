@@ -94,3 +94,14 @@ test('C1 with the enforced form: the summary counts answers in the enforced form
   assert.deepEqual(run.rows.map(r=>r.variant.usage?.answerForm??null),['enforced','text','enforced']);assert.equal(run.rows[1].variant.usage.formFallback,true);assert.equal(run.rows[1].variant.decision.action,'Hold');
   assert.deepEqual(run.summary.claude.form,{enforced:'2 of 3',fellBack:1,textPartsDropped:{}});
 });
+
+test('Claude trading D-2: with a Claude trading model the baseline runs on Claude, and costs are counted by vendor, not by side',async()=>{
+  const {a,sent}=world();a.config.openaiModel='claude-opus-5-5';a.config.reasoningEffort='medium';const SOL={openaiModel:'gpt-6-sol',reasoningEffort:'low'};
+  const est=a.replayEstimate({model:SOL,limit:2});assert.ok(est.claudeUSD>0&&est.openaiUSD>0,'both vendors estimated');assert.ok(est.reservedPerClaudeUSD>0);
+  const run=await a.replay({model:SOL,limit:2});assert.deepEqual(sent,{openai:2,claude:2});
+  assert.ok(run.rows.every(r=>r.baseline.usage.model==='claude-opus-5-5'&&r.variant.usage.model==='gpt-6-sol'));
+  const c=run.summary.claude;assert.equal(c.answers.received,2,'the Claude side (the baseline) is the one counted');
+  const sum=(side,claude)=>run.rows.map(r=>r[side].usage.costMicro??0).reduce((x,y)=>x+y,0)/1e6;assert.equal(c.measured.claudeUSD,Math.round(sum('baseline')*1e6)/1e6);assert.equal(c.measured.openaiUSD,Math.round(sum('variant')*1e6)/1e6);
+  await assert.rejects(a.replay({model:{openaiModel:'claude-opus-5-5',reasoningEffort:'medium'},limit:2}),/REPLAY_NO_CHANGE/,'Claude on a Claude baseline is no change');
+  const t=await a.replay({instructions:'Prefer cash.',limit:1});assert.equal(t.rows[0].baseline.usage.model,'claude-opus-5-5');assert.equal(t.rows[0].variant.usage.model,'claude-opus-5-5','an instruction change on a Claude baseline runs both sides on Claude');
+});

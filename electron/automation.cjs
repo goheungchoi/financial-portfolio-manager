@@ -451,13 +451,16 @@ class Automation {
   dryRunEstimate({model=null}={}){const m=model==='claude-opus-5-5'?model:this.config.openaiModel,claude=m.startsWith('claude-');
     const same=c=>claude?String(c.model??'').startsWith(m):c.model===m;
     const day=seoulDate(),vendor=this.vendorOf(m),usage=this.vendorUsage(vendor,day),limits=vendorLimits(this.config,vendor);
-    const all=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload)).filter(c=>!c.kind&&same(c));
+    // Claude trading D-2 (D-0 note section 0): live reviews first; for Claude with no live review yet, its dry runs (kind
+    // dry-run), so the estimate is never missing after a completed Claude dry run. basis says which.
+    const calls=this.db.prepare('SELECT payload FROM ai_calls ORDER BY rowid DESC LIMIT 400').all().map(r=>JSON.parse(r.payload)).filter(same);
+    const live=calls.filter(c=>!c.kind),fromDry=claude&&!live.some(c=>c.status==='completed'&&Number.isFinite(c.accountedMicro));const all=fromDry?calls.filter(c=>c.kind==='dry-run'):live;
     const rows=all.filter(c=>c.status==='completed'&&Number.isFinite(c.accountedMicro));
     const byReview=new Map();for(const c of rows){const v=byReview.get(c.reviewId)??{micro:0,calls:0};v.micro+=c.accountedMicro;v.calls++;byReview.set(c.reviewId,v);}
     const recent=[...byReview.values()].slice(0,10);const sorted=recent.map(v=>v.micro).sort((a,b)=>a-b);const median=sorted.length?sorted[Math.floor(sorted.length/2)]:null;
     const usd=v=>v==null?null:Math.round(v)/1e6;
     const reserveFigures=vendor==='anthropic'?this.claudeReservation(m,limits):null;
-    return {model:m,...(reserveFigures?{claude:reserveFigures}:{}),vendor:claude?'Anthropic':'OpenAI',ran:all.length>0,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${m} review${recent.length===1?'':'s'}`,
+    return {model:m,...(reserveFigures?{claude:reserveFigures}:{}),vendor:claude?'Anthropic':'OpenAI',ran:all.length>0||live.length>0,estimateUSD:usd(median),highUSD:usd(sorted.at(-1)??null),requests:recent.length?{min:Math.min(...recent.map(v=>v.calls)),max:Math.max(...recent.map(v=>v.calls))}:null,basis:`${recent.length} recent ${m} ${fromDry?'dry run':'review'}${recent.length===1?'':'s'}`,
       today:{provider:VENDOR_NAMES[vendor],calls:usage.calls,usedUSD:usd(usage.reservedMicro),maxCalls:limits.unlimitedCalls?null:limits.maxCallsPerDay,maxUSD:limits.unlimitedBudget?null:limits.maxUSDPerDay},
       note:'A dry-run review counts against the same daily AI limits as live reviews.'};
   }
@@ -925,6 +928,10 @@ class Automation {
     // B3: condensing on Claude needs the Anthropic key and its sharing switch (research results can carry order and holding
     // details). Refused before any request; the review then carries the result by reference, as on any condensing failure.
     if(this.vendorOf(modelConfig.openaiModel)==='anthropic'){if(this.claudeGateClosed('compacting'))throw new Error('CLAUDE_DRY_RUN_REQUIRED');if(this.missingKey(modelConfig.openaiModel))throw new Error('AI_NOT_CONNECTED');if(!this.consentFor(modelConfig.openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');}
+    // Claude trading D-2: no call while the compacting model's vendor has a provider wait (an OpenAI account without
+    // credit would otherwise be called, and its wait re-armed, during every Claude review). The review then carries the
+    // results by reference, as on any condensing failure (context-fit.cjs).
+    if(this.providerWaitFor(modelConfig.openaiModel))throw new Error('PROVIDER_WAIT');
     const reserve=models.reservation(modelConfig,payload,{maxBytes:400000,kind:'compact'});const day=seoulDate();
     
     const callId=randomUUID(),record={reviewId,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'compact'};
@@ -1398,24 +1405,28 @@ class Automation {
     // A context saved before extendedSessions existed lacks it; with the proposed text it is filled from the current
     // settings on both sides (design 2.2), and the row says so.
     if(variant.proposedText)for(const pick of picks)if(!Array.isArray(pick.context.extendedSessions)){pick.context={...pick.context,extendedSessions:this.extendedSessions()};pick.filled=['extendedSessions'];}
-    const claude=Boolean(variant.model)&&models.vendorOf(variant.model.openaiModel)==='anthropic';
+    // Claude trading D-2: Claude on either side (the variant, or the baseline when the trading model is Claude) takes the
+    // measured Claude path with its cap; the estimate and the costs are counted by each side's vendor, not by side.
+    const vModel=variant.model??modelConfig,claudeSide=models.vendorOf(vModel.openaiModel)==='anthropic'&&Boolean(variant.model)?'variant':models.vendorOf(modelConfig.openaiModel)==='anthropic'?'baseline':null;
+    const claude=claudeSide!=null;
     const capMicro=claude?Math.round(Math.max(0.01,Math.min(100,Number.isFinite(Number(options.capUSD))&&Number(options.capUSD)>0?Number(options.capUSD):3))*1e6):null;
     let estimate=null;if(claude){const bytes=c=>Buffer.byteLength(JSON.stringify(c));let c=0,o=0,reserved=0;
-      picks.forEach((pick,i)=>{const v=R.applyVariant(pick.context,variant);c+=R.estimateMicro(variant.model.openaiModel,bytes(v),{first:i===0})??0;o+=R.estimateMicro(modelConfig.openaiModel,bytes(pick.context))??0;reserved=Math.max(reserved,models.reservation(variant.model,v,{}));});
+      const isClaude=m=>models.vendorOf(m.openaiModel)==='anthropic';let firstClaude=true;
+      picks.forEach(pick=>{const v=R.applyVariant(pick.context,variant);for(const [m,ctx] of [[modelConfig,pick.context],[vModel,v]]){if(isClaude(m)){c+=R.estimateMicro(m.openaiModel,bytes(ctx),{first:firstClaude})??0;firstClaude=false;reserved=Math.max(reserved,models.reservation(m,ctx,{}));}else o+=R.estimateMicro(m.openaiModel,bytes(ctx))??0;}});
       estimate={reviews:picks.length,claudeUSD:Math.round(c)/1e6,openaiUSD:Math.round(o)/1e6,totalUSD:Math.round(c+o)/1e6,reservedPerClaudeUSD:Math.round(reserved)/1e6,capUSD:capMicro/1e6,basis:R.EST.basis};}
-    return {R,models,modelConfig,variant,instructions,picks,claude,capMicro,estimate};
+    return {R,models,modelConfig,variant,instructions,picks,claude,claudeSide,capMicro,estimate};
   }
   // The confirmation's figures for a Claude replay, with the same refusals as the run (nothing is sent).
   replayEstimate(options={}){const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');const plan=this.replayPlan(options);if(!plan.claude)return null;return plan.estimate;}
   async replay(options={}){
     if(this.replaying)throw new Error('REPLAY_BUSY');const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');
-    const {R,models,modelConfig,variant,instructions,picks,claude,capMicro,estimate}=this.replayPlan(options);
+    const {R,models,modelConfig,variant,instructions,picks,claude,claudeSide,capMicro,estimate}=this.replayPlan(options);
     this.replaying=true;const id=R.newId();
     const decide=async(context,config=modelConfig,set)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();
       const callId=require('node:crypto').randomUUID();this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
       try{const r=await this.provider.request('decision',{context,options:{...config,research:false,...(set?{instructionSet:set}:{})}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,r,'completed');const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);const cost=row?JSON.parse(row.payload).accountedMicro??null:null;return {...r.decision,_usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:cost}};}catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');throw error;}};
     this.log(id,'Program','Replay',`Replaying ${picks.length} saved review${picks.length===1?'':'s'} with a change: ${[instructions&&'extra instructions',variant.withoutNarrative&&'without the narrative',variant.withoutEpisodes&&'without episodes',variant.withoutRegime&&'without the regime gauge and sizing',variant.model&&`on ${variant.model.openaiModel} (${variant.model.reasoningEffort} effort) instead of ${modelConfig.openaiModel} (${modelConfig.reasoningEffort})`,variant.proposedText&&'the proposed built-in text instead of the current one'].filter(Boolean).join(', ')}. No orders are placed.`);
-    if(claude)return this.replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate});
+    if(claude)return this.replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate,claudeSide});
     try{
       const closes=this.indexCloses?.()??{};const rows=[];
       for(const pick of picks){
@@ -1431,7 +1442,7 @@ class Automation {
   // C1: a replay whose change is Claude. Each call is measured (cost, time); a failed side is kept with its reason (the
   // app's rule or the refusal record, local only) and the run goes on; the cap is checked before each request against the
   // measured spending so far plus that request's estimate; the Anthropic limit is checked by reserveCall as for any call.
-  async replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate}){
+  async replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate,claudeSide='variant'}){const vModel=variant.model??modelConfig;
     const {settle}=require('./ai-accounting.cjs');const bytes=c=>Buffer.byteLength(JSON.stringify(c));let spentMicro=0,stopped=null;const rows=[];
     const call=async(context,config,set)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();const callId=require('node:crypto').randomUUID();
       this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
@@ -1455,14 +1466,14 @@ class Automation {
         let base;try{base=await call(pick.context,modelConfig);}catch(error){if(error?.message==='AI_BUDGET_EXHAUSTED'){stopped={reason:'limit',left:picks.length-i};break;}throw error;}
         spentMicro+=base.usage?.costMicro??0;
         let changed=null;
-        if(spentMicro+(R.estimateMicro(variant.model.openaiModel,bytes(vctx),{first:i===0})??0)>capMicro){stopped={reason:'cap',left:picks.length-i-1};changed=blockedSide('stopped');}
-        else{try{changed=await call(vctx,variant.model,variant.proposedText?'proposed':undefined);spentMicro+=changed.usage?.costMicro??0;}catch(error){if(error?.message!=='AI_BUDGET_EXHAUSTED')throw error;stopped={reason:'limit',left:picks.length-i-1};changed=blockedSide('limit');}}
+        if(spentMicro+(R.estimateMicro(vModel.openaiModel,bytes(vctx),{first:i===0})??0)>capMicro){stopped={reason:'cap',left:picks.length-i-1};changed=blockedSide('stopped');}
+        else{try{changed=await call(vctx,vModel,variant.proposedText?'proposed':undefined);spentMicro+=changed.usage?.costMicro??0;}catch(error){if(error?.message!=='AI_BUDGET_EXHAUSTED')throw error;stopped={reason:'limit',left:picks.length-i-1};changed=blockedSide('limit');}}
         for(const r of [base,changed])if(r?.decision?.symbol)await this.warmSeries([r.decision.symbol]);
         const b=side(base,score),v=changed.failure&&!changed.usage?changed:side(changed,score);
         rows.push({reviewId:pick.review.id,day:pick.day,approximate:pick.approximate,...R.textOf(pick,variant),original:R.brief(pick.review.decision),baseline:b,variant:v,changed:Boolean(b.decision&&v.decision)&&JSON.stringify(b.decision)!==JSON.stringify(v.decision)});
         if(stopped)break;
       }
-      const claudeResult=R.claudeSummary(rows,{estimate,stopped,capMicro});
+      const claudeResult=R.claudeSummary(rows,{estimate,stopped,capMicro,claudeSide});
       const run=this.replays.saveRun({id,timestamp:Date.now(),variant,rows,summary:{...R.summarize(rows),claude:claudeResult}});
       // The log line carries counts only: the rule texts stay on the stored run (local only, review R6).
       const {byRule:_rules,...counts}=claudeResult.answers;this.log(id,'System','Replay finished',JSON.stringify({reviews:rows.length,changed:run.summary.changed,claude:{answers:counts,basis:claudeResult.basis,formatFailures:claudeResult.formatFailures,measured:claudeResult.measured,...(stopped?{stopped}:{})}}));return run;

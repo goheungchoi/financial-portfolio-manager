@@ -59,12 +59,15 @@ const markdown=t=>typeof t==='string'&&(/\*\*[^*]+\*\*/.test(t)||/^\s*[-*] \S/m.
 // The Claude run's counts (R1, R2): answers received, accepted, not accepted by rule, refused, uncertain; measured cost
 // and time beside the estimate. Counts only, never a percentage alone; no ranking of the models from a handful of rows.
 // byRule holds the app's rule texts (local only: the run is stored, the log line gets counts without it).
-function claudeSummary(rows,{estimate=null,stopped=null,capMicro=null}={}){
-  const sides=rows.map(r=>r.variant);const failure=k=>sides.filter(s=>s.failure?.kind===k);
+// claudeSide (Claude trading D-2): the side that ran on Claude, the variant or (with a Claude trading model) the baseline;
+// the answers counted are that side's. Costs are counted by each side's vendor.
+function claudeSummary(rows,{estimate=null,stopped=null,capMicro=null,claudeSide='variant'}={}){
+  const sides=rows.map(r=>r[claudeSide==='baseline'?'baseline':'variant']);const failure=k=>sides.filter(s=>s.failure?.kind===k);
   const accepted=sides.filter(s=>s.decision&&!s.failure).length,notAccepted=failure('not-accepted'),received=accepted+notAccepted.length;
   const byRule={};for(const s of notAccepted){const k=s.failure.rule??s.failure.code;byRule[k]=(byRule[k]??0)+1;}
   const sum=(list,f)=>list.reduce((n,x)=>n+(Number.isFinite(f(x))?f(x):0),0);
-  const claudeMicro=sum(sides,s=>s.usage?.costMicro),openaiMicro=sum(rows.map(r=>r.baseline),s=>s.usage?.costMicro);
+  const all=rows.flatMap(r=>[r.baseline,r.variant]),onClaude=s=>String(s?.usage?.model??'').startsWith('claude-');
+  const claudeMicro=sum(all.filter(onClaude),s=>s.usage?.costMicro),openaiMicro=sum(all.filter(s=>!onClaude(s)),s=>s.usage?.costMicro);
   const ms=sides.map(s=>s.usage?.ms).filter(Number.isFinite);
   // The enforced decision form (E1, E3): how many answers came in it, how many fell back to text, and dropped text parts.
   const answered=sides.filter(s=>s.usage&&(s.decision||s.failure?.kind==='not-accepted'));const dropped={};for(const s of sides)for(const k of s.usage?.textPartsDropped??[])dropped[k]=(dropped[k]??0)+1;

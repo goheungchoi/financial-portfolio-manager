@@ -97,3 +97,25 @@ test('D-1: an Anthropic 429 keeps its retry-after, and one that is not rate_limi
   assert.equal(why({status:429,errorType:'rate_limit_error'}).unknown,false);assert.equal(why({status:429,errorType:'billing_threshold_error'}).unknown,true);assert.match(why({status:429,errorType:'billing_threshold_error'}).text,/unfamiliar code/);
   assert.equal(a.providerReason('openai',{kind:'rate',count:1,lastRefusal:{status:429,errorType:'tokens'}}).unknown,false,'OpenAI is judged by its codes, as before');
 });
+
+test('D-2: compacting makes no call while its vendor has a provider wait; the review carries results by reference',async()=>{
+  const {a,db,sent}=harness();const calls=()=>db.prepare("SELECT COUNT(*) n FROM ai_calls").get().n;const before=calls();
+  a.providerWaitFor=m=>m==='gpt-6-luna'?Date.now()+3600000:0;await assert.rejects(a.compactResearch('R1',{items:[]}),/PROVIDER_WAIT/);
+  assert.equal(calls(),before,'nothing reserved');assert.deepEqual(sent,[],'nothing sent');
+  a.providerWaitFor=()=>0;await a.compactResearch('R1',{items:[]});assert.deepEqual(sent,['compact'],'without a wait it runs as before');
+});
+
+test('D-2: the cost estimate for Claude counts its dry runs until a live Claude review exists',()=>{
+  const {a,db}=harness();const put=(id,kind,micro,review)=>db.prepare('INSERT INTO ai_calls VALUES(?,?,?)').run(id,'2026-11-15',JSON.stringify({reviewId:review,model:'claude-opus-5-5',status:'completed',accountedMicro:micro,...(kind?{kind}:{})}));
+  let e=a.dryRunEstimate({model:'claude-opus-5-5'});assert.equal(e.estimateUSD,null);assert.equal(e.ran,false);
+  put('d1','dry-run',214102,'D');put('d2','dry-run',159626,'D');put('d3','dry-run',43109,'D');
+  e=a.dryRunEstimate({model:'claude-opus-5-5'});assert.equal(e.estimateUSD,0.416837,'the 21:38 dry run');assert.equal(e.basis,'1 recent claude-opus-5-5 dry run');assert.deepEqual(e.requests,{min:3,max:3});
+  put('l1',null,500000,'L');e=a.dryRunEstimate({model:'claude-opus-5-5'});assert.equal(e.estimateUSD,0.5,'a live review replaces the dry runs');assert.equal(e.basis,'1 recent claude-opus-5-5 review');
+  assert.equal(a.dryRunEstimate().basis.endsWith('reviews'),true,'OpenAI: live reviews only, as before');
+});
+
+test('D-2: scout, narrative and reflection follow a Claude trading model ("same"); compacting stays on the routine model',()=>{
+  const {a}=harness();a.config.openaiModel='claude-opus-5-5';a.config.reasoningEffort='medium';
+  for(const agent of ['scout','narrative','reflection'])assert.equal(a.agentModel(agent).openaiModel,'claude-opus-5-5',agent);
+  assert.equal(a.agentModel('compacting').openaiModel,'gpt-6-luna');a.completedClaudeDryRun=()=>null;assert.equal(a.claudeGateClosed('scout'),true,'each helper keeps its call-time gate');
+});
