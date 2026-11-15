@@ -13,7 +13,7 @@ function scoreLine(card:NonNullable<ScoutState['scorecard']>){
   if(week?.scored)return `Past picks: ${week.beatBenchmark} of ${week.scored} beat the market over 5 trading days${week.scored<card.minSample?' (too few to judge)':''}`;
   return `Past picks: ${total} tracked, first results after 5 trading days`;
 }
-const ERRORS:Record<string,string>={AI_BUDGET_EXHAUSTED:'Daily AI budget reached',SCOUT_BUSY:'A scout run is already going',RATE_LIMITED:'KIS is rate limiting; try again shortly',AI_TIMEOUT:'OpenAI took too long',STALE_DECISION:'The account changed during the run'};
+const ERRORS:Record<string,string>={AI_BUDGET_EXHAUSTED:'Daily AI budget reached',SCOUT_BUSY:'A scout run is already going',RATE_LIMITED:'KIS is rate limiting; try again shortly',AI_TIMEOUT:'The AI took too long',STALE_DECISION:'The account changed during the run'};
 // The AI scout's latest plan, shown on Discover with a button to run it now.
 export function ScoutPanel({onOpenChart,onNavigate}:{onOpenChart(symbol:string):void;onNavigate(tab:string):void}){
   const [scout,setScout]=useState<ScoutState|null>(null);const [running,setRunning]=useState(false);const [note,setNote]=useState('');

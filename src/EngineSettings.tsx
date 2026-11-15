@@ -97,12 +97,18 @@ function AgentModelRows({agent,name,state,config,busy,edit}:{agent:AgentKey;name
   </>;
 }
 
+// Claude trading D-3: the trading model row's hint for Claude, by state (gate, dry run, first review).
+function claudeHint(state:Props['state'],config:Props['config']){const t=state.claudeTrading;
+  if(!t?.enabled)return 'Claude Opus 5.5: dry run only for now (Dashboard → Dry run)';
+  // The saved model, not the draft: before the confirmed save, a Claude draft is not trading yet.
+  if(state.config.openaiModel.startsWith('claude-'))return t.firstReview==='pending'?'Trades on Claude: no fallback. The first review waits for you on Home.':'Trades on Claude: no fallback. Reviews wait when Claude cannot answer.';
+  return t.dryRunReady?'Claude Opus 5.5: you confirm before it trades':'Claude Opus 5.5 needs a dry run on this version first (Dashboard → Dry run)';}
 function AgentsTab(props:Props){
   const {state,config,busy,edit,setModel}=props;
   const efforts=config.openaiModel==='gpt-6-astra'||config.openaiModel.startsWith('claude-')?['low','medium','high']:['none','low','medium','high'];
   return <>
-    <Card id="eng-model" title="Trading review" label="AI model" hint={state.providerStatus.aiConnected?'Decides Buy, Sell or Hold. The other agents can follow it.':'No OpenAI key loaded. Add one in Connections.'}>
-      <Row title="Model" hint="Claude Opus 5.5: dry run only for now (Dashboard → Dry run)"><select aria-label="Trading model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><optgroup label="OpenAI"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></optgroup><optgroup label="Anthropic"><option value="claude-opus-5-5" disabled>Claude Opus 5.5 · dry run only</option></optgroup></select></Row>
+    <Card id="eng-model" title="Trading review" label="AI model" hint={state.providerStatus.aiConnected||state.providerStatus.anthropicConnected?'Decides Buy, Sell or Hold. The other agents can follow it.':'No AI key loaded. Add one in Connections.'}>
+      <Row title="Model" hint={claudeHint(state,config)}><select aria-label="Trading model" disabled={busy} value={config.openaiModel} onChange={e=>setModel(e.target.value)}><optgroup label="OpenAI"><option value="gpt-6-luna">GPT-6 Luna</option><option value="gpt-6-sol">GPT-6 Sol</option><option value="gpt-6-astra">GPT-6 Astra</option></optgroup><optgroup label="Anthropic"><option value="claude-opus-5-5" disabled={!state.claudeTrading?.enabled&&!config.openaiModel.startsWith('claude-')}>{state.claudeTrading?.enabled?'Claude Opus 5.5':'Claude Opus 5.5 · dry run only'}</option></optgroup></select></Row>
       <Row title="Reasoning effort" hint="Higher is slower and costs more"><select aria-label="Reasoning effort" disabled={busy} value={config.reasoningEffort} onChange={e=>edit('reasoningEffort',e.target.value)}>{efforts.map(v=><option key={v} value={v}>{cap(v)}</option>)}</select></Row>
     </Card>
     <Card id="eng-scout-agent" title="AI scout" label="Scout agent" hint="Researches the market and writes the plan for the trading reviews. It never trades. When it runs: Schedule and triggers.">

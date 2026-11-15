@@ -56,14 +56,16 @@ test('D-1: the save conditions, each with its code, before anything is saved; sw
     a.configure({anthropicUnlimitedCalls:true,anthropicUnlimitedBudget:true,anthropicCallsPerDay:1,anthropicUSDPerDay:0.01});assert.equal(a.config.anthropicUSDPerDay,0.01,'unlimited covers a review');
     a.completedClaudeDryRun=()=>null;a.configure({openaiModel:'gpt-6-sol',reasoningEffort:'medium'});assert.equal(a.config.openaiModel,'gpt-6-sol','switching back needs nothing');
   }finally{M.setClaudeTradingForTests(null);}
-  const {a}=harness();a.completedClaudeDryRun=()=>dry({appVersion:'1.5.60'});assert.throws(()=>a.configure({...CLAUDE,claudeTradingConfirmed:true}),/CLAUDE_NOT_ENABLED_FOR_TRADING/,'the gate is still closed');
+  // The gate closed (the constant before D-3's last commit, set here explicitly): refused by the gate.
+  M.setClaudeTradingForTests(false);try{const {a}=harness();a.completedClaudeDryRun=()=>dry({appVersion:'1.5.60'});assert.throws(()=>a.configure({...CLAUDE,claudeTradingConfirmed:true}),/CLAUDE_NOT_ENABLED_FOR_TRADING/,'the gate closed');}finally{M.setClaudeTradingForTests(null);}
   const ui=require('fs').readFileSync(require('path').join(__dirname,'../src/RuntimeSettings.tsx'),'utf8');for(const c of ['DRY_RUN','KEY','CONSENT','LIMITS','CONFIRM'])assert.match(ui,new RegExp(`CLAUDE_TRADING_${c}:'`),c+' has words in the settings window');
 });
 
 test('D-1: at review time a Claude trading model needs the gate, the key and the consent; nothing is sent otherwise, said once per cause',async()=>{
   const {a,events,sent,alerts}=harness();a.config.openaiModel='claude-opus-5-5';a.config.reasoningEffort='medium';a.completedClaudeDryRun=()=>dry({appVersion:'1.5.60'});
   const lines=()=>events.filter(e=>e.title==='Claude review not started').map(e=>e.body);
-  // The gate closed (the constant false): a Claude model in the saved settings is refused at review time (review F1).
+  // The gate closed (set explicitly): a Claude model in the saved settings is refused at review time (review F1).
+  M.setClaudeTradingForTests(false);
   await assert.rejects(a.review('Scheduled review'),/CLAUDE_TRADING_BLOCKED/);await assert.rejects(a.review('User request'),/CLAUDE_TRADING_BLOCKED/,'your own review too: nothing to send it to');
   assert.deepEqual(sent,[],'no provider call, no fallback');assert.deepEqual(lines(),['Claude models run dry-run reviews only for now; trading on Claude is not enabled yet.'],'once per cause');assert.equal(alerts.length,1);
   M.setClaudeTradingForTests(true);try{
@@ -118,4 +120,58 @@ test('D-2: scout, narrative and reflection follow a Claude trading model ("same"
   const {a}=harness();a.config.openaiModel='claude-opus-5-5';a.config.reasoningEffort='medium';
   for(const agent of ['scout','narrative','reflection'])assert.equal(a.agentModel(agent).openaiModel,'claude-opus-5-5',agent);
   assert.equal(a.agentModel('compacting').openaiModel,'gpt-6-luna');a.completedClaudeDryRun=()=>null;assert.equal(a.claudeGateClosed('scout'),true,'each helper keeps its call-time gate');
+});
+
+test('D-3: the switch to Claude makes the first review wait for your press; emergencies and your own request run; switching back clears it',async()=>{
+  M.setClaudeTradingForTests(true);try{
+    const {a,events}=harness();a.completedClaudeDryRun=()=>dry({appVersion:'1.5.60'});a.configure({anthropicUnlimitedCalls:true,anthropicUnlimitedBudget:true});
+    a.configure({...CLAUDE,claudeTradingConfirmed:true});assert.equal(a.claudeFirstReview().state,'pending');assert.equal(a.getState().claudeTrading.firstReview,'pending');assert.equal(a.getState().claudeTrading.enabled,true);
+    const held=e=>e==='CLAUDE_FIRST_REVIEW_PENDING';const run=t=>a.review(t).then(()=>null,e=>e.message);
+    assert.ok(held(await run('Scheduled review')));assert.ok(held(await run('Price movement trigger')));
+    assert.equal(events.filter(e=>e.title==='First Claude review waits for you').length,1,'said once');
+    assert.ok(!held(await run('Emergency loss response')),'an emergency review is not held');
+    const mine=await run('User request');assert.ok(!held(mine),'your own request runs');
+    if(mine===null){assert.equal(a.claudeFirstReview().state,'done','a completed first review ends the wait');assert.ok(events.some(e=>e.title==='First Claude review completed'));assert.ok(!held(await run('Scheduled review')));}
+    a.configure({openaiModel:'gpt-6-sol',reasoningEffort:'medium'});assert.equal(a.claudeFirstReview(),null,'switching back clears it');
+    a.configure({...CLAUDE,claudeTradingConfirmed:true});assert.equal(a.claudeFirstReview().state,'pending','a new switch asks again');
+  }finally{M.setClaudeTradingForTests(null);}
+  const src=require('fs').readFileSync(require('path').join(__dirname,'../electron/main.cjs'),'utf8');assert.match(src,/id:'claude-first-review',tone:'action',title:'First review on Claude Opus 5\.5 not run yet'.*action:'Run first review',run:'review'/,'Home shows the item with its button');
+});
+
+test('D-3: the confirmation says what goes to Anthropic, no fallback, the shared wait, the measured cost, the limits and the helpers',async()=>{
+  const {claudeConfirmLines}=await import('../src/claudeConfirmLines.mjs');
+  const cfg={intervalMinutes:30,scope:'both',anthropicUnlimitedBudget:true,anthropicUnlimitedCalls:true,scoutModel:'same',narrativeModel:'same',reflectionModel:'same',routineModel:'gpt-6-luna'};
+  const lines=claudeConfirmLines(cfg,{claudeDryRun:{costUSD:0.416837,calls:3}});
+  assert.deepEqual(lines,['Every review sends your account data (holdings, cash, orders and prices) to Anthropic.',
+    'No fallback: when Claude cannot answer, reviews wait and you are alerted. Armed stops keep running.',
+    "A wait started by any Claude call, the helpers' included, holds automatic reviews until it ends.",
+    'Your last dry run cost $0.42 for 3 requests. At your interval (every 30 minutes) that is about $10.84 a day for 26 scheduled reviews; triggered reviews add to it.',
+    'Your Claude limits: unlimited.',
+    'Scout, Market narrative, Reflection move to Claude too. They have not yet run on Claude with real requests.',
+    'Context compacting still uses OpenAI (GPT-6 Luna).',
+    'The first review waits for you: run it from Home. Automatic reviews start after it completes.']);
+  const l2=claudeConfirmLines({...cfg,anthropicUnlimitedBudget:false,anthropicUnlimitedCalls:false,anthropicUSDPerDay:10,anthropicCallsPerDay:60,scoutModel:'gpt-6-sol',narrativeModel:'gpt-6-sol'},{claudeDryRun:null});
+  assert.ok(l2.includes('There is no measured cost yet.'));assert.ok(l2.includes('Your Claude limits: $10 and 60 requests a day.'));assert.ok(l2.includes('Reflection moves to Claude too. It has not yet run on Claude with real requests.'));
+  assert.ok(!lines.some(l=>/should|recommend|prefer|better/i.test(l)),'facts only');
+  // Review F2: with the auto interval on (the user's setting) the AI may change the interval, and the line says so.
+  assert.ok(claudeConfirmLines({...cfg,autoReviewInterval:true},{claudeDryRun:{costUSD:0.416837,calls:3}}).includes('Your last dry run cost $0.42 for 3 requests. At your base interval (every 30 minutes; the AI may change it) that is about $10.84 a day for 26 scheduled reviews; triggered reviews add to it.'));
+});
+
+test('D-3 F1: the first-review state is read from its table once, then from memory; a set writes through',()=>{
+  const {a,db}=harness();let reads=0;const prepare=db.prepare.bind(db);db.prepare=sql=>{if(/claude_trading_state/.test(sql))reads++;return prepare(sql);};
+  for(let i=0;i<5;i++)a.getState();assert.ok(reads<=1,`read at most once, not per state read (${reads})`);
+  const before=reads;a.setClaudeFirstReview({state:'pending',since:1});assert.equal(a.getState().claudeTrading.firstReview,'pending');a.getState();assert.equal(reads,before+1,'only the write');
+  const b=new (require('../electron/automation.cjs').Automation)(db,new PaperEngine(db,[],()=>[]),{request:async()=>({})},()=>{});assert.equal(b.claudeFirstReview().state,'pending','a restart reads it once from the table');
+});
+
+test('D-3: a completed first review on Claude ends the wait, and automatic reviews continue',async()=>{
+  M.setClaudeTradingForTests(true);try{
+    const {LiveEngine}=require('../electron/live-engine.cjs');const {a,db,events}=harness();
+    const snapshot={accountKey:'acct',environment:'mock',reportedTotal:10000000,cash:5000000,holdings:[{symbol:'005930',name:'Samsung',quantity:10,cost:200000,price:217000}]};
+    a.live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[{symbol:'005930',price:217000,retrievedAt:Date.now()}],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));a.evidence={get:async()=>({})};
+    a.completedClaudeDryRun=()=>dry({appVersion:'1.5.60'});a.configure({anthropicUnlimitedCalls:true,anthropicUnlimitedBudget:true});a.configure({...CLAUDE,claudeTradingConfirmed:true});
+    assert.equal(a.claudeFirstReview().state,'pending');await a.review('User request');
+    assert.equal(a.claudeFirstReview().state,'done');assert.ok(events.some(e=>e.title==='First Claude review completed'));
+    const next=await a.review('Scheduled review').then(()=>null,e=>e.message);assert.notEqual(next,'CLAUDE_FIRST_REVIEW_PENDING','automatic reviews continue');
+  }finally{M.setClaudeTradingForTests(null);}
 });

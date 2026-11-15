@@ -56,7 +56,7 @@ test('a scout run is metered, saves the plan and the next trading review receive
     if(operation==='decision')return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for entry.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}};
   const automation=new Automation(db,paper,provider,(id,kind,title,body)=>events.push({id,kind,title,body}));automation.live=live;automation.providerStatus.aiConnected=true;
   const watch=[];automation.discovery={list:()=>watch,symbols:()=>watch.map(w=>w.symbol),screen_market:async()=>({rows:[]}),search_securities:async()=>({rows:[]}),research:async({symbol})=>({symbol,analysts:{brokerages:3}}),update_watchlist:async args=>{watch.push(...args.entries.map(e=>({symbol:e.symbol,name:'Samsung',source:'ai',reason:e.reason})));return {results:[{symbol:'005930',status:'added'}]};}};
-  assert.match(automation.getState().scout.blocked,/OpenAI/,'needs the OpenAI decision maker');
+  assert.match(automation.getState().scout.blocked,/Choose the AI as the decision maker/,'needs the AI decision maker (Claude trading D-3: no longer named OpenAI)');
   automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'none'});
   assert.equal(automation.getState().scout.blocked,null);
   const saved=await automation.scout();
