@@ -82,7 +82,13 @@ function reversal(kind){const o=buy('X',100,K('2026-11-09T23:40:00')),Z={symbol:
 function usdControl(){const o=buy('X',100,K('2026-11-09T23:40:00'));
   return [at('2026-11-09T23:00:00','before',3000000,{cash:500,holdings:[]},[]),at('2026-11-09T23:45:00','fill',3000000,{cash:500,holdings:[X]},[o]),at('2026-11-10T08:59:00','before report',3000000,{cash:500,holdings:[X]},[o]),
     at('2026-11-10T09:00:00','report',3000000,{cash:500,holdings:[X],buyKRW:134000},[o]),at('2026-11-11T08:25:00','settled in USD',3000000,{cash:400,holdings:[X],buyKRW:0},[o]),at('2026-11-11T23:00:00','end',3000000,{cash:400,holdings:[X],buyKRW:0},[o])];}
-const FUNDED={'K1, one Korean day':k1('one'),'K1, across a Korean day':k1('two'),'K1, Korean fall first':k1('two','kr-first'),'K1, U.S. reading first':k1('two','us-first'),K2:k2(),'full reversal':reversal('full'),'partial reversal':reversal('partial')};
+// The Korean payment read while KIS keeps reporting the buy, up to and past the U.S. age limit (3 U.S. business days
+// from the 11-09 fill: from 11-12 New York, 14:00 KST): the kr-paid group's age close (S3a-3).
+function krPaidStays(){const o=buy('X',100,K('2026-11-09T23:40:00')),rep={cash:0,holdings:[X],buyKRW:134000};
+  return [at('2026-11-09T23:00:00','before',3000000,{cash:0,holdings:[]},[]),at('2026-11-09T23:45:00','fill',3000000,{cash:0,holdings:[X]},[o]),at('2026-11-10T08:59:00','before report',3000000,{cash:0,holdings:[X]},[o]),
+    at('2026-11-10T09:00:00','report (K1)',3000000,rep,[o]),at('2026-11-11T08:25:00','Korean fall (kr-paid)',2866000,rep,[o]),at('2026-11-12T12:00:00','report still there',2866000,rep,[o]),
+    at('2026-11-20T15:00:00','past the age limit',2866000,rep,[o]),at('2026-11-20T23:00:00','end',2866000,rep,[o])];}
+const FUNDED={'K1, Korean paid, KIS keeps reporting':krPaidStays(),'K1, one Korean day':k1('one'),'K1, across a Korean day':k1('two'),'K1, Korean fall first':k1('two','kr-first'),'K1, U.S. reading first':k1('two','us-first'),K2:k2(),'full reversal':reversal('full'),'partial reversal':reversal('partial')};
 const SEQUENCES={...FUNDED,'USD control (no funding)':usdControl()};
 const TOL={KR:1,US:0.01};
 // Every check that is not right: a loss, breach or ambiguity in any scenario, or a drift (a false gain or loss).
@@ -117,7 +123,7 @@ else{
     const control=wrong(e2e(SEQUENCES['USD control (no funding)'])).map(x=>[x.from,x.at,x.drift.high,x.cause.inFlight]);
     assert.ok(control.length>0&&control.every(([, , h,i])=>Math.abs(h-i)<=TOL.US),'the control\'s are all the in-flight range');
     // For the readings the control shares (before, fill, before report, report): the same checks with the same amounts.
-    const shared=new Set(['before','fill','before report']),pick=list=>list.filter(([from,at])=>shared.has(from)&&(shared.has(at)||/^report/.test(at))).map(([from,at,h,i])=>[from,/^report/.test(at)?'report':at,h,i]);
+    const isReport=n=>n==='report'||/^report \(/.test(n),shared=new Set(['before','fill','before report']),pick=list=>list.filter(([from,at])=>shared.has(from)&&(shared.has(at)||isReport(at))).map(([from,at,h,i])=>[from,isReport(at)?'report':at,h,i]);
     for(const [name,seq] of Object.entries(FUNDED))assert.deepEqual(pick(wrong(e2e(seq)).filter(x=>x.market==='US').map(x=>[x.from,x.at,x.drift.high,x.cause.inFlight])),pick(control),name);});
   // The recorder alone (conditions 1 to 3), as funding-transfers.test.cjs drives it. A fill at 23:40 KST on 11-09 is New
   // York 11-09: its U.S. settlement date (one U.S. business day on) is 11-10, from 14:00 KST 11-10.
@@ -165,6 +171,28 @@ else{
     // the other stays deducted until its own fall.
     {const w=two();w.to('2026-11-11T08:25:00');w.kr(3000000-134000);const left=w.f.current('A').krwUnpaidKRW;assert.ok(left===134000||left===134500,String(left));
       w.to('2026-11-11T08:30:00');w.kr(3000000-268500);assert.equal(w.f.current('A').krwUnpaidKRW,0);assert.deepEqual([w.row('a').state,w.row('b').state],['booked','booked']);}
+  });
+  test('S3a-3 (1): a kr-paid group KIS\'s report fell for without attribution claims none of a later buy\'s report once past the age rule',()=>{
+    // Two K1 groups of 134,000 each, both paid in Korea (kr-paid); KIS's report then falls by one of them and then the
+    // other, which uniqueSet cannot attribute (two equal groups): both stay kr-paid while nothing is reported.
+    const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(0,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(0,134000,[a]);
+    const b=w.b('b',100);w.to('2026-11-10T09:05:00');w.us(0,134000,[a,b],{open:['b'],openUSD:100});w.to('2026-11-10T09:10:00');w.us(0,268000,[a,b]);assert.deepEqual([w.row('a').state,w.row('b').state],['krw','krw']);
+    w.to('2026-11-11T08:25:00');w.kr(2866000);w.to('2026-11-11T08:26:00');w.kr(2732000);assert.deepEqual([w.row('a').state,w.row('b').state],['kr-paid','kr-paid']);
+    w.to('2026-11-18T08:30:00');w.us(0,134000,[a,b]);w.to('2026-11-18T08:31:00');w.us(0,0,[a,b]);assert.deepEqual([w.row('a').state,w.row('b').state],['kr-paid','kr-paid'],'not attributable');
+    assert.equal(w.f.current('A').krwKRW,268000,'still counted as reported by KIS (the stale state)');
+    // A new buy with U.S. cash to carry it, reported after the age limit (New York 11-12 for 11-09/17 fills).
+    w.to('2026-11-20T23:40:00');const c=w.b('c',100);w.us(500,0,[a,b,c],{open:['c'],openUSD:100});w.to('2026-11-21T09:00:00');const cur=w.us(500,134000,[a,b,c]);
+    assert.deepEqual([w.row('a').state,w.row('b').state],['booked','booked']);assert.match(w.row('a').reason,/settled by age after its Korean payment/);assert.equal(w.row('c').state,'us');
+    assert.equal(cur.krwKRW,0,'the old groups claim none of it');assert.equal(cur.usReportedKRW,134000,'the U.S. side carries the new buy');assert.equal(cur.provisionalKRW,0);
+    assert.equal(w.notes.length,0,'no System line');assert.deepEqual(w.flows().filter(id=>id.startsWith('funding:a:')||id.startsWith('funding:b:')),['funding:a:out','funding:a:in','funding:b:out','funding:b:in'],'no flow at the change');
+  });
+  test('S3a-3 (2): KIS still reporting the group at the age limit: its KRW becomes unattributed (provisional); the split and the values do not change',()=>{
+    const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const o=k1(w,'o1',100,134000);w.us(0,134000,[o]);w.to('2026-11-11T08:25:00');w.kr(2866000);assert.equal(w.row('o1').state,'kr-paid');
+    w.to('2026-11-12T12:00:00');const before=w.us(0,134000,[o]);assert.equal(w.row('o1').state,'kr-paid');assert.deepEqual([before.krwKRW,before.provisionalKRW],[134000,0]);
+    w.to('2026-11-20T15:00:00');const after=w.us(0,134000,[o]);assert.equal(w.row('o1').state,'booked');assert.deepEqual([after.krwKRW,after.provisionalKRW],[0,134000]);
+    // The split's Korean part is krwKRW + provisional: unchanged, so the Korean low and high are too (and the e2e
+    // sequence "K1, Korean paid, KIS keeps reporting" checks .low/.high and the loss checks across the change).
+    assert.equal(after.krwKRW+after.provisionalKRW,before.krwKRW+before.provisionalKRW);assert.equal(after.krwUnpaidKRW,0);assert.equal(before.krwUnpaidKRW,0);
   });
   test('condition 5: the values (.low and .high) of both markets at every reading are those of the code before S3a-2',()=>{
     const before=JSON.parse(fs.readFileSync(FIXTURE,'utf8'));for(const [name,seq] of Object.entries(SEQUENCES))assert.deepEqual(valuesOf(e2e(seq)),before[name],name);});}

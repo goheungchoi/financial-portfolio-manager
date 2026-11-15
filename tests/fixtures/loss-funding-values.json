@@ -898,5 +898,111 @@
     }
    }
   }
+ ],
+ "K1, Korean paid, KIS keeps reporting": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 0
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "Korean fall (kr-paid)",
+   "value": {
+    "KR": {
+     "low": 2732000,
+     "high": 2732000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "report still there",
+   "value": {
+    "KR": {
+     "low": 2732000,
+     "high": 2732000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "past the age limit",
+   "value": {
+    "KR": {
+     "low": 2732000,
+     "high": 2732000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2732000,
+     "high": 2732000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
  ]
 }

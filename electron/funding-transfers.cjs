@@ -92,6 +92,10 @@ class FundingTransfers {
     // F5: a filled buy KIS never reported, past the age rule, is history by the same rule (its cash was taken, or it
     // settled as USD before any report), so a later buy of the same size keeps its attribution.
     for(const [k,r] of rows)if(r.state==='filled'&&aged(r.filledAt)){const next={...r,state:'none',reason:'settled by age without a KIS report'};this.put(account,k,next);rows.set(k,{key:k,...next});}
+    // S3a-3: a group whose Korean payment was read (kr-paid) but whose report KIS never took away by an amount it could be
+    // matched to, past the same age rule, is settled: booked, with no flow and no line. If KIS still reports it, that
+    // amount is then unattributed (provisional), like any report no tracked buy explains.
+    for(const [k,r] of rows)if(r.state==='kr-paid'&&aged(Number.isFinite(r.filledAt)?r.filledAt:r.reportedAt)){const next={...r,state:'booked',via:'age',reason:'settled by age after its Korean payment',settledAt:now};this.put(account,k,next);rows.set(k,{key:k,...next});}
     const meta={...(m??{explainedKR:0,explainedUS:0,provisionalKRW:0}),startedAt:m?.startedAt??now};
     // S3a (G1): the readings before this one, for the legs' windows (book): the U.S. figure's (the previous U.S. reading)
     // and the Korean figure's (the later of the previous U.S. and Korean readings); none at the first reading.
