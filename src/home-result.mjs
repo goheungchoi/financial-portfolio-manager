@@ -5,7 +5,7 @@
 import {portfolioProfit} from './portfolio-profit.mjs';
 
 const firstWhy=s=>String(s).replace(/^\d{4}-\d{2}-\d{2}: /,'').split('; ')[0].replace(/\.$/,'');
-const TAG_SETTLEMENT='Includes days with U.S. buys awaiting settlement evidence, accounting corrections or restatements.';
+const TAG_SETTLEMENT='Includes days with U.S. buys awaiting settlement evidence or with accounting corrections.';
 const TAG_FLOWS='It is left out of the returns, so a deposit or withdrawal may be counted as gain or loss.';
 const TAG_UNRESOLVED='Money changes awaiting you are left out; confirm or remove them on the Performance page.';
 
@@ -32,8 +32,8 @@ export function resultSummary(summaries){
 
 /**
  * @typedef {{low:number,high:number}} Range
- * @typedef {{gain:number|null,twr:number|null,twrRange:Range|null,reason:string|null,tag:{text:string,why:string}|null,start?:string,end?:string}} ResultTotal
- * @typedef {{day:string|null,pnl:number|null,dailyReturn:number|null,pnlRange:Range|null,returnRange:Range|null,correction:number|null,reason:string|null,unavailable?:boolean,provisional?:boolean}} ResultToday
+ * @typedef {{gain:number|null,twr:number|null,reason:string|null,tag:{text:string,why:string}|null,start?:string,end?:string}} ResultTotal
+ * @typedef {{day:string|null,pnl:number|null,dailyReturn:number|null,pnlRange:Range|null,correction:number|null,reason:string|null,unavailable?:boolean,provisional?:boolean}} ResultToday
  * @typedef {{scope:'both'|'korea',since:string|null,benchmarkName:string,total:ResultTotal|null,today:ResultToday|null,
  *   unrealized:{amount:number|null,percent:number|null,reason:string|null},unrealizedUSD:{amount:number,percent:number|null}|null,
  *   benchmark:{benchmark:number,you:number}|null}} HomeResult
@@ -56,16 +56,16 @@ export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdL
     total:null,today:null,unrealized:{amount:null,percent:null,reason:null},unrealizedUSD:null,benchmark:null};
 
   // Total: the "All" period, as the account value box shows it on "All".
-  if(points.length<2)out.total={gain:null,twr:null,twrRange:null,reason:twoDays,tag:null};
+  if(points.length<2)out.total={gain:null,twr:null,reason:twoDays,tag:null};
   else{
     const all=(summary.periods??[]).find(p=>p.label==='All')??null;
-    if(!all)out.total={gain:null,twr:null,twrRange:null,reason:'No result for the whole history yet.',tag:null};
+    if(!all)out.total={gain:null,twr:null,reason:'No result for the whole history yet.',tag:null};
     else{
       const missing=all.unavailable?.length?all.unavailable:null;
-      const gain=Number.isFinite(all.gain)?all.gain:null,twr=Number.isFinite(all.twr)?all.twr:null,twrRange=all.twrRange??null;
+      const gain=Number.isFinite(all.gain)?all.gain:null,twr=Number.isFinite(all.twr)?all.twr:null;
       const reason=missing?periodNote(all,summary).text:gain==null?'Not known for the whole history.':null;
       const tag=summary.unreadableFlows?{text:'Return estimate',why:'a deposit or withdrawal record could not be read.'}:all.settlementAffected?{text:'Not verified',why:TAG_SETTLEMENT}:summary.provisional?.unresolved?.length?{text:'Provisional',why:TAG_UNRESOLVED}:null;
-      out.total={gain,twr,twrRange:twr==null?twrRange:null,reason,tag,start:all.start,end:all.end};
+      out.total={gain,twr,reason,tag,start:all.start,end:all.end};
       // Benchmark over the same days, shown only next to a return.
       if(Number.isFinite(all.benchmark)&&twr!=null)out.benchmark={benchmark:all.benchmark,you:twr};
     }
@@ -73,14 +73,14 @@ export function homeResult({summary,rows=[],usLoaded=false,equityKnown=true,usdL
 
   // Today: the latest recorded day, as the box's "Latest day".
   const last=points.at(-1);
-  if(!last||points.length<2)out.today={pnl:null,dailyReturn:null,pnlRange:null,returnRange:null,correction:null,day:last?.day??null,reason:twoDays};
+  if(!last||points.length<2)out.today={pnl:null,dailyReturn:null,pnlRange:null,correction:null,day:last?.day??null,reason:twoDays};
   else out.today={day:last.day,pnl:Number.isFinite(last.pnl)?last.pnl:null,dailyReturn:Number.isFinite(last.dailyReturn)?last.dailyReturn:null,
-    pnlRange:last.bounded?null:last.pnlRange??null,returnRange:last.bounded?.returnRange??null,correction:Number.isFinite(last.correction)&&last.correction?last.correction:null,
+    pnlRange:last.pnlRange??null,correction:Number.isFinite(last.correction)&&last.correction?last.correction:null,
     reason:Number.isFinite(last.pnl)?null:last.unavailable?.length?firstWhy(last.unavailable[0]):'Not known for the latest day.',
     // A recorded reason ("Unavailable" on the box) as against no figure yet ("—").
     unavailable:!Number.isFinite(last.pnl)&&Boolean(last.unavailable?.length)};
   // The tile's Today line shows a small "Provisional" tag when a range or a correction applies (the figures go to More).
-  if(out.today)out.today.provisional=Boolean(out.today.pnlRange||out.today.returnRange||out.today.correction);
+  if(out.today)out.today.provisional=Boolean(out.today.pnlRange||out.today.correction);
 
   // Unrealized: the old tile's figure, over the holdings the account value counts (Korea alone until the U.S. is loaded).
   const counted=rows.filter(r=>r.market==='KR'||usLoaded);

@@ -29,8 +29,8 @@ const SUMMARIES={
   // Performance: identical period returns (a short history makes 1M..All the same) are stated once.
   performance:p=>{if(!p?.history)return p;const history=Object.fromEntries(Object.entries(p.history).map(([m,h])=>{if(!Array.isArray(h?.timeWeightedReturns))return [m,h];const groups=[];
     // Stage 3.4: periods are grouped only with the same settlement treatment, and an unavailable one keeps its first
-    // reason, its range and its corrections, so a null return is never read as a missing number.
-    const extra=r=>({...(r.returnRangePct?{returnRangePct:r.returnRangePct}:{}),...(r.unavailable?{unavailable:[String(r.unavailable[0]).slice(0,240)]}:{}),...(r.accountingCorrections?{accountingCorrections:r.accountingCorrections}:{}),...(r.settlementAffected?{settlementAffected:r.settlementAffected}:{})}),key=r=>JSON.stringify(extra(r));
+    // reason and its corrections, so a null return is never read as a missing number.
+    const extra=r=>({...(r.unavailable?{unavailable:[String(r.unavailable[0]).slice(0,240)]}:{}),...(r.accountingCorrections?{accountingCorrections:r.accountingCorrections}:{}),...(r.settlementAffected?{settlementAffected:r.settlementAffected}:{})}),key=r=>JSON.stringify(extra(r));
     for(const r of h.timeWeightedReturns){const g=groups.find(x=>x.returnPct===r.returnPct&&x.benchmarkPct===r.benchmarkPct&&x.from===r.from&&x.key===key(r));if(g){g.periods.push(r.period);g.partial=g.partial||r.partial;}else groups.push({periods:[r.period],from:r.from,returnPct:r.returnPct,benchmarkPct:r.benchmarkPct,partial:r.partial,key:key(r),extra:extra(r)});}
     return [m,{...h,timeWeightedReturns:groups.map(g=>({period:g.periods.join('/'),from:g.from,returnPct:g.returnPct,benchmarkPct:g.benchmarkPct,...(g.partial?{partial:true}:{}),...g.extra}))}];}));return {...p,history};},
   // News: the same story from several outlets is one item, with every symbol and the highest importance kept.

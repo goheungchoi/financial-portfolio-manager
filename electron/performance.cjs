@@ -131,12 +131,8 @@ class PerformanceHistory {
     let corrections=new Map(),failed=null;if(kind!=='KRW'&&this.corrections)try{corrections=this.corrections(account,history);if(!(corrections instanceof Map))throw new Error('CORRECTIONS_INVALID');}catch(e){corrections=new Map();failed=`settlement corrections could not be read (${String(e?.message??e).slice(0,80)})`;}
     for(const row of history){
       lastFx=row.fx??lastFx;const recorded=kind==='KRW'?row.KRW?.equity:kind==='USD'?row.USD?.equity:row.equityKRW;if(!Number.isFinite(recorded))continue;
-      // The approved restatement on this day, converted at the day's rate in the combined series (1.5.48 review, B2: with
-      // no restatement, 0 times a missing rate made every combined value NaN until a rate was recorded). A restatement on a
-      // day without a rate cannot be converted: the day is unavailable, never NaN.
-      const restatedUSD=kind==='KRW'?0:corrections.get(row.day)?.adjustmentUSD??0,noRate=Boolean(restatedUSD)&&kind==='COMBINED'&&!Number.isFinite(lastFx);
-      const historical=!restatedUSD||noRate?0:restatedUSD*(kind==='COMBINED'?lastFx:1);
-      const adj=historical+adjustments.filter(a=>a.day===row.day&&(kind==='COMBINED'||a.currency===kind)).reduce((n,a)=>n+(kind==='COMBINED'&&a.currency==='USD'?(lastFx==null?NaN:a.amount*lastFx):a.amount),0);const value=recorded+adj;
+      // The valuation corrections in force for the day (S4a: historical restatements are gone).
+      const adj=adjustments.filter(a=>a.day===row.day&&(kind==='COMBINED'||a.currency===kind)).reduce((n,a)=>n+(kind==='COMBINED'&&a.currency==='USD'?(lastFx==null?NaN:a.amount*lastFx):a.amount),0);const value=recorded+adj;
       const flow=flows.filter(f=>f.day===row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0);
       // Flows recorded on days without a valuation are folded into the next valued day.
       const skipped=previous?flows.filter(f=>f.day>previous.day&&f.day<row.day&&(kind==='COMBINED'?!f.transfer:f.currency===kind)).reduce((sum,f)=>sum+(kind==='COMBINED'&&f.currency==='USD'?(lastFx==null?NaN:f.amount*lastFx):f.amount),0):0;
@@ -147,16 +143,12 @@ class PerformanceHistory {
       // could not be told: the possible corrections of unknown timing give the P/L a range, and the return is unavailable.
       const cx=previous?corrections.get(row.day):null,rate=kind==='COMBINED'?lastFx:1,conv=v=>v*(rate??NaN);
       const correction=cx?.items?.length?conv(cx.usd):0,unknownC=cx?.unknown?.length?cx.items.filter(i=>i.usd==null).map(i=>conv(i.possibleUSD??0)):[];const lost=Boolean(failed&&previous);
-      // Stage 3.2: a day affected by an uncertain obligation or a misstatement window is unavailable (blocked); the one
-      // bounded case is a range in the U.S. series and unavailable in the combined one (its funding route and FX exposure
-      // are not bounded).
-      const blocked=[...(previous?cx?.unavailable??[]:[]),...(noRate?['an approved restatement on this day cannot be converted: no exchange rate is recorded for it']:[])];let bounded=previous&&cx?.bounded&&!blocked.length&&!unknownC.length&&!lost?cx.bounded:null;
-      if(bounded&&kind!=='USD'){blocked.push(`an uncertain U.S. buy obligation of $${Number(bounded.usd).toFixed(2)}: its funding route and FX exposure are not bounded in this series, so the return is unavailable`);bounded=null;}
-      const states=bounded&&base>0&&Number.isFinite(base)?{real:(value-correction)/base-1,notReal:(value+bounded.usd-correction)/(base+bounded.usd)-1}:null;if(bounded&&!states){blocked.push('an uncertain U.S. buy obligation on a day with no base value');bounded=null;}
+      // A day the settlement tracker's state was not recorded for, or could not be read (U4), is unavailable (blocked).
+      const blocked=[...(previous?cx?.unavailable??[]:[])];
       const out=Boolean(unknownC.length||lost||blocked.length);
       const offset=!previous||kind==='KRW'||!(Math.abs(previous.openUSD)>=0.005)?0:-previous.openUSD*(kind==='COMBINED'?previous.fx??NaN:1),returnBase=previous?base-offset:null,gained=previous?value-previous.value-netFlow-correction:null;
-      const dailyReturn=out||bounded||!previous?null:returnBase>0&&Number.isFinite(returnBase)?gained/returnBase:returnBase===0&&Math.abs(gained)<0.005?0:null;
-      const noBase=Boolean(previous&&!out&&!bounded&&dailyReturn==null);if(noBase)blocked.push(NO_BASE);
+      const dailyReturn=out||!previous?null:returnBase>0&&Number.isFinite(returnBase)?gained/returnBase:returnBase===0&&Math.abs(gained)<0.005?0:null;
+      const noBase=Boolean(previous&&!out&&dailyReturn==null);if(noBase)blocked.push(NO_BASE);
       if(dailyReturn!=null)index*=1+dailyReturn;
       // Unrealized P/L and holdings: native for one market; the all-markets series converts U.S. values at the day's rate.
       const parts=kind==='COMBINED'?[[row.KRW,1],[row.USD,lastFx]]:[[kind==='KRW'?row.KRW:row.USD,1]];
@@ -176,10 +168,9 @@ class PerformanceHistory {
       // counted twice until it is matched or reconciled, so the day's return is shown but not verified.
       // C1d-2 (M8): a day with a U.S. buy whose funding route KIS had not shown is an estimate in the market series.
       const routeOpen=kind!=='COMBINED'&&Boolean(row.fundingRoute?.open)&&Boolean(previous);
-      const settlement=[...(previous&&cx?.pending||routeOpen?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(historical?['restated']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[]),...(bounded?['bounded']:[])];
-      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(historical?{restated:historical}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),...(routeOpen?{fundingRouteOpen:true}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
+      const settlement=[...(previous&&cx?.pending||routeOpen?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[])];
+      points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),...(routeOpen?{fundingRouteOpen:true}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
         ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
-        ...(bounded?{bounded:{pieceId:bounded.pieceId,usd:bounded.usd,states,returnRange:{low:Math.min(states.real,states.notReal),high:Math.max(states.real,states.notReal)},label:`one uncertain obligation of $${Number(bounded.usd).toFixed(2)}: the return is a range (real, or not real)`}}:{}),
         ...(noBase?{returnOnly:true}:{}),...(offset?{returnBase}:{}),dailyReturn,index,pnl,...(lost||(blocked.length&&!noBase)?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,...(bandAdj?{bandCorrected:bandAdj.version??true,...(bandAdj.band.estimated?{bandEstimated:true}:{})}:{}),cash,unrealized,positions});
       if(previous&&cx?.items?.length&&Number.isFinite(cx.usd))netUSD+=cx.usd;previous={day:row.day,value,openUSD:kind==='KRW'?0:corrections.get(row.day)?.openUSD??0,fx:lastFx};
     }
@@ -201,14 +192,8 @@ class PerformanceHistory {
       if(start.day===end.day)return {label,start:start.day,end:end.day,partial,twr:null,gain:null,flows:0,benchmark:null};
       const inside=points.filter(p=>p.day>start.day&&p.day<=end.day),flows=inside.reduce((sum,p)=>sum+p.flow,0),corrections=inside.reduce((sum,p)=>sum+(p.correction??0),0);
       const from=closeOn(start.day),to=closeOn(end.day),unavailable=inside.filter(p=>p.unavailable).map(p=>`${p.day}: ${p.unavailable.join('; ')}`);
-      // Stage 3.2 (U3): bounded days chain each state separately, for one obligation only; two or more have no
-      // consistent set of states, so the period is unavailable.
-      const pieces=[...new Set(inside.filter(p=>p.bounded).map(p=>p.bounded.pieceId))];
-      if(!unavailable.length&&pieces.length>1)unavailable.push(`${pieces.length} uncertain obligations in the period: no consistent range`);
-      const chain=state=>inside.reduce((n,p)=>n*(1+(p.bounded?p.bounded.states[state]:p.dailyReturn??0)),1)-1;
-      const twrRange=!unavailable.length&&pieces.length?(([a,b])=>({low:Math.min(a,b),high:Math.max(a,b)}))([chain('real'),chain('notReal')]):null;
-      return {label,start:start.day,end:end.day,partial,twr:unavailable.length||pieces.length?null:end.index/start.index-1,gain:inside.some(p=>p.unavailable&&!p.returnOnly)?null:end.value-start.value-flows-corrections,flows,
-        ...(affected(inside)?{settlementAffected:affected(inside)}:{}),...(twrRange?{twrRange}:{}),...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
+      return {label,start:start.day,end:end.day,partial,twr:unavailable.length?null:end.index/start.index-1,gain:inside.some(p=>p.unavailable&&!p.returnOnly)?null:end.value-start.value-flows-corrections,flows,
+        ...(affected(inside)?{settlementAffected:affected(inside)}:{}),...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
     const open=unresolved==='exclude'?this.movements(account).filter(f=>f.category==='unresolved'&&f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind)):[];
@@ -221,10 +206,10 @@ class PerformanceHistory {
 }
 // Stage 3.4: the days of a window the settlement treatment touched, by kind; null when none.
 // S2b (c): corrections count only while they have not netted to zero (correctionOpen).
-function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)&&(k!=='corrected'||p.correctionOpen)).length;const out={pending:n('pending'),corrected:n('corrected'),restated:n('restated'),unavailable:n('unavailable'),bounded:n('bounded')};return Object.values(out).some(Boolean)?out:null;}
+function affected(days){const n=k=>days.filter(p=>(p.settlement??[]).includes(k)&&(k!=='corrected'||p.correctionOpen)).length;const out={pending:n('pending'),corrected:n('corrected'),unavailable:n('unavailable')};return Object.values(out).some(Boolean)?out:null;}
 // Risk and attribution for the points from a start day: peak, trough, drawdowns, volatility, best and worst days,
 // daily P/L and the change in each holding's unrealized P/L.
-// Stage 3.4: an unavailable day (or a bounded one, which has no single return) breaks the time-weighted chain. The
+// Stage 3.4: an unavailable day breaks the time-weighted chain. The
 // window's return, its drawdowns from that day on and its gain (when a day is unavailable) are then unavailable, never
 // read from the flat index or the raw values. Day statistics use the days with a return and say how many lack one.
 // C1a: the points from the first one holding money, when every earlier one is exactly 0 (an account not yet funded is
@@ -235,7 +220,7 @@ function funded(points){const i=points.findIndex(p=>p.value>0);return i>0&&point
 function analyze(points,from){
   const pts=points.filter(p=>p.day>=from);if(!pts.length)return null;const valued=funded(pts);const first=pts[0],last=pts.at(-1);
   const days=pts.slice(1);const rets=days.map(p=>p.dailyReturn).filter(Number.isFinite);
-  const gaps=days.filter(p=>p.unavailable||p.bounded),blocked=days.filter(p=>p.unavailable),firstGap=gaps[0]?.day??null;
+  const gaps=days.filter(p=>p.unavailable),blocked=gaps,firstGap=gaps[0]?.day??null;
   let top=-Infinity,maxDd=0;const drawdown=pts.map(p=>{if(firstGap!=null&&p.day>=firstGap)return {day:p.day,drawdownPct:null};top=Math.max(top,p.index);const dd=p.index/top-1;maxDd=Math.min(maxDd,dd);return {day:p.day,drawdownPct:dd*100};});
   const by=(list,key,dir)=>list.reduce((best,p)=>best==null||dir*(p[key]-best[key])>0?p:best,null);
   const mean=rets.length?rets.reduce((a,b)=>a+b,0)/rets.length:null;const sd=rets.length>=5?Math.sqrt(rets.reduce((a,b)=>a+(b-mean)**2,0)/(rets.length-1)):null;
@@ -248,30 +233,29 @@ function analyze(points,from){
   const corrections=days.reduce((a,p)=>a+(p.correction??0),0);
   return {from:first.day,to:last.day,days:pts.length,startValue:first.value,endValue:last.value,twrPct:gaps.length?null:r2((last.index/first.index-1)*100),gain:blocked.some(p=>!p.returnOnly)?null:last.value-first.value-days.reduce((a,p)=>a+p.flow,0)-corrections,
     ...(corrections?{corrections}:{}),...(affected(days)?{settlementAffected:affected(days)}:{}),returnDays:rets.length,unavailableDays:blocked.map(p=>({day:p.day,reasons:p.unavailable})),...(gaps.length?{chainBrokenFrom:firstGap}:{}),
-    // Values on restated days include the approved overlay (stage 3.4 review): flagged, never called recorded values.
-    peak:{value:peak.value,day:peak.day,...(peak.restated?{restated:peak.restated}:{})},trough:{value:trough.value,day:trough.day,...(trough.restated?{restated:trough.restated}:{})},intradayHigh:{value:high.high,day:high.day,...(high.bandEstimated?{estimated:true}:{})},intradayLow:{value:low.low,day:low.day,...(low.bandEstimated?{estimated:true}:{})},
+    peak:{value:peak.value,day:peak.day},trough:{value:trough.value,day:trough.day},intradayHigh:{value:high.high,day:high.day,...(high.bandEstimated?{estimated:true}:{})},intradayLow:{value:low.low,day:low.day,...(low.bandEstimated?{estimated:true}:{})},
     maxDrawdownPct:gaps.length?null:r2(maxDd*100),currentDrawdownPct:gaps.length?null:r2(drawdown.at(-1).drawdownPct),volatilityPct:sd==null?null:r2(sd*Math.sqrt(252)*100),
     bestDay:best?{day:best.day,returnPct:r2(best.dailyReturn*100),pnl:best.pnl}:null,worstDay:worst?{day:worst.day,returnPct:r2(worst.dailyReturn*100),pnl:worst.pnl}:null,
     positiveDaysPct:rets.length?r2(rets.filter(v=>v>0).length/rets.length*100):null,unrealized:last.unrealized,cashSharePct:last.cash!=null&&last.value>0?r2(last.cash/last.value*100):null,
-    dailyPnl:days.map(p=>({day:p.day,pnl:p.pnl,returnPct:p.dailyReturn==null?null:r2(p.dailyReturn*100),...(p.pnlRange?{pnlRange:p.pnlRange}:{}),...(p.unavailable?{unavailable:p.unavailable}:{}),...(p.correction?{correction:p.correction}:{}),...(p.bounded?{returnRangePct:{low:r2(p.bounded.returnRange.low*100),high:r2(p.bounded.returnRange.high*100)}}:{})})),
+    dailyPnl:days.map(p=>({day:p.day,pnl:p.pnl,returnPct:p.dailyReturn==null?null:r2(p.dailyReturn*100),...(p.pnlRange?{pnlRange:p.pnlRange}:{}),...(p.unavailable?{unavailable:p.unavailable}:{}),...(p.correction?{correction:p.correction}:{})})),
     drawdown:drawdown.map(d=>({day:d.day,drawdownPct:r2(d.drawdownPct)})),contributions};
 }
 // D1 (artifacts/reviews/2026-11-12-risk-figures/design.md): the review must not get a peak, trough, volatility or best
-// and worst day computed across days whose value is not valid. A day is invalid when it has no return (unavailable),
-// a range instead of one (bounded), or a value that is not positive; a return into or out of such a day is invalid too.
+// and worst day computed across days whose value is not valid. A day is invalid when it has no return (unavailable) or a
+// value that is not positive; a return into or out of such a day is invalid too.
 // With one in the window those figures are left out with the reason, and the last unbroken run of valid days is given
 // on its own (sinceChainResumed: 2 days or more; volatility and best and worst day from 5 returns, as analyze does).
 // null when the window has no invalid day: the section is then exactly as before.
 function riskBreak(points,from,to){
   // Days at exactly 0 before the account first holds money (an empty account, not a bad record) are left out first.
-  const pts=funded(points.filter(p=>p.day>=from&&p.day<=to));const why=p=>p.unavailable?String(p.unavailable[0]).slice(0,120):p.bounded?'a range, not one value':!(p.value>0)?'value not positive':null;
+  const pts=funded(points.filter(p=>p.day>=from&&p.day<=to));const why=p=>p.unavailable?String(p.unavailable[0]).slice(0,120):!(p.value>0)?'value not positive':null;
   // The window's first day is only a starting value: its own missing return (from before the window) does not count.
-  const bad=pts.map((p,i)=>({p,i,why:i===0?(!(p.value>0)?'value not positive':p.bounded?'a range, not one value':null):why(p)})).filter(x=>x.why);if(!bad.length)return null;
+  const bad=pts.map((p,i)=>({p,i,why:i===0?(!(p.value>0)?'value not positive':null):why(p)})).filter(x=>x.why);if(!bad.length)return null;
   const r2=v=>v==null?null:Math.round(v*100)/100;
   const list=bad.slice(0,4).map(x=>`${x.p.day}: ${x.why}`).join('; ')+(bad.length>4?`; ${bad.length-4} more`:'');
   const text=`Return chain broken from ${bad[0].p.day} (${list}). Peak, trough, drawdowns, volatility and best and worst days would mix values across it; do not derive them from other figures.`;
-  // The run starts at the last invalid day when only its return is missing (its own value is positive and single), else after it.
-  const last=bad.at(-1),usable=last.p.value>0&&!last.p.bounded;const run=pts.slice(usable?last.i:last.i+1);let resumed=null;
+  // The run starts at the last invalid day when only its return is missing (its own value is positive), else after it.
+  const last=bad.at(-1),usable=last.p.value>0;const run=pts.slice(usable?last.i:last.i+1);let resumed=null;
   if(run.length>=2){let index=1,top=1,maxDd=0;const rets=[];const withRet=[];
     if(run.slice(1).some(p=>!Number.isFinite(p.dailyReturn)))return {from:bad[0].p.day,text,resumed:null};
     for(const [i,p] of run.entries()){if(i>0){index*=1+p.dailyReturn;rets.push(p.dailyReturn);withRet.push(p);}top=Math.max(top,index);maxDd=Math.min(maxDd,index/top-1);}
@@ -285,14 +269,14 @@ function riskBreak(points,from,to){
 // The performance part of the AI review context (main's automation.performanceSummary), from one series' summary.
 // Stage 3.4: a period without a return is listed with its reasons, never left out or given a number; accounting
 // corrections and days without a return are listed apart.
-function reviewSummary(s){return {since:s.start,currency:s.kind,benchmark:s.benchmark==='SPX'?'S&P 500':'KOSPI',timeWeightedReturns:s.periods.filter(p=>p.start!==p.end).map(p=>({period:p.label,from:p.start,partial:p.partial,returnPct:p.twr==null?null:+(p.twr*100).toFixed(2),...(p.twrRange?{returnRangePct:{low:+(p.twrRange.low*100).toFixed(2),high:+(p.twrRange.high*100).toFixed(2)}}:{}),...(p.unavailable?{unavailable:p.unavailable.slice(0,3).map(x=>String(x).slice(0,240))}:{}),...(p.corrections?{accountingCorrections:Math.round(p.corrections*100)/100}:{}),...(p.settlementAffected?{settlementAffected:p.settlementAffected}:{}),benchmarkPct:p.benchmark==null?null:+(p.benchmark*100).toFixed(2)})),...(()=>{const a=s.analytics?.['3M']??s.analytics?.All;if(!a)return {};const m1=s.analytics?.['1M'];const day=d=>d&&{day:d.day,returnPct:d.returnPct,pnl:Math.round(d.pnl)};const top=(a.contributions??[]).filter(c=>c.change!==0);
+function reviewSummary(s){return {since:s.start,currency:s.kind,benchmark:s.benchmark==='SPX'?'S&P 500':'KOSPI',timeWeightedReturns:s.periods.filter(p=>p.start!==p.end).map(p=>({period:p.label,from:p.start,partial:p.partial,returnPct:p.twr==null?null:+(p.twr*100).toFixed(2),...(p.unavailable?{unavailable:p.unavailable.slice(0,3).map(x=>String(x).slice(0,240))}:{}),...(p.corrections?{accountingCorrections:Math.round(p.corrections*100)/100}:{}),...(p.settlementAffected?{settlementAffected:p.settlementAffected}:{}),benchmarkPct:p.benchmark==null?null:+(p.benchmark*100).toFixed(2)})),...(()=>{const a=s.analytics?.['3M']??s.analytics?.All;if(!a)return {};const m1=s.analytics?.['1M'];const day=d=>d&&{day:d.day,returnPct:d.returnPct,pnl:Math.round(d.pnl)};const top=(a.contributions??[]).filter(c=>c.change!==0);
       const broken=riskBreak(s.points,a.from,a.to);
       return {risk:{window:`${a.from} to ${a.to}`,...(broken?{peak:null,trough:null}:{peak:{value:Math.round(a.peak.value),day:a.peak.day},trough:{value:Math.round(a.trough.value),day:a.trough.day}}),maxDrawdownPct:broken?null:a.maxDrawdownPct,currentDrawdownPct:broken?null:a.currentDrawdownPct,maxDrawdown1mPct:m1&&!riskBreak(s.points,m1.from,m1.to)?m1.maxDrawdownPct:null,
         ...(broken?{volatilityPct:null,bestDay:null,worstDay:null,positiveDaysPct:null}:{volatilityPct:a.volatilityPct,bestDay:day(a.bestDay),worstDay:day(a.worstDay),positiveDaysPct:a.positiveDaysPct}),daysWithReturn:a.returnDays,daysWithoutReturn:a.unavailableDays.length,...(a.chainBrokenFrom?{returnChainBrokenFrom:a.chainBrokenFrom}:{}),
         ...(broken?{returnChainBrokenFrom:broken.from,riskUnavailable:broken.text,...(broken.resumed?{sinceChainResumed:broken.resumed}:{})}:{})},
         recentDailyPnl:a.dailyPnl.slice(-5).map(p=>({day:p.day,pnl:p.pnl==null?null:Math.round(p.pnl),returnPct:p.returnPct,...(p.unavailable?{unavailable:true}:{}),...(p.correction?{accountingCorrection:Math.round(p.correction*100)/100}:{})})),
-        settlement:(()=>{const pts=s.points.filter(p=>p.day>a.from);const corr=pts.filter(p=>p.correction).map(p=>({day:p.day,amount:Math.round(p.correction*100)/100}));const un=pts.filter(p=>p.unavailable).map(p=>({day:p.day,why:String(p.unavailable[0]).slice(0,200)}));const rest=pts.filter(p=>p.restated).length;
-          return corr.length||un.length||rest?{accountingCorrections:corr.slice(-5),daysWithoutReturn:un.slice(-5),restatedDays:rest,label:'accounting corrections (settlement changes with no cash or market move) are not investment return; days without a return could not be read and are unknown, not zero'}:undefined;})(),unrealizedPnl:a.unrealized==null?null:Math.round(a.unrealized),cashSharePct:a.cashSharePct,
+        settlement:(()=>{const pts=s.points.filter(p=>p.day>a.from);const corr=pts.filter(p=>p.correction).map(p=>({day:p.day,amount:Math.round(p.correction*100)/100}));const un=pts.filter(p=>p.unavailable).map(p=>({day:p.day,why:String(p.unavailable[0]).slice(0,200)}));
+          return corr.length||un.length?{accountingCorrections:corr.slice(-5),daysWithoutReturn:un.slice(-5),label:'accounting corrections (settlement changes with no cash or market move) are not investment return; days without a return could not be read and are unknown, not zero'}:undefined;})(),unrealizedPnl:a.unrealized==null?null:Math.round(a.unrealized),cashSharePct:a.cashSharePct,
         holdingContribution:top.length?{basis:'Change in unrealized P/L over the window',best:top.slice(0,3).map(c=>({symbol:c.symbol,change:Math.round(c.change),status:c.status})),worst:top.slice(-3).reverse().filter(c=>c.change<0).map(c=>({symbol:c.symbol,change:Math.round(c.change),status:c.status}))}:undefined};})()};}
 // The review context's performance for one market (main's automation.performanceSummary, stage 3.5: one function for main
 // and the stage 3 gate harness): the summary, the money changes not yet settled, and whether the returns measure market
@@ -304,7 +288,7 @@ function reviewPerformance(s,{unconfirmed=[],checking=[],uncertainKRW=0}={}){
 // Each market's day for the daily digest (main's automation.performanceToday): its return, or why it has none, its
 // accounting correction and its settlement treatment.
 function todayFigures(perf,account,day){return [['KR','KRW','Korea'],['US','USD','U.S.']].flatMap(([market,currency,label])=>{const p=perf.series(account,currency).find(x=>x.day===day);
-  return p?[{market,currency,label,dailyReturn:p.dailyReturn,pnl:p.pnl??null,correction:p.correction??0,unavailable:p.unavailable??null,returnRange:p.bounded?.returnRange??null,settlement:p.settlement??[]}]:[];});}
+  return p?[{market,currency,label,dailyReturn:p.dailyReturn,pnl:p.pnl??null,correction:p.correction??0,unavailable:p.unavailable??null,settlement:p.settlement??[]}]:[];});}
 function benchmarkFor(kind){return kind==='USD'?'SPX':'KOSPI';}
 // When a market's session for a trading day is over and its index readings are closes: 15:40 Seoul for Korean indexes,
 // 16:20 New York for U.S. ones (after the closing auctions and the VIX settle). An index row fetched before then is an
@@ -321,17 +305,15 @@ function closedSince(since,now=Date.now()){
 // Whether a market's returns measure market performance, apart from whether its balance is reliable: unconfirmed
 // detected flows, cash changes not yet explained, and unknown funding of unsettled U.S. buys (Korean value) are inside them.
 // settlement (stage 3.4): the window's settlement-affected days (analyze().settlementAffected): days without a return,
-// accounting corrections and restated days all make the returns unverified.
+// and accounting corrections make the returns unverified.
 function returnReliability({unconfirmed=[],checking=[],uncertainKRW=0,settlement=null}){
   const money=(amount,currency)=>currency==='USD'?`$${Math.abs(amount).toFixed(2)}`:`₩${Math.abs(Math.round(amount)).toLocaleString('en-US')}`;
   const reasons=[...unconfirmed.map(f=>`a detected ${f.amount>0?'deposit':'withdrawal'} of ${money(f.amount,f.currency)} on ${f.day} is not confirmed; returns treat it as one`),
     ...checking.map(f=>`a cash change of ${f.amount>0?'+':'−'}${money(f.amount,f.currency)} since ${String(f.since).slice(0,16).replace('T',' ')} UTC is not yet explained; returns count it as gain or loss`),
     ...(uncertainKRW>0?[`funding of ₩${Math.round(uncertainKRW).toLocaleString('en-US')} of unsettled U.S. buys is not yet known, so Korean value may be understated`]:[]),
     ...(settlement?.unavailable?[`${settlement.unavailable} recorded day${settlement.unavailable>1?'s have':' has'} no return (the account or the settlement tracker could not be read then); returns spanning ${settlement.unavailable>1?'them':'it'} are unavailable, not zero`]:[]),
-    ...(settlement?.bounded?[`${settlement.bounded} day${settlement.bounded>1?'s have':' has'} only a return range (one uncertain U.S. obligation)`]:[]),
     ...(settlement?.pending?[`${settlement.pending} day${settlement.pending>1?'s have':' has'} a U.S. buy still awaiting settlement: ${settlement.pending>1?'those returns are estimates':'that return is an estimate'} until it settles, by KIS evidence or after 3 business days`]:[]),
-    ...(settlement?.corrected?[`${settlement.corrected} day${settlement.corrected>1?'s include':' includes'} accounting corrections, kept out of returns`]:[]),
-    ...(settlement?.restated?[`${settlement.restated} day${settlement.restated>1?'s are':' is'} restated by a historical correction you approved`]:[])];
+    ...(settlement?.corrected?[`${settlement.corrected} day${settlement.corrected>1?'s include':' includes'} accounting corrections, kept out of returns`]:[])];
   return reasons.length?{reliable:false,reasons}:{reliable:true};
 }
 module.exports={PerformanceHistory,INDEXES,benchmarkFor,analyze,riskBreak,reviewSummary,reviewPerformance,todayFigures,finishedRows,closedSince,sessionEnd,returnReliability};

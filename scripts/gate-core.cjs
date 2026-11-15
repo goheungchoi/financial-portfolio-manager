@@ -1,4 +1,4 @@
-// Shared by the stage gate reports (scripts/stage2b-gate.cjs, scripts/stage3-gate.cjs): runs the given test files and
+// Shared by the stage gate reports (scripts/stage2b-gate.cjs; the stage 3 gate went in S4a): runs the given test files and
 // lists, for every required test id, the tests that cover it and whether they passed.
 // Every file's run must be whole and passing (stage 2b.6 review, P2: a failed process and skipped tests were reported as
 // passing): the process exits 0 with no spawn error; the TAP output has its plan, and as many top-level results as

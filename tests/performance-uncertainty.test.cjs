@@ -83,19 +83,6 @@ test('U4: after tracking starts, a day whose tracker state was not recorded or c
   const z=world();delete z.perf.settlement;z.record();z.nextDay();z.us.price=1010;z.record();z.perf.settlement=a=>z.f.snapshot(a);z.nextDay();z.see([]);z.us.price=1020;z.record();
   const [,e1,e2]=z.points();close(e1.dailyReturn,10/1500);close(e2.dailyReturn,10/1510);assert.equal(e2.unavailable,undefined);
 });
-test('S2: restatements are off: no candidates, no previews, no approvals; the card is hidden; the stage 3.2 rules only on request',()=>{
-  const w=started();w.nextDay();w.us.price=1010;w.record();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();
-  const {SettlementRestatements}=require('../electron/valuation-corrections.cjs');const s=new SettlementRestatements(w.db,{inFlight:w.f,reconciliation:w.rec,performance:w.perf,corrections:w.sc,clock:w.clock});
-  assert.deepEqual(s.candidates('a'),[]);assert.throws(()=>s.preview('a','anything'),/HISTORICAL_TIMING_UNPROVEN/);assert.deepEqual(s.inForce('a',w.perf.history('a')),[]);
-  const fs=require('node:fs'),path=require('node:path'),src=f=>fs.readFileSync(path.join(__dirname,'..',f),'utf8');
-  assert.ok(!/<Restatements[\s/]/.test(src('src/AccountPerformance.tsx')),'the Restatements card is not rendered');assert.ok(!/enabled:true/.test(src('electron/main.cjs').match(/SettlementRestatements\)\([^\n]*/)[0]),'the app does not turn them on');
-  assert.ok(src('electron/main.cjs').includes('performanceCorrections(store.db,{inFlight,reconciliation})'),'the app uses the S2 default, not strict');
-  // strict: the stage 3.2 rules, for the tests of the code S4 removes.
-  const sc=performanceCorrections(w.db,{inFlight:w.f,reconciliation:w.rec,strict:true});w.perf.corrections=(a,rows)=>sc.byDay(a,rows);assert.ok(w.points().some(p=>p.unavailable?.some(x=>/misstatement window/.test(x))));
-});
-
-// S2b (review of S2, finding 1-3): the return base leaves out the corrections still open; a day whose return cannot be
-// computed makes period figures unavailable, never a silent 0%; corrections that net to zero leave no estimate tag.
 test('S2b (a): the C0 shape: pre-tracking buys open as a correction on day 1 make the recorded value negative; returns use the base without them',()=>{
   // Day 0 $560 with nothing pending; tracking then finds $694.50 of pre-tracking buys (value -$134.50); two days later they
   // settle by age. The daily results follow from this fixture's prices.

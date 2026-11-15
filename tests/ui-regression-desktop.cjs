@@ -714,7 +714,6 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       const record=()=>{const v=value({us:U(),inFlight:f.current(acct),fx:{usdKRW:1300,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity.low;perf.record(acct,{totals:{USD:v,KRW:10000000,equityKRW:10000000+v*1300},fx:{usdKRW:1300}});t+=60000;};
       see([]);see([A]);record();t=B+33*3600000;us.price=101;record();t=B+55*3600000;us.cash=80;t=B+73*3600000;us.price=102;record();t=B+97*3600000;
       const q={requestId:'stage34-r1',account:acct,pieceId:f.current(acct).open.find(p=>p.id==='stage34-A').pid,cents:10000,explanation:'settled',route:'USD',kisReference:'KIS-FIXTURE',note:'desktop fixture',settledOn:S};const pv=rec.preview(q);rec.confirm({...q,stateVersion:pv.stateVersion,binding:pv.binding});record();
-      const approvals=()=>db.prepare('SELECT COUNT(*) n FROM valuation_settlement_approvals WHERE account=?').get(acct).n;
       // Home: a return, tagged as an estimate (the period has an accounting correction); never the settlement red line.
       await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"] .trend-note`)?.textContent.startsWith("Return estimate")','the Home trend should show the return as an estimate');
       assert.ok(!(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Investment return unavailable")')),'no settlement red line');
@@ -731,8 +730,9 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       assert.ok(!(await run('document.querySelector(`[aria-label="Settlement effects"]`).textContent.includes("Days without a return")')),'no day without a return');
       for(const label of ['Daily P/L','Drawdown']){await run(`Array.from(document.querySelectorAll('[aria-label="Chart"] button')).find(b=>b.textContent===${JSON.stringify(label)}).click()`);await wait(150);}
       assert.ok(!(await run('document.querySelector(`[aria-label="Account performance"]`).textContent.includes("Drawdown is unavailable from")')),'the drawdown chart is whole');
-      assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="Historical restatements"]`)||document.querySelector(`[aria-label^="Preview restatement"]`))')),'the restatement card is hidden');
-      assert.deepEqual((await run('window.portfolio.getRestatements()')).restatements?.candidates??[],[],'no candidates are discovered');assert.equal(approvals(),0);
+      // S4a: the restatement code is gone: no card, and no restatement call on the bridge.
+      assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="Historical restatements"]`)||document.querySelector(`[aria-label^="Preview restatement"]`))')),'no restatement card');
+      assert.equal(await run('typeof window.portfolio.getRestatements'),'undefined','no restatement call');
       await capture('s2-performance-estimate');
       // A day recorded while the tracker could not be read: still no return, with that reason (U4), on Home and Performance.
       t=B+121*3600000;us.price=103;perf.settlement=()=>{throw new Error('disk I/O error');};record();perf.settlement=a=>f.snapshot(a);

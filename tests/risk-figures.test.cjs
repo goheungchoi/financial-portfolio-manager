@@ -39,11 +39,10 @@ test('D1: a clean window is exactly as before',()=>{
   assert.deepEqual([r.peak,r.trough,r.maxDrawdownPct,r.volatilityPct,r.positiveDaysPct],[{value:105,day:'2026-10-09'},{value:99,day:'2026-10-03'},a.maxDrawdownPct,a.volatilityPct,a.positiveDaysPct]);
 });
 
-test('D1: the clean run gives volatility and best and worst day from 5 returns; a bounded day breaks the chain; the first day only needs a value',()=>{
+test('D1: the clean run gives volatility and best and worst day from 5 returns; the first day only needs a value',()=>{
   const more=series([...US.map(p=>[p.day,p.value,p.unavailable?{unavailable:p.unavailable,dailyReturn:null}:{}]),['2026-11-06',528],['2026-11-09',523],['2026-11-10',533],['2026-11-11',531]]);
   const r=reviewSummary(summary(more)).risk.sinceChainResumed;assert.equal(r.days,6);assert.ok(Number.isFinite(r.volatilityPct));assert.equal(r.bestDay.day,'2026-11-10');assert.equal(r.worstDay.day,'2026-11-09');assert.equal(r.note,undefined);
-  const bounded=series([['2026-10-01',100],['2026-10-02',101,{bounded:{returnRange:{low:0,high:.02},states:{real:0,notReal:.02}},dailyReturn:null}],['2026-10-03',102],['2026-10-06',103]]);
-  const b=riskBreak(bounded,'2026-10-01','2026-10-06');assert.match(b.text,/2026-10-02: a range, not one value/);assert.equal(b.resumed.from,'2026-10-03','a bounded day is not a starting value');
+  // (S4a: the bounded day, a return range, went with the stage 3.2 rules.)
   const startsUnavailable=series([['2026-10-01',100,{unavailable:NO_BASE,dailyReturn:null}],['2026-10-02',101],['2026-10-03',102]]);
   assert.equal(riskBreak(startsUnavailable,'2026-10-01','2026-10-03'),null,'the first day of a window only needs a positive value');
   const emptyFirst=series([['2026-10-12',0],['2026-10-13',0],['2026-10-17',533.84],['2026-10-20',545],['2026-10-21',597.13]]);

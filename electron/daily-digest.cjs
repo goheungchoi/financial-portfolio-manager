@@ -14,12 +14,12 @@ function buildDigest(a,now=Date.now()){
   if(['us','both'].includes(a.config.scope))add('U.S.','USD',a.usLive?.getState().loss);
   // Without an active trading session there is no loss baseline; fall back to recorded daily account values.
   if(!markets.length&&a.config.scope!=='paper')for(const row of a.accountValues?.(day)??[])if((row.market==='KR'&&a.config.scope!=='us')||(row.market==='US'&&a.config.scope!=='kis'))add(row.label,row.currency,{baseline:row.baseline,equity:row.equity});
-  // Stage 3.4: the day as the performance series sees it, per market in scope: its return, a range in the one bounded
-  // case, or unavailable with the reason (never zero); accounting corrections apart, as not investment return.
+  // Stage 3.4: the day as the performance series sees it, per market in scope: its return, or unavailable with the
+  // reason (never zero); accounting corrections apart, as not investment return.
   const inScope=row=>a.config.scope!=='paper'&&((row.market==='KR'&&a.config.scope!=='us')||(row.market==='US'&&a.config.scope!=='kis'));
   const performance=(a.performanceToday?.(day)??[]).filter(inScope);
   const pctOf=v=>`${v>=0?'+':''}${(v*100).toFixed(2)}%`;
-  const returnText=p=>p.dailyReturn!=null?pctOf(p.dailyReturn):p.returnRange?`${pctOf(p.returnRange.low)} to ${pctOf(p.returnRange.high)} (range: one uncertain U.S. obligation)`:'unavailable';
+  const returnText=p=>p.dailyReturn!=null?pctOf(p.dailyReturn):'unavailable';
   const perfLines=performance.length?[`Investment return today: ${performance.map(p=>`${p.label} ${returnText(p)}${p.correction?` · accounting correction ${signed(p.correction,p.currency)} (not investment return)`:''}${p.settlement?.length&&p.dailyReturn!=null?' · not verified (settlement-affected)':''}`).join(' · ')}`,
     ...performance.filter(p=>p.unavailable?.length).map(p=>`${p.label} return unavailable: ${String(p.unavailable[0]).slice(0,160)}`)]:[];
   const orders=[...a.paper.orders(),...(a.live?.orders()??[]),...(a.usLive?.orders()??[])].filter(row=>row.status!=='Ready'&&onDay(row.createdAt));
