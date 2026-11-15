@@ -27,7 +27,7 @@ test('B9: a buy settled by age after the baseline moves it up by the same amount
   const w=world(),A=order('A');assert.equal(w.see([A]).open.length,1,'bootstrap: open, not closed');
   const p=w.baseline(D);assert.equal(p.baseline,400,'$500 cash less the $100 in flight');assert.equal(w.loss().loss,0);
   w.later(24*HOUR);const r=w.see([A]);assert.equal(r.open.length,0,'settled by age');
-  const a=w.adj();assert.equal(a.certain.low,100);assert.deepEqual(a.items.filter(i=>i.kind==='settled by age').map(i=>[i.orderId,i.side,i.usd,i.timing]),[['A','Buy',100,'before']]);
+  const a=w.adj();assert.equal(a.certain.low,100);assert.deepEqual(a.items.filter(i=>i.kind==='settled by age').map(i=>[i.orderId,i.side,i.usd]),[['A','Buy',100]]);
   const l=w.loss();assert.equal(l.loss,0,'the value rose with the baseline');assert.equal(l.breached,false);
   // Later readings change nothing (the piece is closed once; cumulative per piece).
   w.see([A]);w.see([A]);assert.equal(w.adj().certain.low,100);assert.equal(w.loss().loss,0);
@@ -38,13 +38,13 @@ test('B9: a real $35 loss on the day of a $100 age close is measured in full and
   // Without B9 the close would hide it: the value is $100 higher than the unadjusted baseline.
   assert.equal(value({us:{cash:500,pendingSaleProceeds:0,holdings:w.us.holdings},inFlight:w.f.current('a'),fx:{usdKRW:1300},now:Date.now()}).markets.US.equity.low-400,65);
 });
-test('B9: a sale settled by age moves the high bound down; a close before the baseline moves nothing; no snapshot is unknown timing',()=>{
+test('B9: a sale settled by age moves the high bound down; a close before the baseline moves nothing; no snapshot is unavailable (S3b, R1)',()=>{
   const w=world(),S=order('S',{side:'Sell',costEstimate:{netCash:50},resultCosts:{netCash:50},fillPrice:50,limitPrice:50});w.see([S]);w.baseline(D);w.later(24*HOUR);w.see([S]);
   const a=w.adj();assert.equal(a.certain.high,-50);assert.equal(a.certain.low,0);assert.deepEqual(a.items.filter(i=>i.kind==='settled by age').map(i=>[i.side,i.usd]),[['Sell',50]]);assert.equal(w.loss().loss,0);
   // Closed before the day's baseline: the baseline already has the value without it.
   const b=world(),B=order('B',{createdAt:PRE,filledObservedAt:PRE});b.see([B]);b.baseline(D);assert.equal(b.adj().certain.low,0);assert.equal(b.adj().items.length,0);assert.equal(b.loss().loss,0);
-  // No snapshot for the day (B8): the close is of unknown timing, a scenario, never applied as certain.
-  const c=world(),C=order('C');c.see([C]);c.later(24*HOUR);c.see([C]);const closedAt=c.f.evidence.events('a').find(e=>e.kind==='piece-closed').at;const u=c.sb.adjustments('a',{day:D,baselineAt:closedAt-1});assert.equal(u.snapshot,false);assert.equal(u.certain.low,0);assert.equal(u.withUnknown.low,100);
+  // No snapshot for the day (S3b, R1): unavailable, never applied by the clock alone.
+  const c=world(),C=order('C');c.see([C]);c.later(24*HOUR);c.see([C]);const closedAt=c.f.evidence.events('a').find(e=>e.kind==='piece-closed').at;const u=c.sb.adjustments('a',{day:D,baselineAt:closedAt-1});assert.match(u.unavailable,/no settlement snapshot/);assert.equal('certain' in u,false);
 });
 test('B9 is capped at the piece\'s basis at the baseline, so a close can never move it by more than was counted',()=>{
   const w=world(),A=order('A');w.see([A]);w.baseline(D);

@@ -87,7 +87,7 @@ test('A3: a new day takes its baseline from the valuation with its snapshot; a b
 test('A4: a failed or malformed settlement or flow reader makes the loss check unavailable, never zero; it recovers when the reader does',()=>{
   const w=lossWorld();w.engine.netEquityOf=()=>({low:1060,high:1060,version:'audit-net'});const check=()=>w.engine.lossOf(w.engine.policy(),w.balance);
   w.engine.settlementAdjustments=()=>({certain:{low:100,high:100},items:[]});assert.equal(check().loss,40);
-  for(const bad of [()=>{throw new Error('UNREADABLE_SETTLEMENT_STATE');},()=>null,()=>({certain:{low:'x'}}),()=>({certain:{low:1,high:1},withUnknown:{low:NaN,high:1}})]){w.engine.settlementAdjustments=bad;const l=check();
+  for(const bad of [()=>{throw new Error('UNREADABLE_SETTLEMENT_STATE');},()=>null,()=>({certain:{low:'x'}}),()=>({certain:{low:1,high:NaN}}),()=>({unavailable:'the day\'s baseline has no settlement snapshot, so settlement changes since it cannot be placed'})]){w.engine.settlementAdjustments=bad;const l=check();
     assert.equal(l.unavailable,true);assert.equal(l.loss,null);assert.equal(l.breached,false);assert.equal(l.ambiguous,true,'restricts new buys');assert.match(l.reasons[0],/settlement corrections|settlement snapshot/);}
   w.engine.settlementAdjustments=()=>({certain:{low:100,high:100},items:[]});assert.equal(check().breached,true,'recovers');
   w.engine.flowsSince=()=>({confirmed:0,unresolved:100,range:{low:0,high:100}});const amb=check();assert.equal(amb.unavailable,undefined);

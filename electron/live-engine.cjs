@@ -250,16 +250,18 @@ class LiveEngine {
   // counted. A breach under every scenario is a breach; under some only it is ambiguous: reported with the scenarios,
   // and new buys are restricted as a breach would restrict them (automation.cjs), without claiming a loss. Deposits,
   // withdrawals and the resolution of funding uncertainty move baseline and value alike, so they are not losses.
-  // Settlement corrections since the baseline (stage 2b.4, settlementAdjustments set by the app for the U.S. engine:
-  // SettlementBaseline.adjustments): {certain:{low,high}, withUnknown:{low,high}|null, items}, in this market's currency.
-  // Unavailable (with the reason), never zero, when the configured reader fails, returns something unreadable, or has
-  // nothing for a baseline that should have a snapshot (1.5.48 audit, A4). No reader configured: no corrections.
+  // Settlement corrections since the baseline (settlementAdjustments set by the app for the U.S. engine:
+  // SettlementBaseline.adjustments, the one rule of S3b): {certain:{low,high}, items}, in this market's currency.
+  // Unavailable (with the reason), never zero, when the configured reader fails, returns something unreadable, reports
+  // itself unavailable (no snapshot for the day: ruling R1 of S3b), or has nothing for a baseline that should have a
+  // snapshot (1.5.48 audit, A4). No reader configured: no corrections.
   settlement(policy){if(!this.settlementAdjustments)return null;
     if(policy.baselineSnapshot?.error)return {unavailable:`the settlement snapshot of the day's baseline could not be saved (${policy.baselineSnapshot.error})`};
     let a;try{a=this.settlementAdjustments(policy);}catch(e){return {unavailable:`settlement corrections since the day's baseline could not be read (${/^[A-Z_]{3,40}$/.test(e?.message??'')?e.message:'READ_FAILED'})`};}
     if(a==null)return {unavailable:Number.isFinite(policy.baselineAt)?'settlement corrections since the day\'s baseline could not be read (nothing returned)':'the day\'s baseline has no recorded time, so settlement corrections since it cannot be read'};
+    if(typeof a.unavailable==='string')return {unavailable:a.unavailable};
     const pair=x=>Number.isFinite(x?.low)&&Number.isFinite(x?.high);
-    if(!pair(a.certain)||a.withUnknown!=null&&!pair(a.withUnknown))return {unavailable:'settlement corrections since the day\'s baseline could not be read (an unreadable result)'};
+    if(!pair(a.certain))return {unavailable:'settlement corrections since the day\'s baseline could not be read (an unreadable result)'};
     return a;}
   // Today's daily-loss check on the balance the engine holds (as getState shows it), or null before the day's baseline.
   currentLoss(){const policy=this.policy(),connection=this.getConnection().snapshot,snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;
@@ -271,9 +273,9 @@ class LiveEngine {
       return {policy:limit,baseline:null,equity:null,loss:null,lossPct:null,limitKRW:limit.mode==='amount'?limit.value:null,breached:false,ambiguous:limit.mode!=='off',unavailable:limit.mode!=='off',version:null,pending:true,
         reasons:limit.mode==='off'?[`no daily loss is measured: ${why}`]:[`the daily loss cannot be checked: ${why}`,'new buys are restricted until it can be checked']};}
     const version=policy.valuation??'broker-total';const f=this.flows(policy);
-    // A reconciliation or correction moves the baseline with the value (stage 2b.4); of unknown payment timing, both
-    // scenarios are kept: adjusted (paid before the baseline) and not adjusted (paid after it).
-    const s0=version==='broker-total'?null:this.settlement(policy),adj=s0?.certain??{low:0,high:0},alt=s0?.withUnknown??null;
+    // A cash-free change of the settlement tracker after the baseline moves the baseline with the value (S3b, the one
+    // rule in settlement-baseline.cjs).
+    const s0=version==='broker-total'?null:this.settlement(policy),adj=s0?.certain??{low:0,high:0};
     const v=version==='broker-total'?{low:snapshot.reportedTotal,high:snapshot.reportedTotal,version}:this.lossValue(snapshot);
     // Anything the check needs that cannot be read makes it unavailable (1.5.48 audit, A3/A4): never a zero adjustment,
     // never a baseline of one valuation against a value of another. New buys are restricted (automation.cjs).
@@ -286,8 +288,8 @@ class LiveEngine {
     // The combined range of uncertain money changes; from the sums when only they are given (each sum real or not).
     const r=f.range??(()=>{const parts=[f.unresolved,u.confirmed,u.unresolved].map(x=>Number(x)||0),tl=Number(f.timing?.low)||0,th=Number(f.timing?.high)||0;
       return {low:parts.reduce((n,x)=>n+Math.min(0,x),0)+Math.min(0,tl,th),high:parts.reduce((n,x)=>n+Math.max(0,x),0)+Math.max(0,tl,th)};})();
-    // Each scenario on the certain adjustment and, when some timing is unknown, again on the adjusted one.
-    const on=(a,tag)=>{const low=policy.baseline+a.low,high=(policy.baselineHigh??policy.baseline)+a.high,n=x=>tag?`${tag}: ${x}`:x;
+    // Each scenario on the settlement adjustment.
+    const on=a=>{const low=policy.baseline+a.low,high=(policy.baselineHigh??policy.baseline)+a.high,n=x=>x;
       return [[n('low bounds'),low+f.confirmed,v.low],[n('high bounds'),high+f.confirmed,v.high],...(f.unresolved?[[n('unresolved money changes counted'),low+f.confirmed+f.unresolved,v.low]]:[]),
         ...(u.confirmed||u.unresolved?[[n('flows of uncertain timing counted'),low+f.confirmed+u.confirmed+u.unresolved,v.low]]:[]),
         // Every uncertain money change together (review of f26d33f, P1): unresolved flows, flows of uncertain timing, held
@@ -295,9 +297,9 @@ class LiveEngine {
         // grows with the money counted as moved, so these two bound every combination; on both bounds.
         ...(r&&(r.low||r.high)?[[n('all uncertain money changes at their lowest total, low bounds'),low+f.confirmed+r.low,v.low],[n('all uncertain money changes at their highest total, low bounds'),low+f.confirmed+r.high,v.low],
           [n('all uncertain money changes at their lowest total, high bounds'),high+f.confirmed+r.low,v.high],[n('all uncertain money changes at their highest total, high bounds'),high+f.confirmed+r.high,v.high]]:[])];};
-    const scenarios=[...on(adj,null),...(alt?on(alt,'settlement of unknown timing adjusted (paid before the baseline)'):[])].map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
+    const scenarios=on(adj).map(([name,b,e])=>({name,...lossStatus(limit,b,e)}));
     const all=scenarios.every(x=>x.breached),any=scenarios.some(x=>x.breached);
-    const settled=s0&&(adj.low||adj.high||alt)?{settlement:{adjustment:adj,...(alt?{ifPaidBeforeBaseline:alt,assumption:'not adjusted: paid after the baseline'}:{}),items:s0.items}}:{};
+    const settled=s0&&(adj.low||adj.high)?{settlement:{adjustment:adj,items:s0.items}}:{};
     const note=s0&&(adj.low||adj.high)?[`baseline adjusted for settlement corrections: low ${adj.low>=0?'+':''}${adj.low.toFixed(2)}, high ${adj.high>=0?'+':''}${adj.high.toFixed(2)}`]:[];
     // A late basis (R1): the loss is measured from when the valuation read again, not from the day's opening, and says so.
     // With a loss limit on, a late basis cannot show whether the limit was crossed before it, so automatic new exposure

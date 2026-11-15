@@ -99,26 +99,8 @@ test('Gate harness, T1-T3, T25a, T30 path: bootstrap, named-route and unknown-ro
   assert.equal(x.inputs.KR.reportedKRW,130000,'read from the balance');assert.equal(kBefore-x.sizing.capacity.KR,100*RHO,'counted once, as C_US += $100 at rho (T37j)');
   assert.equal(x.home.valuation.markets.KR.equity.low,1200000-130000);assert.equal(x.risk.KR.low,1200000);
 });
-test('Gate harness, T25b/T44, T28/T46 and the 2b.5 preview: the daily-loss baseline, its scenarios and the preview agree with Home, history and sizing',async()=>{
-  const w=world();w.open(order('A',100));w.baseline();let x=await w.compose();agree(x,'baseline');
-  assert.equal(x.risk.check.US.loss,0);
-  // Paid before the baseline: the value and the baseline move together; the preview's "after" is what every consumer
-  // then reads.
-  const {preview}=w.reconcile('A',{settledOn:'2026-11-04'});x=await w.compose();agree(x,'reconciled');assert.deepEqual(preview.after.loss.US,Reconciliation.lossSummary(x.risk.check.US));
-  assert.equal(x.risk.check.US.loss,0);assert.deepEqual(x.risk.check.US.settlement.adjustment,{low:100,high:0});
-  // A recorded $200 withdrawal after the baseline (the flow history the engines read through flowsSince): every consumer
-  // sees $200 less, and the loss check counts it as money moved, not as a loss.
-  const at=w.eU.policy().baselineAt;w.us.cash-=200;w.perf.addFlow('a',{day:require('../electron/kis-activity.cjs').seoulDate(w.clock()),market:'US',amount:-200,note:'withdrawal',occurredAfter:at+1,occurredBy:w.clock()});
-  x=await w.compose();agree(x,'withdrawal');assert.equal(x.risk.check.US.loss,0,'a withdrawal is not a loss');assert.equal(x.risk.check.US.breached,false);
-  // A genuine $35 market loss stays visible on every consumer.
-  w.us.holdings=[{symbol:'NASD:X',quantity:1,price:965}];x=await w.compose();agree(x,'market loss');assert.equal(x.risk.check.US.loss,35);assert.equal(x.risk.check.US.breached,true);
-  // Unknown timing: both scenarios; the two agree with the value every consumer reads.
-  const y=world();y.open(order('A',100));y.baseline();y.reconcile('A');const z=await y.compose();agree(z,'unknown timing');assert.ok(z.risk.check.US.scenarios.some(s=>/paid before the baseline/.test(s.name)));
-  // T46: with a genuine $40 loss the scenarios disagree: ambiguous, and the automation reads the U.S. market as ambiguous
-  // (new buys restricted, a protective sale allowed: agent-desk.test.cjs covers that rule on this state).
-  y.us.holdings=[{symbol:'NASD:X',quantity:1,price:960}];const a=await y.compose();agree(a,'ambiguous');assert.equal(a.risk.check.US.breached,false);assert.equal(a.risk.check.US.ambiguous,true);
-  const em=require('../electron/automation.cjs').Automation.prototype.emergencyState.call({config:{scope:'both'},live:y.eK,usLive:y.eU});assert.deepEqual([em.active,em.ambiguousMarkets],[false,['US']]);
-});
+// S3b: "Gate harness, T25b/T44, T28/T46 and the 2b.5 preview" was removed with the baseline's reconciliation and
+// unknown-timing rules it checked (settlement-baseline.cjs; s3/s3b-report.md).
 test('Gate harness: settlement timing and a reversal withdrawing it leave every consumer in agreement and no false flow',async()=>{
   const w=world();w.open(order('A',100));w.baseline();const detect=()=>{const v=w.f.current('a');return w.fd.observe('a',{krCash:1000000,usCash:w.us.cash-v.buysUSD+v.sellsUSD,fx:RATE,orders:[],usExplained:r=>w.f.explained('a',r),usReview:v.review});};
   detect();w.later(MIN);const {record}=w.reconcile('A');w.later(MIN);detect();let x=await w.compose();agree(x,'timing open');assert.ok(x.risk.check.US.scenarios.some(z=>/all uncertain money changes/.test(z.name)),'the open timing reaches the loss check through flowsSince');assert.equal(x.panel.summary.timingOpen,1);
