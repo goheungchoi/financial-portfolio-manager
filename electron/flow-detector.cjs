@@ -30,7 +30,9 @@ const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=1
 // (a small positive amount) was recorded as a deposit.
 // 2026-11-14 (settlement clean-up C1d-2): Korean cash is net of the KRW KIS has shown for U.S. buys (funding-transfers.cjs),
 // and U.S. cash also less the U.S. buys whose funding route KIS has not shown; the recorder's own bookings come as funding.
-const BASIS={KR:'net-of-shown-funding',US:'with-pending-in-flight-and-route'};
+// 2026-11-15 (S3a-2): Korean cash is net of the KRW of K1 groups not yet seen leaving it (krwUnpaidKRW), so it does not
+// move when KIS's report goes before the Korean cash falls, nor when the cash falls first.
+const BASIS={KR:'net-of-unpaid-funding',US:'with-pending-in-flight-and-route'};
 // Readings saved under the single name name only the Korean basis: builds before 1.5.46 wrote it for U.S. cash alone and
 // 1.5.46 for cash plus unsettled proceeds, and nothing saved tells them apart, so their U.S. basis is unknown (an upgrade
 // need not pass through 1.5.46). Readings without a name predate both.

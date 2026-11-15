@@ -18,6 +18,16 @@
 // explained(): cumulative amounts per market the flow detector leaves out (only changes this recorder has seen: M2).
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');const B=require('./business-days.cjs');
 const BAND=0.05,MAX_SET=8;
+// S3a-2: the states whose KRW has not been seen leaving Korean cash (current().krwUnpaidKRW); and the states KIS still
+// reports (the split's groups).
+const UNPAID=new Set(['krw','awaiting-kr','awaiting-reversal']),REPORTED=new Set(['us','krw','kr-paid']);
+// The first set (fewest members, then the earliest in the given order) whose amount(c) totals target within the band:
+// the payment of groups of equal amount is the same whichever of them it is (no booking follows from it).
+function firstSet(cands,target,amount){if(!(target>0)||!cands.length)return null;const c=cands.slice(0,MAX_SET),n=c.length,masks=[];
+  for(let m=1;m<1<<n;m++)masks.push(m);const bits=m=>{let k=0;for(let i=0;i<n;i++)if(m&1<<i)k++;return k;},order=m=>c.map((_,i)=>m&1<<i?'0':'1').join('');
+  masks.sort((a,b)=>bits(a)-bits(b)||order(a).localeCompare(order(b)));
+  for(const m of masks){const s=c.filter((_,i)=>m&1<<i),t=s.reduce((x,r)=>x+amount(r),0);if(Math.abs(t-target)<=BAND*target)return s;}
+  return null;}
 const won=v=>Math.round(v),usd=v=>Math.round(v*100)/100;
 const netUSD=o=>{const n=o?.resultCosts?.netCash;return Number.isFinite(n)?Math.abs(n):Math.abs((Number(o?.filled)||0)*(Number(o?.fillPrice)||0));};
 const fillAt=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.isFinite(o.createdAt)?o.createdAt:null;
@@ -28,20 +38,38 @@ function uniqueSet(cands,target,amount){if(!(target>0)||!cands.length||cands.len
     if(Math.abs(t-target)<=BAND*target){if(found)return null;found=s;}}
   return found;}
 class FundingTransfers {
-  // performance: PerformanceHistory (addFlow); clock.
-  constructor(db,{performance=null,clock=Date.now}={}){this.db=db;this.performance=performance;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS funding_transfers(account TEXT NOT NULL,key TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(account,key))');}
+  // performance: PerformanceHistory (addFlow); clock; log(title, body): one System line (S3a-2: a group whose Korean
+  // payment or exchange is never seen).
+  constructor(db,{performance=null,clock=Date.now,log=null}={}){this.db=db;this.performance=performance;this.clock=clock;this.log=log;db.exec('CREATE TABLE IF NOT EXISTS funding_transfers(account TEXT NOT NULL,key TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(account,key))');}
+  // S3a-2: a group no evidence closed: the row keeps its reason, one System line says what and how much; no booking.
+  unmatched(account,r,reason,now){this.put(account,r.key,{...r,state:'unmatched',expiredAt:now,reason});
+    try{this.log?.('U.S. buy funding not matched',`${(r.orders??[]).join('+')}: ${reason}. KRW ${Math.round(r.reportedKRW??0).toLocaleString('en-US')} (U.S. $${usd(r.usd??0).toFixed(2)}); nothing was booked for it.`);}catch{}}
   rows(account){return this.db.prepare("SELECT key,payload FROM funding_transfers WHERE account=? AND key<>'#meta'").all(account).map(r=>({key:r.key,...JSON.parse(r.payload)}));}
   meta(account){const r=this.db.prepare("SELECT payload FROM funding_transfers WHERE account=? AND key='#meta'").get(account);return r?JSON.parse(r.payload):null;}
   put(account,key,v){const {key:_k,...rest}=v;this.db.prepare('INSERT INTO funding_transfers VALUES(?,?,?) ON CONFLICT(account,key) DO UPDATE SET payload=excluded.payload').run(account,key,JSON.stringify(rest));}
   // The split now: Korean deduction (K1 groups), U.S. obligation (groups not yet shown), and the reported amount no
   // tracked buy explains (provisional: purchases outside the app, or a report the rule could not attribute). M4: while
   // KIS reports an amount, every won of it is in exactly one of the three.
+  // S3a-2 (s3a-f1.md, B): krwUnpaidKRW, the KRW of K1 groups not yet seen leaving Korean cash (reported and unsettled;
+  // settled by KIS with the Korean fall not yet read; partly paid in USD with the exchange not yet read). The Korean
+  // daily-loss value and the flow detector's Korean cash deduct it, so the deduction ends at the reading that shows the
+  // Korean cash fall, whichever of the U.S. and Korean readings comes first. krwKRW keeps its meaning (the groups KIS
+  // still reports, for the valuation's split).
   current(account){const m=this.meta(account),rows=this.rows(account);const us=rows.filter(r=>r.state==='us');
-    return {krwKRW:won(rows.filter(r=>r.state==='krw').reduce((n,r)=>n+r.reportedKRW,0)),usReportedKRW:won(us.reduce((n,r)=>n+r.reportedKRW,0)),usUSD:usd(us.reduce((n,r)=>n+r.usd,0)),usOrders:us.length,
+    return {krwKRW:won(rows.filter(r=>r.state==='krw'||r.state==='kr-paid').reduce((n,r)=>n+r.reportedKRW,0)),krwUnpaidKRW:won(rows.filter(r=>UNPAID.has(r.state)).reduce((n,r)=>n+r.reportedKRW,0)),usReportedKRW:won(us.reduce((n,r)=>n+r.reportedKRW,0)),usUSD:usd(us.reduce((n,r)=>n+r.usd,0)),usOrders:us.length,
       provisionalKRW:won(Math.max(0,m?.provisionalKRW??0)),reportedKRW:won(m?.reportedKRW??0),explained:{KR:won(m?.explainedKR??0),US:usd(m?.explainedUS??0)}};}
-  book(account,key,leg,{market,amount,day,note,at}){if(!this.performance||!amount)return null;const id=`funding:${key}:${leg}`;
+  // S3a (G1, ruling R2): each leg carries the window in which its own market's figure moved: occurredAfter, the reading
+  // before that move (after), and occurredBy, the reading that showed it (by, default at). The daily-loss checks place it
+  // against their baseline by that window (PerformanceHistory.flowsSince). Where the reading before cannot be named
+  // (the recorder's first reading, rows from before this), only occurredBy is kept and the leg stays of uncertain timing.
+  // - The Korean figure's U.S.-buy deduction is computed from the U.S. reading and this recorder (valuation.cjs korea),
+  //   so a Korean move at a U.S. reading lies after the later of the previous U.S. and Korean readings. A Korean D+2
+  //   cash fall lies between two Korean readings.
+  // - The U.S. figure depends on U.S. readings only.
+  // The booking day stays the day of the reading that booked it.
+  book(account,key,leg,{market,amount,day,note,at,by=at,after=null}){if(!this.performance||!amount)return null;const id=`funding:${key}:${leg}`;
     if(this.db.prepare('SELECT 1 FROM cash_flows WHERE id=?').get(id))return null;
-    return this.performance.addFlow(account,{id,day,market,amount,transfer:true,source:'funding',occurredBy:at,note});}
+    return this.performance.addFlow(account,{id,day,market,amount,transfer:true,source:'funding',occurredBy:by,...(Number.isFinite(after)&&after<by?{occurredAfter:after}:{}),note});}
   // C1d-2b, F4: a reading's bookings, states and explained amounts commit together or not at all (no one-legged transfer).
   tx(fn){const own=!this.db.isTransaction;this.db.exec(own?'BEGIN IMMEDIATE':'SAVEPOINT funding_transfers');
     try{const r=fn();this.db.exec(own?'COMMIT':'RELEASE funding_transfers');return r;}
@@ -65,6 +93,9 @@ class FundingTransfers {
     // settled as USD before any report), so a later buy of the same size keeps its attribution.
     for(const [k,r] of rows)if(r.state==='filled'&&aged(r.filledAt)){const next={...r,state:'none',reason:'settled by age without a KIS report'};this.put(account,k,next);rows.set(k,{key:k,...next});}
     const meta={...(m??{explainedKR:0,explainedUS:0,provisionalKRW:0}),startedAt:m?.startedAt??now};
+    // S3a (G1): the readings before this one, for the legs' windows (book): the U.S. figure's (the previous U.S. reading)
+    // and the Korean figure's (the later of the previous U.S. and Korean readings); none at the first reading.
+    const prevUS=Number.isFinite(m?.usAt)?m.usAt:null,krAfter=prevUS==null?null:Math.max(prevUS,Number.isFinite(m?.kr?.at)?m.kr.at:-Infinity),window={US:prevUS,KR:krAfter};
     const prevR=m?m.reportedKRW??0:0,dR=R-prevR;
     // The U.S. cash change since the previous reading less the fills seen meanwhile: what the settlement itself took.
     const prevFx=m?.effects??{},fillMove=Object.entries(effects).reduce((n,[id,e])=>n+e-(prevFx[id]??0),0);
@@ -75,32 +106,41 @@ class FundingTransfers {
       if(set){event=true;const key=set.flatMap(r=>r.orders).sort().join('+'),total=usd(set.reduce((n,r)=>n+r.usd,0));for(const r of set)this.db.prepare('DELETE FROM funding_transfers WHERE account=? AND key=?').run(account,r.key);
         const others=live.filter(r=>r.state==='us'&&!set.includes(r)).reduce((n,r)=>n+r.usd,0),money=cash+pending-(Number(openBuysUSD)||0)-others;
         if(money<=0.005){// K1: nothing in U.S. money could pay it: all of it is KRW.
-          this.put(account,key,{state:'krw',orders:key.split('+'),usd:total,reportedKRW:dR,reportedAt:now,via:'report'});
-          this.book(account,key,'out',{market:'KR',amount:-dR,day,at:now,note:'Transfer between markets: KRW paying a U.S. buy (KIS reported it awaiting settlement; no U.S. cash could pay it).'});
-          this.book(account,key,'in',{market:'US',amount:total,day,at:now,note:'Transfer between markets: into the U.S. account, paying a U.S. buy with KRW.'});
+          // S3a-2: the group keeps its earliest fill time, for the guard on its Korean payment (readKR).
+          const filled=set.map(r=>r.filledAt).filter(Number.isFinite);
+          this.put(account,key,{state:'krw',orders:key.split('+'),usd:total,reportedKRW:dR,reportedAt:now,via:'report',...(filled.length?{filledAt:Math.min(...filled)}:{})});
+          this.book(account,key,'out',{market:'KR',amount:-dR,day,at:now,after:window.KR,note:'Transfer between markets: KRW paying a U.S. buy (KIS reported it awaiting settlement; no U.S. cash could pay it).'});
+          this.book(account,key,'in',{market:'US',amount:total,day,at:now,after:window.US,note:'Transfer between markets: into the U.S. account, paying a U.S. buy with KRW.'});
           meta.explainedKR-=dR;meta.explainedUS+=total;}
         else this.put(account,key,{state:'us',orders:key.split('+'),usd:total,reportedKRW:dR,reportedAt:now});}
 }
-    else if(dR<0){const F=-dR,groups=live.filter(r=>r.state==='us'||r.state==='krw');const set=uniqueSet(groups,F,r=>r.reportedKRW);
+    else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW);
       if(set){event=true;const total=set.reduce((n,r)=>n+r.usd,0),paid=Math.max(0,-cashMove),Y=usd(Math.min(total,paid));
         for(const r of set){const share=total>0?r.usd/total:0,y=usd(Y*share);
           if(r.state==='us'){const S=usd(r.usd-y);
             // The U.S. side settled: its obligation left, the cash it took left; what stays is the shortfall.
             if(S<=0.005)this.put(account,r.key,{...r,state:'booked',paidUSD:y,settledAt:now,via:'usd'});
-            else{this.put(account,r.key,{...r,state:'awaiting-krw',paidUSD:y,shortfallUSD:S,fx,settledAt:now});meta.explainedUS+=S;}}
+            else{this.put(account,r.key,{...r,state:'awaiting-krw',paidUSD:y,shortfallUSD:S,fx,settledAt:now,window});meta.explainedUS+=S;}}
+          else if(r.state==='kr-paid'){// S3a-2: its Korean payment was read before this U.S. reading.
+            if(y>0.005)this.unmatched(account,{...r,paidUSD:y,settledAt:now},'KIS took U.S. cash for it after its KRW payment was seen',now);
+            else this.put(account,r.key,{...r,state:'booked',settledAt:now,via:'krw'});}
           else{// K1 at the report; settled now.
             if(y>0.005&&r.reportedKRW-y*(fx??0)<=BAND*r.reportedKRW){// F1: KIS paid the whole buy in USD after all: the full reversal, now.
-              this.book(account,r.key,'reversal-out',{market:'US',amount:-y,day,at:now,note:'Transfer between markets reversed: KIS paid this U.S. buy in USD.'});
-              this.book(account,r.key,'reversal-in',{market:'KR',amount:r.reportedKRW,day,at:now,note:'Transfer between markets reversed: KRW not taken for this U.S. buy.'});
+              this.book(account,r.key,'reversal-out',{market:'US',amount:-y,day,at:now,after:window.US,note:'Transfer between markets reversed: KIS paid this U.S. buy in USD.'});
+              this.book(account,r.key,'reversal-in',{market:'KR',amount:r.reportedKRW,day,at:now,after:window.KR,note:'Transfer between markets reversed: KRW not taken for this U.S. buy.'});
               this.put(account,r.key,{...r,state:'booked',paidUSD:y,settledAt:now,via:'reversal'});meta.explainedUS-=y;meta.explainedKR+=r.reportedKRW;}
-            else if(y>0.005){this.put(account,r.key,{...r,state:'awaiting-reversal',paidUSD:y,fx,settledAt:now});meta.explainedUS-=y;}
-            else this.put(account,r.key,{...r,state:'booked',settledAt:now,via:'krw'});}}}}
+            // Part USD: the U.S. leg back now, where U.S. cash fell (S3a-2; it was booked at the Korean reading); the KRW
+            // part waits for the Korean exchange.
+            else if(y>0.005){this.book(account,r.key,'reversal-out',{market:'US',amount:-y,day,at:now,after:window.US,note:'Transfer between markets reversed in part: KIS paid part of this U.S. buy in USD.'});
+              this.put(account,r.key,{...r,state:'awaiting-reversal',paidUSD:y,fx,settledAt:now,window});meta.explainedUS-=y;}
+            // All KRW: settled by KIS; the KRW stays deducted until the Korean cash fall is read (S3a-2).
+            else this.put(account,r.key,{...r,state:'awaiting-kr',settledAt:now});}}}}
     // M4: every won KIS reports is a group's (U.S. obligation or Korean deduction) or provisional: the reported amount
     // no tracked buy explains (purchases outside the app, or a report the rule could not attribute).
     // KIS revalues the KRW it reports at each day's rate: with no buy reported or settled in this reading, a change within
     // the band rescales the groups and the provisional amount together, so the split keeps summing to what KIS reports.
-    let groups=this.rows(account).filter(r=>r.state==='us'||r.state==='krw');const before=groups.reduce((n,r)=>n+r.reportedKRW,0)+(m?.provisionalKRW??0);
-    if(!event&&dR!==0&&before>0&&R>0&&Math.abs(R-before)<=BAND*before){const k=R/before;for(const r of groups)this.put(account,r.key,{...r,reportedKRW:won(r.reportedKRW*k)});groups=this.rows(account).filter(r=>r.state==='us'||r.state==='krw');}
+    let groups=this.rows(account).filter(r=>REPORTED.has(r.state));const before=groups.reduce((n,r)=>n+r.reportedKRW,0)+(m?.provisionalKRW??0);
+    if(!event&&dR!==0&&before>0&&R>0&&Math.abs(R-before)<=BAND*before){const k=R/before;for(const r of groups)this.put(account,r.key,{...r,reportedKRW:won(r.reportedKRW*k)});groups=this.rows(account).filter(r=>REPORTED.has(r.state));}
     const tracked=groups.reduce((n,r)=>n+r.reportedKRW,0);meta.provisionalKRW=Math.max(0,R-tracked);
     Object.assign(meta,{reportedKRW:R,cash,pending,effects,usAt:now});this.put(account,'#meta',meta);return this.current(account);}
   // One Korean reading: the change in D+2 cash less the Korean fills seen meanwhile pays any shortfall awaiting it.
@@ -112,19 +152,37 @@ class FundingTransfers {
     const effects=Object.fromEntries(kr.map(o=>{const n=o?.resultCosts?.netCash;const e=Number.isFinite(n)?n:(o.side==='Buy'?-1:1)*(Number(o.filled)||0)*(Number(o.fillPrice)||0);return [String(o.id),e];}));
     const prev=m.kr,move=prev?settled-prev.settled-Object.entries(effects).reduce((n,[id,e])=>n+e-(prev.effects?.[id]??0),0):0;
     let left=move<0?-move:0;
+    // S3a (G1): the Korean fall lies between the previous Korean reading and this one; a U.S. leg booked here keeps the
+    // window of the U.S. settlement reading that moved the U.S. figure (the row's window, from readUS).
+    const prevKR=Number.isFinite(prev?.at)?prev.at:null;
     for(const r of this.rows(account).filter(x=>x.state==='awaiting-krw'||x.state==='awaiting-reversal').sort((a,b)=>a.settledAt-b.settledAt)){
       const expired=B.agedOut('KR',{fillAt:r.settledAt,now,n:1}).aged;const need=r.state==='awaiting-krw'?r.shortfallUSD*(r.fx??0):r.reportedKRW-(r.paidUSD*(r.fx??0));
       if(left>0&&need>0&&Math.abs(left-need)<=BAND*need){const X=won(left);left=0;
-        if(r.state==='awaiting-krw'){this.book(account,r.key,'out',{market:'KR',amount:-X,day,at:now,note:'Transfer between markets: KRW exchanged at settlement for the part of a U.S. buy U.S. cash did not cover.'});
-          this.book(account,r.key,'in',{market:'US',amount:r.shortfallUSD,day,at:now,note:'Transfer between markets: into the U.S. account, the exchange paying part of a U.S. buy.'});
+        if(r.state==='awaiting-krw'){this.book(account,r.key,'out',{market:'KR',amount:-X,day,at:now,after:prevKR,note:'Transfer between markets: KRW exchanged at settlement for the part of a U.S. buy U.S. cash did not cover.'});
+          this.book(account,r.key,'in',{market:'US',amount:r.shortfallUSD,day,at:now,by:r.settledAt,after:r.window?.US,note:'Transfer between markets: into the U.S. account, the exchange paying part of a U.S. buy.'});
           this.put(account,r.key,{...r,state:'booked',exchangedKRW:X,exchangedAt:now,via:'exchange'});m.explainedKR-=X;}
         else{// The K1 booking took the whole reported KRW; KIS exchanged only X: the rest comes back as a reversal.
-          const back=won(r.reportedKRW-X);this.book(account,r.key,'reversal-out',{market:'US',amount:-r.paidUSD,day,at:now,note:'Transfer between markets reversed in part: KIS paid part of this U.S. buy in USD.'});
-          this.book(account,r.key,'reversal-in',{market:'KR',amount:back,day,at:now,note:'Transfer between markets reversed in part: KRW not taken for this U.S. buy.'});
+          // S3a-2: the reported KRW stayed deducted until now (krwUnpaidKRW), so the Korean loss value moves here only, by
+          // + reported - X: the KRW leg's window is the Korean pair. The U.S. leg was booked at the U.S. settlement reading
+          // (a group settled by the code before S3a-2 gets it now; a repeat books nothing).
+          const back=won(r.reportedKRW-X);
+          this.book(account,r.key,'reversal-out',{market:'US',amount:-r.paidUSD,day,at:now,by:r.settledAt,after:r.window?.US,note:'Transfer between markets reversed in part: KIS paid part of this U.S. buy in USD.'});
+          this.book(account,r.key,'reversal-in',{market:'KR',amount:back,day,at:now,after:prevKR,note:'Transfer between markets reversed in part: KRW not taken for this U.S. buy.'});
           // The detector saw the deduction end (+reported KRW) at the U.S. reading and the exchange (-X) here: the
           // reversal's KRW (reported - X) is what it must leave out.
           this.put(account,r.key,{...r,state:'booked',exchangedKRW:X,exchangedAt:now,via:'reversal'});m.explainedKR+=back;}}
-      else if(expired)this.put(account,r.key,{...r,state:'unmatched',expiredAt:now,reason:'no Korean exchange within one Korean business day of the U.S. settlement'});}
+      else if(expired)this.unmatched(account,r,'no Korean exchange within one Korean business day of the U.S. settlement',now);}
+    // S3a-2: the Korean payment of K1 groups (all KRW): a fall in D+2 cash (what the exchanges above did not take) within
+    // the band of a group's KRW, or of the first set of groups that totals it, pays them. Guard: only once one U.S.
+    // business day has passed since the group's fill (its U.S. settlement date), so a Korean withdrawal between KIS's
+    // report and the settlement is never taken for it. A group written before S3a-2 has no fill time: its report time
+    // stands in (KIS reports the fill on the evening of its New York trade date, so the date is the same; a later report
+    // only makes the guard later). Read before KIS's report goes (krw: becomes kr-paid) or after (awaiting-kr: booked).
+    const due=r=>B.agedOut('US',{fillAt:Number.isFinite(r.filledAt)?r.filledAt:r.reportedAt,now,n:1}).aged;
+    const unpaid=this.rows(account).filter(x=>(x.state==='awaiting-kr'||x.state==='krw')&&due(x)).sort((a,b)=>(a.state==='awaiting-kr'?0:1)-(b.state==='awaiting-kr'?0:1)||(a.settledAt??a.reportedAt)-(b.settledAt??b.reportedAt));
+    const paid=left>0?firstSet(unpaid,left,r=>r.reportedKRW):null;
+    if(paid){left=0;for(const r of paid)this.put(account,r.key,r.state==='awaiting-kr'?{...r,state:'booked',krPaidAt:now,via:'krw'}:{...r,state:'kr-paid',krPaidAt:now});}
+    for(const r of this.rows(account).filter(x=>x.state==='awaiting-kr'))if(B.agedOut('KR',{fillAt:r.settledAt,now,n:1}).aged)this.unmatched(account,r,'no Korean cash fall paying it within one Korean business day of the U.S. settlement',now);
     m.kr={settled,effects,at:now};this.put(account,'#meta',m);return this.current(account);}
 }
 module.exports={FundingTransfers,uniqueSet,BAND};

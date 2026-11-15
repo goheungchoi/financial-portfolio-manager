@@ -1,0 +1,902 @@
+{
+ "K1, one Korean day": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 0
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "after report",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "debit (held)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "exchange",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
+ ],
+ "K1, across a Korean day": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 0
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "after report",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "next Korean day",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "debit (held)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "exchange",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
+ ],
+ "K1, Korean fall first": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 0
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "after report",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "next Korean day",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "debit (held)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "Korean fall",
+   "value": {
+    "KR": {
+     "low": 2732000,
+     "high": 2732000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "U.S. consistent",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
+ ],
+ "K1, U.S. reading first": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 0
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 0,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "after report",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "next Korean day",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "debit (held)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "U.S. consistent",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "Korean fall",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
+ ],
+ "K2": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 50,
+     "high": 50
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 50,
+     "high": 150
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 50,
+     "high": 150
+    }
+   }
+  },
+  {
+   "note": "report (us)",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 50,
+     "high": 101
+    }
+   }
+  },
+  {
+   "note": "next Korean day",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 50,
+     "high": 101
+    }
+   }
+  },
+  {
+   "note": "debit (held)",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 50,
+     "high": 101
+    }
+   }
+  },
+  {
+   "note": "exchange (K2)",
+   "value": {
+    "KR": {
+     "low": 2933000,
+     "high": 2933000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2933000,
+     "high": 2933000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
+ ],
+ "full reversal": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 110,
+     "high": 110
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 110,
+     "high": 210
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 110,
+     "high": 210
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 210,
+     "high": 210
+    }
+   }
+  },
+  {
+   "note": "sale",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 210,
+     "high": 210
+    }
+   }
+  },
+  {
+   "note": "proceeds settled",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 210,
+     "high": 210
+    }
+   }
+  },
+  {
+   "note": "settlement (USD)",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 110,
+     "high": 110
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 110,
+     "high": 110
+    }
+   }
+  }
+ ],
+ "partial reversal": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 60,
+     "high": 60
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 60,
+     "high": 160
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 60,
+     "high": 160
+    }
+   }
+  },
+  {
+   "note": "report (K1)",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 160,
+     "high": 160
+    }
+   }
+  },
+  {
+   "note": "sale",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 160,
+     "high": 160
+    }
+   }
+  },
+  {
+   "note": "proceeds settled",
+   "value": {
+    "KR": {
+     "low": 2866000,
+     "high": 2866000
+    },
+    "US": {
+     "low": 160,
+     "high": 160
+    }
+   }
+  },
+  {
+   "note": "settlement (USD)",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "exchange",
+   "value": {
+    "KR": {
+     "low": 2946400,
+     "high": 2946400
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 2946400,
+     "high": 2946400
+    },
+    "US": {
+     "low": 100,
+     "high": 100
+    }
+   }
+  }
+ ],
+ "USD control (no funding)": [
+  {
+   "note": "before",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 500,
+     "high": 500
+    }
+   }
+  },
+  {
+   "note": "fill",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 500,
+     "high": 600
+    }
+   }
+  },
+  {
+   "note": "before report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 500,
+     "high": 600
+    }
+   }
+  },
+  {
+   "note": "report",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 500,
+     "high": 600
+    }
+   }
+  },
+  {
+   "note": "settled in USD",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 500,
+     "high": 500
+    }
+   }
+  },
+  {
+   "note": "end",
+   "value": {
+    "KR": {
+     "low": 3000000,
+     "high": 3000000
+    },
+    "US": {
+     "low": 500,
+     "high": 500
+    }
+   }
+  }
+ ]
+}

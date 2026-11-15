@@ -482,7 +482,14 @@ class InFlight {
 // every other consumer reads (stage 2b.6: one function for main and the composition harness). KRW committed to U.S. buys
 // moves money between the markets: the daily loss leaves it out (transfer flows settle it), while new exposure is
 // measured with it deducted. Null when the market's value is not available.
+// S3a-2 (settlement clean-up, s3/s3a-f1.md, B): with the funding recorder, the transfers it books are the flows, so the
+// loss value follows them. Korea deducts the KRW of K1 groups not yet seen leaving Korean cash (krwUnpaidKRW: booked out at
+// the report, ending at the Korean reading that shows the cash fall). The U.S. side carries a buy whose route KIS has not
+// shown in full (fundingRouteOpen, low and high alike: its KRW part, if any, comes in as a transfer at settlement).
+// low and high, which new exposure, the series and the review read, are not changed.
 function marketValue(market,{korea=null,us=null,fx=null,inFlight=null,funding=null,now=Date.now()}={}){
   const v=value({korea,us,fx,inFlight,funding,now}).markets[market];if(!v.available||v.equity.low==null)return null;
-  const f=v.components.find(c=>c.name==='usBuyFunding');return {low:v.equity.low,high:v.equity.high,version:VERSION,loss:{low:v.equity.low-(f?.low??0),high:v.equity.high-(f?.high??0)}};}
+  const f=v.components.find(c=>c.name==='usBuyFunding'),route=v.components.find(c=>c.name==='fundingRouteOpen');
+  const unpaid=market==='KR'&&Number.isFinite(funding?.krwUnpaidKRW)?funding.krwUnpaidKRW:0,routeRange=route?Math.max(0,(route.high??route.amount)-(route.low??route.amount)):0;
+  return {low:v.equity.low,high:v.equity.high,version:VERSION,loss:{low:v.equity.low-(f?.low??0)-unpaid,high:v.equity.high-(f?.high??0)-unpaid-routeRange}};}
 module.exports={value,marketValue,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND,fundingSplit};
