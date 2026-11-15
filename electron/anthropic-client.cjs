@@ -163,7 +163,8 @@ function flatten(schema){const props={};
     walk(o,k);}
   return toAnthropicSchema({type:'object',properties:props,required:Object.keys(props),additionalProperties:false});}
 const FLAT=new Map();
-function flatDecisionSchema(brief,targets){const key=`${Boolean(brief)}/${Boolean(targets)}`;if(!FLAT.has(key))FLAT.set(key,flatten(C.decisionSchema(Boolean(brief),Boolean(targets))));return FLAT.get(key);}
+// trail (trailing stops T2): the plan's trailPct and trailAtrMultiple, only while Engine settings allow trailing stops.
+function flatDecisionSchema(brief,targets,trail=false){const key=`${Boolean(brief)}/${Boolean(targets)}${trail?'/trail':''}`;if(!FLAT.has(key))FLAT.set(key,flatten(C.decisionSchema(Boolean(brief),Boolean(targets),Boolean(trail))));return FLAT.get(key);}
 // The count Anthropic's grammar limit follows (the probe's rule): properties + unions + arrays.
 function grammarCount(x){let n=0;const w=o=>{if(!o||typeof o!=='object')return;if(o.anyOf||Array.isArray(o.type))n++;if(o.type==='array'){n++;w(o.items);}if(o.properties)for(const v of Object.values(o.properties)){n++;w(v);}for(const b of o.anyOf??[])w(b);};w(x);return n;}
 // The format text for the enforced form (format only; review E9 adds the sentence on the instructions' null).
@@ -188,7 +189,7 @@ function rebuildDecision(flat,schema){
   if(missing.length||extra.length)throw fail(`decision fields${missing.length?` missing ${missing.slice(0,6).join(', ')}`:''}${extra.length?` unexpected ${extra.slice(0,6).map(k=>String(k).slice(0,30)).join(', ')}`:''}`);
   const f=flat,str=v=>typeof v==='string'?v.trim():'',dropped=[];
   const d={action:f.action,symbol:f.symbol,quantity:f.quantity,credit:f.credit,loanDate:f.loanDate,explanation:f.explanation};
-  d.plan={horizon:f.plan_horizon,thesis:f.plan_thesis,invalidation:f.plan_invalidation,stopPrice:zeroNone(f.plan_stopPrice),targetPrice:zeroNone(f.plan_targetPrice),horizonDays:zeroNone(f.plan_horizonDays),confidence:f.plan_confidence,
+  d.plan={horizon:f.plan_horizon,thesis:f.plan_thesis,invalidation:f.plan_invalidation,stopPrice:zeroNone(f.plan_stopPrice),targetPrice:zeroNone(f.plan_targetPrice),horizonDays:zeroNone(f.plan_horizonDays),...('plan_trailPct' in schema.properties?{trailPct:zeroNone(f.plan_trailPct),trailAtrMultiple:zeroNone(f.plan_trailAtrMultiple)}:{}),confidence:f.plan_confidence,
     portfolioImpact:str(f.plan_portfolioImpact_why)?{weightBeforePct:f.plan_portfolioImpact_weightBeforePct,weightAfterPct:f.plan_portfolioImpact_weightAfterPct,related:f.plan_portfolioImpact_related,relatedBeforePct:f.plan_portfolioImpact_relatedBeforePct,relatedAfterPct:f.plan_portfolioImpact_relatedAfterPct,equityReliable:f.plan_portfolioImpact_equityReliable,why:f.plan_portfolioImpact_why}:null,
     evidence:f.plan_evidence,
     valuation:str(f.plan_valuation_method)?{method:f.plan_valuation_method,inputs:f.plan_valuation_inputs,justification:f.plan_valuation_justification}:null,
@@ -320,9 +321,9 @@ class AnthropicClient {
       // follow, so a part change (a setting) still reads the tools and the core from the cache; with no part text the system
       // is the two blocks it was. options.instructionSet is 'proposed' only in the replay.
       const textBlocks=RI.reviewBlocks(RI.partsFor(context),options.instructionSet);
-      const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const enforced=form!=='text';const flatSchema=enforced?flatDecisionSchema(brief,targets):null;
+      const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const trail=C.trailOn(context);const enforced=form!=='text';const flatSchema=enforced?flatDecisionSchema(brief,targets,trail):null;
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:{type:'ephemeral'}}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets))),cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:{type:'ephemeral'}}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets,trail))),cache_control:{type:'ephemeral'}}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may

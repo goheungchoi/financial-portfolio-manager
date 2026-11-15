@@ -109,3 +109,98 @@ test('T1: a trailing stop is never renewed as the twin of a fixed order with the
   const again=desk.setOrder('kis:a',args,{config:on,positions:held});assert.equal(again.status,'rejected','not renewed: the shares are covered');assert.equal(again.renewed,undefined);assert.equal(desk.orders('kis:a')[0].id,first.id);
   const plain=new AgentDesk(new DatabaseSync(':memory:'));plain.setOrder('kis:a',args,{config:on,positions:held});assert.equal(plain.setOrder('kis:a',args,{config:on,positions:held}).renewed,true,'fixed orders still renew');
 });
+
+// ---- T2: the switch, the tool and schema variants, validation, twins, replaces, context (t0/note.md sections 1, 5 to 8; review.md C).
+const D=require('../electron/agent-desk.cjs');const C=require('../electron/ai-client.cjs');
+const ON={...COND_DEFAULTS,conditionalOrders:true,trailingStops:true,conditionalMaxActive:5};
+const STOP={action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:70000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'r',replaces:null,credit:null,trail:{pct:6,atrMultiple:null,activateAt:null}};
+const Q=[{symbol:'005930',price:81200}];const HELD={'005930':{quantity:4}};
+const arm=(desk,args={},opts={})=>desk.setOrder('kis:a',{...STOP,...args},{config:ON,universe:['005930'],quotes:Q,positions:HELD,...opts});
+
+test('T2: the trail tool and plan fields exist only as variants; with the switch off every schema and tool is unchanged',()=>{
+  assert.ok(!('trail' in D.ORDER_TOOL.parameters.properties)&&!D.ORDER_TOOL.parameters.required.includes('trail'),'ORDER_TOOL is as before');
+  const p=D.ORDER_TOOL_TRAIL.parameters;assert.deepEqual(p.required,[...D.ORDER_TOOL.parameters.required,'trail']);
+  assert.deepEqual(p.properties.trail,{anyOf:[{type:'null'},{type:'object',properties:{pct:{type:['number','null']},atrMultiple:{type:['number','null']},activateAt:{type:['number','null']}},required:['pct','atrMultiple','activateAt'],additionalProperties:false}]});
+  assert.equal(D.ORDER_TOOL_TRAIL.description,D.ORDER_TOOL.description+D.TRAIL_SENTENCE,'the one sentence, once, at the end');
+  assert.match(D.TRAIL_SENTENCE,/while the app is closed, daily highs from the time it was closed are applied at its next check\./,'review C: the cut wording');
+  assert.ok(!/should|prefer|recommend|typical|usually|consider/i.test(D.TRAIL_SENTENCE),'it says what trail does, not when or how far');
+  for(const [a,b] of [[false,false],[true,false],[false,true],[true,true]])assert.deepEqual(C.decisionSchema(a,b,false),C.decisionSchema(a,b),'no trail: the old schema');
+  const plan=C.decisionSchema(false,false,true).properties.plan;assert.deepEqual(plan.required.slice(-2),['trailPct','trailAtrMultiple']);assert.deepEqual(plan.properties.trailPct.type,['number','null']);
+  const ctx=allowed=>({agentDesk:{conditionalOrders:{allowed:true,...(allowed?{trailing:{allowed:true}}:{})}}});
+  assert.equal(C.deskTools(ctx(false)).at(-1),D.ORDER_TOOL);assert.equal(C.deskTools(ctx(true)).at(-1),D.ORDER_TOOL_TRAIL);
+  const desk=new AgentDesk(new DatabaseSync(':memory:'));assert.equal(desk.context('kis:a',{...ON,trailingStops:false},['005930']).conditionalOrders.trailing,undefined,'off: nothing in the context');
+  assert.deepEqual(desk.context('kis:a',ON,['005930']).conditionalOrders.trailing,{allowed:true});assert.equal(desk.context('kis:a',{...ON,conditionalOrders:false},['005930']).conditionalOrders.trailing,undefined);
+  assert.equal(COND_DEFAULTS.trailingStops,false,'off by default');
+});
+
+test('T2: the OpenAI request carries the trail variants only while the context allows trailing stops',async()=>{
+  const sent=[];const client=new C.AiClient('k'.repeat(20),async(url,init)=>{sent.push(JSON.parse(init.body));return {ok:false,status:400,text:async()=>'{}',json:async()=>({}),headers:new Map()};});
+  const base={environment:'kis',universe:[{symbol:'005930'}],positions:{}};
+  for(const trailing of [false,true]){try{await client.decide({...base,agentDesk:{conditionalOrders:{allowed:true,...(trailing?{trailing:{allowed:true}}:{})}}},{research:true});}catch{}}
+  const [off,on]=sent;const plan=b=>b.text.format.schema.properties.plan.properties,tool=b=>b.tools.find(t=>t.name==='set_conditional_order');
+  assert.ok(!('trailPct' in plan(off))&&!('trail' in tool(off).parameters.properties),'off: as before');assert.ok('trailPct' in plan(on)&&'trail' in tool(on).parameters.properties,'on: both variants');
+  assert.equal(off.instructions,on.instructions,'no text changes');
+});
+
+test('T2: every refusal of a trail, in the order of the note',()=>{
+  const desk=()=>new AgentDesk(new DatabaseSync(':memory:'));const why=(args,opts)=>arm(desk(),args,opts).reason;
+  assert.equal(why({},{config:{...ON,trailingStops:false}}),'Trailing stops are turned off in Engine settings.');
+  for(const bad of [{side:'Buy'},{purpose:'entry'}])assert.equal(why(bad),'trail is for a Sell stop_loss or take_profit on cash shares.',JSON.stringify(bad));
+  assert.equal(why({credit:{kind:'margin-sell',loanDate:'2026-10-25',source:'self'}},{lot:{ok:true,lot:{},account:'a'}}),'trail is for a Sell stop_loss or take_profit on cash shares.','a credit lot');
+  for(const conditions of [[{expr:'price("005930")',op:'<',value:70000}],[{expr:'sma("005930",5)',op:'<=',value:70000}],[{expr:'price("005930")',op:'<=',value:70000},{expr:'price("005930")',op:'>',value:1}]])assert.equal(why({conditions}),'With trail, give exactly one condition: price("SYM") <= the floor.');
+  assert.equal(why({combine:'any'}),'With trail, give exactly one condition: price("SYM") <= the floor.');
+  assert.equal(why({trail:{pct:6,atrMultiple:2,activateAt:null}}),'trail needs exactly one of pct and atrMultiple.');assert.equal(why({trail:{pct:null,atrMultiple:null,activateAt:null}}),'trail needs exactly one of pct and atrMultiple.');
+  assert.equal(why({trail:{pct:0.4,atrMultiple:null,activateAt:null}}),'trail.pct must be 0.5 to 50.');assert.equal(why({trail:{pct:51,atrMultiple:null,activateAt:null}}),'trail.pct must be 0.5 to 50.');
+  assert.equal(why({trail:{pct:null,atrMultiple:11,activateAt:null}},{atr:()=>({value:1000,date:'2026-11-06'})}),'trail.atrMultiple must be 0.5 to 10.');
+  assert.equal(why({},{quotes:[]}),'The current price of 005930 is not known; nothing was armed.');
+  assert.equal(why({trail:{pct:null,atrMultiple:2,activateAt:null}},{atr:()=>null}),'ATR(14) for 005930 could not be computed from its daily bars; nothing was armed.');
+  assert.equal(why({trail:{pct:null,atrMultiple:0.5,activateAt:null}},{atr:()=>({value:300,date:'2026-11-06'})}),'The trail distance is 0.18% of the price; it must be 0.5% to 50%.');
+  assert.equal(why({trail:{pct:6,atrMultiple:null,activateAt:81000}}),'trail.activateAt must be above the current price and the floor, or null.');
+  assert.equal(arm(desk(),{trail:null}).status,'armed','trail null: an ordinary stop');assert.equal(arm(desk(),{trail:null},{config:{...ON,trailingStops:false}}).status,'armed','null is accepted while off');
+});
+
+test('T2: arming sets the trail and its level as the condition value; ATR from completed bars only',()=>{
+  const desk=new AgentDesk(new DatabaseSync(':memory:'));const r=arm(desk);assert.equal(r.status,'armed');const o=desk.orders('kis:a')[0];
+  assert.equal(o.trail.floor,70000);assert.equal(o.trail.level,76300);assert.equal(o.conditions[0].value,76300);assert.equal(o.trail.high,81200);assert.equal(o.priceAtCreation,81200);
+  const view=desk.context('kis:a',ON,['005930']).conditionalOrders.armed[0].trail;assert.equal(view.distance,'6%');assert.equal(view.floor,70000);assert.equal(view.level,76300);assert.equal(view.tracking,true);assert.equal(view.active,true);
+  assert.equal(desk.context('kis:a',{...ON,trailingStops:false},['005930']).conditionalOrders.armed[0].trail.tracking,false,'switched off: shown as not tracking');
+  const summary=require('../electron/automation.cjs').dryRunSummary({agentDesk:desk.context('kis:a',ON,['005930'])});assert.deepEqual(summary.conditionalOrders.armed[0].trail,{level:76300,high:81200,floor:70000},'the dry-run summary');
+  const atrDesk=new AgentDesk(new DatabaseSync(':memory:'));arm(atrDesk,{trail:{pct:null,atrMultiple:1.5,activateAt:null}},{atr:()=>({value:1213,date:'2026-11-06'})});const t=atrDesk.orders('kis:a')[0].trail;
+  assert.equal(t.distance,1819.5);assert.equal(t.level,79300);assert.equal(atrDesk.context('kis:a',ON,['005930']).conditionalOrders.armed[0].trail.distance,'1819.5 (1.5 x ATR14 1213 on 2026-11-06)');
+  // trailAtr: bars of the exchange's current day are left out.
+  const {a}=harness();const today=T.dayOf(Date.now(),'KR');const bars=Array.from({length:30},(_,i)=>({date:`2026-10-${String(i+1).padStart(2,'0')}`,open:100,high:110,low:90,close:100}));
+  a.series={closes:()=>[...bars,{date:today,open:100,high:400,low:10,close:100}]};const v=a.trailAtr('005930');assert.equal(v.date,'2026-10-30');assert.equal(v.value,20,'the wide bar of today is not used');
+  a.series={closes:()=>bars.slice(0,10)};assert.equal(a.trailAtr('005930'),null,'not enough bars');
+});
+
+test('T2: a trailing twin has the same floor and trail and keeps its high; a different trail is not a twin',()=>{
+  const desk=new AgentDesk(new DatabaseSync(':memory:'));const first=arm(desk);const o=desk.orders('kis:a')[0];desk.update(o,{trail:{...o.trail,high:90000,level:84600},conditions:[{...o.conditions[0],value:84600}]});
+  const again=arm(desk,{expiresInHours:48});assert.equal(again.renewed,true);assert.equal(again.id,first.id);const kept=desk.orders('kis:a')[0];assert.equal(kept.trail.high,90000);assert.equal(kept.trail.level,84600);
+  assert.equal(arm(desk,{trail:{pct:7,atrMultiple:null,activateAt:null}}).status,'rejected','another distance: not a twin, and the shares are covered');
+  assert.equal(arm(desk,{trail:null,conditions:[{expr:'price("005930")',op:'<=',value:84600}]}).status,'rejected','a fixed order at the current level is not a twin');
+});
+
+test('T2: replaces carries the high onto the same trail and starts afresh otherwise',()=>{
+  const setup=()=>{const desk=new AgentDesk(new DatabaseSync(':memory:'));const first=arm(desk);const o=desk.orders('kis:a')[0];desk.update(o,{trail:{...o.trail,high:90000,highAt:1,level:84600},conditions:[{...o.conditions[0],value:84600}]});return {desk,id:first.id};};
+  let {desk,id}=setup();const carried=arm(desk,{replaces:id,conditions:[{expr:'price("005930")',op:'<=',value:72000}]});assert.equal(carried.status,'armed');assert.equal(carried.replaced,id);
+  let t=desk.orders('kis:a')[0].trail;assert.equal(t.high,90000);assert.equal(t.highAt,1);assert.equal(t.level,84600);assert.equal(t.floor,72000);assert.equal(t.startedFrom,'carried');
+  ({desk,id}=setup());arm(desk,{replaces:id,conditions:[{expr:'price("005930")',op:'<=',value:86000}]});t=desk.orders('kis:a')[0].trail;assert.equal(t.level,86000,'a higher floor wins');
+  ({desk,id}=setup());arm(desk,{replaces:id,trail:{pct:8,atrMultiple:null,activateAt:null}});t=desk.orders('kis:a')[0].trail;assert.equal(t.high,81200,'another distance: from the current price');assert.equal(t.level,74700);
+  ({desk,id}=setup());arm(desk,{replaces:id,trail:null});const fixed=desk.orders('kis:a')[0];assert.equal(fixed.trail,undefined,'to a fixed stop');assert.equal(fixed.conditions[0].value,70000);
+});
+
+test('T2: switching trailing stops off says so once and keeps the stops armed; the two-check memory starts afresh',()=>{
+  const {a,events,armed}=harness();a.configure({trailingStops:true});a.trailMemory=new Map([['x',{price:1,at:1}]]);a.configure({trailingStops:false});
+  assert.equal(armed().status,'armed');assert.equal(armed().trail.level,76300);assert.deepEqual(events.filter(e=>e.title==='Trailing stops paused').map(e=>e.body),['1 trailing stop stays armed at its current level.']);
+  assert.equal(a.trailMemory.size,0);a.configure({trailingStops:false});assert.equal(events.filter(e=>e.title==='Trailing stops paused').length,1,'not again without a change');
+  assert.throws(()=>a.configure({trailingStops:'yes'}),/INVALID_SETTINGS/);
+});
+
+test('T2: plan trail fields survive normalizing, and the flat Claude answer rebuilds them (0 is none)',()=>{
+  const A=require('../electron/anthropic-client.cjs');const schema=A.flatDecisionSchema(false,false,true);
+  const flat=Object.fromEntries(Object.entries(schema.properties).map(([k,v])=>[k,v.type==='array'?[]:v.type==='number'||v.type==='integer'?0:v.enum?v.enum[0]:'']));
+  const {decision}=A.rebuildDecision({...flat,plan_trailPct:6,plan_trailAtrMultiple:0},schema);assert.equal(decision.plan.trailPct,6);assert.equal(decision.plan.trailAtrMultiple,null);
+  const plain=A.flatDecisionSchema(false,false);const {decision:d2}=A.rebuildDecision(Object.fromEntries(Object.keys(plain.properties).map(k=>[k,flat[k]])),plain);assert.ok(!('trailPct' in d2.plan),'off: no trail keys');
+  assert.equal(C.normalizePlan({thesis:'t',stopPrice:90,trailPct:6,trailAtrMultiple:null}).trailPct,6);assert.ok(!('trailAtrMultiple' in C.normalizePlan({thesis:'t',stopPrice:90,trailPct:6,trailAtrMultiple:null})));
+  assert.ok(!('trailPct' in C.normalizePlan({thesis:'t',stopPrice:90})),'no trail: as before');
+});

@@ -29,8 +29,11 @@ test('E4: every Claude schema the app can send counts at most 54; the decision c
     ['scout',A.toAnthropicSchema(require('../electron/scout.cjs').SCHEMA)],['narrative',A.toAnthropicSchema(require('../electron/narrative.cjs').SCHEMA)],['compacting',A.toAnthropicSchema(require('../electron/context-fit.cjs').COMPACT_SCHEMA)],['reflection',A.toAnthropicSchema(require('../electron/reflection.cjs').SCHEMA)]];
   for(const [name,s] of all)assert.ok(A.grammarCount(s)<=LIMIT,`${name}: ${A.grammarCount(s)} over ${LIMIT}`);
   assert.deepEqual(all.slice(0,4).map(([,s])=>A.grammarCount(s)),[51,50,50,49]);
+  // Trailing stops T2: the trail forms (plan_trailPct, plan_trailAtrMultiple), sent only while trailing stops are allowed.
+  const trail=[[true,true],[true,false],[false,true],[false,false]].map(([b,t])=>A.flatDecisionSchema(b,t,true));for(const s of trail)assert.ok(A.grammarCount(s)<=LIMIT);
+  assert.deepEqual(trail.map(s=>A.grammarCount(s)),[53,52,52,51]);for(const s of trail)assert.equal(s.properties.plan_trailPct.type,'number');
   // Every leaf of the nested schema has a flat key or sits inside a JSON-text part.
-  for(const [b,t] of [[true,true],[false,false]]){const nested=C.decisionSchema(b,t),flat=A.flatDecisionSchema(b,t).properties;const leaves=[];
+  for(const [b,t,tr] of [[true,true,false],[false,false,false],[true,true,true],[false,false,true]]){const nested=C.decisionSchema(b,t,tr),flat=A.flatDecisionSchema(b,t,tr).properties;const leaves=[];
     const obj=n=>n?.anyOf?.find(x=>x?.type==='object')??(n?.type==='object'?n:null);
     const walk=(node,prefix)=>{for(const [k,v] of Object.entries(node.properties)){const key=prefix?`${prefix}_${k}`:k;if(!prefix&&A.TEXT_PARTS.includes(k))continue;const o=obj(v);if(o&&v.type!=='array')walk(o,key);else leaves.push(key);}};walk(nested,'');
     for(const l of leaves)assert.ok(l in flat,`${l} has a place`);for(const k of A.TEXT_PARTS)if(k in nested.properties)assert.deepEqual(flat[k],{type:'string'},k);}
@@ -38,7 +41,7 @@ test('E4: every Claude schema the app can send counts at most 54; the decision c
   for(const v of Object.values(A.flatDecisionSchema(true,true).properties))assert.ok(v.type!=='object','no nested object');
   // The schemas the app sends are the fixture's: the forms verified on the real API (2026-11-13) without complexity_score and
   // complexity_reason (instruction rewrite, step 2). The format text is the verified one plus the E9 sentence.
-  for(const [k,[b,t]] of Object.entries({'brief-targets':[true,true],'brief-only':[true,false],'targets-only':[false,true],plain:[false,false]}))assert.equal(JSON.stringify(A.flatDecisionSchema(b,t)),JSON.stringify(FIXED.schemas[k]),k);
+  for(const [k,[b,t]] of Object.entries({'brief-targets':[true,true],'brief-only':[true,false],'targets-only':[false,true],plain:[false,false]})){assert.equal(JSON.stringify(A.flatDecisionSchema(b,t)),JSON.stringify(FIXED.schemas[k]),k);assert.equal(JSON.stringify(A.flatDecisionSchema(b,t,true)),JSON.stringify(FIXED.schemas[k+'-trail']),k+'-trail');}
   const verified=FIXED.formatText.split('\n');const lines=A.FORMAT_TEXT.split('\n');
   assert.deepEqual(lines.filter(l=>!verified.includes(l)),['Where the instructions say null, write the marker named here.']);assert.equal(lines.length,verified.length+1);
 });

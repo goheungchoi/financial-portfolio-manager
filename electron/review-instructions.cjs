@@ -50,13 +50,15 @@ const SCOUT_ALL=scoutText(SCOUT_PARTS.map(p=>p.id));
 // INSTRUCTIONS_VERSION (audit 2026-11-04, Stage 4): reviews are kept apart by version, so evidence gathered under one set
 // of instructions is never counted as evidence for another. tests/instructions-version.test.cjs pins each version to its
 // fingerprint. From 'review 2026-11-13' the fingerprint hashes the core and the parts, not one assembled text.
-const INSTRUCTIONS_VERSION='review 2026-11-13';
+// 'review 2026-11-15' (trailing stops T2): no text changed; the fingerprint now covers the trail variants of the
+// decision schema and of set_conditional_order, sent only while Engine settings allow trailing stops.
+const INSTRUCTIONS_VERSION='review 2026-11-15';
 
 // Step 3: the proposed text, draft-2.md with the rulings of review.md (W1 to W6, the quantity and execution sentences,
 // the desk part, R1). No live review sends it: only the replay's "Built-in text: proposed" does, so the user can compare
 // it with the current text on saved reviews before a later release makes it the built-in one. Same part ids, order and
 // conditions as the current set, so a context gives the same part list under both.
-const PROPOSED_VERSION='proposed 2026-11-14';
+const PROPOSED_VERSION='proposed 2026-11-15';// trailing stops T2: the trail variants, as for the current set
 const PROPOSED_REVIEW_CORE=`TASK
 Review this portfolio for the goals in userGuidelines. Answer with one bounded trade or Hold. Count transaction costs and estimated taxes in every comparison.
 Hold is a complete answer when the evidence does not justify a trade. When uncertainty is the reason, name what is unknown and whether it could change the decision. A trade whose expected gain does not cover its costs is not justified.
@@ -316,8 +318,8 @@ function reviewBlocks(ids,set){const s=setOf(set);assemble(s.core,s.parts,ids);r
 // version of that set; tests/instructions-version.test.cjs pins each version to its fingerprint.
 const fingerprints={};
 function fingerprint(set){const s=setOf(set);if(fingerprints[s.name])return fingerprints[s.name];const C=require('./ai-client.cjs');
-  const all={reviewInterval:{auto:true},discovery:{enabled:true},agentDesk:{conditionalOrders:{allowed:true}}};
-  return fingerprints[s.name]=require('node:crypto').createHash('sha256').update(JSON.stringify([s.core,s.parts.map(p=>[p.id,p.text]),[false,true].flatMap(a=>[false,true].map(b=>C.decisionSchema(a,b))),C.reviewTools(all)])).digest('hex').slice(0,16);}
+  const all={reviewInterval:{auto:true},discovery:{enabled:true},agentDesk:{conditionalOrders:{allowed:true}}},trail={...all,agentDesk:{conditionalOrders:{allowed:true,trailing:{allowed:true}}}};
+  return fingerprints[s.name]=require('node:crypto').createHash('sha256').update(JSON.stringify([s.core,s.parts.map(p=>[p.id,p.text]),[false,true].flatMap(a=>[false,true].flatMap(b=>[false,true].map(t=>C.decisionSchema(a,b,t)))),C.reviewTools(all),C.reviewTools(trail)])).digest('hex').slice(0,16);}
 // The review record's instructions: the set's version and fingerprint, and the parts this context was given.
 const record=(context,set)=>({version:setOf(set).version,fingerprint:fingerprint(set),parts:partsFor(context)});
 // The scout's version (design 6): each plan record keeps it with the parts it was given, so the scorecard can be split
