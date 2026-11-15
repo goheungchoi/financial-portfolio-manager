@@ -20,7 +20,7 @@ function world(){const db=new DatabaseSync(':memory:');let t=TRACKING;const cloc
     // The day's last reading: the U.S. low bound, as the app records it.
     record:()=>{const v=w.valueNow().low;const row=perf.record('a',{totals:{USD:v,KRW:1000000,equityKRW:1000000+v*rate},fx:{usdKRW:rate}});t+=MIN;return row;},
     nextDay:()=>{t=Math.ceil((t-TRACKING)/DAY)*DAY+TRACKING;},
-    detect:()=>{const v=f.current('a');return fd.observe('a',{krCash:1000000,usCash:us.cash-v.buysUSD+v.sellsUSD,fx:rate,orders,usExplained:r=>f.explained('a',r),usReview:v.review});},
+    detect:()=>{const v=f.current('a');return fd.observe('a',{krCash:1000000,usCash:us.cash-v.buysUSD+v.sellsUSD,fx:rate,orders,usExplained:r=>f.explained('a',r)});},
     pid:id=>f.current('a').open.find(p=>p.id===id)?.pid,
     // A reading at which the age rule settles the pieces past it (no cash moves).
     settle:()=>{w.see();const open=f.current('a').open;return open;},

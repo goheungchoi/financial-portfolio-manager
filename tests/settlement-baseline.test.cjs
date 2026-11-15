@@ -29,9 +29,7 @@ function world({limit=30}={}){const db=new DatabaseSync(':memory:');let t=Date.n
     open:(...orders)=>{w.see();for(const o of orders)funding.track(o);w.see(orders);return orders;},
     // KIS U.S. cash falls by the payment: the tracker allocates that evidence to the order (it settles by evidence).
     pay:(orders,usd=100)=>{us.cash-=usd;return w.see(orders);},
-    // Coverage citing the order's KIS row (the ledger's cite, kept until S5 with the coverage under review).
-    cite:A=>{const g=f.evidence.links('a',[A]).get(String(A.id));return f.evidence.cite({account:'a',groupId:g.groupId,version:g.version,orderId:String(A.id),side:'Buy',cents:10000,rule:'test'});},
-    detect:(orders=[])=>{const v=f.current('a');return fd.observe('a',{krCash:1000000,usCash:us.cash-v.buysUSD+v.sellsUSD,fx:1300,orders,usExplained:range=>f.explained('a',range),usReview:v.review});}};
+    detect:(orders=[])=>{const v=f.current('a');return fd.observe('a',{krCash:1000000,usCash:us.cash-v.buysUSD+v.sellsUSD,fx:1300,orders,usExplained:range=>f.explained('a',range)});}};
   return w;}
 
 test('B1: the day\'s baseline saves the tracker\'s pieces, once',()=>{
@@ -47,13 +45,10 @@ test('T26 (restated under E8): reduced coverage moves no baseline; a KIS record 
   a=w.sb.adjustments('a',w.e.policy());assert.equal(a.certain.low,-3);assert.equal(w.loss().loss,0,'the correction is not a loss');
   w.ledger.importK(SCOPE,W,[k({settlementUSD:100,grossUSD:100,price:100,settlementDate:'2026-11-03'})]);w.see([A]);assert.equal(w.f.current('a').buysUSD,0);assert.equal(w.sb.adjustments('a',w.e.policy()).certain.low,0);assert.equal(w.loss().loss,0);
 });
-test('B5/B7: a pre-tracking fill listed after the baseline, and coverage going under review, move the baseline with the value',()=>{
+test('B5: a pre-tracking fill listed after the baseline moves the baseline with the value',()=>{
   const w=world();w.open(order('A'));w.baseline(D);w.see([order('A'),order('B',{ticker:'OTHER',fillPrice:50,limitPrice:50,costEstimate:{netCash:-50},resultCosts:{netCash:-50}})]);
   assert.equal(w.f.current('a').buysUSD,150);assert.equal(w.sb.adjustments('a',w.e.policy()).certain.low,-50);assert.equal(w.loss().loss,0);
-  // (S3b: its later reconciliation, which moved the baseline back, is gone with the reconciliation rules; S4 removes
-  // reconciliations.)
-  const x=world();const [A]=x.open(order('A'));x.ledger.importK(SCOPE,W,[k()]);x.pay([A]);x.cite(A);x.baseline(D);
-  x.ledger.importK(SCOPE,W,[]);assert.equal(x.f.current('a').buysUSD,100);assert.equal(x.sb.adjustments('a',x.e.policy()).certain.low,-100);assert.equal(x.loss().loss,0);
+  // (S3b/S4: its later reconciliation is gone. S5: B7, coverage going under review, is gone with the citations.)
 });
 test('S3b, R1: with no snapshot for the day, the settlement corrections are unavailable with the reason, and so is the loss check',()=>{
   const w=world();w.open(order('A'));w.e.baselineTaken=null;w.baseline(D);assert.equal(w.sb.get('a',D),null);
@@ -66,11 +61,6 @@ test('F1-F3 (CN2, CN5): the tracker\'s own changes are explained to the flow det
   const B=order('B',{ticker:'OTHER',fillPrice:50,limitPrice:50,costEstimate:{netCash:-50},resultCosts:{netCash:-50}});w.see([A,B]);w.later(MIN);w.detect([A,B]);w.later(3*HOUR);assert.deepEqual(w.detect([A,B]),[],'no withdrawal from a late pre-tracking fill');
   // A real $200 deposit: it alone is detected.
   w.us.cash+=200;w.later(MIN);w.detect([A,B]);w.later(3*HOUR);const found=w.detect([A,B]);assert.deepEqual(found.map(x=>[x.market,x.amount,Boolean(x.detected)]),[['US',200,true]]);
-});
-test('F2: coverage under review and its return are explained to the flow detector',()=>{
-  const w=world();const [A]=w.open(order('A'));w.ledger.importK(SCOPE,W,[k()]);w.pay([A]);w.cite(A);
-  w.detect([A]);w.later(MIN);w.ledger.importK(SCOPE,W,[]);assert.equal(w.f.current('a').review.buysUSD,100);w.detect([A]);w.later(3*HOUR);assert.deepEqual(w.detect([A]),[],'no withdrawal while under review');
-  w.ledger.importK(SCOPE,W,[k()]);w.later(MIN);w.detect([A]);w.later(3*HOUR);assert.deepEqual(w.detect([A]),[],'no deposit when it holds again');
 });
 test('F3: explainedSince counts only non-cash, non-fill changes after the time given',()=>{
   const w=world();const t0=w.clock();const [A]=w.open(order('A'));assert.equal(w.f.explainedSince('a',t0-1),-100,'the pre-tracking piece');

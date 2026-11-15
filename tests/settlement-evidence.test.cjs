@@ -60,35 +60,6 @@ test('T13: a reported rise allocated to a fill stays allocated for days; a linke
   const x=world();const G=order('G',{resultCosts:undefined});x.see({cash:500});x.see({cash:500},[G]);x.see({cash:500,unsettled:{buyKRW:130000,sellKRW:0}},[G]);x.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:100.8})]);
   assert.equal(x.see({cash:500,unsettled:{buyKRW:130000,sellKRW:0}},[G]).buysUSD,0);
 });
-test('T34: a cited row whose quantity or trade date changes puts its coverage under review; re-confirmation restores it',()=>{
-  for(const [label,changed] of [['quantity',{quantity:2}],['trade date',{tradeDate:'2026-11-04'}]]){
-    const w=world();w.ledger.importK(SCOPE,W,[k()]);const g=w.group();const c=w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'A',side:'Buy',cents:10000,rule:'manual'});
-    assert.equal(w.current().buysUSD,0,label+': covered');
-    w.ledger.importK(SCOPE,W,[k('TEST',changed)]);const cur=w.current();assert.equal(cur.buysUSD,100,label+': under review counts as unresolved');assert.equal(cur.unresolved.buysUSD,100);
-    assert.equal(cur.open[0].unresolved.why,'under review');assert.match(cur.open[0].unresolved.reason,/missing from a later complete history window/);
-    const fresh=w.ledger.kGroups('a').find(x=>x.id!==g.id);assert.equal(fresh.state,'possible correction');assert.deepEqual(fresh.possibleCorrectionOf,[g.id]);assert.equal(w.ledger.independent(fresh),false,label+': the new row is not independent evidence');
-    w.ledger.confirm(c,{groupId:fresh.id,version:1});assert.equal(w.current().buysUSD,0,label+': re-confirmed');assert.equal(w.ledger.independent(w.ledger.kGroups('a').find(x=>x.id===fresh.id)),true);
-  }
-});
-test('T35: a cited row missing from a later complete window is under review; seen again, it is not',()=>{
-  const w=world();w.ledger.importK(SCOPE,W,[k(),k('OTHER')]);w.ledger.cite({account:'a',groupId:w.group().id,version:1,orderId:'A',side:'Buy',cents:10000,rule:'manual'});
-  w.ledger.importK(SCOPE,{start:'2026-11-01',end:D},[k('OTHER')]);assert.equal(w.current().buysUSD,100);
-  // A window that does not cover the date says nothing.
-  w.ledger.importK(SCOPE,{start:'2026-11-06',end:'2026-11-07'},[]);assert.equal(w.current().buysUSD,100);
-  w.ledger.importK(SCOPE,W,[k(),k('OTHER')]);assert.equal(w.current().buysUSD,0,'seen again');
-  // A version corrected below the cited amount: the shortfall alone.
-  w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97}),k('OTHER')]);const r=w.current();assert.equal(r.buysUSD,3);assert.match(r.open[0].unresolved.reason,/corrected to \$97\.00/);
-});
-test('T36: a reversing row makes its window incomplete: cited coverage on those dates is under review, with no second record; a side change likewise',()=>{
-  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');const costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});
-  const w=world(db);costs.importHistory('a',[{...W,complete:true,rows:[k()]}],1);const g=w.group();w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'A',side:'Buy',cents:10000,rule:'manual'});assert.equal(w.current().buysUSD,0);
-  // trades() refuses a negative quantity (INVALID_RESPONSE): the range is a gap, and nothing is imported from it.
-  costs.importHistory('a',[{...W,complete:false,reason:'INVALID_RESPONSE',rows:[]}],2);const r=w.current();assert.equal(r.buysUSD,100);assert.match(r.open[0].unresolved.reason,/trade-history gap/);
-  assert.equal(w.ledger.kGroups('a').length,1,'no second record');
-  costs.importHistory('a',[{...W,complete:true,rows:[k()]}],3);assert.equal(w.current().buysUSD,0,'a complete read restores it');
-  // The side changes: the old key is missing, the new row only a possible correction.
-  costs.importHistory('a',[{...W,complete:true,rows:[k('TEST',{side:'Sell'})]}],4);assert.equal(w.current().buysUSD,100);assert.equal(w.ledger.kGroups('a').find(x=>x.key.side==='Sell').state,'possible correction');
-});
 test('atomicity: one evidence remainder is never allocated twice; a refused allocation rolls back the whole reading',()=>{
   const w=world();const id=w.ledger.aggregate({account:'a',environment:'live',readingA:'1',readingB:'2',side:'Buy',field:'cash',amountCents:10000});
   w.ledger.allocate({account:'a',evidenceId:id,pieceId:'P#1',cents:6000,pieceCents:6000});
@@ -157,18 +128,6 @@ test('review 2b.2: successive K versions are reconciled against the open conflic
   // A sale corrected upward is possible extra proceeds (the high bound), never a buy obligation.
   const y=world();const S=order('S',{side:'Sell',resultCosts:{netCash:100}});y.see({cash:500});y.see({cash:500},[S]);assert.equal(y.see({cash:600},[S]).sellsUSD,0);
   y.ledger.importK(SCOPE,W,[k('TEST',{side:'Sell',settlementUSD:105,grossUSD:105,price:105})]);const s=y.see({cash:600},[S]);assert.deepEqual([s.buysUSD,s.sellsUSD],[0,5]);
-});
-test('review 2b.2: citations of one row are checked together; a row is never cited beyond its amount',()=>{
-  const w=world();w.ledger.importK(SCOPE,W,[k()]);const g=w.group();
-  const c60=w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'A',side:'Buy',cents:6000,rule:'manual'});w.later(1);const c40=w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'B',side:'Buy',cents:4000,rule:'manual'});
-  assert.throws(()=>w.ledger.cite({account:'a',groupId:g.id,version:1,orderId:'C',side:'Buy',cents:1,rule:'manual'}),/CITATION_EXCEEDS_ROW/);
-  assert.deepEqual(w.ledger.underReview('a'),[]);
-  w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:97,grossUSD:97,price:97})]);const r=w.ledger.underReview('a');
-  assert.equal(r.reduce((n,x)=>n+x.usd,0),3,'$100 cited against $97: $3 short');assert.deepEqual(r.map(x=>[x.citationId,x.usd]),[[c40,3]],'the newest citation carries it');assert.match(r[0].reason,/citations total \$100\.00/);
-  assert.equal(w.current().buysUSD,3);
-  w.ledger.importK(SCOPE,W,[k('TEST',{settlementUSD:30,grossUSD:30,price:30})]);assert.deepEqual(w.ledger.underReview('a').map(x=>[x.citationId,x.usd]),[[c40,40],[c60,30]],'$70 short: the newer $40 in full, then $30 of the older');
-  // A row that is not independent puts every citation of it under review, in full.
-  w.ledger.importK(SCOPE,W,[]);assert.equal(w.ledger.underReview('a').reduce((n,x)=>n+x.usd,0),100);
 });
 test('review 2b.2: a replacement arriving imports after its row went missing is a possible correction',()=>{
   const w=world();w.ledger.importK(SCOPE,W,[k()]);w.ledger.importK(SCOPE,W,[]);w.ledger.importK(SCOPE,W,[k('OTHER')]);w.ledger.importK(SCOPE,W,[k('OTHER'),k('TEST',{quantity:2})]);

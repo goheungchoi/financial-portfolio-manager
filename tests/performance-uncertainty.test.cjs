@@ -53,12 +53,13 @@ test('S2: the former bounded case (a weekend with one fixed obligation) is an or
   w.see([order('A',100,{createdAt:FILL,filledObservedAt:FILL,day:'2026-10-30'}),order('B',50,{createdAt:FILL,filledObservedAt:FILL,day:'2026-10-30'})]);w.nextDay();w.us.price=1020;w.record();
   const m=w.points()[2];assert.equal(m.unavailable,undefined);assert.notEqual(m.dailyReturn,null);assert.ok(estimate(m));assert.notEqual(w.all().twr,null);
 });
-test('S2: coverage under review, a flag or an overdue mark tag the day only while a piece of it is still open',()=>{
+test('S2: an open piece, a flag or an overdue mark tag the day only while a piece of it is still open',()=>{
+  // (S5: the coverage-under-review case is gone with the citations.)
   const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-10-26'});w.see([B]);w.record();w.nextDay();
-  let review=[{orderId:'B',citationId:'C1',side:'Buy',usd:60,reason:'the row is missing from a later complete history window'}];w.f.evidence.underReview=()=>review;w.us.price=1010;w.record();
+  w.us.price=1010;w.record();
   const [,d]=w.points();assert.equal(d.unavailable,undefined);assert.notEqual(d.dailyReturn,null,'a return, not unavailable');assert.ok(estimate(d));
-  // The review clears and B settles by evidence: the day is plain.
-  review=[];w.nextDay();w.us.cash=400;w.see([B]);w.record();assert.equal(estimate(w.points()[1]),false);
+  // B settles by evidence: the day is plain.
+  w.nextDay();w.us.cash=400;w.see([B]);w.record();assert.equal(estimate(w.points()[1]),false);
   for(const kind of ['flag','overdue']){const x=world();x.see([]);const C=order('C',100,{createdAt:x.clock(),filledObservedAt:x.clock(),day:'2026-10-26'});x.see([C]);x.record();x.nextDay();
     const pid=x.pid('C');x.f.evidence.event('a',kind,kind==='flag'?{pieces:[pid],why:'ambiguous evidence'}:{pieceId:pid,orderId:'C',usd:100});x.us.price=1010;x.record();
     assert.ok(estimate(x.points()[1]),kind);assert.equal(x.points()[1].unavailable,undefined);x.us.cash=400;x.see([C]);assert.equal(estimate(x.points()[1]),false,kind+': settled, plain');}

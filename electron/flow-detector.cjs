@@ -103,17 +103,16 @@ class FlowDetector {
   // provisionalKRW: unsettled U.S. buys whose funding is not yet known (KRW or USD); unsettledKRW: all unsettled U.S. buys.
   // usExplained({afterId, since}): {usd, through}: USD the settlement tracker moved the U.S. basis by after the last
   // ledger event the previous reading accounted for (or since its time) without cash or a fill (InFlight.explained);
-  // usReview: its coverage under review now ({buysUSD, sellsUSD}), compared with the last reading (stage 2b.4: a
-  // reconciliation, a late pre-tracking fill or a correction is no deposit or withdrawal).
+  // (A late pre-tracking fill or a correction is no deposit or withdrawal. S5: the coverage under review, usReview, is
+  // gone; a stored usReview, always 0, is not read.)
   // funding: the recorder's cumulative explained amounts {KR, US} (electron/funding-transfers.cjs explained).
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0,usExplained=null,usReview=null,funding=null}){
+  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0,usExplained=null,funding=null}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
-    const reviewEffect=usReview?Math.round(((Number(usReview.sellsUSD)||0)-(Number(usReview.buysUSD)||0))*100)/100:0;
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
-    let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=(Number(x?.usd)||0)+reviewEffect-(Number(prev.usReview)||0);usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usReview:reviewEffect,usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{})};
+    let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=Number(x?.usd)||0;usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{})};
     // Provisional changes and settlement evidence carry over between readings. (S4b-1: settlement-timing entries are no
     // longer kept; a stored one is dropped at this save.)
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};

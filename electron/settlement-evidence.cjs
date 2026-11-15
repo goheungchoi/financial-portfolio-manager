@@ -1,7 +1,7 @@
 // The settlement evidence ledger (stage 2b.2; design v2 §2, v3 §2-3, v3.1 §2, v3.3). Durable and append-only where it
 // matters, so evidence is used once and every change is on record:
 // - settlement_events: append-only (triggers refuse updates and deletes): every piece, evidence, allocation, flag,
-//   correction, conflict and citation change of the U.S. settlement tracker (electron/valuation.cjs InFlight);
+//   correction and conflict of the U.S. settlement tracker (electron/valuation.cjs InFlight);
 // - settlement_evidence: one row per evidence version. Aggregates (U.S. cash, KIS's reported unsettled totals) are
 //   identified by {account, environment, market, reading A, reading B, side, field}: they never name a fill. KIS settled
 //   trade rows (K, CTOS4001R) by a content key {account, environment, market, ticker, side, trade date, quantity}, which
@@ -14,11 +14,10 @@
 //   count that changed, make the group correction-ambiguous; a key missing from a later complete window covering its
 //   date is marked missing; a new key appearing for the same ticker while another went missing is a possible
 //   correction, never independent evidence;
-// - settlement_citations: coverage that relies on a K row (an audited reconciliation, stage 2b.3; A1 once U6 is
-//   verified). A citation whose row is missing, changed key, became ambiguous, was superseded for less, or sits in a
-//   trade-history gap is under review: its amount counts as unresolved again until it is re-confirmed;
-// - settlement_standby: no longer written (S4b-2, with the reconciliation that used it); the table is kept, empty.
-// K is supporting evidence only (D2): nothing here resolves a piece from K. A1 stays disabled until U6 is verified.
+// - settlement_citations and settlement_standby: no longer created, written or read (S4b-2 removed the reconciliation
+//   that wrote them, S5 the readers: re-confirmation and "coverage under review"). Files that have them keep them, empty.
+// K is supporting evidence only (D2): nothing here resolves a piece from K. Coverage by citation (rule A1, tied to U6) no
+// longer exists: enabling U6-U9 later needs it designed again. U6-U9 stay disabled.
 const crypto=require('node:crypto');
 const hash=v=>crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0,24);
 const cents=v=>Math.round(Number(v)*100);
@@ -37,9 +36,7 @@ class SettlementEvidence{
       CREATE TRIGGER IF NOT EXISTS settlement_events_no_delete BEFORE DELETE ON settlement_events BEGIN SELECT RAISE(ABORT,'settlement_events is append-only'); END;
       CREATE TABLE IF NOT EXISTS settlement_evidence(id TEXT PRIMARY KEY,evidenceId TEXT NOT NULL,version INTEGER NOT NULL,account TEXT NOT NULL,source TEXT NOT NULL,amountCents INTEGER NOT NULL,currency TEXT NOT NULL,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settlement_allocations(id TEXT PRIMARY KEY,account TEXT NOT NULL,evidenceId TEXT NOT NULL,version INTEGER NOT NULL,pieceId TEXT NOT NULL,orderId TEXT,cents INTEGER NOT NULL,rule TEXT,at INTEGER NOT NULL,reversedBy TEXT);
-      CREATE TABLE IF NOT EXISTS settlement_k_groups(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS settlement_citations(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS settlement_standby(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL)`);}
+      CREATE TABLE IF NOT EXISTS settlement_k_groups(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL)`);}
   // One transaction for fn: BEGIN IMMEDIATE (so another connection cannot interleave), or a savepoint inside one
   // already open. Everything fn writes commits together, or nothing does.
   tx(fn){const own=!this.db.isTransaction;this.db.exec(own?'BEGIN IMMEDIATE':'SAVEPOINT settlement_evidence');
@@ -87,7 +84,7 @@ class SettlementEvidence{
         if(n!==g.count||n>1||g.state==='uncertain'){if(g.state==='single'&&(n!==g.count||n>1))g.state='correction-ambiguous';g.count=Math.max(g.count,n);g.members=list;}
         else if(g.state==='single'&&!same(g.versions.at(-1).fields,list[0]))this.addVersion(g,list[0]);
         g.lastSeen=now;this.putGroup(g);if(g.state!==was)this.event(account,'k-state',{groupId:id,from:was,to:g.state});}
-      this.noteReview(account);return {groups:byKey.size,missing:missingNow.length};});}
+      return {groups:byKey.size,missing:missingNow.length};});}
   // Reduces the active allocations of an order by cents, latest first: each is marked reversed, and replaced by one for
   // what is left of it. Returns what was released, per evidence version and piece, so it can be restored.
   reduceAllocations(account,orderId,c,reason){const out=[];let left=c;
@@ -115,36 +112,5 @@ class SettlementEvidence{
       out.set(String(o.id),!g?{state:'none'}:counts.get(key(o))>1?{state:'uncertain',groupId:g.id,reason:'several app orders share the KIS row\'s ticker, side, date and quantity'}:!this.independent(g)?{state:'uncertain',groupId:g.id,reason:this.why(g)}:{state:'linked',groupId:g.id,version:g.versions.at(-1).version,fields:g.versions.at(-1).fields});}
     return out;}
   why(g){return g.missingSince!=null?'the row is missing from a later complete history window':g.state==='possible correction'?'a possible correction of a row that disappeared':g.state==='correction-ambiguous'?'its rows changed in a way that cannot be linked with certainty':g.count>1?`${g.count} identical rows in one window`:this.inGap(g)?'its date is in a trade-history gap':'not independent';}
-  // Coverage relying on a K row (stage 2b.3 records; A1 later). Tests and the reconciliation call this.
-  // Citations of one row together never exceed what it says (CITATION_EXCEEDS_ROW).
-  cite({account,groupId,version,orderId,side,cents:c,rule}){const id='C'+hash([account,groupId,version,orderId,c,this.clock()]);const row={id,account,groupId,version,orderId:String(orderId),side,cents:c,rule,at:this.clock()};
-    return this.tx(()=>{const v=this.version(groupId,version);if(!v)throw fail('CITATION_TARGET_UNKNOWN');
-      if(this.citations(account).filter(x=>x.groupId===groupId).reduce((n,x)=>n+x.cents,0)+c>v.amountCents)throw fail('CITATION_EXCEEDS_ROW');this.db.prepare('INSERT INTO settlement_citations VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'citation',row);this.noteReview(account);return id;});}
-  // Active citations (a reversed reconciliation's citation no longer covers anything); all: every one, for the record.
-  citations(account,{all=false}={}){return this.db.prepare('SELECT payload FROM settlement_citations WHERE account=?').all(account).map(r=>JSON.parse(r.payload)).filter(c=>all||!c.reversedBy);}
-  // Re-confirms a citation against the group's current version (or another group), after review. Confirming against a
-  // possible correction is the manual link that makes it a row of its own (v3.1 §2); an ambiguous group or one with
-  // several rows cannot be confirmed.
-  confirm(id,{groupId,version}){return this.tx(()=>{const r=this.db.prepare('SELECT account,payload FROM settlement_citations WHERE id=?').get(id);if(!r)throw fail('CITATION_UNKNOWN');
-    const g=this.kGroups(r.account).find(x=>x.id===groupId);if(!g||!g.versions.some(v=>v.version===version))throw fail('CITATION_TARGET_UNKNOWN');if(g.state==='correction-ambiguous'||g.state==='uncertain'||g.count!==1)throw fail('CITATION_TARGET_AMBIGUOUS');
-    if(g.state==='possible correction'){g.state='single';g.linkedManually={citationId:id,at:this.clock()};this.putGroup(g);this.event(r.account,'k-linked-manually',{groupId,citationId:id});}
-    const row={...JSON.parse(r.payload),groupId,version,confirmedAt:this.clock()};this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify(row),id);this.event(r.account,'citation-confirmed',{id,groupId,version});this.noteReview(r.account);return row;});}
-  // Citations whose K row no longer holds: the amount not covered counts as unresolved again. All citations of one row
-  // are checked together against its current version (review of 4b534c1, P1: $60 and $40 each compared with a row
-  // corrected to $97 stayed covered): the shortfall goes under review, newest citations first. A row that is not
-  // independent evidence puts every citation of it under review.
-  // Stage 3.2 review (P2): every change of the coverage under review is an event (review-changed: before and after),
-  // so a row that goes missing and returns between two recorded readings still leaves its trace. It is derived from the
-  // K rows, the citations and the trade-history gaps, so it is noted after each of them changes; unchanged, nothing.
-  noteReview(account){const now=this.underReview(account).map(r=>({citationId:r.citationId,orderId:String(r.orderId),side:r.side,usd:r.usd,reason:r.reason})).sort((a,b)=>a.citationId<b.citationId?-1:a.citationId>b.citationId?1:0);
-    const last=this.db.prepare("SELECT payload FROM settlement_events WHERE account=? AND kind='review-changed' ORDER BY id DESC LIMIT 1").get(account),before=last?JSON.parse(last.payload).after??[]:[];
-    if(JSON.stringify(before)!==JSON.stringify(now))this.event(account,'review-changed',{before,after:now});return now;}
-  underReview(account){const out=[];const groups=new Map(this.kGroups(account).map(g=>[g.id,g])),byRow=new Map();
-    for(const c of this.citations(account)){if(!byRow.has(c.groupId))byRow.set(c.groupId,[]);byRow.get(c.groupId).push(c);}
-    for(const [groupId,list] of byRow){const g=groups.get(groupId),total=list.reduce((n,c)=>n+c.cents,0);let reason=null,short=0;
-      if(!g){reason='the cited row is unknown';short=total;}else if(!this.independent(g)){reason=this.why(g);short=total;}
-      else{const amount=cents(g.versions.at(-1).fields.settlementUSD??g.versions.at(-1).fields.grossUSD??0);if(total>amount){short=total-amount;reason=`the cited row was corrected to $${(amount/100).toFixed(2)}; its citations total $${(total/100).toFixed(2)}`;}}
-      for(const c of [...list].sort((a,b)=>b.at-a.at||(a.id<b.id?1:-1))){if(short<=0)break;const part=Math.min(short,c.cents);short-=part;out.push({citationId:c.id,orderId:c.orderId,side:c.side,usd:part/100,reason});}}
-    return out;}
 }
 module.exports={SettlementEvidence,usTradeDate};

@@ -33,10 +33,11 @@ class SettlementCorrections{
 }
 // Settlement simplification S2 (design section 3, D3), the default: no day is unavailable for a settlement reason. A day
 // whose interval had a U.S. buy in flight (open at the previous day's last reading, seen during the day, opened, flagged
-// or overdue in between, or coverage under review) shows its return with the estimate tag (pending) while any of those
+// or overdue in between) shows its return with the estimate tag (pending) while any of those
 // pieces is still open, and plainly once they closed (by evidence or by age, at most 3 business days). There are no
 // misstatement windows and no bounded ranges: a closed piece's change is a correction (C2). S4a removed the stage 3.2
-// rules (U1-U3) and the historical restatements with them. U4 stays: a day the tracker's state was not recorded for, or
+// rules (U1-U3) and the historical restatements with them; S5 the coverage under review (a stored piece's review flag and
+// review-changed events, none on the live file, are not read). U4 stays: a day the tracker's state was not recorded for, or
 // could not be read, has no return.
 class SettlementUncertainty{
   constructor(db,{inFlight}={}){if(!inFlight)throw new Error('UNCERTAINTY_NEEDS_TRACKER');this.db=db;this.inFlight=inFlight;}
@@ -45,7 +46,7 @@ class SettlementUncertainty{
   // S2: Map day -> {unavailable (U4 only), pending (the estimate tag, while a piece of the day is open)}.
   estimates(account,rows,excludePieces=null){const out=new Map(),days=rows.filter(r=>Number.isFinite(r.at)),started=this.inFlight.state(account).startedAt;if(!Number.isFinite(started))return out;const kept=pid=>!(excludePieces?.has(pid));
     const at=day=>{const d=out.get(day)??{unavailable:[]};out.set(day,d);return d;},mark=(day,why)=>{const d=at(day);if(!d.unavailable.includes(why))d.unavailable.push(why);};
-    const now=this.inFlight.current(account),openNow=new Set((now.open??[]).filter(p=>p.side==='Buy'&&kept(p.pid)).map(p=>p.pid)),reviewNow=(now.review?.buysUSD??0)>0.005;
+    const now=this.inFlight.current(account),openNow=new Set((now.open??[]).filter(p=>p.side==='Buy'&&kept(p.pid)).map(p=>p.pid));
     const events=this.inFlight.evidence.events(account).filter(e=>kept(e.pieceId)),side=new Map(),opened=new Map();for(const e of events)if(e.kind==='piece-opened'){side.set(e.pieceId,e.side);if(!opened.has(e.pieceId))opened.set(e.pieceId,e.at);}
     const buys=list=>(list??[]).filter(p=>p.side==='Buy'&&kept(p.pid));
     for(let i=1;i<days.length;i++){const prev=days[i-1],cur=days[i],day=cur.day;if(cur.at<started)continue;const s=cur.settlement,p=prev.settlement;
@@ -53,14 +54,14 @@ class SettlementUncertainty{
       if(s.error||!s.last){mark(day,`the settlement tracker could not be read when this day was recorded (${s.error??'no reading'})`);continue;}
       if(prev.at>=started&&(!p||p.error||!p.last)){mark(day,'the settlement tracker\'s uncertainty was not recorded at the previous day\'s last reading');continue;}
       const before=prev.at>=started?buys(p.last.pieces):[];
-      const pids=new Set([...before,...buys(s.seen),...buys(s.last.pieces)].map(x=>x.pid).filter(Boolean));for(const pid of [...(prev.at>=started?p.last.open?.pids??[]:[]),...(s.openPids??[]),...(s.last.open?.pids??[])])if(kept(pid))pids.add(pid);let review=[...before,...buys(s.seen)].some(x=>x.review);
+      const pids=new Set([...before,...buys(s.seen),...buys(s.last.pieces)].map(x=>x.pid).filter(Boolean));for(const pid of [...(prev.at>=started?p.last.open?.pids??[]:[]),...(s.openPids??[]),...(s.last.open?.pids??[])])if(kept(pid))pids.add(pid);
       for(const e of events){if(!(e.at>prev.at&&e.at<=cur.at))continue;if(e.kind==='piece-opened'&&e.side==='Buy')pids.add(e.pieceId);else if(e.kind==='flag')for(const pid of e.pieces??[]){if(side.get(pid)==='Buy')pids.add(pid);}
-        else if(e.kind==='overdue'&&side.get(e.pieceId)==='Buy')pids.add(e.pieceId);else if(e.kind==='review-changed'&&[...(e.before??[]),...(e.after??[])].some(x=>x.side==='Buy'))review=true;}
+        else if(e.kind==='overdue'&&side.get(e.pieceId)==='Buy')pids.add(e.pieceId);}
       // Not known which buys were open (a day recorded before the snapshot named them, with buys open by amount, or one
       // without the open totals): an estimate while any buy opened by then is still open.
       const named=Array.isArray(s.last.open?.pids)&&(prev.at<started||Array.isArray(p.last.open?.pids)),openByAmount=(s.openBuysMaxUSD??0)>0.005||prev.at>=started&&(p.last.open?.buysUSD??0)>0.005;
       const unknownOpen=Boolean(s.openUnknown||!s.last.open||prev.at>=started&&!p.last.open||!named&&openByAmount);
-      const still=[...pids].filter(pid=>openNow.has(pid)),open=still.length>0||review&&reviewNow||unknownOpen&&[...openNow].some(pid=>(opened.get(pid)??Infinity)<=cur.at);
+      const still=[...pids].filter(pid=>openNow.has(pid)),open=still.length>0||unknownOpen&&[...openNow].some(pid=>(opened.get(pid)??Infinity)<=cur.at);
       if(open){const usd=(now.open??[]).filter(x=>x.side==='Buy'&&(still.includes(x.pid)||unknownOpen&&(opened.get(x.pid)??Infinity)<=cur.at)).reduce((n,x)=>n+(x.usd??0),0);at(day).pending={usd:Math.round(usd*100)/100,estimate:true,...(unknownOpen?{unknown:true}:{})};}}
     return out;}
 }

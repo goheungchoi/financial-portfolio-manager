@@ -4,9 +4,9 @@
 // the tracker's in-flight amounts that moves no money on both sides (baseline and value) or on neither, so a real loss
 // stays visible and no breach is invented.
 //
-// The snapshot: when the U.S. engine takes a day's baseline, the tracker's open pieces (cents, by piece), the orders it
-// knows and its coverage under review are saved with it (settlement_baselines, one per account and day; the first
-// stands). What comes after the baseline is decided by the ledger event id the snapshot kept, not by the clock.
+// The snapshot: when the U.S. engine takes a day's baseline, the tracker's open pieces (cents, by piece), and the orders it
+// knows are saved with it (settlement_baselines, one per account and day; the first stands; S5: older snapshots' review
+// field, always zero, is not read). What comes after the baseline is decided by the ledger event id the snapshot kept, not by the clock.
 //
 // The one rule: a cash-free change of the tracker's basis after the day's baseline predates it, so the baseline moves
 // with the value by the same amount. A buy moves the low bound, a sale the high bound. The changes are the ledger events
@@ -18,8 +18,6 @@
 // - a piece settled by age, or the fee difference of one closed with its evidence: removed (+), cumulative per piece and
 //   at most the piece's basis (what the baseline counted of it, or what opened after it).
 // A close alone is zero P/L; a real loss on the day of a close is measured in full.
-// Coverage under review changed since the baseline moves it the same way (its source, the evidence citations, goes in
-// S5, and this term with it).
 // No snapshot for the day: the corrections cannot be placed against the baseline, so they are unavailable, with the
 // reason (the loss check then reports itself unavailable; ruling R1). A snapshot that could not be saved is already
 // unavailable in LiveEngine.settlement.
@@ -32,10 +30,10 @@ class SettlementBaseline{
   // The snapshot: the tracker as the baseline saw it. The first snapshot of a day stands. (S4b-2: recordIds, the
   // reconciliation records then, is no longer written; older snapshots keep it, unread.)
   take(account,day,at){if(typeof account!=='string'||!account||typeof day!=='string'||!Number.isFinite(at))return null;const was=this.get(account,day);if(was)return was;
-    const st=this.inFlight.state(account),t=this.inFlight.current(account);
+    const st=this.inFlight.state(account);
     const pieces=Object.fromEntries((st.open??[]).filter(f=>f.pid).map(f=>[f.pid,{side:f.side,cents:cents(f.usd),orderId:f.id,...(f.conflict?{conflict:true}:{})}]));
     const lastEventId=this.ledger.events(account).reduce((n,e)=>Math.max(n,e.seq),0);
-    const payload={pieces,orders:Object.keys(st.seen??{}),review:{buysUSD:t.review?.buysUSD??0,sellsUSD:t.review?.sellsUSD??0},lastEventId};
+    const payload={pieces,orders:Object.keys(st.seen??{}),lastEventId};
     this.db.prepare('INSERT INTO settlement_baselines VALUES(?,?,?,?) ON CONFLICT(account,day) DO NOTHING').run(account,day,at,JSON.stringify(payload));return {...payload,at};}
   // The day's adjustment to a U.S. baseline (policy: the engine's, with day and baselineAt): {certain:{low,high}, items}
   // in USD, items saying what makes it; {unavailable: reason} with no snapshot; null without a day or a baseline time.
@@ -55,9 +53,6 @@ class SettlementBaseline{
         items.push({kind:'KIS record lowered again',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:c/100});}
       else if(e.kind==='piece-closed'&&(e.why==='age'&&Number.isFinite(e.usd)||Number.isFinite(e.feeUSD))){const x=Math.max(0,Math.min(cents(e.why==='age'?e.usd:e.feeUSD),(basis.get(e.pieceId)??0)-(closed.get(e.pieceId)??0)));if(!x)continue;
         closed.set(e.pieceId,(closed.get(e.pieceId)??0)+x);move(s,x,1);items.push({kind:e.why==='age'?'settled by age':'fee difference',pieceId:e.pieceId,orderId:e.orderId,side:s,usd:x/100});}}
-    // Coverage under review since the baseline (until S5).
-    if(snap.review){const r=this.inFlight.current(account).review??{buysUSD:0,sellsUSD:0},db=cents(r.buysUSD)-cents(snap.review.buysUSD),ds=cents(r.sellsUSD)-cents(snap.review.sellsUSD);
-      if(db){move('Buy',db,-1);items.push({kind:'coverage under review',side:'Buy',usd:db/100});}if(ds){move('Sell',ds,-1);items.push({kind:'coverage under review',side:'Sell',usd:ds/100});}}
     return {day,at,snapshot:true,certain:{low:b.low/100,high:b.high/100},items};}
 }
 module.exports={SettlementBaseline};

@@ -180,8 +180,8 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,funding=null,now=Date
 // the settlement evidence ledger (electron/settlement-evidence.cjs): evidence is identified by its reading pair, side
 // and field, every allocation is checked there against what is left of the evidence and of the piece, and the events
 // are append-only. KIS settled-trade rows linked with certainty to an order are supporting evidence only (A1 off): they
-// resolve nothing, but one more than a cent from what was allocated reopens the difference (a conflict). Coverage that
-// relies on a K row that no longer holds counts as unresolved again (under review).
+// resolve nothing, but one more than a cent from what was allocated reopens the difference (a conflict). (S5: coverage
+// by citation and "under review" are gone.)
 // orders: the U.S. engine's.
 const MAX_DAYS=7,PAIR_DAYS=4,TOLERANCE=0.95,BOUND=12,EVIDENCE_KEPT=60,DAY=86400000;
 // When an order filled: when the app saw it filled, or failing that when it was placed.
@@ -193,8 +193,8 @@ const fillTime=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.
 const REPORTED=['reported before seen','reported total moved by an unmatched amount'];
 const cents=v=>Math.round(v*100);
 class InFlight {
-  // settleDays: business days after which an open piece is settled by age (S1a; 3). null turns the age rule off; only the
-  // tests of the reconciliation, panel and baseline code that S3 and S4 remove use that, until they are removed.
+  // settleDays: business days after which an open piece is settled by age (S1a; 3). null turns the age rule off: for tests
+  // that need pieces kept open across days (the app never passes it). feeBound:false: see take() below.
   constructor(db,clock=Date.now,{settleDays=require('./business-days.cjs').SETTLE_DAYS,feeBound=true}={}){this.settleDays=settleDays;this.feeBoundOn=feeBound!==false;this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS inflight_settlement(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');this.evidence=new (require('./settlement-evidence.cjs').SettlementEvidence)(db,clock);}
   save(account,st){this.db.prepare('INSERT INTO inflight_settlement VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(st));}
   state(account){const r=this.db.prepare('SELECT payload FROM inflight_settlement WHERE account=?').get(account);return r?JSON.parse(r.payload):{basis:null,seen:{},open:[],evidence:[]};}
@@ -241,8 +241,8 @@ class InFlight {
       const notes0=[],closed0=new Map();this.ageOut(account,st,now,notes0,closed0);
       for(const [orderId,why] of closed0)if(!st.open.some(f=>String(f.id)===orderId))this.onSettled?.(account,{orderId,why});save();
       const staying=st.open.length;
-      return {...this.withReview(account,st),notes:['tracking of U.S. fills awaiting settlement starts with this reading',...(staying?[`${staying} fill(s) from before tracking stay in flight, awaiting verification, until KIS evidence or the age rule resolves them`]:[]),...notes0]};}
-    if(readAt!=null&&st.readAt!=null&&readAt<st.readAt)return {...this.withReview(account,st),notes:['a U.S. balance reading older than the last one was ignored']};
+      return {...InFlight.totals(st),notes:['tracking of U.S. fills awaiting settlement starts with this reading',...(staying?[`${staying} fill(s) from before tracking stay in flight, awaiting verification, until KIS evidence or the age rule resolves them`]:[]),...notes0]};}
+    if(readAt!=null&&st.readAt!=null&&readAt<st.readAt)return {...InFlight.totals(st),notes:['a U.S. balance reading older than the last one was ignored']};
     // State saved before readings were kept: its reported baseline may hold an old unmatched total, so no reported change
     // is evidence at this first reading.
     if(!st.observed){st.observed=reported;delete st.reported;}st.evidence??=[];
@@ -270,7 +270,8 @@ class InFlight {
     // Exact amounts: the run's fills, oldest first, each take what is left of the evidence up to their own amount; a fill
     // not fully covered keeps its remainder in flight, unresolved, with the shortfall (nothing is written off).
     // Each allocation is also written to the ledger (src: its evidence), which refuses more than is left of either.
-    // feeBound:false (constructor) keeps every remainder open: only the tests of the reconciliation code S3/S4 removes.
+    // feeBound:false (constructor) keeps every remainder open, as the code before the fee bound did: for tests that
+    // simulate data written then (settlement-age H1). The app never passes it.
     const feeBound=f=>this.feeBoundOn?Math.max(100,Math.round((f.cents0??cents(f.usd))*0.005)):-1;
     const take=(run,amountCents,evidence,src=null)=>{let left=amountCents;const out=[];
       for(const f of run){const c=cents(f.usd),a=Math.max(0,Math.min(c,left));left-=a;
@@ -398,7 +399,7 @@ class InFlight {
     Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
     // Orders no longer listed are forgotten, so the record stays bounded.
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
-    save();return {...this.withReview(account,st),notes,newlyOverdue};
+    save();return {...InFlight.totals(st),notes,newlyOverdue};
   }
   // Settlement by age (S1a): every piece still open SETTLE_DAYS U.S. business days after its trade date is closed, with
   // its event and note; closedBy collects the orders. C1b: also called at the first reading.
@@ -409,31 +410,26 @@ class InFlight {
       notes.push(`${f.side} ${f.id} ($${f.usd.toFixed(2)}): settled by age, ${this.settleDays} U.S. business days after its trade date ${a.tradeDay}`);}
     if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');}
     return aged;}
-  // The tracker's totals with coverage under review (electron/settlement-evidence.cjs underReview): unresolved again,
-  // beside the open pieces, never matched by evidence here.
-  withReview(account,st){const review=this.evidence.underReview(account).map(r=>({id:r.orderId,pid:'review:'+r.citationId,side:r.side,usd:r.usd,unresolved:{why:'under review',reason:r.reason}}));
-    return InFlight.totals(review.length?{...st,open:[...st.open,...review]}:st);}
   static totals(st){const sum=(side,only=()=>true)=>st.open.filter(f=>f.side===side&&only(f)).reduce((n,f)=>n+cents(f.usd),0)/100;
     return {buysUSD:sum('Buy'),sellsUSD:sum('Sell'),unresolved:{buysUSD:sum('Buy',f=>f.unresolved),sellsUSD:sum('Sell',f=>f.unresolved)},overdue:{buysUSD:sum('Buy',f=>f.overdueAt),sellsUSD:sum('Sell',f=>f.overdueAt)},
       // Evidence released by KIS records lower than what was allocated: reported, not an obligation.
       reducedCoverage:Object.entries(st.conflicts??{}).filter(([,c])=>c.released?.length).map(([orderId,c])=>({orderId,usd:c.released.reduce((n,r)=>n+r.cents,0)/100,groupId:c.groupId,version:c.version})),
       pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},
-      review:{buysUSD:sum('Buy',f=>String(f.pid??'').startsWith('review:')),sellsUSD:sum('Sell',f=>String(f.pid??'').startsWith('review:'))},open:st.open};}
-  current(account){return this.withReview(account,this.state(account));}
+      open:st.open};}
+  current(account){return InFlight.totals(this.state(account));}
   // Stage 3.2: what is uncertain at this reading, recorded with each day's value (performance record). started: when
-  // tracking began (null before); pieces: every open piece marked unresolved and every coverage under review, by side,
-  // with its amount, why, and the fill time when known; totals: the unresolved and under-review totals by side.
-  snapshot(account){const st=this.state(account),t=this.withReview(account,st);
-    const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,review:String(f.pid??'').startsWith('review:'),filledAt:Number.isFinite(f.filledAt)?f.filledAt:null,placedAt:Number.isFinite(f.placedAt)?f.placedAt:null}));
+  // tracking began (null before); pieces: every open piece marked unresolved, by side, with its
+  // amount, why, and the fill time when known; totals: the unresolved totals by side.
+  snapshot(account){const st=this.state(account),t=InFlight.totals(st);
+    const pieces=t.open.filter(f=>f.unresolved).map(f=>({pid:f.pid??null,orderId:String(f.id),side:f.side,usd:f.usd,why:f.unresolved.why??null,filledAt:Number.isFinite(f.filledAt)?f.filledAt:null,placedAt:Number.isFinite(f.placedAt)?f.placedAt:null}));
     // open (stage 3.4 review, CN5): every U.S. buy still counted as an obligation, resolved or not. A payment made while
     // one is open shows as a loss until it is matched or reconciled, so those days are not verified.
-    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review},open:{buysUSD:t.buysUSD,buys:t.open.filter(f=>f.side==='Buy').length,pids:t.open.filter(f=>f.side==='Buy'&&f.pid).map(f=>f.pid)}};}
+    return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved},open:{buysUSD:t.buysUSD,buys:t.open.filter(f=>f.side==='Buy').length,pids:t.open.filter(f=>f.side==='Buy'&&f.pid).map(f=>f.pid)}};}
   // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
   // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,
   // conflict pieces opened or reduced, pieces settled by age and fee differences. These are
   // explained changes for the flow detector, never deposits or withdrawals. Fills and cash evidence are already
-  // explained by the detector's own fill records. Coverage under review is passed apart (totals().review), as it
-  // changes without an event. In USD, positive when the basis rose. Counted after a ledger event id (afterId: the last one
+  // explained by the detector's own fill records. In USD, positive when the basis rose. Counted after a ledger event id (afterId: the last one
   // a reading accounted for), so a change in the same millisecond as a reading is neither missed nor counted twice; a
   // time (since) only when no id was kept. through: the last event id now.
   // pretracking: the part from pre-tracking fills, by order, which the flow detector leaves out for an order whose fill it

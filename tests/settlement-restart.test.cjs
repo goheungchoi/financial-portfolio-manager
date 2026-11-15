@@ -22,7 +22,7 @@ function world({file,start}){const db=new DatabaseSync(file);let t=start;const c
   return {db,f,funding,perf,fd,sb,eU,costs,us,U,clock,later:ms=>{t+=ms;},
     open:os=>{f.observe('a',{us:U(),orders:[],fx:RATE});t+=MIN;for(const o of os)if(o.side==='Buy')funding.track(o);f.observe('a',{us:U(),orders:os,fx:RATE});t+=MIN;},
     baseline:()=>{day='2026-10-28';eU.observeBalance(U());day='2026-10-29';eU.observeBalance(U());t+=HOUR;},
-    detect:()=>{const v=f.current('a');return fd.observe('a',{krCash:1000000,usCash:us.cash-v.buysUSD+v.sellsUSD,fx:RATE,orders:[],usExplained:r=>f.explained('a',r),usReview:v.review});}};}
+    detect:()=>{const v=f.current('a');return fd.observe('a',{krCash:1000000,usCash:us.cash-v.buysUSD+v.sellsUSD,fx:RATE,orders:[],usExplained:r=>f.explained('a',r)});}};}
 
 test('restart (moved from the stage 2b gate): the tracker, evidence, funding, baseline, detector and a stopped history job are reloaded as they were',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'settlement-restart-'));const file=path.join(dir,'p.sqlite');

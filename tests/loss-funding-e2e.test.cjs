@@ -35,7 +35,7 @@ function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=
     const route=rec.current(A),tr=f.current(A);
     // The detector's Korean cash as main.cjs nets it: the KRW of K1 groups not yet seen leaving Korean cash (S3a-2), or
     // the shown KRW before it.
-    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-(tr.buysUSD??0)+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),usReview:tr.review,funding:route.explained});
+    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-(tr.buysUSD??0)+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
     const input={korea,us:used,fx:used.fx,inFlight:tr,funding:route,now:t},mv={KR:marketValue('KR',input),US:marketValue('US',input)};
     const row={at:t,note:r.note,loss:{KR:mv.KR.loss,US:mv.US.loss},value:{KR:{low:mv.KR.low,high:mv.KR.high},US:{low:mv.US.low,high:mv.US.high}},width:widths(value(input).markets.US,mv.US.loss),checks:[]};
     for(const b of bases)for(const m of b.markets){const e=engines[m];const {at,loss}=b;
