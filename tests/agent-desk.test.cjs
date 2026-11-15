@@ -390,15 +390,31 @@ test('a duplicate stop that fires after the first sold the share is closed as no
   const first=await fired(a,pick('C-aaaaaa'));assert.equal(first.status,'submitted');assert.ok(pick('C-bbbbbb').nextCheckAt>Date.now()+50000,'the other stop waits for a balance read after the fill');
   held=0;const second=await fired(a,pick('C-bbbbbb'));assert.equal(second.status,'cancelled');assert.ok(second.outcome.includes('Not needed: no shares of NYSE:NWWR are held'));assert.equal(sent.length,0,'no "not protected" alert');assert.equal(a.calls.propose.length,1,'one sale only');
 });
+test('STALE_DECISION fix S-1: derived cost figures moving mid-review do not make it stale; a saved setting or the tax profile does',async()=>{
+  const hold={decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};
+  const {TradingCosts}=require('../electron/trading-costs.cjs');const {ownerAccount}=require('../electron/tax-profile.cjs');
+  const world=()=>{const h=harness();const c=new TradingCosts(h.db);c.currentAccount=()=>({accountKey:'acct',environment:'live'});let rate=1330;c.marketRate=()=>rate;h.automation.costs=c;return {...h,c,setRate:v=>{rate=v;}};};
+  // Seen once: the app's own trade-history job stored its unread windows mid-review; taxStatus.missingInputs moved.
+  let {automation:a,queue,c}=world();const before=JSON.stringify(c.get().taxStatus);
+  queue.push(()=>{c.jobs.put(ownerAccount('acct'),{queue:[{start:'2025-01-01',end:'2025-03-31'}],createdAt:Date.now(),attempts:0,state:'running'});return hold;});
+  await a.review('User request');assert.notEqual(JSON.stringify(c.get().taxStatus),before,'the derived taxStatus did move');assert.equal(a.lastError,null,'and the review completed');
+  let w=world();w.queue.push(()=>{w.setRate(1355.7);return hold;});await w.automation.review('User request');assert.equal(w.automation.lastError,null,'marketUsdKRW moving is not stale');
+  // A real change of what the user sets still fails, naming the key only.
+  w=world();w.queue.push(()=>{w.c.save({...w.c.saved(),taxMethod:w.c.saved().taxMethod==='fifo'?'moving-average':'fifo'});return hold;});
+  await assert.rejects(w.automation.review('User request'));assert.equal(w.automation.lastError,'STALE_DECISION');assert.match(w.automation.lastErrorDetail,/Changed: cost settings: taxMethod\./);
+  w=world();w.queue.push(()=>{w.c.profile.save({...w.c.profile.get(),residency:'resident'});return hold;});
+  await assert.rejects(w.automation.review('User request'));assert.match(w.automation.lastErrorDetail,/Changed: cost settings: taxProfile\./);
+});
 test('a stale review names the guard that tripped: settings or cost settings by key, never values',async()=>{
   const hold={decision:{action:'Hold',symbol:'',quantity:0,explanation:'Hold.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};
   let {automation:a,queue}=harness();queue.push(()=>{a.configure({reasoningEffort:'medium'});return hold;});
   await assert.rejects(a.review('User request'));assert.equal(a.lastError,'STALE_DECISION');assert.ok(a.lastErrorDetail.includes('Changed: settings.'),a.lastErrorDetail);
-  ({automation:a,queue}=harness());const costs={usdKRW:1357.9,fees:{kr:1}};a.costs={get:()=>JSON.parse(JSON.stringify(costs)),context:()=>null};
+  // STALE_DECISION fix S-1: the check reads the saved settings and the tax profile (a real settings change still trips it).
+  ({automation:a,queue}=harness());const costs={usdKRW:1357.9,fees:{kr:1}};a.costs={get:()=>JSON.parse(JSON.stringify(costs)),saved:()=>JSON.parse(JSON.stringify(costs)),profile:{get:()=>({residency:null})},context:()=>null};
   queue.push(()=>{costs.usdKRW=1355.7;return hold;});
   await assert.rejects(a.review('User request'));assert.equal(a.lastError,'STALE_DECISION');assert.ok(a.lastErrorDetail.includes('Changed: cost settings: usdKRW.'),a.lastErrorDetail);assert.ok(!/1355|1357/.test(a.lastErrorDetail),'no values');
   // The helper directly: current, account scope, disposed.
-  const s=a.watchScope(),r=a.revision,c=JSON.stringify(a.costs.get());assert.equal(a.staleReason(s,r,c),null);assert.equal(a.staleReason('other',r,c),'account scope');a.disposed=true;assert.equal(a.staleReason(s,r,c),'disposed');
+  const s=a.watchScope(),r=a.revision,c=a.costSnapshot();assert.equal(a.staleReason(s,r,c),null);assert.equal(a.staleReason('other',r,c),'account scope');a.disposed=true;assert.equal(a.staleReason(s,r,c),'disposed');
   // A review with nothing changed still completes.
   ({automation:a}=harness());await a.review('User request');assert.equal(a.lastError,null);
 });

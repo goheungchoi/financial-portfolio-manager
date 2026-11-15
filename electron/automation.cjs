@@ -636,7 +636,7 @@ class Automation {
     const entryEvidence=EVIDENCE_TRIGGERS.includes(trigger)?this.triggerEvidence??null:null;
     if(this.busy){if(entryEvidence)this.restoreEvents(this.watchScope(),entryEvidence);throw new Error('REVIEW_BUSY');}const startedAt=Date.now();this.restoreClock();this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();if(this.trialRunning())try{this.alertTrial.attempt({now:startedAt,trigger,reviewId:id,shadowFired:trigger==='Price movement trigger'&&this.lastShadow&&startedAt-this.lastShadow.at<15000?this.lastShadow.fired:null});}catch{}let context,decided=false,firstRequest=null;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
-      costRevision=JSON.stringify(this.costs?.get());
+      costRevision=this.costSnapshot();
       let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;},evidence:entryEvidence}));
       this.observeEmergency(emergency);if(emergency.active)this.lastEmergencyAttempt=Date.now();
       // Token saving: an unchanged scheduled review is skipped before any provider call.
@@ -830,9 +830,15 @@ class Automation {
   // Which of a review's freshness guards tripped (once, a pre-open review failed STALE_DECISION and nothing said
   // why). Returns null when the review is still current; otherwise 'disposed', 'account scope', 'settings', or
   // 'cost settings: <changed top-level keys>'. Key names only, never values: no rates, tax figures or account ids.
+  // What a review's cost freshness compares (STALE_DECISION fix S-1, artifacts/reviews/2026-11-15-claude-trading/
+  // stale-decision.md): only what the user sets, the saved cost settings and the tax profile. Derived figures (taxStatus,
+  // krTaxStatus, marketUsdKRW, taxLots, annualRealizedKRW, the ledger-filled basis) move with the broker, the market and
+  // background jobs (a trade-history read two minutes after start failed the first Claude review); they never make a
+  // decision stale. Never throws: unreadable is null on both sides.
+  costSnapshot(){try{if(!this.costs)return null;return JSON.stringify({...this.costs.saved(),taxProfile:this.costs.profile?.get?.()??null});}catch{return null;}}
   staleReason(watchScope,revision,costRevision){
     if(this.disposed)return 'disposed';if(watchScope!==this.watchScope())return 'account scope';if(revision!==this.revision)return 'settings';
-    const now=JSON.stringify(this.costs?.get());if(costRevision===now)return null;
+    const now=this.costSnapshot();if(costRevision===now)return null;
     let keys=[];try{const a=JSON.parse(costRevision??'null')??{},b=JSON.parse(now??'null')??{};keys=[...new Set([...Object.keys(a),...Object.keys(b)])].filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k])).sort();}catch{}
     return 'cost settings'+(keys.length?': '+keys.slice(0,8).map(k=>String(k).replace(/[^A-Za-z0-9_.-]/g,'').slice(0,40)).join(', '):'');
   }
