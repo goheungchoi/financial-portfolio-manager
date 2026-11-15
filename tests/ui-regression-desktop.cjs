@@ -700,20 +700,21 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
     // the tracker could not be read still has no return, with its own reason.
     await check('S2: settlement days have returns (an estimate), corrections stay apart, no restatements; an unreadable day is still unavailable',async()=>{
       // A U.S. settlement history built with the real tracker on the fixture database (synchronous, so no app reading
-      // interleaves): a $100 buy paid on its settlement date S while still counted, reconciled two days later.
+      // interleaves). S4b-2 (the reconciliation is gone): a $100 pre-tracking buy, paid before tracking started, open from the
+      // first reading and settled by the age rule at a reading eight days later: a +$100 correction, no cash move.
       const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
-      const {InFlight,value}=require('../electron/valuation.cjs');const {FundingLedger}=require('../electron/funding-ledger.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');const {Reconciliation}=require('../electron/settlement-reconciliation.cjs');
+      const {InFlight,value}=require('../electron/valuation.cjs');const {FundingLedger}=require('../electron/funding-ledger.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');
       const acct='ui-regression-fixture',S=new Date(Date.now()-10*86400000).toISOString().slice(0,10),B=Date.parse(new Date(Date.parse(S+'T00:00:00Z')-2*86400000).toISOString().slice(0,10)+'T05:00:00Z');
       let t=B;const clock=()=>t;db.prepare('DELETE FROM inflight_settlement WHERE account=?').run(acct);
-      const f=new InFlight(db,clock),perf=new PerformanceHistory(db,clock);perf.settlement=a=>f.snapshot(a);const rec=new Reconciliation(db,{inFlight:f,funding:new FundingLedger(db,{clock}),performance:perf,clock,who:{user:'fixture',session:'fixture'}});
+      const f=new InFlight(db,clock),perf=new PerformanceHistory(db,clock);perf.settlement=a=>f.snapshot(a);
       // Scaled near the mock account's own U.S. value (about $180), which the app records for today in the same series:
       // with $1,400 synthetic days that recording read as an 88% fall (a fixture artefact, release gate review).
       const us={cash:180,price:100};const U=()=>({accountKey:acct+':US',environment:'mock',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
-      const A={id:'stage34-A',symbol:'NASD:TA',side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'mock',accountKey:acct+':US',market:'US',day:S,createdAt:B+60000,filledObservedAt:B+60000};
+      const A={id:'stage34-A',symbol:'NASD:TA',side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:100,limitPrice:100,costEstimate:{netCash:-100},resultCosts:{netCash:-100},environment:'mock',accountKey:acct+':US',market:'US',day:new Date(B-86400000).toISOString().slice(0,10),createdAt:B-86400000,filledObservedAt:B-86400000};
       const see=list=>{f.observe(acct,{us:U(),orders:list,fx:1300});t+=60000;};
       const record=()=>{const v=value({us:U(),inFlight:f.current(acct),fx:{usdKRW:1300,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity.low;perf.record(acct,{totals:{USD:v,KRW:10000000,equityKRW:10000000+v*1300},fx:{usdKRW:1300}});t+=60000;};
-      see([]);see([A]);record();t=B+33*3600000;us.price=101;record();t=B+55*3600000;us.cash=80;t=B+73*3600000;us.price=102;record();t=B+97*3600000;
-      const q={requestId:'stage34-r1',account:acct,pieceId:f.current(acct).open.find(p=>p.id==='stage34-A').pid,cents:10000,explanation:'settled',route:'USD',kisReference:'KIS-FIXTURE',note:'desktop fixture',settledOn:S};const pv=rec.preview(q);rec.confirm({...q,stateVersion:pv.stateVersion,binding:pv.binding});record();
+      see([]);see([A]);record();t=B+33*3600000;us.price=101;record();t=B+73*3600000;us.price=102;record();t=B+8*86400000;see([A]);record();
+      assert.ok(!f.current(acct).open.some(p=>p.id==='stage34-A'),'the fixture buy is settled by age');
       // Home: a return, tagged as an estimate (the period has an accounting correction); never the settlement red line.
       await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"] .trend-note`)?.textContent.startsWith("Return estimate")','the Home trend should show the return as an estimate');
       assert.ok(!(await run('document.querySelector(`[aria-label="Account trend"]`).textContent.includes("Investment return unavailable")')),'no settlement red line');
@@ -735,7 +736,7 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       assert.equal(await run('typeof window.portfolio.getRestatements'),'undefined','no restatement call');
       await capture('s2-performance-estimate');
       // A day recorded while the tracker could not be read: still no return, with that reason (U4), on Home and Performance.
-      t=B+121*3600000;us.price=103;perf.settlement=()=>{throw new Error('disk I/O error');};record();perf.settlement=a=>f.snapshot(a);
+      t=B+9*86400000;us.price=103;perf.settlement=()=>{throw new Error('disk I/O error');};record();perf.settlement=a=>f.snapshot(a);
       await navigate('Home');await until('document.querySelector(`[aria-label="Account trend"] .trend-note`)?.textContent.startsWith("Investment return unavailable")','an unreadable day still makes the return unavailable');
       assert.match(await run('document.querySelector(`[aria-label="Account trend"] .trend-note`).textContent'),/^Investment return unavailable: the settlement tracker could not be read when this day was recorded \(disk I\/O error\)/,'its own reason, not a settlement one');
       assert.ok(await run('Boolean(document.querySelector(`[aria-label="Account trend"] .trend-note.negative`))'));await capture('s2-home-trend-unreadable');db.close();

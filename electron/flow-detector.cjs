@@ -96,12 +96,6 @@ function piecesOf(m,q,fx){const parts=q.parts?.length?q.parts:[{amount:q.amount,
   if(merged.length>1&&!big(m,merged[0].amount,fx)){const [a,b]=merged.splice(0,2);merged.unshift({amount:a.amount+b.amount,parts:[...a.parts,...b.parts]});}
   const out=merged.map(g=>({amount:round(m,g.amount),...spanOf(g.parts),pendingIds:idsOf(g.parts)}));out[out.length-1].amount=round(m,q.amount-out.slice(0,-1).reduce((n,x)=>n+x.amount,0));return out;}
 const label=market=>market==='US'?'U.S.':'Korean';
-// A settlement-timing entry with its readings: observed (every open candidate paid in the interval), ifPaidEarlier
-// (every one paid earlier), low and high (the extremes over every combination: buy-side candidates paid earlier lower
-// it, sale-side ones raise it). Entries saved before candidates were kept apart are read as one candidate.
-function timingEntry(e){const observed=Number.isFinite(e.observed)?e.observed:e.ifPaidHere,candidates=Array.isArray(e.candidates)?e.candidates:[{id:(e.ids??[]).join('+')||'(all)',usd:round('US',(e.ifPaidHere??0)-(e.ifPaidEarlier??0))}];
-  const sum=f=>candidates.reduce((n,c)=>n+f(c.usd),0);const {ids,usd,...rest}=e;
-  return {...rest,observed,candidates,ifPaidHere:round('US',observed),ifPaidEarlier:round('US',observed-sum(v=>v)),low:round('US',observed-sum(v=>Math.max(0,v))),high:round('US',observed-sum(v=>Math.min(0,v)))};}
 const money=(market,amount)=>market==='US'?`$${Math.abs(amount).toFixed(2)}`:`₩${Math.abs(Math.round(amount)).toLocaleString('en-US')}`;
 class FlowDetector {
   constructor(db,performance,clock=Date.now){this.db=db;this.performance=performance;this.clock=clock;this.onNote=null;db.exec('CREATE TABLE IF NOT EXISTS flow_watch(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
@@ -194,36 +188,6 @@ class FlowDetector {
     const counted=parts.filter(x=>day!=null?seoulDate(x.by)===day:x.by>since);
     return widen({...recorded,unresolved:(recorded.unresolved??0)+after,uncertain:{confirmed:recorded.uncertain?.confirmed??0,unresolved:(recorded.uncertain?.unresolved??0)+unsure},held:{after,uncertain:unsure,parts:parts.map(x=>x.id??null)}},counted.reduce((n,x)=>n+Math.min(0,x.amount),0),counted.reduce((n,x)=>n+Math.max(0,x.amount),0));
   }
-  // Timing entries open now (U.S.), for the reconciliation panel (step 2b.5).
-  timing(account){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);return row?(JSON.parse(row.payload).timing??[]).map(timingEntry):[];}
-  // Resolves a timing entry once the payment's timing is known (paidHere: true if it was made in that interval): the
-  // reading chosen becomes a detected flow when it matters, for you to confirm or remove; the entry is closed.
-  // One transaction (review of f26d33f, P1): the entry is closed and its flow recorded together, or neither. A resolved
-  // entry is remembered (timingResolved), so a repeat returns the first resolution and creates nothing; another choice
-  // for it is refused.
-  // Each candidate is resolved on its own (reconciliationId; optional when the entry has one): paid in that interval leaves
-  // the observed change as it is, paid earlier takes its amount out. When the last candidate is resolved the entry
-  // closes, and its reading becomes a detected flow when it matters. Remembered per candidate.
-  resolveTiming(account,id,{paidHere,reconciliationId=null}={}){if(typeof paidHere!=='boolean')throw new Error('TIMING_CHOICE_REQUIRED');
-    const own=!this.db.isTransaction;this.db.exec(own?'BEGIN IMMEDIATE':'SAVEPOINT resolve_timing');
-    try{const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)throw new Error('TIMING_UNKNOWN');const w=JSON.parse(row.payload);
-      const open=(w.timing??[]).map(timingEntry),x=open.find(e=>e.id===id),past=(w.timingResolved??[]).filter(e=>e.id===id);
-      const cid=reconciliationId??(x?x.candidates.length===1?x.candidates[0].id:null:past.length===1?past[0].candidate:null);
-      if(cid==null)throw new Error(x?'TIMING_CANDIDATE_REQUIRED':'TIMING_UNKNOWN');
-      // A candidate whose reconciliation was reversed was withdrawn with the reversal (stage 2b.5 review, P1): a request
-      // made before it (a page not yet refreshed) is refused, whatever it chose.
-      if((w.timingWithdrawn??[]).some(e=>e.id===id&&e.candidate===cid))throw new Error('TIMING_CANDIDATE_REVERSED');
-      const done=past.find(e=>e.candidate===cid);
-      if(done){if(done.paidHere!==paidHere)throw new Error('TIMING_ALREADY_RESOLVED');const flow=done.flowId?this.performance.flows(account).find(f=>f.id===done.flowId)??null:null;this.db.exec(own?'COMMIT':'RELEASE resolve_timing');return {resolved:done.entry,candidate:cid,flow,repeat:true};}
-      if(!x)throw new Error('TIMING_UNKNOWN');const c=x.candidates.find(k=>k.id===cid);if(!c)throw new Error('TIMING_CANDIDATE_UNKNOWN');
-      const next=timingEntry({...x,observed:round('US',paidHere?x.observed:x.observed-c.usd),candidates:x.candidates.filter(k=>k.id!==cid)});let flow=null;
-      if(!next.candidates.length&&big('US',next.observed,null))flow=this.performance.addFlow(account,{day:seoulDate(x.by),market:'US',amount:next.observed,detected:true,...(Number.isFinite(x.after)?{occurredAfter:x.after}:{}),occurredBy:x.by,
-        note:`Detected: U.S. cash ${next.observed>0?'rose':'fell'} with no matching trade, with the reconciled payments' timing resolved. Confirm or remove.`});
-      const resolved=[...(w.timingResolved??[]),{id,candidate:cid,paidHere,flowId:flow?.id??null,at:this.clock(),entry:x}].slice(-200);
-      const timing=next.candidates.length?open.map(e=>e.id===id?next:e):open.filter(e=>e.id!==id);
-      this.db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify({...w,timing,timingResolved:resolved}),account);
-      this.db.exec(own?'COMMIT':'RELEASE resolve_timing');return {resolved:x,candidate:cid,entry:next.candidates.length?next:null,flow};}
-    catch(e){if(own)this.db.exec('ROLLBACK');else{this.db.exec('ROLLBACK TO resolve_timing');this.db.exec('RELEASE resolve_timing');}throw e;}}
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const p=row?JSON.parse(row.payload).pending??{}:{};
@@ -268,24 +232,4 @@ class FlowDetector {
     return null;
   }
 }
-// A reversed reconciliation leaves the open timing entries it is a candidate in (stage 2b.5 review, P1: a reversed
-// record stayed actionable, and choosing "paid in this interval" created a false $100 flow). Called inside the
-// reversal's transaction, so the entry changes with the record or not at all. The reversal says the reconciliation did
-// not happen, so the change it made to the interval's basis was no payment there: its amount is taken out, as for "paid
-// earlier"; the other candidates stay as they are. When it was the last candidate the entry closes, and its reading
-// becomes a detected flow when it matters (as a resolution would). The withdrawal is remembered, so a stale resolution
-// of it is refused (TIMING_CANDIDATE_REVERSED). A candidate already resolved keeps its resolution. Returns the entries
-// changed: {entryId, candidateUSD, observedBefore, observedAfter, closed, flow}.
-function withdrawTiming(db,{performance=null,clock=Date.now}={},account,reconciliationId,by){
-  let row;try{row=db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);}catch{return [];}if(!row)return [];
-  const w=JSON.parse(row.payload),open=(w.timing??[]).map(timingEntry),timing=[],out=[];
-  for(const x of open){const c=x.candidates.find(k=>k.id===reconciliationId);if(!c){timing.push(x);continue;}
-    const next=timingEntry({...x,observed:round('US',x.observed-c.usd),candidates:x.candidates.filter(k=>k.id!==reconciliationId)});let flow=null;
-    if(!next.candidates.length&&big('US',next.observed,null)&&performance)flow=performance.addFlow(account,{day:seoulDate(x.by),market:'US',amount:next.observed,detected:true,...(Number.isFinite(x.after)?{occurredAfter:x.after}:{}),occurredBy:x.by,
-      note:`Detected: U.S. cash ${next.observed>0?'rose':'fell'} with no matching trade, after reconciliation ${String(reconciliationId).slice(0,12)} was reversed. Confirm or remove.`});
-    if(next.candidates.length)timing.push(next);
-    out.push({entryId:x.id,candidateUSD:c.usd,observedBefore:x.observed,observedAfter:next.observed,closed:!next.candidates.length,flow:flow?{id:flow.id,amount:flow.amount}:null});}
-  if(!out.length)return out;
-  const withdrawn=[...(w.timingWithdrawn??[]),...out.map(o=>({id:o.entryId,candidate:reconciliationId,by,at:clock()}))].slice(-200);
-  db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify({...w,timing,timingWithdrawn:withdrawn}),account);return out;}
-module.exports={withdrawTiming,FlowDetector,unexplained,flowsFrom,cashEffect,THRESHOLD_KRW,HOLD_MS,MAX_HOLD_MS,BASIS};
+module.exports={FlowDetector,unexplained,flowsFrom,cashEffect,THRESHOLD_KRW,HOLD_MS,MAX_HOLD_MS,BASIS};

@@ -117,12 +117,10 @@ test('the tracker writes its evidence, allocations and piece events; events are 
   old.prepare('INSERT INTO inflight_settlement VALUES(?,?)').run('a',JSON.stringify({basis:500,observed:{buys:0,sells:0},seen:{A:{filled:1,cents:10000,basis:'net'}},open:[{id:'A',side:'Buy',usd:100,basis:'net',at:1}],evidence:[],readAt:1,lastAt:1}));
   const y=world(old);assert.equal(y.see({cash:400},[A]).buysUSD,0);assert.equal(old.prepare('SELECT pieceId FROM settlement_allocations').get().pieceId,'A#1');
 });
-test('scope: evidence of another account or environment is never considered; standby evidence is kept, not consumed',()=>{
+test('scope: evidence of another account or environment is never considered (S4b-2: standby evidence went with the reconciliation)',()=>{
   const w=world();w.ledger.importK({account:'b',environment:'live',market:'US'},W,[k()]);w.ledger.importK({account:'a',environment:'mock',market:'US'},W,[k()]);
   assert.equal(w.ledger.links('a',[order('A')]).get('A').state,'none','neither another account\'s row nor this account\'s mock row is evidence for a live order');
   const e1=w.ledger.aggregate({account:'a',environment:'live',readingA:'1',readingB:'2',side:'Buy',field:'cash',amountCents:100}),e2=w.ledger.aggregate({account:'a',environment:'mock',readingA:'1',readingB:'2',side:'Buy',field:'cash',amountCents:100});assert.notEqual(e1,e2);
-  const s=w.ledger.standby({account:'a',evidenceId:e1,version:1,pieceId:'P#1',cents:100});assert.equal(w.ledger.standby({account:'a',evidenceId:e1,version:1,pieceId:'P#1',cents:100}),s,'once');
-  assert.equal(w.ledger.allocated(e1,1),0,'standby consumes nothing');assert.equal(w.ledger.standbyFor('P#1').length,1);
 });
 
 // Review of 4b534c1 (P1 ×3, P2; artifacts/reviews/stage2b2-independent-repro.cjs).
@@ -182,4 +180,21 @@ test('review 2b.2: an import of another environment or market says nothing about
   const g=w.group();assert.equal(g.missingSince,undefined);assert.equal(w.ledger.independent(g),true);
   // Nor is a mock row a possible correction of a live one that went missing.
   w.ledger.importK(SCOPE,W,[]);w.ledger.importK({...SCOPE,environment:'mock'},W,[k('TEST',{quantity:2})]);assert.equal(w.ledger.kGroups('a').find(x=>x.key.environment==='mock').state,'single');
+});
+// S4b-2 (condition E): the stage 2b gate's T4, moved here without the settlements panel (removed). A fill whose dates
+// fall in an incomplete history window stays unresolved; its KIS row is not linked; the tax report lists the gap; a
+// complete read restores the link (A1 off: still supporting only, the piece stays unresolved).
+test('T4 (tracker side, from the stage 2b gate): an incomplete history window unlinks the row and is listed; a complete read restores the link',()=>{
+  const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT,payload TEXT)');
+  let t=Date.parse('2026-10-29T20:00:00Z');const clock=()=>t;const f=new InFlight(db,clock,{settleDays:null}),costs=new TradingCosts(db);costs.currentAccount=()=>({accountKey:'a',environment:'live'});
+  const o={id:'A',symbol:'NASD:TEST',side:'Buy',filled:1,fillPrice:100,resultCosts:{netCash:-100},environment:'live',day:'2026-10-29',createdAt:Date.parse('2026-10-29T15:00:00Z')};
+  const us=()=>({timestamp:new Date(t).toISOString(),environment:'live',cash:500});f.observe('a',{us:us(),orders:[],fx:1300});t+=MIN;f.observe('a',{us:us(),orders:[o],fx:1300});t+=MIN;
+  const row={tradeDate:'2026-10-29',settlementDate:'2026-10-30',ticker:'TEST',side:'Buy',quantity:1,price:100,grossUSD:100,settlementUSD:100,settlementKRW:130000,feesUSD:0,exchangeRate:1300};const Wn={start:'2026-10-25',end:'2026-10-30'};
+  const link=()=>f.evidence.links('a',[o]).get('A');
+  costs.importHistory('a',[{...Wn,complete:true,rows:[row]}],t);assert.equal(link().state,'linked');assert.ok(f.current('a').open.find(p=>p.id==='A')?.unresolved,'A1 off: linked, still unresolved');
+  costs.importHistory('a',[{...Wn,complete:false,reason:'PAGE_LIMIT',rows:[]}],t);
+  assert.equal(link().state,'uncertain');assert.match(link().reason,/trade-history gap/);assert.equal(f.current('a').unresolved.buysUSD,100);
+  assert.ok(costs.historyGaps().some(g=>g.start==='2026-10-25'&&g.end==='2026-10-30'&&g.reason==='PAGE_LIMIT'),'the tax report lists the gap (Fees & taxes)');
+  costs.importHistory('a',[{...Wn,complete:true,rows:[row]}],t);assert.equal(link().state,'linked');assert.ok(!costs.historyGaps().some(g=>g.start==='2026-10-25'),'the gap is gone');
+  assert.equal(SettlementEvidence.prototype.kGroups.call({db},'a').length,1,'no duplicated row');
 });

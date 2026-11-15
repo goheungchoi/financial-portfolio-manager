@@ -6,7 +6,7 @@
 // (electron/performance-corrections.cjs SettlementUncertainty.estimates; PerformanceHistory.series/summary.)
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
 const {InFlight,value}=require('../electron/valuation.cjs');const {FundingLedger}=require('../electron/funding-ledger.cjs');const {PerformanceHistory}=require('../electron/performance.cjs');
-const {Reconciliation}=require('../electron/settlement-reconciliation.cjs');const {performanceCorrections}=require('../electron/performance-corrections.cjs');
+const {performanceCorrections}=require('../electron/performance-corrections.cjs');
 const MIN=60000,DAY=86400000,TRACKING=Date.parse('2026-10-26T05:00:00Z');
 const order=(id,usd,extra={})=>({id,symbol:'NASD:T'+id,side:'Buy',status:'Filled',quantity:1,filled:1,fillPrice:usd,limitPrice:usd,costEstimate:{netCash:-usd},resultCosts:{netCash:-usd},environment:'live',accountKey:'a:US',market:'US',day:'2026-10-25',createdAt:Date.parse('2026-10-25T15:00:00Z'),...extra});
 const close=(a,b,m)=>assert.ok(Math.abs(a-b)<1e-9,`${m??''} ${a} vs ${b}`);
@@ -14,16 +14,14 @@ const estimate=p=>(p.settlement??[]).includes('pending');
 // As main wires it: the correction hook from performanceCorrections (S2 default), and the tracker's snapshot recorded with each day.
 function world(start=TRACKING){const db=new DatabaseSync(':memory:');let t=start;const clock=()=>t;let rate=1300;
   const f=new InFlight(db,clock),funding=new FundingLedger(db,{clock}),perf=new PerformanceHistory(db,clock);
-  const rec=new Reconciliation(db,{inFlight:f,funding,performance:perf,clock,who:{user:'t',session:'s'}});
-  const sc=performanceCorrections(db,{inFlight:f,reconciliation:rec});perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
+  const sc=performanceCorrections(db,{inFlight:f});perf.corrections=(a,rows)=>sc.byDay(a,rows);perf.settlement=a=>f.snapshot(a);
   const us={cash:500,price:1000};let orders=[],seq=0;
   const U=()=>({accountKey:'a:US',environment:'live',cash:us.cash,pendingSaleProceeds:0,holdings:[{symbol:'NASD:X',quantity:1,price:us.price}],reportedTotal:us.cash+us.price,timestamp:new Date(t).toISOString()});
-  const w={db,f,perf,rec,sc,us,clock,later:ms=>{t+=ms;},
+  const w={db,f,perf,sc,us,clock,later:ms=>{t+=ms;},
     see:(list=orders)=>{orders=list;const r=f.observe('a',{us:U(),orders:list,fx:rate});t+=MIN;return r;},
     record:()=>{const v=value({us:U(),inFlight:f.current('a'),fx:{usdKRW:rate,timestamp:new Date(t).toISOString()},now:t}).markets.US.equity.low;const row=perf.record('a',{totals:{USD:v,KRW:1000000,equityKRW:1000000+v*rate},fx:{usdKRW:rate}});t+=MIN;return row;},
     nextDay:()=>{t=Math.ceil((t-start)/DAY)*DAY+start;},
     pid:id=>f.current('a').open.find(p=>p.id===id)?.pid,
-    reconcile:(id,extra={})=>{const q={requestId:'r'+(++seq),account:'a',pieceId:w.pid(id),cents:Math.round(f.current('a').open.find(p=>p.id===id).usd*100),explanation:'settled',route:'USD',kisReference:'KIS',note:'n',...extra};const p=rec.preview(q);return rec.confirm({...q,stateVersion:p.stateVersion,binding:p.binding});},
     points:(kind='USD')=>perf.series('a',kind),all:(kind='USD')=>perf.summary('a',kind,null).periods.find(x=>x.label==='All')};
   return w;}
 // Day 0: tracking starts with a pre-tracking $100 buy (awaiting verification): value 1,400.
@@ -65,11 +63,6 @@ test('S2: coverage under review, a flag or an overdue mark tag the day only whil
     const pid=x.pid('C');x.f.evidence.event('a',kind,kind==='flag'?{pieces:[pid],why:'ambiguous evidence'}:{pieceId:pid,orderId:'C',usd:100});x.us.price=1010;x.record();
     assert.ok(estimate(x.points()[1]),kind);assert.equal(x.points()[1].unavailable,undefined);x.us.cash=400;x.see([C]);assert.equal(estimate(x.points()[1]),false,kind+': settled, plain');}
 });
-test('S2: a reconciliation leaves no misstatement window; one with a settlement date is a correction on an available day',()=>{
-  const w=started();w.nextDay();w.us.price=1010;w.record();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();w.nextDay();w.us.price=1020;w.record();
-  const [,d1,d2,d3]=w.points();for(const d of [d1,d2,d3])assert.equal(d.unavailable,undefined,d.day);
-  assert.equal(d2.correction,100);close(d2.dailyReturn,0);close(d3.dailyReturn,10/1510);assert.equal(estimate(d1),false,'A is closed: plain');assert.notEqual(w.all().twr,null);
-});
 test('U4: after tracking starts, a day whose tracker state was not recorded or could not be read is unavailable; before it nothing is tracked',()=>{
   const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-10-26'});w.see([B]);w.record();
   w.nextDay();w.perf.settlement=()=>{throw new Error('disk I/O error');};w.record();w.nextDay();w.perf.settlement=a=>w.f.snapshot(a);w.record();w.nextDay();delete w.perf.settlement;w.record();
@@ -110,9 +103,11 @@ test('S2b (a, hindsight): a pre-tracking buy later closed by KIS evidence was pa
   close(w.points()[1].dailyReturn,10/1400,'in hindsight it was unpaid at day 0: the recorded base was right');
 });
 test('S2b (c): corrections that do not net to zero keep their days an estimate; corrections that net to zero do not',()=>{
-  // +$100 from a reconciliation with no opening correction (paid before tracking, settlement date known): not netted.
-  const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-11-02'});w.see([B]);w.record();w.nextDay();w.us.price=1010;w.reconcile('B',{settledOn:'2026-11-01'});w.record();
-  const p=w.points()[1];assert.ok(p.correctionOpen,'not netted');assert.equal(w.all().settlementAffected.corrected,1);
+  // +$100 from a fill seen after tracking started (no opening correction) and settled by the age rule with no cash move
+  // (S4b-2: in place of a reconciliation): not netted. Filled New York 10-26, settled by age on 10-29.
+  const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-10-26'});w.see([B]);w.record();
+  for(let i=0;i<3;i++){w.nextDay();w.see([B]);w.record();}
+  const p=w.points().find(x=>x.correction);assert.equal(p.correction,100);assert.ok(p.correctionOpen,'not netted');assert.equal(w.all().settlementAffected.corrected,1);
 });
 // Release gate Q1 run: a day whose valuation range narrowed, with no money change awaiting the user, makes the summary
 // provisional with range changes only: no unresolved list and no "included" scenario. The Performance page read

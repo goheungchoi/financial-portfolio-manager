@@ -90,7 +90,7 @@ function unitedStates(u,{inFlight,now,funding=null,rate=null}){
   if(buys>0.005)components.push(part('inFlightBuys',-buys,'derived','U.S. buys the app saw fill that no KIS evidence covers yet (fill records)',{low:-buys,high:0,note:'paid from U.S. cash or proceeds at settlement, or already deducted'}));
   for(const [k,what] of [['buysUSD','buys'],['sellsUSD','sales']]){const u=inFlight?.unresolved?.[k]??0,o=inFlight?.overdue?.[k]??0;if(u>0.005)reasons.push(`$${u.toFixed(2)} of U.S. ${what} in flight may already be in KIS figures: unresolved, so the value is a range`);
     if(o>0.005)reasons.push(`$${o.toFixed(2)} of U.S. ${what} in flight from before the age rule; they close at the next reading`);}
-  // Bootstrap B1 (stage 2b): fills from before tracking started stay in flight until evidence or a reconciliation.
+  // Bootstrap B1 (stage 2b): fills from before tracking started stay in flight until evidence or the age rule closes them.
   // C1d-2: the U.S. buys KIS reports whose KRW part it has not shown carry their reported amount here, in the low bound.
   {const {unsettledKRW:total,confirmedKRW:known}=require('./integrated-settlement.cjs').settlement(u);const split=funding&&total>0&&rate>0?fundingSplit(funding,total,known):null;
     if(split&&(split.usLowKRW>0||split.usHighKRW>0)){components.push(part('fundingRouteOpen',-split.usLowKRW/rate,'derived','U.S. buys KIS reports awaiting settlement whose KRW part it has not shown',{low:-split.usLowKRW/rate,high:-split.usHighKRW/rate,note:'assumed paid from U.S. cash or proceeds; KIS may take KRW'}));
@@ -192,7 +192,6 @@ const fillTime=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.
 // Why a fill may already be covered by what KIS reports awaiting settlement.
 const REPORTED=['reported before seen','reported total moved by an unmatched amount'];
 const cents=v=>Math.round(v*100);
-const nyDay=ms=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(ms);
 class InFlight {
   // settleDays: business days after which an open piece is settled by age (S1a; 3). null turns the age rule off; only the
   // tests of the reconciliation, panel and baseline code that S3 and S4 remove use that, until they are removed.
@@ -265,8 +264,8 @@ class InFlight {
       if(o.filled>(was?.filled??0)&&delta>0)fresh.push({id,side:o.side,usd:delta/100,basis:a.basis,at:now,placedAt:placedTime(o)});else if(delta||was&&was.basis!==a.basis)adjust(id,o.side,delta,a.basis);}
     let movement=moved;const KEY={Buy:'buys',Sell:'sells'},delta=side=>reported[KEY[side]]-st.observed[KEY[side]];
     const settled=new Set(),live=side=>st.open.filter(f=>f.side===side&&!settled.has(f));
-    // Fills cash or a reported total may settle: not one marked paid before it was seen, which only a reconciliation (or
-    // A1 once U6 is verified) resolves, since the earlier movement may have been its payment (design v1 A2).
+    // Fills cash or a reported total may settle: not one marked paid before it was seen, which only the age rule closes (S4b-2: the
+    // reconciliation is gone; A1 once U6 is verified would too), since the earlier movement may have been its payment (design v1 A2).
     const payable=side=>live(side).filter(f=>f.unresolved?.why!=='paid before seen');
     // Exact amounts: the run's fills, oldest first, each take what is left of the evidence up to their own amount; a fill
     // not fully covered keeps its remainder in flight, unresolved, with the shortfall (nothing is written off).
@@ -378,9 +377,8 @@ class InFlight {
       const pieces=()=>st.open.filter(f=>f.id===id&&f.conflict),held=()=>pieces().reduce((n,f)=>n+cents(f.usd),0);
       // Restoration is exact (review of 790c852, P2): each released part restores at most what the order still lacks and
       // what is still unused in its evidence version; a part another piece has since used is no longer released (it is
-      // that piece's now). Allocation errors are not swallowed. Evidence voided by a reversed reconciliation (stage 2b.3)
-      // has nothing unused: what was released from it belonged to that record.
-      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const ev=ledger.version(r.evidenceId,r.version),free=ev&&!ev.reversedBy?Math.max(0,ev.amountCents-ledger.allocated(r.evidenceId,r.version)):0,take=Math.min(r.cents,k-base,free);
+      // that piece's now). Allocation errors are not swallowed.
+      if(k>base+1){for(const r of [...c.released].reverse()){if(base>=k)break;const ev=ledger.version(r.evidenceId,r.version),free=ev?Math.max(0,ev.amountCents-ledger.allocated(r.evidenceId,r.version)):0,take=Math.min(r.cents,k-base,free);
           if(take>0){ledger.allocate({account,evidenceId:r.evidenceId,version:r.version,pieceId:r.pieceId,orderId:id,cents:take,rule:'restored: KIS record raised'});r.cents-=take;base+=take;ledger.event(account,'coverage-restored',{orderId:id,evidenceId:r.evidenceId,cents:take});}
           const gone=Math.max(0,r.cents-(free-take));if(gone>0&&base<k){r.cents-=gone;ledger.event(account,'release-used-elsewhere',{orderId:id,evidenceId:r.evidenceId,cents:gone});}}
         c.released=c.released.filter(r=>r.cents>0);}
@@ -432,7 +430,7 @@ class InFlight {
     return {at:this.clock(),started:Number.isFinite(st.startedAt)?st.startedAt:null,pieces,totals:{unresolved:t.unresolved,review:t.review},open:{buysUSD:t.buysUSD,buys:t.open.filter(f=>f.side==='Buy').length,pids:t.open.filter(f=>f.side==='Buy'&&f.pid).map(f=>f.pid)}};}
   // Stage 2b.4: how much the tracker moved the flow detector's U.S. cash basis (cash + pending - buys + sales in flight)
   // after since without any cash movement or fill (design v1 §8.1, CN2, CN5, CN25): fills from before tracking opened,
-  // conflict pieces opened or reduced, reconciliations resolving pieces and reversals reopening them. These are
+  // conflict pieces opened or reduced, pieces settled by age and fee differences. These are
   // explained changes for the flow detector, never deposits or withdrawals. Fills and cash evidence are already
   // explained by the detector's own fill records. Coverage under review is passed apart (totals().review), as it
   // changes without an event. In USD, positive when the basis rose. Counted after a ledger event id (afterId: the last one
@@ -440,42 +438,32 @@ class InFlight {
   // time (since) only when no id was kept. through: the last event id now.
   // pretracking: the part from pre-tracking fills, by order, which the flow detector leaves out for an order whose fill it
   // explains itself in the same comparison (the order first listed then), so nothing is explained twice.
-  // A reconciliation is a change without cash in the interval only when its payment is known to be outside it (review of
-  // 06a0b95, P1: a payment and its reconciliation in one interval left the basis unchanged, and explaining the
-  // reconciliation as well made a false withdrawal): a rounding record (no payment), a reclassified flow (its cash was
-  // recorded in an earlier interval), or a settlement date before the interval's first U.S. day (from: its start).
-  // Otherwise it is a candidate (candidates: usd and ids), which the flow detector weighs against the observed change.
-  // A reconciliation already reversed when the interval is read made no payment (stage 2b.5 review, P1): its change and
-  // its reopening are both changes without cash, so it is never a timing candidate.
-  // Stage 3 (performance corrections): until bounds the interval's end (events after it are left out, and a reversal
-  // after it does not count yet); sides keeps only the pieces of those sides (the recorded low series moves with buys).
+  // (S4b-2: reconciliations, their reversals and their timing candidates are gone.)
+  // Stage 3 (performance corrections): until bounds the interval's end (events after it are left out); sides keeps only the pieces of those sides (the recorded low series moves with buys).
   // C1a: excludePieces (the pieces an approved valuation correction supersedes, performance only; the flow detector never
   // passes it) leaves every event of those pieces out.
-  explained(account,{afterId=null,since=null,from=null,until=null,sides=null,excludePieces=null}={}){const side=new Map(),pre={},cand=[];let c=0,through=0;const start=Number.isFinite(from??since)?nyDay(from??since):null;
-    const events=this.evidence.events(account).filter(e=>(until==null||e.at<=until)&&!(excludePieces?.has(e.pieceId))),reversed=new Set(events.filter(e=>e.kind==='reconciliation-reversed').map(e=>e.target));
+  explained(account,{afterId=null,since=null,until=null,sides=null,excludePieces=null}={}){const side=new Map(),pre={};let c=0,through=0;
+    const events=this.evidence.events(account).filter(e=>(until==null||e.at<=until)&&!(excludePieces?.has(e.pieceId)));
     for(const e of events){through=Math.max(through,e.seq);if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if(afterId!=null?!(e.seq>afterId):!(e.at>since))continue;const pieceSide=e.side??side.get(e.pieceId);if(sides&&!sides.includes(pieceSide))continue;const s=pieceSide==='Sell'?1:-1;
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
-      else if(e.kind==='reconciliation'){const outside=reversed.has(e.id)||e.explanation==='rounding'||e.reclassified||typeof e.settledOn==='string'&&start!=null&&e.settledOn<start;if(outside)c-=s*e.cents;else cand.push({id:e.id,usd:-s*e.cents/100,settledOn:e.settledOn??null});}
-      else if(e.kind==='piece-reopened')c+=s*e.cents;else if(e.kind==='conflict-reduced')c-=s*e.cents;
+      else if(e.kind==='conflict-reduced')c-=s*e.cents;
       // S1a: a piece settled by age leaves the obligation with no cash movement: the same sign as a reduced conflict.
       else if(e.kind==='piece-closed'&&e.why==='age'&&Number.isFinite(e.usd))c-=s*cents(e.usd);
       // H1: a fee difference closed with its evidence leaves the obligation with no cash movement, like an age close.
       else if(e.kind==='piece-closed'&&Number.isFinite(e.feeUSD))c-=s*cents(e.feeUSD);}
-    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100])),candidates:{usd:Math.round(cand.reduce((n,x)=>n+x.usd,0)*100)/100,ids:cand.map(x=>x.id),items:cand.map(x=>({id:x.id,usd:x.usd,settledOn:x.settledOn}))}};}
+    return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100]))};}
   explainedSince(account,since){return this.explained(account,{since}).usd;}
   // S2b: the part of the U.S. low basis that is a correction still open at `until`: buy pieces opened as a correction
-  // (a pre-tracking fill or a KIS record above the allocation), less what a reconciliation or a reduced conflict took
-  // off, plus what a reversal reopened, until the piece closes (by evidence, by age or otherwise). The recorded value is
+  // (a pre-tracking fill or a KIS record above the allocation), less what a reduced conflict took off, until the piece closes (by evidence, by age or otherwise). The recorded value is
   // that much lower than what the account is worth, so a day's return is measured on a base that adds it back. USD.
   // In hindsight a piece whose payment was seen after it opened was never a misstatement: one closed by KIS evidence (the
-  // cash fell while it was tracked) or reconciled as paid within a recorded day (paidAfter: those reconciliation ids). It
-  // is left out for every day. One closed by age, reconciled as paid earlier, or still open counts while open.
-  openCorrections(account,{until=null,paidAfter=new Set(),excludePieces=null}={}){const open=new Map(),side=new Map(),events=this.evidence.events(account).filter(e=>!(excludePieces?.has(e.pieceId)));
-    const never=new Set(events.filter(e=>e.kind==='piece-closed'&&e.why==='evidence'||e.kind==='reconciliation'&&paidAfter.has(e.id)).map(e=>e.pieceId));
+  // cash fell while it was tracked). It is left out for every day. One closed by age, or still open, counts while open.
+  openCorrections(account,{until=null,excludePieces=null}={}){const open=new Map(),side=new Map(),events=this.evidence.events(account).filter(e=>!(excludePieces?.has(e.pieceId)));
+    const never=new Set(events.filter(e=>e.kind==='piece-closed'&&e.why==='evidence').map(e=>e.pieceId));
     for(const e of events){if(until!=null&&e.at>until)break;if(never.has(e.pieceId))continue;if(e.kind==='piece-opened')side.set(e.pieceId,e.side);if((e.side??side.get(e.pieceId))!=='Buy')continue;const c=open.get(e.pieceId);
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict'))open.set(e.pieceId,(c??0)+cents(e.usd));
       else if(c==null)continue;else if(e.kind==='piece-closed')open.delete(e.pieceId);
-      else if(e.kind==='reconciliation'||e.kind==='conflict-reduced')open.set(e.pieceId,Math.max(0,c-(e.cents??0)));else if(e.kind==='piece-reopened')open.set(e.pieceId,c+(e.cents??0));}
+      else if(e.kind==='conflict-reduced')open.set(e.pieceId,Math.max(0,c-(e.cents??0)));}
     return [...open.values()].reduce((n,c)=>n+c,0)/100;}
 }
 // One market's net equity for the daily loss and new-exposure checks (the engines' netEquityOf), from the same value()

@@ -29,15 +29,14 @@ class SettlementBaseline{
   constructor(db,{inFlight,clock=Date.now}={}){if(!inFlight)throw new Error('BASELINE_NEEDS_TRACKER');this.db=db;this.inFlight=inFlight;this.ledger=inFlight.evidence;this.clock=clock;
     db.exec('CREATE TABLE IF NOT EXISTS settlement_baselines(account TEXT NOT NULL,day TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(account,day))');}
   get(account,day){const r=this.db.prepare('SELECT at,payload FROM settlement_baselines WHERE account=? AND day=?').get(account,day);return r?{...JSON.parse(r.payload),at:r.at}:null;}
-  // The snapshot: the tracker as the baseline saw it. The first snapshot of a day stands. recordIds (the reconciliation
-  // records existing then) is still written until S4 removes the reconciliations; nothing reads it.
+  // The snapshot: the tracker as the baseline saw it. The first snapshot of a day stands. (S4b-2: recordIds, the
+  // reconciliation records then, is no longer written; older snapshots keep it, unread.)
   take(account,day,at){if(typeof account!=='string'||!account||typeof day!=='string'||!Number.isFinite(at))return null;const was=this.get(account,day);if(was)return was;
     const st=this.inFlight.state(account),t=this.inFlight.current(account);
     const pieces=Object.fromEntries((st.open??[]).filter(f=>f.pid).map(f=>[f.pid,{side:f.side,cents:cents(f.usd),orderId:f.id,...(f.conflict?{conflict:true}:{})}]));
-    const lastEventId=this.ledger.events(account).reduce((n,e)=>Math.max(n,e.seq),0),recordIds=this.records(account).map(r=>r.id);
-    const payload={pieces,orders:Object.keys(st.seen??{}),review:{buysUSD:t.review?.buysUSD??0,sellsUSD:t.review?.sellsUSD??0},lastEventId,recordIds};
+    const lastEventId=this.ledger.events(account).reduce((n,e)=>Math.max(n,e.seq),0);
+    const payload={pieces,orders:Object.keys(st.seen??{}),review:{buysUSD:t.review?.buysUSD??0,sellsUSD:t.review?.sellsUSD??0},lastEventId};
     this.db.prepare('INSERT INTO settlement_baselines VALUES(?,?,?,?) ON CONFLICT(account,day) DO NOTHING').run(account,day,at,JSON.stringify(payload));return {...payload,at};}
-  records(account){try{return this.db.prepare('SELECT payload FROM settlement_reconciliations WHERE account=? ORDER BY at,rowid').all(account).map(r=>JSON.parse(r.payload));}catch{return [];}}
   // The day's adjustment to a U.S. baseline (policy: the engine's, with day and baselineAt): {certain:{low,high}, items}
   // in USD, items saying what makes it; {unavailable: reason} with no snapshot; null without a day or a baseline time.
   adjustments(account,policy){const day=policy?.day,snap=day?this.get(account,day):null,at=snap?.at??policy?.baselineAt;if(!day||!Number.isFinite(at))return null;

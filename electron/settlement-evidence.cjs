@@ -17,7 +17,7 @@
 // - settlement_citations: coverage that relies on a K row (an audited reconciliation, stage 2b.3; A1 once U6 is
 //   verified). A citation whose row is missing, changed key, became ambiguous, was superseded for less, or sits in a
 //   trade-history gap is under review: its amount counts as unresolved again until it is re-confirmed;
-// - settlement_standby: evidence that agrees with a piece already resolved, kept as standby coverage and not consumed.
+// - settlement_standby: no longer written (S4b-2, with the reconciliation that used it); the table is kept, empty.
 // K is supporting evidence only (D2): nothing here resolves a piece from K. A1 stays disabled until U6 is verified.
 const crypto=require('node:crypto');
 const hash=v=>crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0,24);
@@ -54,14 +54,6 @@ class SettlementEvidence{
     const identity={account,environment,market,readingA:readingA??null,readingB:readingB??null,side,field},evidenceId='A'+hash(identity);
     if(!this.version(evidenceId,1)){this.db.prepare('INSERT INTO settlement_evidence VALUES(?,?,?,?,?,?,?,?)').run(`${evidenceId}:1`,evidenceId,1,account,field,amountCents,currency,JSON.stringify({identity,...detail}));this.event(account,'evidence',{evidenceId,identity,amountCents,...detail});}
     return evidenceId;}
-  // A manual reconciliation's evidence (stage 2b.3): one version, the confirmed amount, allocated to its piece like any
-  // other evidence. Reversing the reconciliation reverses its allocations and voids the evidence, so nothing (a
-  // conflict's restoration included) can allocate from it again.
-  manual({account,evidenceId,amountCents,...detail}){this.db.prepare('INSERT INTO settlement_evidence VALUES(?,?,?,?,?,?,?,?)').run(`${evidenceId}:1`,evidenceId,1,account,'M',amountCents,'USD',JSON.stringify({manual:true,...detail}));this.event(account,'evidence',{evidenceId,source:'M',amountCents,...detail});return evidenceId;}
-  reverseEvidence(account,evidenceId,by){const rows=this.db.prepare('SELECT * FROM settlement_allocations WHERE evidenceId=? AND reversedBy IS NULL ORDER BY rowid').all(evidenceId);
-    for(const a of rows){this.db.prepare('UPDATE settlement_allocations SET reversedBy=? WHERE id=?').run(by,a.id);this.event(account,'allocation-reversed',{allocationId:a.id,evidenceId,pieceId:a.pieceId,orderId:a.orderId,cents:a.cents,by});}
-    for(const r of this.db.prepare('SELECT id,payload FROM settlement_evidence WHERE evidenceId=?').all(evidenceId))this.db.prepare('UPDATE settlement_evidence SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(r.payload),reversedBy:by}),r.id);
-    return rows.map(a=>({allocationId:a.id,pieceId:a.pieceId,orderId:a.orderId,cents:a.cents}));}
   allocated(evidenceId,version){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM settlement_allocations WHERE evidenceId=? AND version=? AND reversedBy IS NULL').get(evidenceId,version).n;}
   allocatedToPiece(pieceId){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM settlement_allocations WHERE pieceId=? AND reversedBy IS NULL').get(pieceId).n;}
   allocatedToOrder(account,orderId){return this.db.prepare('SELECT COALESCE(SUM(cents),0) n FROM settlement_allocations WHERE account=? AND orderId=? AND reversedBy IS NULL').get(account,String(orderId)).n;}
@@ -130,7 +122,6 @@ class SettlementEvidence{
       if(this.citations(account).filter(x=>x.groupId===groupId).reduce((n,x)=>n+x.cents,0)+c>v.amountCents)throw fail('CITATION_EXCEEDS_ROW');this.db.prepare('INSERT INTO settlement_citations VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'citation',row);this.noteReview(account);return id;});}
   // Active citations (a reversed reconciliation's citation no longer covers anything); all: every one, for the record.
   citations(account,{all=false}={}){return this.db.prepare('SELECT payload FROM settlement_citations WHERE account=?').all(account).map(r=>JSON.parse(r.payload)).filter(c=>all||!c.reversedBy);}
-  reverseCitation(account,id,by){const r=this.db.prepare('SELECT payload FROM settlement_citations WHERE id=?').get(id);if(!r)return;this.db.prepare('UPDATE settlement_citations SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(r.payload),reversedBy:by}),id);this.event(account,'citation-reversed',{id,by});this.noteReview(account);}
   // Re-confirms a citation against the group's current version (or another group), after review. Confirming against a
   // possible correction is the manual link that makes it a row of its own (v3.1 §2); an ambiguous group or one with
   // several rows cannot be confirmed.
@@ -155,13 +146,5 @@ class SettlementEvidence{
       else{const amount=cents(g.versions.at(-1).fields.settlementUSD??g.versions.at(-1).fields.grossUSD??0);if(total>amount){short=total-amount;reason=`the cited row was corrected to $${(amount/100).toFixed(2)}; its citations total $${(total/100).toFixed(2)}`;}}
       for(const c of [...list].sort((a,b)=>b.at-a.at||(a.id<b.id?1:-1))){if(short<=0)break;const part=Math.min(short,c.cents);short-=part;out.push({citationId:c.id,orderId:c.orderId,side:c.side,usd:part/100,reason});}}
     return out;}
-  // Evidence that agrees with a piece another record already resolved: kept, not consumed (design v3 §6).
-  standby({account,evidenceId,version,pieceId,cents:c}){const id='S'+hash([evidenceId,version,pieceId]);const row={id,account,evidenceId,version,pieceId,cents:c,at:this.clock()};
-    return this.tx(()=>{if(this.db.prepare('SELECT id FROM settlement_standby WHERE id=?').get(id))return id;this.db.prepare('INSERT INTO settlement_standby VALUES(?,?,?)').run(id,account,JSON.stringify(row));this.event(account,'standby',row);return id;});}
-  standbyFor(pieceId){return this.db.prepare('SELECT payload FROM settlement_standby').all().map(r=>JSON.parse(r.payload)).filter(s=>s.pieceId===pieceId).map(s=>({...s,promotedCents:(s.promoted??[]).reduce((n,p)=>n+p.cents,0)}));}
-  // Standby coverage consumed when the record it agreed with is reversed (design v3 §6): the part promoted, and by which
-  // reversal. A standby is promoted at most up to its amount.
-  promote(account,id,c,by){const r=this.db.prepare('SELECT payload FROM settlement_standby WHERE id=?').get(id);const s=JSON.parse(r.payload);s.promoted=[...(s.promoted??[]),{cents:c,by,at:this.clock()}];
-    this.db.prepare('UPDATE settlement_standby SET payload=? WHERE id=?').run(JSON.stringify(s),id);this.event(account,'standby-promoted',{id,pieceId:s.pieceId,evidenceId:s.evidenceId,version:s.version,cents:c,by});}
 }
 module.exports={SettlementEvidence,usTradeDate};

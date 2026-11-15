@@ -443,17 +443,13 @@ app.whenReady().then(async () => {
   const readingFailed=require('./reading-failures.cjs').readingFailures((title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message));
   inFlight.onSettled=(account,{orderId,why})=>{const market=fundingLedger.row(String(orderId))?.market;if(market==='US')fundingLedger.releaseSettled({orderId,why});};inFlightOf=account=>{try{return inFlight.current(account);}catch{return null;}};
   // The U.S. daily-loss baseline and settlement corrections (electron/settlement-baseline.cjs, stage 2b.4): the tracker's
-  // pieces are saved with each day's baseline, and reconciliations or corrections after it move the baseline with the value.
+  // pieces are saved with each day's baseline, and the tracker's cash-free changes after it move the baseline with the value.
   const settlementBaseline=new (require('./settlement-baseline.cjs').SettlementBaseline)(store.db,{inFlight});
   usLive.baselineTaken=policy=>{const a=kisState.snapshot?.accountKey;if(a)settlementBaseline.take(a,policy.day,policy.baselineAt);};
   usLive.settlementAdjustments=policy=>{const a=kisState.snapshot?.accountKey;return a?settlementBaseline.adjustments(a,policy):null;};
-  // Audited manual reconciliation (electron/settlement-reconciliation.cjs, stage 2b.3) and its panel (electron/
-  // settlement-panel.cjs, stage 2b.5): U.S. stocks › Settlements, with the Home summary and Check again (one bounded
-  // trade-history job per order, no AI). A1 stays off (U6): KIS settled records are supporting evidence only.
-  // A preview shows each market's daily-loss check before and after (LiveEngine.currentLoss, with the settlement
-  // baseline adjustments of stage 2b.4).
-  const reconciliation=new (require('./settlement-reconciliation.cjs').Reconciliation)(store.db,{inFlight,funding:fundingLedger,performance,loss:()=>{const out={};for(const [m,e] of [['KR',live],['US',usLive]]){try{out[m]=e?.currentLoss()??null;}catch{out[m]=null;}}return out;}});
-  const settlementPanel=new (require('./settlement-panel.cjs').SettlementPanel)({inFlight,reconciliation,flowDetector,costs});
+  // S4b-2: the manual reconciliation and the U.S. settlements panel are gone (KIS evidence and the age rule settle every
+  // fill); the U.S. page shows one read-only line while fills are settling (usLive.settlingFills).
+  usLive.settlingFills=()=>{const a=kisState.snapshot?.accountKey;return a?(inFlightOf(a)?.open??[]).length:0;};
   // The accounting-correction component of the performance series (stage 3.1): cash-free settlement changes of the U.S.
   // low basis, kept out of P/L and returns; each recorded day keeps the tracker's state, so a day with a U.S. buy in
   // flight is an estimate (S2) and a day the tracker could not be read has no return (U4).
@@ -464,7 +460,7 @@ app.whenReady().then(async () => {
   performance.settlement=account=>inFlight.snapshot(account);
   // S4a: historical restatements (stage 3.3/3.4: discovery, preview, approval) are gone.
   detectFlows=()=>{try{const s=kisState.snapshot;if(!s?.accountKey)return;const us=usSnapshot?.accountKey===s.accountKey+':US'?usSnapshot:null;try{brokerBalances.record(s.accountKey,'KR',kisState.heldReading??s);if(us)brokerBalances.record(s.accountKey,'US',usHeldReading??us);}catch{}
-    if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);settlementPanel.overdueNotice(s.accountKey,r.newlyOverdue,(id,message)=>notifier?.notify(id,message));}catch(e){readingFailed('U.S. settlement tracking',e);}
+    if(us&&us!==lastInFlightReading){lastInFlightReading=us;try{const r=inFlight.observe(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null});for(const n of r.notes)automation.log(require('node:crypto').randomUUID(),'System','U.S. settlement tracking',n);}catch(e){readingFailed('U.S. settlement tracking',e);}
       // C1d-2: never a held or provisional U.S. reading (C1d-1, M7).
       if(!us.settlementProvisional)try{const t=inFlightOf(s.accountKey);fundingTransfers.observeUS(s.accountKey,{us,orders:usLive?.orders()??[],fx:automation.fx?.()?.usdKRW??null,openOrderIds:new Set((t?.open??[]).filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:t?.buysUSD??0});}catch(e){readingFailed('U.S. funding transfers',e);}}
     if(s!==lastFundingKR&&!s.settlementProvisional){lastFundingKR=s;try{fundingTransfers.observeKR(s.accountKey,{korea:s,orders:live.orders()});}catch(e){readingFailed('U.S. funding transfers',e);}}
@@ -575,7 +571,6 @@ app.whenReady().then(async () => {
     try{const important=automation.stateCached('newsEvents',()=>automation.newsEvents.list(100)).filter(e=>e.importance==='high'&&e.symbols?.length&&now-(e.firstSeenAt??0)<86400000);if(important.length){counts.news=important.length;items.push({id:'news',tone:'info',title:`${plural(important.length,'important disclosure')} about your stocks today`,detail:important.slice(0,2).map(e=>e.title).join(' · '),tab:'News',action:'Read'});}}catch{}
     try{for(const o of automation.desk.orders(automation.watchScope()))if(o.linkedBuy&&o.unreadableSince&&now-o.unreadableSince>300000)items.push({id:'stop-unreadable-'+o.id,tone:'warning',title:`Stop order for ${o.symbol} cannot read its purchase`,detail:'It stays armed and keeps trying; it sells nothing until the purchase can be read.',tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
     try{for(const f of automation.desk.planStopFailures(automation.watchScope()))items.push({id:'plan-stop-'+f.id,tone:'warning',title:`No stop order for the purchase of ${f.symbol}`,detail:`${f.quantity} ${f.symbol}: ${f.reason}`,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
-    try{const home=settlementView()?.home;if(home)items.push({id:'settlements',tone:home.tone,title:home.title,detail:home.detail,tab:'U.S. stocks',action:'Review'});}catch{}
     try{if(restartNotice&&!restartNoticeDismissed&&!require('./auto-launch.cjs').launchState(automation).running)items.push({id:'restart-notice',tone:'warning',title:restartNotice.title,detail:restartNotice.message,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers',dismissible:true});}catch{}
     if(updates.view().status==='downloaded')items.push({id:'update',tone:'info',title:`Version ${updates.view().available?.version} is ready to install`,detail:'Install from Connections when no trading is active.',tab:'Connections',action:'Install'});
     return {items,counts};
@@ -586,27 +581,6 @@ app.whenReady().then(async () => {
   ipcMain.handle('system:login-item',event=>{authorize(event);return loginItem.get();});
   ipcMain.handle('system:set-login-item',(event,on)=>{authorize(event);try{return loginItem.set(on);}catch{return {...loginItem.get(),error:'Invalid request.'};}});
   ipcMain.handle('workspace:dismiss',(event,id)=>{authorize(event);if(id==='restart-notice')restartNoticeDismissed=true;return attentionState();});
-  // The settlement panel (stage 2b.5). The account is the connected one, never the page's. A preview and its
-  // confirmation are computed with the balances, rate and capacity inputs the app holds (no read is made for them), so a
-  // confirmation applies only if nothing it was bound to changed (electron/settlement-reconciliation.cjs R3); otherwise
-  // the reply carries the refreshed preview.
-  const settlementContext=()=>{const k=kisState.snapshot,us=k&&usSnapshot?.accountKey===k.accountKey+':US'?usSnapshot:null,fx=automation.fx?.()??null;
-    const kCash=k?Math.min(k.cash,Number.isFinite(k.settledCash)?k.settledCash:k.cash):null,at=Math.max(Date.parse(k?.timestamp??'')||0,Date.parse(us?.timestamp??'')||0);
-    return {balances:{korea:k??null,us,fx,now:at||null},inputs:Number.isFinite(kCash)&&fx?.usdKRW>0?{kCash,uCash:us&&Number.isFinite(us.cash)?us.cash:0,reportedKRW:Math.max(0,Number(us?.unsettled?.buyKRW)||0),rate:fx.usdKRW}:null};};
-  const settlementView=()=>{const k=kisState.snapshot;return k?.accountKey?settlementPanel.view(k.accountKey,{orders:usLive?.orders()??[],environment:k.environment??null}):null;};
-  const settlementAction=action=>async(event,...args)=>{authorize(event);const account=kisState.snapshot?.accountKey;if(!account)return {ok:false,error:'KIS_NOT_CONNECTED',state:null};
-    try{const data=await action(account,...args);return {ok:true,data,state:settlementView()};}
-    catch(error){const code=/^[A-Z_]{3,40}$/.test(error.code??error.message??'')?(error.code??error.message):'SETTLEMENT_FAILED';
-      return {ok:false,error:code,...(error.preview?{preview:error.preview}:{}),...(Number.isInteger(error.remainingCents)?{remainingCents:error.remainingCents}:{}),...(Number.isInteger(error.flowCents)?{flowCents:error.flowCents}:{}),state:settlementView()};}};
-  const settlementRequest=(account,req)=>{if(!req||typeof req!=='object'||Array.isArray(req))throw new Error('INVALID_REQUEST');return {...req,account};};
-  ipcMain.handle('settlements:get',settlementAction(()=>null));
-  ipcMain.handle('settlements:preview',settlementAction((account,req)=>reconciliation.preview(settlementRequest(account,req),settlementContext())));
-  ipcMain.handle('settlements:confirm',settlementAction((account,req)=>reconciliation.confirm(settlementRequest(account,req),settlementContext())));
-  ipcMain.handle('settlements:preview-reversal',settlementAction((account,req)=>reconciliation.previewReversal(settlementRequest(account,req),settlementContext())));
-  ipcMain.handle('settlements:reverse',settlementAction((account,req)=>reconciliation.reverse(settlementRequest(account,req),settlementContext())));
-  ipcMain.handle('settlements:resolve-timing',settlementAction((account,id,value)=>{if(typeof id!=='string'||!value||typeof value!=='object')throw new Error('INVALID_REQUEST');return flowDetector.resolveTiming(account,id,{paidHere:value.paidHere,reconciliationId:typeof value.reconciliationId==='string'?value.reconciliationId:null});}));
-  ipcMain.handle('settlements:check-again',settlementAction((account,pieceId)=>{if(typeof pieceId!=='string')throw new Error('INVALID_REQUEST');
-    return settlementPanel.checkAgain(account,pieceId,{orders:usLive?.orders()??[],environment:kisState.snapshot?.environment??null,today:require('./kis-activity.cjs').seoulDate(),fetch:(a,b,o)=>usBroker.request('charges',{start:a,end:b,...o})});}));
   // App updates from GitHub Releases, for installed builds only (PORTFOLIO_UPDATE_TEST names an update config file for local tests).
   // Only installer builds carry app-update.yml (and electron-updater); portable folder builds and source runs have no updates.
   const updateTest=Boolean(process.env.PORTFOLIO_UPDATE_TEST);const installed=app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA&&require('node:fs').existsSync(path.join(process.resourcesPath,'app-update.yml'));
