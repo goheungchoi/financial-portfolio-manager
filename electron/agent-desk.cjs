@@ -108,7 +108,9 @@ class AgentDesk {
       if(covered+args.quantity>held+buying){
         const key=c=>JSON.stringify(c.map(x=>[String(x.expr).replace(/\s+/g,''),x.op,Number(x.value)])),want=key(parsed.conditions);
         // A replacement never renews another order instead: it is refused, and the order it names stays armed.
-        const twin=replaced?null:same.find(o=>o.quantity===args.quantity&&(o.limitPrice??null)===(args.limitPrice??null)&&(o.combine??'all')===combine&&key(o.conditions)===want);
+        // A trailing stop's condition value is its moving level, not the floor the AI gave (trailing T1): it is never a
+        // twin of a fixed order. T2 adds trailing twins by floor and trail.
+        const twin=replaced?null:same.find(o=>!o.trail&&o.quantity===args.quantity&&(o.limitPrice??null)===(args.limitPrice??null)&&(o.combine??'all')===combine&&key(o.conditions)===want);
         if(twin){const now=this.clock(),renewed=this.write('conditional_orders',{...twin,expiresAt:Math.max(twin.expiresAt,now+hours*3600000),reason:cut(args.reason,300)||twin.reason,reviewId:reviewId??twin.reviewId??null,renewedAt:now,renewals:(twin.renewals??0)+1});
           return {status:'armed',id:renewed.id,renewed:true,expiresAt:new Date(renewed.expiresAt).toISOString(),note:'An identical armed order existed; its expiry was extended. Nothing new was armed.'};}
         return fail(`${held} shares of ${args.symbol} are held${buying?` and ${buying} are being bought`:''}, and armed ${purpose??'sell'} orders already cover ${covered} (${same.map(o=>o.id).join(', ')||'none'}); this would cover ${covered+args.quantity}. Cancel one first, or send the identical order again to extend it.`);

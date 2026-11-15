@@ -1104,7 +1104,7 @@ class Automation {
     if(quantity!=null&&quantity>r.available)return {ok:false,reason:`The ${order.symbol} lot of ${c.loanDate} has ${r.available} shares left after waiting orders (${r.reserved} reserved).`};
     return {ok:true,lot:r.lot,available:r.available,reserved:r.reserved,account:(()=>{try{return engine.identity();}catch{return null;}})()};}
   async fireConditional(order){
-    const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);
+    const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{if(order.trail)outcome+=require('./trailing-stops.cjs').firedText(order);const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);
       if(status==='rejected'&&order.side==='Sell'&&order.purpose==='stop_loss')try{this.notify?.('stop-rejected-'+order.id,`Stop loss for ${order.symbol} was rejected: ${outcome} The position is not protected until a new one is armed.`);}catch{}return saved;};
     // The market comes once from the instrument (a U.S. symbol carries its exchange, as NASD:NVDA) and must be the
     // account's. Audit 2026-11-04: the Buy checks read an undeclared market, so every conditional Buy threw a
@@ -1211,6 +1211,13 @@ class Automation {
   settleAutoSlot(slot,record){if(!slot)return;const s=record?.status??null,reason=record?.reason??null;
     const unsent=s==='Ready'||s==='Rejected'&&['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(reason)||reason==='APPROVAL_REQUIRED'&&s!=='Submitting';
     this.guardrails.settleSlot(slot,unsent?'released':'used',{status:s,...(reason?{reason}:{})});}
+  // One tracking step for every armed trailing stop (electron/trailing-stops.cjs, step T1): regular-session quotes only,
+  // the two-check rule, and a row write only when the level moves by a tick. Never throws; a failure skips that order.
+  trackTrailing(scope=this.watchScope(),now=Date.now()){const T=require('./trailing-stops.cjs');const {regularOpen}=require('./market-hours.cjs');this.trailMemory??=new Map();
+    let quotes=[];try{quotes=this.liveQuotes();}catch{}const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
+    for(const o of this.desk.orders(scope)){if(!o.trail)continue;try{const market=T.marketOf(o.symbol);
+      const r=T.step(o,quotes.find(q=>q.symbol===o.symbol),{now,regular:t=>regularOpen(market,t,closed),memory:this.trailMemory});
+      if(!r)continue;this.desk.update(o,r.patch);for(const e of r.events)this.log(o.id,'System',e.title,e.body);}catch{}}}
   deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // The purchase a plan stop is linked to (P1): its engine record, the shares it filled, and whether it has ended (filled,
   // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
@@ -1527,6 +1534,8 @@ class Automation {
     if(deskDue&&this.config.scope!=='paper')try{this.syncLinkedStops();}catch{}
     if(deskDue&&this.conditionalMonitoringActive()&&!this.firing){
       const scope=this.watchScope();const data=this.formulaData();const formula=require('./formula.cjs');
+      // Trailing stops move their level first (T1), so the check below reads the level as of this quote.
+      if(this.config.trailingStops===true)this.trackTrailing(scope);
       for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}
     }
     // Open app orders follow the best bid or ask every 3 seconds while the app runs, auto trading on or not.
