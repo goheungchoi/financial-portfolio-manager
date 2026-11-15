@@ -209,3 +209,12 @@ test('review round 2: a result whose import fails is rolled back with its queue 
   await assert.rejects(costs.syncHistory('a',async()=>({rows:[trade('2026-02-26','NEW',1),bad],complete:true,reason:null,pages:1}),{plan:()=>[window],clock:()=>2}),/INVALID_TRADE_HISTORY/);
   assert.deepEqual(unread(costs),[[window.start,window.end,'NOT_READ']],'still unread');assert.deepEqual(stored(costs).map(e=>[e.symbol,e.price]),[['US:AAA',100]],'the stored trade stays and the row written before the refusal is rolled back');
 });
+
+test('STALE_DECISION fix S-2: the day of the last full read is kept in the database, so a restart does not read again from last January',()=>{
+  const {DatabaseSync}=require('node:sqlite');const {TradingCosts}=require('../electron/trading-costs.cjs');const db=new DatabaseSync(':memory:');
+  const a=new TradingCosts(db);assert.equal(a.fullReadDay('acct'),null,'never read');a.setFullReadDay('acct','2026-11-08');
+  const b=new TradingCosts(db);assert.equal(b.fullReadDay('acct'),'2026-11-08','a new instance (a restart) sees it');assert.equal(b.fullReadDay('other'),null,'per account');
+  b.setFullReadDay('acct','2026-11-09');assert.equal(a.fullReadDay('acct'),'2026-11-09');
+  const src=require('fs').readFileSync(require('path').join(__dirname,'../electron/main.cjs'),'utf8');
+  assert.ok(src.includes('const full=costs.fullReadDay(s.accountKey)!==today')&&src.includes('if(r.planned&&full)costs.setFullReadDay(s.accountKey,today)'),'main reads and writes it');assert.ok(!src.includes('taxImportDay'),'no in-memory day left');
+});

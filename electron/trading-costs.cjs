@@ -217,6 +217,10 @@ class TradingCosts{
     return [...gaps,...unread].filter(g=>accounts.has(g.account)).sort((a,b)=>a.start.localeCompare(b.start));}
   // A gap up to the end of the tax year leaves the year's figures incomplete: its dates may hold the year's sales or the
   // purchases they are measured against.
+  // The Seoul day of an account's last full trade-history read (STALE_DECISION fix S-2): kept in the database, so a
+  // restart does not read again from January of last year (it did, two minutes after every start). Never throws.
+  fullReadDay(account){try{this.db.exec('CREATE TABLE IF NOT EXISTS trade_history_reads(account TEXT PRIMARY KEY,day TEXT NOT NULL)');return this.db.prepare('SELECT day FROM trade_history_reads WHERE account=?').get(String(account))?.day??null;}catch{return null;}}
+  setFullReadDay(account,day){try{this.db.exec('CREATE TABLE IF NOT EXISTS trade_history_reads(account TEXT PRIMARY KEY,day TEXT NOT NULL)');this.db.prepare('INSERT INTO trade_history_reads VALUES(?,?) ON CONFLICT(account) DO UPDATE SET day=excluded.day').run(String(account),String(day));}catch{}}
   historyIssues(year){const {describe}=require('./trade-history.cjs');return this.historyGaps().filter(g=>g.start<=`${year}-12-31`).map(describe);}
   // Shares acquired before the records, entered by the user: quantity, acquisition date and KRW cost.
   openingLots(account=null){return this.db.prepare('SELECT payload FROM tax_opening_lots').all().map(r=>JSON.parse(r.payload)).filter(l=>account==null||l.account===account);}
