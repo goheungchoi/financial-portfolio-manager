@@ -56,8 +56,10 @@ test('the hold ends at the first reading with cash at or above 0; after 3 hours 
 
 test('the wiring: stored as evidence, the funding check and the order path read the new reading; tracker, loss check, record and graph do not',()=>{
   const m=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/main.cjs'),'utf8');
-  assert.ok(m.includes('{const h=useUs(value.balance);usSnapshot=h.snapshot;usHeldReading=h.heldReading??null;}'),'every U.S. reading goes through the hold');
-  assert.ok(m.includes('if(!usHeldReading&&!usSnapshot.settlementProvisional)usLive.observeBalance(value.balance);'),'the loss check takes no baseline or peak from it');
+  assert.ok(m.includes('const h=useUs(value.balance);usSnapshot=h.snapshot;usHeldReading=h.heldReading??null;'),'every U.S. reading goes through the hold');
+  // S3a (G2): the engine gets the accepted view, which observeBalance refuses while held or provisional
+  // (tests/loss-inputs-s3a.test.cjs); so the loss check takes no baseline or peak from it.
+  assert.ok(m.includes('usLive.observeBalance(h.engine);'),'the loss check takes no baseline or peak from it');
   assert.ok(m.includes("if(us)brokerBalances.record(s.accountKey,'US',usHeldReading??us);"),'the KIS reading itself is kept');
   assert.ok(m.includes("const u=usHeldReading??usSnapshot;return kisState.snapshot&&u?.accountKey===kisState.snapshot.accountKey+':US'?u:null;"),'the funding check reads the new reading, as before');
   assert.ok(m.includes("&&!usSnapshot.settlementProvisional?(f=>usSnapshot.cash"),'the flow detector reads no provisional U.S. reading');

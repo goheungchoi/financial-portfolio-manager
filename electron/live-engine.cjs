@@ -50,7 +50,9 @@ class LiveEngine {
   // takes a late basis at the first reading that succeeds; a known day's peak moves only on readings of its own version.
   // D4: a Korean reading in the overnight settlement state (settlement-check.cjs) sets nothing: no baseline, no day's peak,
   // no risk balance; the last consistent reading stays in use.
-  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;if(snapshot.settlementCheck?.overnight)return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day(),key=this.identity();
+  // S3a (G2): nor does a U.S. reading the settlement hold marks (main.cjs useUs): settlementHeld (the last consistent
+  // reading standing in for one KIS is moving a settlement in) or settlementProvisional (used after the hold's bound).
+  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;if(snapshot.settlementCheck?.overnight||snapshot.settlementHeld||snapshot.settlementProvisional)return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day(),key=this.identity();
     const write=next=>this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),key);
     const {baselineSnapshot:_s,baselinePending:pending,baselineLate:_l,...carried}=policy;
     if(policy.day!==today||!Number.isFinite(policy.baseline)){const basis=this.basisFrom(snapshot,policy.day===today?pending??{since:Date.now(),reason:'the day\'s opening value was not recorded'}:null);
@@ -64,7 +66,11 @@ class LiveEngine {
     const extra=this.market==='KR'?[...new Set((await this.extraSymbols?.())??[])].filter(symbol=>/^\d{6}$/.test(symbol)&&!(configured?.symbols??[]).includes(symbol)).slice(0,20):[];
     let value=supplied??await this.broker.request('live-context',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),symbols:configured?.symbols??[],...(extra.length?{extra}:{})});
     if(value.balance.accountKey!==this.identity())throw new Error('ACCOUNT_CHANGED');
+    // S3a (G2): a reading read here passes through the settlement hold once (acceptReading, U.S.); a supplied one
+    // (automation.refreshUS) has already been accepted. The review sees the accepted reading, without the hold's marks.
+    if(!supplied&&this.acceptReading)value={...value,balance:this.acceptReading(value.balance)};
     this.observeBalance(value.balance);
+    if(value.balance.settlementHeld||value.balance.settlementProvisional){const {settlementHeld:_h,settlementProvisional:_p,...shown}=value.balance;value={...value,balance:shown};}
     // D4: the review sees the last consistent Korean reading while KIS moves last night's settlement (settlement-check.cjs).
     if(this.balanceHold){const use=this.balanceHold.accept(value.balance);if(use.held)value={...value,balance:use.balance};}
     return {...(this.market==='US'&&this.buyingPower?{buyingPower:this.buyingPower(value.balance)}:{}),...(this.market==='US'?(s=>({unsettledKRW:s.unsettledKRW,...(s.uncertainKRW?{unsettledUncertainKRW:s.uncertainKRW}:{})}))(require('./integrated-settlement.cjs').settlement(value.balance)):{}),environment:'kis',executionEnabled:executionEnabled&&this.enabled,automaticExecutionEnabled:this.autoEnabled,market:this.market,currency:this.market==='US'?'USD':'KRW',marketSession:value.marketSession??{open:false,status:'unverified'},equity:value.balance.reportedTotal,cash:Number.isFinite(value.balance.settledCash)?value.balance.settledCash:value.balance.cash,depositCash:value.balance.cash,...(value.balance.pendingSaleProceeds>0?{pendingSaleProceeds:value.balance.pendingSaleProceeds}:{}),positions:Object.fromEntries(value.balance.holdings.map(row=>[row.symbol,{quantity:row.quantity,costTotal:row.cost*row.quantity}])),universe:value.quotes.map(quote=>({symbol:quote.symbol,name:value.balance.holdings.find(row=>row.symbol===quote.symbol)?.name??this.nameOf?.(quote.symbol)??quote.symbol,price:quote.price})),quotes:value.quotes.map(quote=>({...quote,timestamp:quote.retrievedAt,stale:value.marketSession?.open!==true})),orders:this.orders().filter(row=>['Accepted','Uncertain','Submitting','Partially filled'].includes(row.status)).map(({symbol,side,quantity,filled,status,brokerOrderId,createdAt,reconciledAt})=>({symbol,side,quantity,filled,status,orderId:brokerOrderId??null,placedAt:createdAt?new Date(createdAt).toISOString():null,lastConfirmedAt:reconciledAt?new Date(reconciledAt).toISOString():null})),...(this.orderReconciliation()?{orderReconciliation:this.orderReconciliation()}:{}),risk:(policy=>policy?{...policy,baseline:this.adjustedBaseline(policy),...(this.adjustedBaseline(policy)!==policy.baseline?{baselineIncludesFlows:this.adjustedBaseline(policy)-policy.baseline}:{})}:null)(this.policy())??{symbols:[],anyStock:true,maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,baseline:value.balance.reportedTotal,dayPeakEquity:value.balance.reportedTotal,lossLimit:{mode:'off',value:0},readOnly:true},...this.productRisk(value)};
@@ -131,7 +137,10 @@ class LiveEngine {
         if(prepared.session.approval&&automatic)throw new Error('EXTENDED_APPROVAL_REQUIRED');
         const pct=this.extendedMaxOrderPct?.()??5;if(order.notional>accountBase*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
         order={...order,session:prepared.session.id};}
-      this.observeBalance(prepared.balance);
+      // S3a (G2): this reading passes through the settlement hold once (acceptReading, U.S.); a held or provisional one sets
+      // no risk balance, baseline or peak. The order's own checks keep the reading as read: in a settlement debit it shows
+      // less cash and a smaller base, so it can only refuse more, never admit more.
+      this.observeBalance(this.acceptReading?this.acceptReading(prepared.balance):prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
       if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
