@@ -79,7 +79,7 @@ function harness({ctxPrice=76000}={}){const {Automation}=require('../electron/au
   return {a,db,events,calls,ctx,quotes,scope,armed};}
 
 test('T1: trackTrailing moves the stored level only with the switch on; the condition value, priceAtCreation and the context follow',()=>{
-  const {a,events,quotes,armed,scope}=harness();a.config.trailingStops=true;
+  const {a,events,quotes,armed,scope}=harness();a.config.trailingStops=true;a.trailSeen=new Map([[armed().id,{stepAt:KR_OPEN-5000,acceptedAt:null,regularSince:KR_OPEN-5000}]]);// tracking already running: no gap (T3)
   quotes.push({symbol:'005930',price:90000,timestamp:KR_OPEN});a.trackTrailing(scope,KR_OPEN);quotes[0]={symbol:'005930',price:90000,timestamp:KR_OPEN+5000};a.trackTrailing(scope,KR_OPEN+5000);
   assert.equal(armed().trail.level,84600);assert.equal(armed().conditions[0].value,84600);assert.equal(armed().trail.floor,70000,'the floor the AI gave is kept');assert.equal(armed().priceAtCreation,81200,'unchanged');
   assert.equal(a.desk.context(scope,a.config,['005930']).conditionalOrders.armed[0].conditions[0].value,84600,'the review sees the current level');
@@ -203,4 +203,109 @@ test('T2: plan trail fields survive normalizing, and the flat Claude answer rebu
   const plain=A.flatDecisionSchema(false,false);const {decision:d2}=A.rebuildDecision(Object.fromEntries(Object.keys(plain.properties).map(k=>[k,flat[k]])),plain);assert.ok(!('trailPct' in d2.plan),'off: no trail keys');
   assert.equal(C.normalizePlan({thesis:'t',stopPrice:90,trailPct:6,trailAtrMultiple:null}).trailPct,6);assert.ok(!('trailAtrMultiple' in C.normalizePlan({thesis:'t',stopPrice:90,trailPct:6,trailAtrMultiple:null})));
   assert.ok(!('trailPct' in C.normalizePlan({thesis:'t',stopPrice:90})),'no trail: as before');
+});
+
+// ---- T3: plan stops from the fill, the catch-up (review C1, D), "not tracked since", the armed line, the start notice (B).
+const bar=(date,high)=>({date,open:high,high,low:high-1000,close:high-500});
+const trailing=(extra={})=>order({...T.create({pct:6,atrMultiple:null,activateAt:null},{floor:70000,price:81200,now:KR_OPEN,market:'KR'}),...extra});
+
+test('T3: a plan stop waits for its fill, then trails from the fill price (or the first quote when the record has none)',()=>{
+  const waiting=order(T.create({pct:6,atrMultiple:null,activateAt:null},{floor:70000,price:81200,now:KR_OPEN,market:'KR',awaitingFill:true}));
+  assert.equal(waiting.trail.awaitingFill,true);assert.equal(waiting.trail.active,false);assert.equal(waiting.trail.level,70000);assert.equal(waiting.trail.startedFrom,'fill');
+  assert.deepEqual(run(waiting,[[90000,0],[90000,5]]).writes,[],'not tracked before the fill');
+  const later=KR_OPEN+86400000;const filled={...waiting,...T.startFromFill(waiting,{fillPrice:82000,now:later})};
+  assert.equal(filled.trail.active,true);assert.equal(filled.trail.high,82000);assert.equal(filled.trail.level,77000);assert.equal(filled.conditions[0].value,77000);assert.equal(filled.trail.catchUpFrom,'2026-11-11','the fill day bar never counts');
+  const noPrice={...waiting,...T.startFromFill(waiting,{fillPrice:NaN,now:later})};assert.equal(noPrice.trail.startOnQuote,true);assert.equal(noPrice.trail.high,null);
+  const first=run(noPrice,[[83000,0]],{start:later});assert.equal(first.o.trail.high,83000,'the first accepted quote');assert.equal(first.o.trail.startOnQuote,undefined);assert.equal(first.o.trail.level,78000);
+  assert.match(T.armedText(waiting),/trails 6% below the high from the fill of its purchase; floor 70,000; stop 70,000 until then\.$/);
+});
+
+test('T3: the catch-up counts daily highs on or after watchedDay, never the arming day, and says when the stop now fires',()=>{
+  // Armed Monday 11-16 10:00 KST; the app closed after 11:00; back Wednesday 11-18 10:05.
+  const o=trailing({watchedDay:'2026-11-09',watchedAt:KR_OPEN+3600000});const back=Date.parse('2026-11-11T01:05:00Z');
+  const bars=[bar('2026-11-06',99000),bar('2026-11-09',95000),bar('2026-11-10',84000),bar('2026-11-11',83000)];
+  const r=T.catchUp(o,bars,{now:back,from:o.trail.watchedAt,price:78000});const t=r.patch.trail;
+  assert.equal(t.high,84000,'11-09 (the arming day) and older bars are left out');assert.equal(t.highDay,'2026-11-10');assert.equal(t.level,78900);assert.equal(r.patch.conditions[0].value,78900);
+  assert.equal(t.watchedDay,'2026-11-11');assert.deepEqual(t.catchUp,{status:'done',from:'2026-11-10',to:'2026-11-11',high:84000,day:'2026-11-10',at:back});assert.deepEqual(t.untracked,[{from:KR_OPEN+3600000,to:back}]);
+  assert.deepEqual(r.events,[{title:'Trailing stop caught up · 005930',body:'Daily high 84,000 on 11-10 while the app was not tracking (11-09 11:00 to 11-11 10:05 KST); stop now 78,900, at or above the price 78,000, so it fires at this check.'}]);
+  assert.match(T.firedText({...o,trail:t}),/Trailing: high 84,000 on 11-10 \(daily high\), trail 6%, stop 78,900\.$/);
+  // C1: a later gap counts the bar of the last tracked day itself (its high is the exchange's own figure).
+  const next=T.catchUp({...o,trail:{...t,catchUpFrom:'2026-11-10'}},[bar('2026-11-11',86000)],{now:back+3*3600000,from:back+3600000,price:85000});assert.equal(next.patch.trail.high,86000);assert.match(next.events[0].body,/stop now 80,800\.$/,'below the price: no "fires"');
+  const none=T.catchUp(o,[bar('2026-11-10',80000)],{now:back,from:o.trail.watchedAt,price:78000});assert.equal(none.patch.trail.high,81200);assert.deepEqual(none.events,[],'nothing higher: no line');assert.equal(none.patch.trail.catchUp.status,'done');
+  const act=order(T.create({pct:6,atrMultiple:null,activateAt:85000},{floor:70000,price:81200,now:KR_OPEN,market:'KR'}));const on=T.catchUp(act,[bar('2026-11-10',86000)],{now:back,from:null}).patch.trail;assert.equal(on.active,true);assert.equal(on.high,86000);assert.equal(on.level,80800);
+});
+
+test('T3: unreadable bars: no catch-up, nothing guessed, watchedDay kept for the retry; a known capital change skips the catch-up',()=>{
+  const o=trailing({watchedDay:'2026-11-09'});const back=Date.parse('2026-11-11T01:05:00Z');
+  const u=T.catchUp(o,null,{now:back,from:KR_OPEN});assert.equal(u.patch.trail.high,81200);assert.equal(u.patch.trail.level,76300);assert.equal(u.patch.trail.watchedDay,'2026-11-09');
+  assert.deepEqual(u.patch.trail.catchUp,{status:'unavailable',at:back,retryAt:back+300000,from:'2026-11-10'});assert.deepEqual(u.events,[]);
+  const s=T.catchUp(o,[bar('2026-11-10',99000)],{now:back,from:KR_OPEN,blocked:'A capital change of 005930 was filed on 2026-11-03 (무상증자결정).'});assert.equal(s.patch.trail.high,81200);assert.equal(s.patch.trail.catchUp.status,'skipped');
+  assert.deepEqual(s.events,[{title:'Trailing stop not caught up · 005930',body:'A capital change of 005930 was filed on 2026-11-03 (무상증자결정). Daily highs are not applied for this gap; the stop stays at 76,300.'}]);
+  const {a}=harness();a.capitalFilings=()=>[{date:'2026-10-01',title:'주요사항보고서(무상증자결정)'},{date:'2026-11-03',title:'기업설명회(IR)개최'}];
+  assert.match(a.capitalChange('005930','2026-11-10','2026-11-11'),/filed on 2026-10-01/,'within 60 days before the gap');assert.equal(a.capitalChange('005930','2027-01-20','2027-01-21'),null,'older than 60 days');
+  assert.equal(a.capitalChange('NASD:AAPL','2026-11-10','2026-11-11'),null,'no U.S. data: a stated limit');a.capitalFilings=()=>null;assert.equal(a.capitalChange('005930','2026-11-10','2026-11-11'),null,'no filings at hand');
+});
+
+test('T3: trackTrailing: a gap runs the catch-up first and then the stop fires through the normal check; a failed read retries in 5 minutes',async()=>{
+  const {a,events,quotes,armed,scope}=harness();a.config.trailingStops=true;const back=Date.parse('2026-11-11T01:05:00Z');a.desk.update(armed(),{trail:{...armed().trail,watchedAt:KR_OPEN+3600000}});
+  let reads=0;a.dailyBars=async()=>{reads++;return reads===1?null:[bar('2026-11-10',84000)];};quotes.push({symbol:'005930',price:78000,timestamp:back});
+  a.trackTrailing(scope,back);await new Promise(r=>setImmediate(r));assert.equal(reads,1,'the first step after start is a gap');assert.equal(armed().trail.catchUp.status,'unavailable');assert.equal(armed().trail.level,76300);
+  a.trackTrailing(scope,back+5000);await new Promise(r=>setImmediate(r));assert.equal(reads,1,'no retry before 5 minutes');
+  a.trackTrailing(scope,back+300000);await new Promise(r=>setImmediate(r));assert.equal(reads,2,'retried');assert.equal(armed().trail.level,78900);assert.equal(armed().conditions[0].value,78900);
+  assert.ok(events.some(e=>e.title==='Trailing stop caught up · 005930'));
+  const formula=require('../electron/formula.cjs');assert.equal(formula.checkConditions(armed().conditions,'all',a.formulaData()).met,true,'the 5 s check now finds price 78,000 at or below 78,900');
+});
+
+test('T3 F1: days owed by an unreadable catch-up stay owed through live tracking and a restart, until a catch-up is done',async()=>{
+  // The planner's probe: armed 11-16, the app away until 11-19 10:00 KST, bars unreadable at Start, live tracking moves
+  // watchedDay to 11-19; the retry must still count 11-17 and 11-18.
+  const bars=[bar('2026-11-09',99000),bar('2026-11-10',90000),bar('2026-11-11',85000),bar('2026-11-12',82000)];const start=Date.parse('2026-11-12T01:00:00Z');
+  for(const restart of [false,true]){const {a,quotes,armed,scope}=harness();a.config.trailingStops=true;a.desk.update(armed(),{trail:{...armed().trail,watchedAt:KR_OPEN+3600000}});
+    let readable=false;a.dailyBars=async()=>readable?bars:null;const tick=async s=>{quotes[0]={symbol:'005930',price:81000,timestamp:start+s*1000};a.trackTrailing(scope,start+s*1000);await a.trailCatchChain;};
+    await tick(0);assert.deepEqual(armed().trail.catchUp,{status:'unavailable',at:start,retryAt:start+300000,from:'2026-11-10'});
+    for(let s=5;s<=60;s+=5)await tick(s);assert.equal(armed().trail.watchedDay,'2026-11-12','live tracking moved watchedDay');assert.equal(armed().trail.level,76300);
+    if(restart){a.trailSeen=new Map();a.trailMemory=new Map();await tick(65);assert.equal(armed().trail.catchUp.from,'2026-11-10','still owed after a restart that could not read either');assert.equal(armed().trail.catchUp.status,'unavailable');}
+    readable=true;await tick(restart?400:300);if(armed().trail.catchUp.status!=='done')await tick(700);
+    assert.equal(armed().trail.catchUp.status,'done');assert.equal(armed().trail.high,90000,restart?'with a restart':'without');assert.equal(armed().trail.level,84600);assert.equal(armed().trail.catchUp.from,'2026-11-10');}
+});
+
+test('T3: catch-ups at Start read their bars one at a time',async()=>{
+  const {a,scope,armed}=harness();a.config.trailingStops=true;let open=0,most=0;
+  a.dailyBars=async()=>{open++;most=Math.max(most,open);await new Promise(r=>setTimeout(r,5));open--;return [];};
+  const first=armed();for(let i=0;i<3;i++)a.desk.update({...first,id:'C-x'+i},{});const ids=a.desk.orders(scope).filter(o=>o.trail).map(o=>o.id);assert.equal(ids.length,4);
+  a.trackTrailing(scope,KR_OPEN);assert.equal(a.trailCatching.size,4,'all marked at once');await a.trailCatchChain;assert.equal(most,1,'one read at a time');assert.equal(a.trailCatching.size,0);
+});
+
+test('T3: "not tracked since" after 5 minutes without an accepted quote in a regular session; cleared by the next accepted quote',()=>{
+  const {a,quotes,armed,scope}=harness();a.config.trailingStops=true;a.trailSeen=new Map([[armed().id,{stepAt:KR_OPEN-5000,acceptedAt:KR_OPEN-5000,regularSince:KR_OPEN-3600000}]]);
+  quotes.push({symbol:'005930',price:81000,timestamp:KR_OPEN-120000});// a quote the PC clock sees as old
+  for(let s=0;s<=300;s+=5)a.trackTrailing(scope,KR_OPEN+s*1000);assert.equal(armed().trail.notTrackedSince,KR_OPEN-5000);
+  assert.match(a.desk.context(scope,a.config,['005930']).conditionalOrders.armed[0].trail.notTrackedSince,/^2026-11-09 09:59$/);
+  quotes[0]={symbol:'005930',price:81000,timestamp:KR_OPEN+305000};a.trackTrailing(scope,KR_OPEN+305000);assert.equal(armed().trail.notTrackedSince,undefined);
+  const evening=harness();evening.a.config.trailingStops=true;evening.a.trailSeen=new Map([[evening.armed().id,{stepAt:Date.parse('2026-11-09T09:00:00Z')-5000,acceptedAt:null,regularSince:null}]]);
+  for(let s=0;s<=600;s+=5)evening.a.trackTrailing(evening.scope,Date.parse('2026-11-09T09:00:00Z')+s*1000);assert.equal(evening.armed().trail.notTrackedSince,undefined,'outside the regular session it is not missing anything');
+});
+
+test('T3: followPlan arms the trailing plan stop (or the fixed one with the reason); the armed line; switching on again does not catch up the off time',()=>{
+  const plan=(extra={})=>({action:'Buy',symbol:'005930',quantity:4,credit:'none',plan:{thesis:'t',invalidation:'below 70,000',stopPrice:70000,targetPrice:null,horizonDays:30,confidence:'medium',...extra}});
+  const {a,events,quotes,scope}=harness();a.desk.cancelOrder(scope,a.desk.orders(scope)[0].id);a.config.trailingStops=true;quotes.push({symbol:'005930',price:81200,timestamp:Date.now()});
+  a.followPlan(scope,plan({trailPct:6}),'R1',{proposalId:'B1',market:'KR',positions:{}});const o=a.desk.orders(scope)[0];
+  assert.equal(o.trail.awaitingFill,true);assert.equal(o.linkedBuy.id,'B1');assert.ok(events.some(e=>e.title==='Trailing stop armed · 005930'&&/from the fill of its purchase/.test(e.body)));
+  a.live.orders=()=>[{id:'B1',status:'Filled',filled:4,fillPrice:82000}];a.trackTrailing(scope,KR_OPEN);const f=a.desk.orders(scope)[0].trail;assert.equal(f.active,true);assert.equal(f.high,82000);assert.equal(f.level,77000);
+  const b=harness();b.a.desk.cancelOrder(b.scope,b.a.desk.orders(b.scope)[0].id);b.a.config.trailingStops=true;b.quotes.push({symbol:'005930',price:81200,timestamp:Date.now()});
+  b.a.followPlan(b.scope,plan({trailPct:6,trailAtrMultiple:2}),'R2',{proposalId:'B2',market:'KR',positions:{}});const fixed=b.a.desk.orders(b.scope)[0];
+  assert.equal(fixed.trail,undefined);assert.equal(fixed.conditions[0].value,70000);assert.equal(fixed.trailNotUsed,'trail needs exactly one of pct and atrMultiple.');
+  assert.ok(b.events.some(e=>e.title==='Plan stop armed without trailing'&&/trail needs exactly one/.test(e.body)));assert.equal(b.a.desk.context(b.scope,b.a.config,['005930']).conditionalOrders.armed[0].trailNotUsed,'trail needs exactly one of pct and atrMultiple.');
+  const c=harness();c.a.desk.cancelOrder(c.scope,c.a.desk.orders(c.scope)[0].id);c.a.followPlan(c.scope,plan({trailPct:6}),'R3',{proposalId:'B3',market:'KR',positions:{}});assert.equal(c.a.desk.orders(c.scope)[0].trail,undefined,'switch off: a fixed stop, no line');assert.ok(!c.events.some(e=>/without trailing/.test(e.title)));
+  // Ruling 5: switched off and on again, the bars of the off time do not count.
+  const d=harness();d.a.configure({trailingStops:true});d.a.configure({trailingStops:false});d.a.configure({trailingStops:true});const t=d.armed().trail;const today=T.dayOf(Date.now(),'KR');
+  assert.equal(t.watchedDay,today);assert.ok(t.catchUpFrom>=T.nextDay(today),'never before the day after the switch (the harness arms on 11-09, so it may be later)');assert.ok(t.resumedAt>0);assert.equal(T.catchUp(d.armed(),[bar(today,99000)],{now:Date.now(),from:Date.now()}).patch.trail.high,81200,'today (the off time) is not caught up');
+});
+
+test('T3: the start notice says trailing stops catch up on Start and may sell at once (review B)',()=>{
+  const N=require('../electron/start-notice.cjs');const prev={kind:'normal',at:KR_OPEN};
+  const n=N.startNotice({previousStop:prev,stops:{count:2,any:true},wasRunning:false,trailing:1,now:KR_OPEN+60000});
+  assert.match(n.message,/2 stop orders are not being watched\. 1 trailing stop will catch up from daily highs when you press Start, and it may sell at once if its new level is at or above the price\. Open the app/);assert.equal(n.trailingStops,1);
+  assert.doesNotMatch(N.startNotice({previousStop:prev,stops:{count:1,any:true},wasRunning:false,now:KR_OPEN}).message,/trailing/,'none: unchanged');
+  const {a,db,scope}=harness();assert.equal(N.armedTrailing(db,{scope}),1);assert.equal(N.armedTrailing(db,{scope:null}),0);a.desk.cancelOrder(scope,a.desk.orders(scope)[0].id);assert.equal(N.armedTrailing(db,{scope}),0);
 });

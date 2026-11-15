@@ -73,7 +73,8 @@ test('the shutdown phone alert confirmed sent is kept on the record and read bac
 });
 test('main.cjs wiring: the notice once per start for the last run\'s account; the Home item until Start or Dismiss; the phone alert after the row, never waited on',()=>{
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/main.cjs'),'utf8');
-  assert.match(src,/restartNotice=N\.startNotice\(\{previousStop,stops:N\.armedStops\(store\.db,\{scope:previousStop\?\.scope\?\?null\}\),wasRunning:Boolean\(automation\.config\.enabled&&automation\.config\.autoSubmit\)\}\)/);
+  // Trailing stops T3 (review B): the last run's armed trailing stops, only while Engine settings allow them.
+  assert.match(src,/restartNotice=N\.startNotice\(\{previousStop,stops:N\.armedStops\(store\.db,\{scope:previousStop\?\.scope\?\?null\}\),trailing:automation\.config\.trailingStops===true&&automation\.config\.conditionalOrders\?N\.armedTrailing\(store\.db,\{scope:previousStop\?\.scope\?\?null\}\):0,wasRunning:Boolean\(automation\.config\.enabled&&automation\.config\.autoSubmit\)\}\)/);
   assert.match(src,/exitRecord\.heartbeat\(scope\);\},60000\)\.unref\(\)/);
   assert.match(src,/const id='restart-notice:'\+\(exitRecord\?\.current\?\.startedAt\?\?Date\.now\(\)\);setTimeout\(\(\)=>\{try\{notifier\.notify\(id,restartNotice\.message\);\}catch\{\}\},3000\);/);
   assert.match(src,/if\(restartNotice&&!restartNoticeDismissed&&!require\('\.\/auto-launch\.cjs'\)\.launchState\(automation\)\.running\)items\.push\(\{id:'restart-notice'/);

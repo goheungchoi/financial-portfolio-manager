@@ -310,7 +310,7 @@ app.whenReady().then(async () => {
   automation.notify=(id,message)=>notifier.notify(id,message);
   // The start notice (restart part 1, step 2): once per start, desktop and phone, when stop orders are armed or auto
   // trading was running at the last stop. Not on a first start. The Home item stays until Start or Dismiss.
-  try{const N=require('./start-notice.cjs');restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit)});
+  try{const N=require('./start-notice.cjs');restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),trailing:automation.config.trailingStops===true&&automation.config.conditionalOrders?N.armedTrailing(store.db,{scope:previousStop?.scope??null}):0,wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit)});
     if(restartNotice){const id='restart-notice:'+(exitRecord?.current?.startedAt??Date.now());setTimeout(()=>{try{notifier.notify(id,restartNotice.message);}catch{}},3000);}}catch{}
   agentBridge=require('./agent-bridge.cjs').startBridge(app.getPath('userData'),paper,decision=>automation.review('External agent',decision));
   automation.evidence=new (require('./market-evidence.cjs').MarketEvidence)(async(args,context)=>{
@@ -404,6 +404,10 @@ app.whenReady().then(async () => {
   // Daily history for holdings and watchlist stocks is kept warm (every six hours) for exposure, sizing, triggers and formulas.
   let warmAt=0;setInterval(()=>{if(!kisState.snapshot||Date.now()-warmAt<6*3600000)return;warmAt=Date.now();void (async()=>{const symbols=[...new Set([...kisState.snapshot.holdings.map(h=>h.symbol),...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('KR')??[])])].slice(0,25);for(const symbol of symbols){try{await research.source(symbol,'daily');await research.source(symbol,'overview');if(/^\d{6}$/.test(symbol)){await research.source(symbol,'dividends');await research.source(symbol,'meetings');if(automation.providerStatus.dartConnected)await research.source(symbol,'dart');}}catch{}}})();},120000).unref();
   automation.series={closes:symbol=>research.cached(symbol,'daily')?.value?.closes??null,ensure:symbol=>research.source(symbol,'daily')};
+  // Trailing stops (T3): daily bars read fresh for a catch-up (null when they cannot be read), and the cached OpenDART
+  // filings that say whether a capital change falls in the gap (null when there are none at hand).
+  automation.dailyBars=async symbol=>{const r=await research.source(symbol,'daily',true);return r?.status==='ok'&&Array.isArray(r.data?.closes)?r.data.closes:null;};
+  automation.capitalFilings=symbol=>research.cached(symbol,'dart')?.value?.filings??null;
   const deskAction=action=>(event,...args)=>{authorize(event);const scope=automation.watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');action(scope,...args);return automation.deskState();};
   ipcMain.handle('desk:cancel-trigger',deskAction((scope,id)=>automation.desk.cancelTrigger(scope,String(id))));
   ipcMain.handle('desk:delete-note',deskAction((scope,symbol)=>automation.desk.deleteNote(scope,String(symbol??''))));

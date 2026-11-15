@@ -29,18 +29,30 @@ function usable(quote,{market,now,regular}){if(!(quote?.price>0))return false;co
 // A new trail for an order being armed. spec: {pct|null, atrMultiple|null, activateAt|null}; floor: the condition's
 // value; price: the current price; atr: ATR(14) in price units when atrMultiple is given; startHigh: where the high
 // starts (the fill price for a plan stop; T3), else the price. Validation is the caller's (T2).
-function create(spec,{floor,price,atr=null,atrDate=null,now,market,startHigh=null}){
-  const kind=spec.atrMultiple!=null?'atr':'pct',active=spec.activateAt==null,high=active?(startHigh??price):null;
+// awaitingFill (T3): a plan stop armed with its purchase does not trail until the purchase fills; its high then starts
+// at the fill price (startFromFill). catchUpFrom: the first daily bar a catch-up may use: never the arming (or fill)
+// day's bar, which holds prices from before the stop existed (review C1).
+const nextDay=day=>new Date(Date.parse(day+'T00:00:00Z')+86400000).toISOString().slice(0,10);
+function create(spec,{floor,price,atr=null,atrDate=null,now,market,startHigh=null,awaitingFill=false}){
+  const kind=spec.atrMultiple!=null?'atr':'pct',active=!awaitingFill&&spec.activateAt==null,high=active?(startHigh??price):null;
   const distance=kind==='atr'?Math.round(spec.atrMultiple*atr*10000)/10000:null;
-  const t={kind,pct:kind==='pct'?spec.pct:null,atrMultiple:kind==='atr'?spec.atrMultiple:null,atr:kind==='atr'?atr:null,atrDate:kind==='atr'?atrDate:null,distance,floor,activateAt:spec.activateAt??null,active,high:active?high:null,highAt:active?now:null,level:floor,watchedDay:dayOf(now,market),watchedAt:now,untracked:[],catchUp:null,startedFrom:startHigh!=null?'fill':'price'};
+  const t={kind,pct:kind==='pct'?spec.pct:null,atrMultiple:kind==='atr'?spec.atrMultiple:null,atr:kind==='atr'?atr:null,atrDate:kind==='atr'?atrDate:null,distance,floor,activateAt:spec.activateAt??null,active,high:active?high:null,highAt:active?now:null,level:floor,watchedDay:dayOf(now,market),watchedAt:now,catchUpFrom:nextDay(dayOf(now,market)),untracked:[],catchUp:null,startedFrom:awaitingFill?'fill':startHigh!=null?'fill':'price',...(awaitingFill?{awaitingFill:true}:{})};
   t.level=Math.max(floor,rawLevel(t,t.high,market)??-Infinity);return t;}
+// The linked purchase filled (T3, ruling 4): the trail starts at the fill price, or at the first accepted quote when the
+// record has none (high null until then); the fill day's bar never counts in a catch-up.
+function startFromFill(order,{fillPrice,now}){const t=order.trail,market=marketOf(order.symbol);const high=fillPrice>0?fillPrice:null;
+  const next={...t,awaitingFill:false,active:t.activateAt==null&&high!=null,high:t.activateAt==null?high:null,highAt:t.activateAt==null&&high!=null?now:null,watchedDay:dayOf(now,market),watchedAt:now,catchUpFrom:nextDay(dayOf(now,market)),...(high==null&&t.activateAt==null?{startOnQuote:true}:{})};
+  next.level=Math.max(t.level,t.floor,rawLevel(next,next.high,market)??-Infinity);const [c0,...rest]=order.conditions;return {trail:next,conditions:[{...c0,value:next.level},...rest]};}
 const fmt=(v,market)=>market==='US'?Number(v).toFixed(2):Math.round(v).toLocaleString('en-US');
 const distanceText=(t,market)=>t.kind==='pct'?`${t.pct}%`:`${fmt(t.distance,market)} (${t.atrMultiple} × ATR ${fmt(t.atr,market)})`;
 // One tracking step for an armed order with a trail. memory: a Map kept by the caller for this run (order id -> the last
 // accepted quote). Returns null (nothing to write) or {patch, events}; events are Journal lines {title, body}.
 function step(order,quote,{now,regular,memory}){
-  const t=order?.trail;if(!t)return null;const market=marketOf(order.symbol);
+  const t=order?.trail;if(!t||t.awaitingFill)return null;const market=marketOf(order.symbol);
   if(!usable(quote,{market,now,regular}))return null;
+  // A plan stop whose fill record had no price: the first accepted quote after the fill starts the high (T3).
+  if(t.startOnQuote){const {startOnQuote,...rest}=t;const next={...rest,active:true,high:quote.price,highAt:now,highDay:null,watchedAt:now};next.level=Math.max(t.level,t.floor,rawLevel(next,next.high,market)??-Infinity);
+    memory.set(order.id,{price:quote.price,at:stamp(quote),best:next.high,bestAt:now});const [c0,...more]=order.conditions;return {patch:{trail:next,conditions:[{...c0,value:next.level},...more]},events:[]};}
   // memory also keeps the run's highest confirmed high (review F1): a high that moves the level by less than a tick is
   // not written at once, but it is written with the next row write, so the stored high is never below a confirmed one.
   const ts=stamp(quote),prev=memory.get(order.id),kept=prev?.best>(t.high??-Infinity)?{high:prev.best,highAt:prev.bestAt}:{high:t.high,highAt:t.highAt};
@@ -50,7 +62,7 @@ function step(order,quote,{now,regular,memory}){
   let active=t.active,high=t.active?kept.high:t.high,highAt=t.active?kept.highAt:t.highAt;
   if(!active){if(t.activateAt!=null&&candidate>=t.activateAt){active=true;high=candidate;highAt=now;}}
   else if(!(high>=candidate)){high=candidate;highAt=now;}
-  const next={...t,active,high,highAt};const raw=rawLevel(next,high,market),before=rawLevel(t,t.high,market);
+  const next={...t,active,high,highAt,...(high!==t.high?{highDay:null}:{})};const raw=rawLevel(next,high,market),before=rawLevel(t,t.high,market);
   const level=Math.max(t.level,t.floor,raw??-Infinity);next.level=level;
   if(active&&!t.active)events.push({title:`Trailing stop active · ${order.symbol}`,body:`${fmt(candidate,market)} reached activateAt ${fmt(t.activateAt,market)}; stop now ${fmt(level,market)}.`});
   const day=dayOf(now,market);if(active)memory.set(order.id,{price:quote.price,at:ts,best:high,bestAt:highAt});
@@ -61,5 +73,39 @@ function step(order,quote,{now,regular,memory}){
 // The text added to a fired trailing stop's Journal outcome.
 function firedText(order){const t=order?.trail;if(!t)return '';const market=marketOf(order.symbol);
   if(!t.active)return ` Trailing: not yet active (activateAt ${fmt(t.activateAt,market)}); stop ${fmt(t.level,market)}, the floor.`;
-  return ` Trailing: high ${fmt(t.high,market)} on ${dayOf(t.highAt,market).slice(5)}, trail ${distanceText(t,market)}, stop ${fmt(t.level,market)}.`;}
-module.exports={create,step,usable,rawLevel,roundDown,tickOf,dayOf,marketOf,firedText,distanceText,WATCHED_EVERY_MS,MAX_AGE_MS};
+  return ` Trailing: high ${fmt(t.high,market)} on ${(t.highDay??dayOf(t.highAt,market)).slice(5)}${t.highDay?' (daily high)':''}, trail ${distanceText(t,market)}, stop ${fmt(t.level,market)}.`;}
+const ZONE_LABEL={KR:'KST',US:'New York'};
+const clock=(t,market)=>`${dayOf(t,market).slice(5)} ${new Intl.DateTimeFormat('en-GB',{timeZone:ZONE[market],hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(t))}`;
+const span=(from,to,market)=>`${clock(from,market)} to ${clock(to,market)} ${ZONE_LABEL[market]}`;
+// The Journal line when a trailing stop is armed (T3; review T2 note 2).
+function armedText(order){const t=order.trail,market=marketOf(order.symbol),d=distanceText(t,market),f=fmt(t.floor,market),head=`${order.side} ${order.quantity} (${order.purpose}): `;
+  if(t.awaitingFill)return `${head}trails ${d} below the high from the fill of its purchase; floor ${f}; stop ${f} until then.`;
+  if(!t.active)return `${head}trails ${d} below the high once ${fmt(t.activateAt,market)} is reached; floor ${f}; stop ${f} until then.`;
+  return `${head}trails ${d} below the high from ${fmt(t.high,market)}; floor ${f}; stop now ${fmt(t.level,market)}.`;}
+// The catch-up after a gap in tracking (decision 3 A; review C1, D). from: when tracking stopped. bars: the symbol's
+// daily bars read fresh for the catch-up ({date, high}), or null when they could not be read. blocked: the reason not to
+// catch up (a known split, rights issue or other capital change in the gap), or null. price: the current price, for the
+// line. Counted: bars dated on or after watchedDay and on or after catchUpFrom (never the arming or fill day), through
+// today. Unreadable bars: no catch-up, nothing guessed, watchedDay kept so a retry in 5 minutes covers the same days.
+// Returns {patch, events}.
+const RETRY_MS=300000,GAP_MS=120000;
+// The first day a catch-up counts. While an earlier catch-up is owed (its bars could not be read), its days stay owed
+// from catchUp.from, whatever watchedDay has become since through live tracking or a restart (review T3 F1).
+function catchUpStart(t){const own=[t.watchedDay,t.catchUpFrom].filter(Boolean).sort().at(-1)??t.watchedDay;
+  return t.catchUp?.status==='unavailable'&&typeof t.catchUp.from==='string'?[t.catchUp.from,own].sort()[0]:own;}
+function catchUp(order,bars,{now,from,price=null,blocked=null}){const t=order.trail,market=marketOf(order.symbol),today=dayOf(now,market);
+  const untracked=Number.isFinite(from)&&now-from>GAP_MS?[...(t.untracked??[]),{from,to:now}].slice(-3):(t.untracked??[]);
+  const start=catchUpStart(t);const level0=fmt(t.level,market),events=[];
+  const patch=next=>{const [c0,...rest]=order.conditions;return {patch:{trail:next,conditions:[{...c0,value:next.level},...rest]},events};};
+  if(blocked){events.push({title:`Trailing stop not caught up · ${order.symbol}`,body:`${blocked} Daily highs are not applied for this gap; the stop stays at ${level0}.`});
+    return patch({...t,untracked,watchedDay:today,watchedAt:now,catchUp:{status:'skipped',reason:blocked,at:now}});}
+  if(!Array.isArray(bars))return patch({...t,untracked,catchUp:{status:'unavailable',at:now,retryAt:now+RETRY_MS,from:start}});
+  const use=bars.filter(b=>b&&typeof b.date==='string'&&b.date>=start&&b.date<=today&&b.high>0);
+  const top=use.reduce((m,b)=>!m||b.high>m.high?b:m,null);let {active,high,highAt,highDay}=t;
+  if(top){if(!active){if(t.activateAt!=null&&top.high>=t.activateAt){active=true;high=top.high;highAt=now;highDay=top.date;}}else if(!(high>=top.high)){high=top.high;highAt=now;highDay=top.date;}}
+  const next={...t,active,high,highAt,highDay:highDay??null,untracked,watchedDay:today,watchedAt:now,catchUp:{status:'done',from:start,to:today,high:top?.high??null,day:top?.date??null,at:now}};
+  next.level=Math.max(t.level,t.floor,rawLevel(next,high,market)??-Infinity);
+  if(high!==t.high||active!==t.active){const fires=price>0&&price<=next.level;
+    events.push({title:`Trailing stop caught up · ${order.symbol}`,body:`Daily high ${fmt(high,market)} on ${top.date.slice(5)} while the app was not tracking${Number.isFinite(from)?` (${span(from,now,market)})`:''}; stop now ${fmt(next.level,market)}${fires?`, at or above the price ${fmt(price,market)}, so it fires at this check`:''}.`});}
+  return patch(next);}
+module.exports={catchUpStart,create,step,usable,rawLevel,roundDown,tickOf,dayOf,nextDay,marketOf,firedText,distanceText,armedText,catchUp,startFromFill,span,WATCHED_EVERY_MS,MAX_AGE_MS,RETRY_MS,GAP_MS};

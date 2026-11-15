@@ -152,7 +152,10 @@ class Automation {
     if(typeof next.conditionalOrders!=='boolean'||typeof next.trailingStops!=='boolean'||typeof next.conditionalAutoSubmit!=='boolean'||typeof next.creditProtectionApproved!=='boolean'||!Number.isInteger(next.conditionalMaxActive)||next.conditionalMaxActive<1||next.conditionalMaxActive>10||!Number.isFinite(next.conditionalMaxOrderPct)||next.conditionalMaxOrderPct<1||next.conditionalMaxOrderPct>50||!Number.isFinite(next.conditionalMaxSlippagePct)||next.conditionalMaxSlippagePct<.1||next.conditionalMaxSlippagePct>10||!Number.isFinite(next.conditionalMaxHours)||next.conditionalMaxHours<1||next.conditionalMaxHours>336)throw new Error('INVALID_SETTINGS');
     // Trailing stops switched off (T2): armed trailing stops stay armed as fixed stops at their current level; switched
     // on again they resume from the next quotes (no catch-up of the off time). The two-check memory starts afresh.
-    if(Boolean(next.trailingStops)!==Boolean(this.config.trailingStops)){this.trailMemory=new Map();if(!next.trailingStops)try{const n=this.desk.orders(this.watchScope()).filter(o=>o.trail).length;if(n)this.log(randomUUID(),'System','Trailing stops paused',`${n} trailing ${n===1?'stop stays armed at its current level':'stops stay armed at their current levels'}.`);}catch{}}
+    if(Boolean(next.trailingStops)!==Boolean(this.config.trailingStops)){this.trailMemory=new Map();this.trailSeen=new Map();
+      // Switched on again (ruling 5): the off time is not caught up; daily bars count only from the next day.
+      if(next.trailingStops)try{const T=require('./trailing-stops.cjs'),now=Date.now();for(const o of this.desk.orders(this.watchScope()))if(o.trail&&!o.trail.awaitingFill){const day=T.dayOf(now,T.marketOf(o.symbol));this.desk.update(o,{trail:{...o.trail,watchedDay:day,watchedAt:now,catchUpFrom:[o.trail.catchUpFrom,T.nextDay(day)].filter(Boolean).sort().at(-1),resumedAt:now}});}}catch{}
+      if(!next.trailingStops)try{const n=this.desk.orders(this.watchScope()).filter(o=>o.trail).length;if(n)this.log(randomUUID(),'System','Trailing stops paused',`${n} trailing ${n===1?'stop stays armed at its current level':'stops stay armed at their current levels'}.`);}catch{}}
     if(next.alertTrial!==this.config.alertTrial){if(next.alertTrial==='on'){this.alertTrial.start({scope:this.watchScope(),markets:require('./market-hours.cjs').marketsFor(next.scope)});this.log(randomUUID(),'System','Watchlist alert trial started','Price reviews now come from the selective watchlist rules; the current rule runs in shadow. Every other trigger and all protection are unchanged.');}
       else{const t=this.alertTrial.end('turned off');if(t)this.log(randomUUID(),'System','Watchlist alert trial stopped','Turned off. Price reviews come from the current rule again.');}}
     this.config=next;this.revision=(this.revision??0)+1;this.saveConfig();this.savedAt=Date.now();if(Object.hasOwn(value,'enabled'))this.sessionArmed=next.enabled;return this.getState();
@@ -1086,7 +1089,7 @@ class Automation {
       save_assessment:async args=>{guard();return this.assessments.save(scope,args,{context,reviewId,symbols:[...new Set([...Object.keys(context.positions??{}),...(context.universe??[]).map(r=>r.symbol)])]});},
       save_note:async args=>{guard();return this.desk.saveNote(scope,args,{orderIds:this.engineOrders().filter(o=>o.symbol===String(args?.symbol??'').trim().toUpperCase()&&require('./note-staleness.cjs').OPEN.includes(o.status)).map(o=>o.id)});},
       set_conditional_order:async args=>{guard();if(args?.action!=='cancel'&&context.environment==='local-paper')return {status:'rejected',reason:'Conditional orders need a KIS account.'};
-        if(args?.action!=='cancel'&&args?.side==='Buy'){const sym=String(args.symbol??'').trim().toUpperCase();const refused=this.leveragedEntryRefusal(/:/.test(sym)?this.usLive:this.live,sym,'Buy');if(refused)return {status:'rejected',reason:refused};}if(args?.trail?.atrMultiple!=null)await this.warmSeries([String(args.symbol??'')]);const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,positions:context.positions??null,atr:sym=>this.trailAtr(sym),lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.replaced)this.logStopReplaced(scope,reviewId,reply.replaced,reply.id);if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);count(()=>use.item('conditionalOrder',reply.id,o?.conditions));const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';if(o.trail)reply.trail={level:o.trail.level,high:o.trail.high,active:o.trail.active,distance:o.trail.kind==='pct'?`${o.trail.pct}%`:o.trail.distance};}return reply;},
+        if(args?.action!=='cancel'&&args?.side==='Buy'){const sym=String(args.symbol??'').trim().toUpperCase();const refused=this.leveragedEntryRefusal(/:/.test(sym)?this.usLive:this.live,sym,'Buy');if(refused)return {status:'rejected',reason:refused};}if(args?.trail?.atrMultiple!=null)await this.warmSeries([String(args.symbol??'')]);const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,positions:context.positions??null,atr:sym=>this.trailAtr(sym),lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.replaced)this.logStopReplaced(scope,reviewId,reply.replaced,reply.id);if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);count(()=>use.item('conditionalOrder',reply.id,o?.conditions));const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';if(o.trail){reply.trail={level:o.trail.level,high:o.trail.high,active:o.trail.active,distance:o.trail.kind==='pct'?`${o.trail.pct}%`:o.trail.distance};if(!reply.renewed)this.log(o.id,'System',`Trailing stop armed · ${o.symbol}`,require('./trailing-stops.cjs').armedText(o));}}return reply;},
     };
   }
   // One console entry for a stop replaced in one step (step A-R): both ids and both levels. Never throws.
@@ -1222,9 +1225,45 @@ class Automation {
   // the two-check rule, and a row write only when the level moves by a tick. Never throws; a failure skips that order.
   trackTrailing(scope=this.watchScope(),now=Date.now()){const T=require('./trailing-stops.cjs');const {regularOpen}=require('./market-hours.cjs');this.trailMemory??=new Map();
     let quotes=[];try{quotes=this.liveQuotes();}catch{}const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
-    for(const o of this.desk.orders(scope)){if(!o.trail)continue;try{const market=T.marketOf(o.symbol);
-      const r=T.step(o,quotes.find(q=>q.symbol===o.symbol),{now,regular:t=>regularOpen(market,t,closed),memory:this.trailMemory});
-      if(!r)continue;this.desk.update(o,r.patch);for(const e of r.events)this.log(o.id,'System',e.title,e.body);}catch{}}}
+    // T3: trailSeen (this run, per order): when tracking last stepped, when a quote was last accepted, and since when the
+    // regular session has been open, for the gap test and "not tracked since"; trailCatching: catch-ups in flight.
+    this.trailSeen??=new Map();this.trailCatching??=new Set();
+    for(let o of this.desk.orders(scope)){if(!o.trail)continue;try{const market=T.marketOf(o.symbol),regular=t=>regularOpen(market,t,closed);
+      // A plan stop starts trailing once its purchase has filled, from the fill price (ruling 4).
+      if(o.trail.awaitingFill){const lp=this.linkedPurchase(o);if(!(lp?.filled>=1))continue;o=this.desk.update(o,T.startFromFill(o,{fillPrice:Number(lp.record?.fillPrice),now}));this.trailSeen.set(o.id,{stepAt:now,acceptedAt:null,regularSince:null});continue;}
+      const seen=this.trailSeen.get(o.id),gap=!seen||now-seen.stepAt>T.GAP_MS;const s={stepAt:now,acceptedAt:seen?.acceptedAt??null,regularSince:regular(now)?(seen?.regularSince??now):null};this.trailSeen.set(o.id,s);
+      // After a gap (app started, auto trading resumed, a long pause), or a catch-up whose bars could not be read and whose
+      // retry is due: the catch-up runs first; the order is not tracked until it is done.
+      const retry=o.trail.catchUp?.status==='unavailable'&&now>=(o.trail.catchUp.retryAt??0);
+      if((gap||retry)&&!this.trailCatching.has(o.id)){void this.catchUpTrail(o.id,{scope,from:gap?(seen?.stepAt??o.trail.watchedAt):null,now});continue;}
+      if(this.trailCatching.has(o.id))continue;
+      const quote=quotes.find(q=>q.symbol===o.symbol),accepted=T.usable(quote,{market,now,regular});if(accepted)s.acceptedAt=now;
+      const r=T.step(o,quote,{now,regular,memory:this.trailMemory});
+      let patch=r?.patch??null;const t=patch?.trail??o.trail;
+      // "not tracked since" (review T1 note): no accepted quote for over 5 minutes inside a regular session.
+      const base=Math.max(s.acceptedAt??0,s.regularSince??Infinity);
+      if(!accepted&&s.regularSince!=null&&now-base>300000&&!t.notTrackedSince)patch={...(patch??{}),trail:{...t,notTrackedSince:base}};
+      else if(accepted&&t.notTrackedSince){const {notTrackedSince,...rest}=t;patch={...(patch??{}),trail:rest};}
+      if(!patch)continue;this.desk.update(o,patch);for(const e of r?.events??[])this.log(o.id,'System',e.title,e.body);}catch{}}}
+  // The catch-up for one trailing stop (T3): its daily bars read fresh, unless a capital change is known in the gap (review
+  // D, Korean listings with OpenDART filings). Never throws; the order stays armed at its level whatever happens.
+  // Queued (review T3, question 2): catch-ups read their daily bars one at a time, so ten stops at Start make ten reads in
+  // turn, not at once. Each order is marked at once, so it is not tracked while it waits; its stop still fires as usual.
+  catchUpTrail(id,opts){this.trailCatching??=new Set();this.trailCatching.add(id);const run=()=>this.runCatchUp(id,opts);this.trailCatchChain=(this.trailCatchChain??Promise.resolve()).then(run,run);return this.trailCatchChain;}
+  async runCatchUp(id,{scope,from,now=Date.now()}){const T=require('./trailing-stops.cjs');
+    try{const o=this.desk.orders(scope).find(x=>x.id===id);if(!o?.trail)return;const start=T.catchUpStart(o.trail);
+      const blocked=this.capitalChange(o.symbol,start,T.dayOf(now,T.marketOf(o.symbol)));let bars=null;if(!blocked)try{bars=await this.dailyBars?.(o.symbol)??null;}catch{bars=null;}
+      const fresh=this.desk.orders(scope).find(x=>x.id===id);if(!fresh?.trail)return;
+      let price=null;try{price=this.liveQuotes().find(q=>q.symbol===fresh.symbol)?.price??null;}catch{}
+      const r=T.catchUp(fresh,bars,{now,from,price,blocked});this.desk.update(fresh,r.patch);for(const e of r.events)this.log(id,'System',e.title,e.body);}
+    catch{}finally{this.trailCatching.delete(id);}}
+  // A known change in the share count of a Korean listing between two days (review D): a rights issue, bonus issue,
+  // capital reduction, split or reverse split filed on OpenDART from 60 days before the gap. Daily highs are adjusted
+  // prices, so they are not applied across it. Returns the reason, or null (also when the filings cannot be read).
+  capitalChange(symbol,from,to){try{if(/:/.test(symbol)||!from)return null;const filings=this.capitalFilings?.(symbol);if(!Array.isArray(filings))return null;
+    const since=new Date(Date.parse(from+'T00:00:00Z')-60*86400000).toISOString().slice(0,10);
+    const hit=filings.find(f=>f&&typeof f.date==='string'&&f.date>=since&&f.date<=to&&/유상증자|무상증자|감자|주식분할|주식병합/.test(String(f.title??'')));
+    return hit?`A capital change of ${symbol} was filed on ${hit.date} (${String(hit.title).slice(0,60)}).`:null;}catch{return null;}}
   deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // The purchase a plan stop is linked to (P1): its engine record, the shares it filled, and whether it has ended (filled,
   // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
@@ -1247,8 +1286,19 @@ class Automation {
     const p=decision.plan;const day=seoulDate();
     const text=`Plan from ${day}: ${p.thesis} Invalid if: ${p.invalidation}. Stop ${p.stopPrice}${p.targetPrice?`, target ${p.targetPrice}`:''}, horizon ${p.horizonDays} days, confidence ${p.confidence}.`;
     const note=this.desk.saveNote(scope,{action:'set',symbol:decision.symbol,note:text,expiresInDays:Math.min(90,Math.max(1,p.horizonDays))});this.log(reviewId,'Tool','Trade plan saved',JSON.stringify(note));
-    if(this.config.conditionalOrders&&p.stopPrice){const stop=this.desk.setOrder(scope,{action:'add',id:'',symbol:decision.symbol,side:'Sell',quantity:decision.quantity,limitPrice:null,conditions:[{expr:`price("${decision.symbol}")`,op:'<=',value:p.stopPrice}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Stop from the trade plan of ${day}: ${p.invalidation}`.slice(0,300)},{config:this.config,reviewId,positions:positions??{},...(proposalId?{link:{id:proposalId,market,quantity:decision.quantity}}:{})});
-      if(stop.status==='armed'){this.log(reviewId,'Tool','Stop-loss armed from the plan',JSON.stringify(stop));return;}
+    if(this.config.conditionalOrders&&p.stopPrice){const args={action:'add',id:'',symbol:decision.symbol,side:'Sell',quantity:decision.quantity,limitPrice:null,conditions:[{expr:`price("${decision.symbol}")`,op:'<=',value:p.stopPrice}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Stop from the trade plan of ${day}: ${p.invalidation}`.slice(0,300)};
+      const opts={config:this.config,reviewId,positions:positions??{},...(proposalId?{link:{id:proposalId,market,quantity:decision.quantity}}:{})};
+      // A plan whose stop trails (T3): armed with the trail, trailing from the fill. A trail that cannot be used (both
+      // fields, out of bounds, no ATR or price) arms the fixed stop and says why (ruling 3); the Buy is not held back.
+      const wants=require('./agent-desk.cjs').trailingAllowed(this.config)&&(p.trailPct!=null||p.trailAtrMultiple!=null);let stop,trailNotUsed=null;
+      if(wants){let price=null;try{price=this.formulaData(this.liveQuotes()).price(decision.symbol);}catch{}
+        stop=this.desk.setOrder(scope,{...args,trail:{pct:p.trailPct??null,atrMultiple:p.trailAtrMultiple??null,activateAt:null}},{...opts,quotes:price>0?[{symbol:decision.symbol,price}]:[],atr:sym=>this.trailAtr(sym)});
+        if(stop.status!=='armed'){const fixed=this.desk.setOrder(scope,args,opts);if(fixed.status==='armed'){trailNotUsed=stop.reason??'the trail was refused';stop=fixed;}}}
+      else stop=this.desk.setOrder(scope,args,opts);
+      if(stop.status==='armed'){this.log(reviewId,'Tool','Stop-loss armed from the plan',JSON.stringify(stop));const o=this.desk.orders(scope).find(x=>x.id===stop.id);
+        if(trailNotUsed){if(o)this.desk.update(o,{trailNotUsed});this.log(stop.id,'System','Plan stop armed without trailing',`${decision.quantity} ${decision.symbol} at ${p.stopPrice}: ${trailNotUsed}`);}
+        else if(o?.trail)this.log(o.id,'System',`Trailing stop armed · ${o.symbol}`,require('./trailing-stops.cjs').armedText(o));
+        return;}
       const reason=stop.reason??'the stop order was refused';this.log(reviewId,'System','Stop-loss NOT armed from the plan',`${decision.quantity} ${decision.symbol} at ${p.stopPrice}: ${reason} The purchase goes ahead without a stop order.`);
       try{this.desk.recordPlanStopFailure(scope,{symbol:decision.symbol,quantity:decision.quantity,reason,proposalId});}catch{}
       try{this.notify?.('plan-stop-'+(proposalId??reviewId),`The purchase of ${decision.quantity} ${decision.symbol} has no stop order: ${reason}`);}catch{}}

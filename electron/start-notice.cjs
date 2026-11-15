@@ -26,13 +26,17 @@ const hasStops=stops=>Boolean(stops&&(stops.count!=null?stops.count>0:stops.any)
  * is armed and auto trading was not running.
  * @param {{previousStop:{kind:string,at:number|null,timeUncertain?:boolean}|null,stops:{count:number|null,any:boolean},wasRunning:boolean,now?:number}} input
  */
-function startNotice({previousStop,stops,wasRunning,now=Date.now()}){
-  if(!previousStop)return null;const armed=hasStops(stops);if(!armed&&!wasRunning)return null;
+// trailing (trailing stops T3, review B): the watched account's armed trailing stops, counted only while Engine settings
+// allow them (switched off they are fixed stops and do not catch up). On Start each catches up from the daily highs of
+// the time the app was closed, so one may sell at once: the notice says so before the user presses Start.
+const trailingText=n=>`${n} trailing stop${n===1?'':'s'} will catch up from daily highs when you press Start, and ${n===1?'it':'one'} may sell at once if its new level is at or above the price.`;
+function startNotice({previousStop,stops,wasRunning,trailing=0,now=Date.now()}){
+  if(!previousStop)return null;const armed=hasStops(stops)||trailing>0;if(!armed&&!wasRunning)return null;
   const how=stopSentence(previousStop,now);
-  const message=[how,`The app started and auto trading is paused.${armed?` ${stopsText(stops)}`:''}`,'Open the app and press Start auto trading.'].filter(Boolean).join(' ');
+  const message=[how,`The app started and auto trading is paused.${hasStops(stops)?` ${stopsText(stops)}`:''}`,trailing>0?trailingText(trailing):null,'Open the app and press Start auto trading.'].filter(Boolean).join(' ');
   // Short enough for the Needs you row; the full sentence is the item's detail (tooltip) and the alerts.
   const title=!armed?'Auto trading paused after a restart':stops.count!=null?`Paused: ${stops.count} stop order${stops.count===1?'':'s'} not watched`:'Paused: stop orders not watched';
-  return {title,message,how,armedStops:armed?stops.count:0,wasRunning:Boolean(wasRunning),stopKind:previousStop.kind};
+  return {title,message,how,armedStops:hasStops(stops)?stops.count:0,...(trailing>0?{trailingStops:trailing}:{}),wasRunning:Boolean(wasRunning),stopKind:previousStop.kind};
 }
 
 /** The phone message when Windows ends the session, or null when there is nothing to warn about. */
@@ -55,4 +59,6 @@ function armedStops(db,{scope=null,now=Date.now()}={}){
     if(known){const count=live.filter(r=>r.scope===scope).length;return {count,any:count>0};}
     return {count:null,any:live.some(r=>r.scope!=='paper'&&!r.scope.startsWith('paper:'))};}catch{return {count:null,any:false};}
 }
-module.exports={stopSentence,startNotice,sessionEndMessage,armedStops};
+// Armed, unexpired trailing stops (stop_loss or take_profit with a trail) of the watched account; 0 when it is not known.
+function armedTrailing(db,{scope=null,now=Date.now()}={}){try{if(typeof scope!=='string'||!scope.includes(':'))return 0;return db.prepare("SELECT payload FROM conditional_orders WHERE status='armed' AND scope=?").all(scope).map(r=>{try{return JSON.parse(r.payload);}catch{return null;}}).filter(o=>o?.trail&&Number(o.expiresAt)>now).length;}catch{return 0;}}
+module.exports={stopSentence,startNotice,sessionEndMessage,armedStops,armedTrailing};
