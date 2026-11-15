@@ -51,7 +51,7 @@ export function JournalView({state,onNavigate,onDesk}:{state:RuntimeState;busy:b
         {current&&<DecisionDetail review={current} state={state} onNavigate={onNavigate} onLessons={()=>setView('Lessons')}/>}
       </div></section>)}
     {view==='Trades'&&<TradeOutcomes outcomes={state.outcomes??[]}/>}
-    {view==='Orders and triggers'&&<>{warn&&<p className="notice" role="status">Not monitored while auto trading is paused.</p>}{state.desk?<AgentDesk desk={state.desk} conditionalOn={state.config.conditionalOrders} onChange={desk=>onDesk?.(desk)}/>:<section className="empty">Nothing to show yet<br/><small>The agent's notes, review triggers and conditional orders appear here once the engine has loaded them.</small></section>}</>}
+    {view==='Orders and triggers'&&<>{warn&&<p className="notice" role="status">Not monitored while auto trading is paused.</p>}{state.desk?<AgentDesk desk={state.desk} conditionalOn={state.config.conditionalOrders} trailingOn={state.config.trailingStops===true} onChange={desk=>onDesk?.(desk)}/>:<section className="empty">Nothing to show yet<br/><small>The agent's notes, review triggers and conditional orders appear here once the engine has loaded them.</small></section>}</>}
     {view==='Lessons'&&<LearningPanel state={state}/>}
     {view==='Scoreboard'&&<Scoreboard/>}
     {view==='Replay'&&<ReplayPanel/>}

@@ -1,10 +1,17 @@
-import type {DeskState,DeskCondition} from './RuntimeSettings';
+import type {DeskState,DeskCondition,DeskTrail} from './RuntimeSettings';
 import {Note} from './Note';
 // What the trading agent is keeping track of: its notes, the reviews it asked for and the orders it armed. You can remove any of them.
 const when=(t:number)=>new Date(t).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
 const conds=(list:DeskCondition[],combine:string)=>list.map(c=>`${c.expr} ${c.op} ${c.value}`).join(combine==='any'?' or ':' and ');
+// A trailing stop's part of the armed line (trailing stops T4): its distance, high and level, and what is not tracked.
+const num=(v:number,us:boolean)=>us?v.toFixed(2):Math.round(v).toLocaleString('en-US');
+export function trailText(t:DeskTrail,symbol:string,trailingOn:boolean){const us=symbol.includes(':');const d=t.kind==='pct'?`${t.pct}%`:`${num(t.distance??0,us)} (${t.atrMultiple} × ATR)`;
+  const head=t.awaitingFill?`trails ${d} from the fill of its purchase · stop ${num(t.floor,us)} until then`:!t.active&&t.activateAt!=null?`trails ${d} from ${num(t.activateAt,us)} · stop ${num(t.floor,us)} until then`:t.high!=null?`trails ${d} below the high · high ${num(t.high,us)} · stop now ${num(t.level,us)}`:`trails ${d} from the first price after the fill · stop ${num(t.level,us)}`;
+  const last=t.untracked?.at(-1);const parts=[head,...(!trailingOn?['trailing paused (off in settings)']:[]),...(t.notTrackedSince?[`not tracked since ${new Date(t.notTrackedSince).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}`]:[]),
+    ...(t.catchUp?.status==='unavailable'?['not caught up: daily highs could not be read']:t.catchUp?.status==='skipped'?['not caught up: a capital change was filed']:[]),...(last?[`not tracked ${when(last.from)} to ${when(last.to)}`]:[])];
+  return parts.join(' · ');}
 const PURPOSE:Record<string,string>={stop_loss:'Stop loss',take_profit:'Take profit',entry:'Entry',exit:'Exit',other:'Order'};
-export function AgentDesk({desk,conditionalOn,onChange}:{desk:DeskState;conditionalOn:boolean;onChange(desk:DeskState):void}){
+export function AgentDesk({desk,conditionalOn,trailingOn=false,onChange}:{desk:DeskState;conditionalOn:boolean;trailingOn?:boolean;onChange(desk:DeskState):void}){
   const act=async(task:()=>Promise<DeskState>|undefined)=>{try{const next=await task();if(next)onChange(next);}catch{}};
   const empty=!desk.notes.length&&!desk.triggers.length&&!desk.orders.length&&!desk.recentOrders.length;
   return <section className="agent-desk" aria-label="Agent desk"><div className="section-head"><div><h2>Agent desk</h2><small className="muted">Notes, review triggers and conditional orders the AI is keeping.</small></div></div>
@@ -14,7 +21,7 @@ export function AgentDesk({desk,conditionalOn,onChange}:{desk:DeskState;conditio
     {(desk.planStopFailures?.length??0)>0&&<div className="notice warning" role="alert" aria-label="Purchases without a stop order">{desk.planStopFailures!.map(f=><p key={f.id}><b>The purchase of {f.quantity} {f.symbol} has no stop order.</b> {f.reason}</p>)}</div>}
     {empty&&<p className="muted">{conditionalOn?'Nothing yet. The AI adds notes, review triggers and conditional orders during reviews.':'Nothing yet. The AI adds notes and review triggers during reviews.'}</p>}
     {desk.orders.length>0&&<><h3 className="research-sub">Conditional orders · armed{desk.monitoringActive===false?' · inactive while auto trading is paused':''}</h3><ul className="desk-list" aria-label="Armed conditional orders">{desk.orders.map(o=><li key={o.id}>
-      <div><span className={`role-tag ${o.side==='Buy'?'role-add':'role-trim'}`}>{PURPOSE[o.purpose]??o.purpose}</span> <b>{o.side} {o.quantity} {o.symbol}</b> at {o.limitPrice??'the market price'}<small> when {conds(o.conditions,o.combine)} · until {when(o.expiresAt)}{o.linkedBuy?' · sells only the shares its purchase buys':''}{o.waiting?` · waiting: ${o.waiting}`:''}</small>{o.reason&&<small className="desk-reason">{o.reason}</small>}</div>
+      <div><span className={`role-tag ${o.side==='Buy'?'role-add':'role-trim'}`}>{PURPOSE[o.purpose]??o.purpose}</span> <b>{o.side} {o.quantity} {o.symbol}</b> at {o.limitPrice??'the market price'}<small> when {conds(o.conditions,o.combine)} · until {when(o.expiresAt)}{o.linkedBuy?' · sells only the shares its purchase buys':''}{o.trail?` · ${trailText(o.trail,o.symbol,trailingOn)}`:''}{o.trailNotUsed?` · not trailing: ${o.trailNotUsed}`:''}{o.waiting?` · waiting: ${o.waiting}`:''}</small>{o.reason&&<small className="desk-reason">{o.reason}</small>}</div>
       <button aria-label={`Cancel conditional order ${o.id}`} onClick={()=>void act(()=>window.portfolio?.cancelConditionalOrder(o.id))}>Cancel</button></li>)}</ul></>}
     {desk.triggers.length>0&&<><h3 className="research-sub">Review triggers</h3><ul className="desk-list" aria-label="Review triggers">{desk.triggers.map(t=><li key={t.id}>
       <div><b>{t.name}</b><small> when {conds(t.conditions,t.combine)} · until {when(t.expiresAt)}</small>{t.reason&&<small className="desk-reason">{t.reason}</small>}</div>
