@@ -38,22 +38,6 @@ test('P1: each open piece shows its order, signed amount, why and since when, th
   w.costs.gaps.record('a',{start:'2026-11-04',end:'2026-11-06',complete:false,reason:'PAGE_LIMIT'},w.clock());const g=w.view().pieces.find(p=>p.orderId==='A');
   assert.deepEqual(g.evidence.historyGap,{start:'2026-11-04',end:'2026-11-06',reason:'PAGE_LIMIT'});assert.ok(g.unknown.some(u=>/could not be read completely/.test(u)));
 });
-test('P2/P3: every reconciliation by its id with its signed amount, and the timing still open for each, candidate by candidate; resolving and reversing update the panel',()=>{
-  // A $100 buy and a $100 sale reconciled in one interval, cash unchanged (the round-5 case): -$100 to +$100.
-  const S=()=>order('S',{side:'Sell',fillPrice:100,limitPrice:100,costEstimate:undefined,resultCosts:{netCash:100}});
-  const w=world();w.open(order('A'),S());w.detect();w.later(MIN);const ra=w.reconcile({pieceId:w.pid('A')}).id,rs=w.reconcile({pieceId:w.pid('S'),route:undefined}).id;w.later(MIN);w.detect();
-  const v=w.view();assert.equal(v.pieces.length,0);assert.deepEqual(v.reconciliations.map(r=>[r.id,r.side,r.signedUSD,r.route,r.kisReference,r.reversed]),[[rs,'Sell',100,null,'KIS',null],[ra,'Buy',-100,'USD','KIS',null]],'newest first, each by id, signed');
-  assert.deepEqual(v.reconciliations.find(r=>r.id===ra).confirmedBy,{user:'t',session:'s'});
-  const [e]=v.timing;assert.deepEqual(e.candidates.map(c=>[c.reconciliationId,c.side,c.paymentUSD,c.ifPaidEarlierUSD]),[[ra,'Buy',-100,-100],[rs,'Sell',100,100]]);
-  assert.deepEqual([e.observedUSD,e.low,e.high],[0,-100,100]);assert.deepEqual(v.summary.timingRange,{low:-100,high:100});
-  assert.deepEqual(v.reconciliations.find(r=>r.id===ra).timing.map(t=>[t.entryId,t.ifPaidHereUSD,t.ifPaidEarlierUSD]),[[e.id,0,-100]]);
-  assert.match(v.home.detail,/1 payment timing to confirm \(−\$100\.00 to \+\$100\.00\)/);
-  // The sale paid earlier: its timing closes; the buy's stays open, 0 to +$100.
-  w.fd.resolveTiming('a',e.id,{reconciliationId:rs,paidHere:false});const v2=w.view();assert.deepEqual(v2.reconciliations.find(r=>r.id===rs).timing,[]);
-  assert.deepEqual(v2.timing[0].candidates.map(c=>c.reconciliationId),[ra]);assert.deepEqual(v2.summary.timingRange,{low:0,high:100});
-  // Reversing the buy's record: shown reversed, by which record; its timing is no longer listed against it.
-  const back=w.reverse(ra);const v3=w.view(),r3=v3.reconciliations.find(r=>r.id===ra);assert.equal(r3.reversed.id,back.id);assert.deepEqual(r3.timing,[]);assert.deepEqual(v3.pieces.find(p=>p.orderId==='A').signedUSD,-100,'reopened');assert.equal(v3.pieces.find(p=>p.orderId==='A').state,'unresolved','reopened as it was, awaiting verification');
-});
 test('P4: the Home summary shows only when unresolved amounts affect equity or buying capacity, or timing is open',()=>{
   const w=world();assert.equal(w.view().home,null,'nothing open');
   w.open(order('A'));const h=w.view().home;assert.equal(h.title,'1 older U.S. trade needs settlement confirmation (−$100.00)','1.5.48: the title counts the trades and their signed total');assert.equal(h.detail,'$100.00 lowers equity and buying capacity');assert.equal(h.tone,'warning');
@@ -123,33 +107,6 @@ test('P5: the check reads the order\'s dates as asked (never after today, a gap 
   // Two identical app orders and one KIS row: possibly either, so neither is linked.
   const x=world();x.open(order('A'),order('B'));const k=kis([raw('2026-11-05','TEST')]);await x.check(k.fetch);
   const p=x.view().pieces.find(q=>q.orderId==='A');assert.equal(p.evidence.k.state,'uncertain');assert.match(p.evidence.k.reason,/several app orders/);assert.ok(p.unknown.some(u=>/not with certainty/.test(u)));assert.equal(p.state,'unresolved');
-});
-test('R1 (review of 9ef95fe, P1): a reversal withdraws its reconciliation from open timing in the same transaction; other candidates stay; a stale resolution is refused',()=>{
-  // The reviewer's case: $100 reconciled, reversed, then "paid in this interval" from a page not yet refreshed.
-  const w=world();w.open(order('A'));w.detect();w.later(MIN);const m=w.reconcile({pieceId:w.pid('A')});w.later(MIN);w.detect();const [e]=w.fd.timing('a');assert.deepEqual(e.candidates.map(c=>c.id),[m.id]);
-  const q={requestId:'v1',account:'a',reconciliationId:m.id,note:'wrong'};const p=w.rec.previewReversal(q);
-  assert.deepEqual(p.effects.timing.map(t=>[t.entryId,t.candidateUSD,t.observedBefore,t.observedAfter,t.closed,t.flow]),[[e.id,100,100,0,true,null]],'shown in the preview');assert.equal(w.fd.timing('a').length,1,'a preview changes nothing');
-  w.rec.reverse({...q,stateVersion:p.stateVersion,binding:p.binding});assert.deepEqual(w.fd.timing('a'),[]);assert.deepEqual(w.view().timing,[]);assert.equal(w.view().summary.timingOpen,0);
-  for(const paidHere of [true,false])assert.throws(()=>w.fd.resolveTiming('a',e.id,{reconciliationId:m.id,paidHere}),/TIMING_CANDIDATE_REVERSED/);assert.equal(w.perf.flows('a').length,0,'no false flow');
-  // The next interval explains the reopening; nothing is left over.
-  w.later(MIN);w.detect();assert.deepEqual(w.fd.timing('a'),[]);assert.equal(w.perf.flows('a').length,0);assert.deepEqual(w.fd.pending('a'),[]);
-  assert.throws(()=>w.fd.resolveTiming('a',e.id,{reconciliationId:m.id,paidHere:true}),/TIMING_CANDIDATE_REVERSED/,'remembered across later readings');
-  // Opposite candidates: reversing the sale leaves the buy's candidate, its reading taken out (0 - (-100) = +100).
-  const S=()=>order('S',{side:'Sell',fillPrice:100,limitPrice:100,costEstimate:undefined,resultCosts:{netCash:100}});
-  const x=world();x.open(order('A'),S());x.detect();x.later(MIN);const ra=x.reconcile({pieceId:x.pid('A')}).id,rs=x.reconcile({pieceId:x.pid('S'),route:undefined}).id;x.later(MIN);x.detect();const [g]=x.fd.timing('a');
-  x.reverse(rs);const [h]=x.fd.timing('a');assert.equal(h.id,g.id);assert.deepEqual(h.candidates.map(c=>[c.id,c.usd]),[[ra,100]]);assert.deepEqual([h.observed,h.low,h.high],[100,0,100]);
-  x.later(MIN);x.detect();assert.throws(()=>x.fd.resolveTiming('a',g.id,{reconciliationId:rs,paidHere:false}),/TIMING_CANDIDATE_REVERSED/);const ok=x.fd.resolveTiming('a',g.id,{reconciliationId:ra,paidHere:true});assert.equal(ok.flow.amount,100);
-  // Reconciled and reversed within one interval: never a candidate, never a flow.
-  const y=world();y.open(order('A'));y.detect();y.later(MIN);const r=y.reconcile({pieceId:y.pid('A')});y.reverse(r.id);y.later(MIN);y.detect();assert.deepEqual(y.fd.timing('a'),[]);assert.equal(y.perf.flows('a').length,0);assert.deepEqual(y.fd.pending('a'),[]);
-});
-test('R1: the withdrawal is atomic with the reversal; the last candidate leaves a real unexplained change as a detected flow',()=>{
-  // Paid in the interval as reconciled (cash fell $100), then reversed: the fall has no explanation left.
-  const w=world();w.open(order('A'));w.detect();w.later(MIN);const m=w.reconcile({pieceId:w.pid('A')});w.us.cash-=100;w.later(MIN);w.detect();const e=w.fd.timing('a')[0];
-  assert.deepEqual([e.observed,e.candidates[0].usd],[0,100]);
-  const add=w.perf.addFlow.bind(w.perf);w.perf.addFlow=()=>{throw new Error('DISK_FULL');};
-  const q={requestId:'v1',account:'a',reconciliationId:m.id,note:'wrong'};assert.throws(()=>{const p=w.rec.previewReversal(q);w.rec.reverse({...q,stateVersion:p.stateVersion,binding:p.binding});},/DISK_FULL/);
-  assert.equal(w.rec.reversalOf(m.id),null,'nothing reversed');assert.deepEqual(w.fd.timing('a').map(x=>x.candidates.length),[1],'the entry unchanged');assert.equal(w.view().reconciliations[0].reversed,null);
-  w.perf.addFlow=add;const b=w.reverse(m.id);assert.equal(b.effects.timing[0].flow.amount,-100);assert.deepEqual(w.perf.flows('a').map(f=>[f.amount,f.detected]),[[-100,true]]);assert.deepEqual(w.fd.timing('a'),[]);
 });
 test('R2 (review of 9ef95fe, P2): funding still committed after a reconciliation is shown and keeps the Home row: route unknown, or the estimate above the reconciled amount',()=>{
   const w=world();w.open(order('A'));w.later(MIN);w.reconcile({pieceId:w.pid('A'),route:'unknown',settledOn:'2026-11-01'});w.detect();

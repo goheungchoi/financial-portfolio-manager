@@ -101,12 +101,6 @@ test('Gate harness, T1-T3, T25a, T30 path: bootstrap, named-route and unknown-ro
 });
 // S3b: "Gate harness, T25b/T44, T28/T46 and the 2b.5 preview" was removed with the baseline's reconciliation and
 // unknown-timing rules it checked (settlement-baseline.cjs; s3/s3b-report.md).
-test('Gate harness: settlement timing and a reversal withdrawing it leave every consumer in agreement and no false flow',async()=>{
-  const w=world();w.open(order('A',100));w.baseline();const detect=()=>{const v=w.f.current('a');return w.fd.observe('a',{krCash:1000000,usCash:w.us.cash-v.buysUSD+v.sellsUSD,fx:RATE,orders:[],usExplained:r=>w.f.explained('a',r),usReview:v.review});};
-  detect();w.later(MIN);const {record}=w.reconcile('A');w.later(MIN);detect();let x=await w.compose();agree(x,'timing open');assert.ok(x.risk.check.US.scenarios.some(z=>/all uncertain money changes/.test(z.name)),'the open timing reaches the loss check through flowsSince');assert.equal(x.panel.summary.timingOpen,1);
-  w.later(MIN);w.reverse(record.id);w.later(MIN);detect();x=await w.compose();agree(x,'reversed');assert.equal(x.panel.summary.timingOpen,0);assert.equal(w.perf.flows('a').length,0);
-  assert.equal(x.home.valuation.markets.US.equity.low,1400);
-});
 test('T39 (restated under the Stage 1 funding rules, v3.3 §2): the worked example with an unresolved bootstrap buy, both sequences, and its release by reconciliation',async()=>{
   // U.S. cash $500, Korean settled cash 1,000,000, rate 1,300 (rho 1,326), F = $100 (one unresolved bootstrap buy).
   // Unknown regime: no USD counts toward capacity; every U.S. commitment is KRW at rho.
@@ -151,7 +145,7 @@ test('Gate restart: every stage 2b table and state is reloaded after a restart: 
   const failed=await panel.checkAgain('a',w.pid('C'),{orders:list,environment:'live',today:'2026-11-06',fetch:async()=>{throw new Error('RATE_LIMITED');}});assert.equal(failed.stopped,'FAILED');
   const state=(x,p,cs)=>({tracker:x.f.current('a'),panel:p.view('a',{orders:list,environment:'live'}),records:x.rec.records('a'),events:x.f.evidence.events('a').length,funding:x.funding.commitments('a'),
     adjustments:x.sb.adjustments('a',x.eU.policy()),timing:x.fd.timing('a'),flows:x.perf.flows('a'),job:cs.jobs.get(SettlementPanel.checkKey('a','C')),gaps:cs.gaps.list('a'),watch:x.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get('a').payload});
-  const before=state(w,panel,costs);assert.equal(before.timing.length,1);assert.ok(before.records.length>=5);assert.ok(before.job);
+  const before=state(w,panel,costs);assert.ok(before.records.length>=5);assert.ok(before.job);
   const t=w.clock();w.db.close();
   // A new process: every module constructed again on the same file, at the same time.
   const r=world({file,start:t});r.setOrders(list);const costs2=new TradingCosts(r.db);costs2.currentAccount=()=>({accountKey:'a',environment:'live'});const panel2=new SettlementPanel({inFlight:r.f,reconciliation:r.rec,flowDetector:r.fd,costs:costs2,clock:r.clock});
@@ -159,8 +153,7 @@ test('Gate restart: every stage 2b table and state is reloaded after a restart: 
   for(const k of Object.keys(before))if(k!=='panel'&&k!=='job')assert.deepEqual(after[k],before[k],k);
   assert.deepEqual({...after.job,state:null},{...before.job,state:null},'the job is kept');assert.equal(after.job.state,'paused');
   const strip=v=>JSON.parse(JSON.stringify(v,(key,val)=>key==='check'?undefined:val));assert.deepEqual(strip(after.panel),strip(before.panel),'the panel reads the same');
-  // Repeats after the restart are still recognised; a stale timing resolution of the reversed record is still refused.
-  assert.throws(()=>r.fd.resolveTiming('a',before.timing[0].id,{reconciliationId:c.id,paidHere:true}),/TIMING_CANDIDATE_REVERSED/);
+  // Repeats after the restart are still recognised. (S4b-1: the stale timing resolution check went with the timing entries.)
   const again=r.rec.confirm({requestId:'r2',account:'a',pieceId:b.pieceId,cents:5000,explanation:'settled',route:'unknown',kisReference:'KIS',note:'checked',stateVersion:'x',binding:b.contentHash});assert.equal(again.repeat,true);assert.equal(again.id,b.id);
   // The composition still agrees after the restart.
   agree(await r.compose(),'after restart');r.db.close();fs.rmSync(dir,{recursive:true,force:true});

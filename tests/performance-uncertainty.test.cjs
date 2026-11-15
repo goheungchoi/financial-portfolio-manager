@@ -70,10 +70,6 @@ test('S2: a reconciliation leaves no misstatement window; one with a settlement 
   const [,d1,d2,d3]=w.points();for(const d of [d1,d2,d3])assert.equal(d.unavailable,undefined,d.day);
   assert.equal(d2.correction,100);close(d2.dailyReturn,0);close(d3.dailyReturn,10/1510);assert.equal(estimate(d1),false,'A is closed: plain');assert.notEqual(w.all().twr,null);
 });
-test('C3 stays until S3 removes reconciliation: a manual reconciliation with no payment timing at all leaves its day without a return',()=>{
-  // Manual reconciliation has never been used on the live account; S3 removes it with this rule.
-  const w=started();w.nextDay();w.us.price=1010;w.reconcile('A');w.record();const [,d]=w.points();assert.match(d.unavailable.join(';'),/was paid on this day or earlier is not known/);
-});
 test('U4: after tracking starts, a day whose tracker state was not recorded or could not be read is unavailable; before it nothing is tracked',()=>{
   const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-10-26'});w.see([B]);w.record();
   w.nextDay();w.perf.settlement=()=>{throw new Error('disk I/O error');};w.record();w.nextDay();w.perf.settlement=a=>w.f.snapshot(a);w.record();w.nextDay();delete w.perf.settlement;w.record();

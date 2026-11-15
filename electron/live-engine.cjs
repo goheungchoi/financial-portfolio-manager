@@ -213,15 +213,14 @@ class LiveEngine {
   // Money moved since the day's baseline was taken (flowsSince, set by the app): confirmed (recorded or confirmed by
   // you) and unresolved (detected, awaiting you). Only confirmed flows adjust the baseline; unresolved ones are a
   // scenario in lossOf. Without flowsSince, flowsToday counts as confirmed.
-  // timing: U.S. changes whose reading depends on a reconciled payment's timing ({low, high} of their readings).
   // A configured reader that throws or returns something unreadable is never taken as "no money moved" (1.5.48 audit,
   // A4): the result is unavailable, with the reason, and the loss check reports itself unavailable. Only an engine with
   // no reader configured counts nothing.
   flows(policy){const none={confirmed:0,unresolved:0,uncertain:{confirmed:0,unresolved:0}},code=e=>/^[A-Z_]{3,40}$/.test(e?.message??'')?e.message:'READ_FAILED',fin=Number.isFinite;
     if(this.flowsSince){let f;try{f=this.flowsSince(policy);}catch(e){return {unavailable:`deposits and withdrawals since the day's baseline could not be read (${code(e)})`};}
       const pair=x=>x==null||fin(x.low)&&fin(x.high),num=x=>x==null||fin(Number(x));
-      if(!f||!fin(f.confirmed)||!num(f.unresolved)||!num(f.uncertain?.confirmed)||!num(f.uncertain?.unresolved)||!pair(f.timing)||!pair(f.range))return {unavailable:'deposits and withdrawals since the day\'s baseline could not be read (an unreadable result)'};
-      return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0,uncertain:{confirmed:Number(f.uncertain?.confirmed)||0,unresolved:Number(f.uncertain?.unresolved)||0},...(f.timing?{timing:{low:f.timing.low,high:f.timing.high}}:{}),...(f.range?{range:{low:f.range.low,high:f.range.high}}:{})};}
+      if(!f||!fin(f.confirmed)||!num(f.unresolved)||!num(f.uncertain?.confirmed)||!num(f.uncertain?.unresolved)||!pair(f.range))return {unavailable:'deposits and withdrawals since the day\'s baseline could not be read (an unreadable result)'};
+      return {confirmed:f.confirmed,unresolved:Number(f.unresolved)||0,uncertain:{confirmed:Number(f.uncertain?.confirmed)||0,unresolved:Number(f.uncertain?.unresolved)||0},...(f.range?{range:{low:f.range.low,high:f.range.high}}:{})};}
     // Only a finite number is a successful read: nothing returned (null or undefined) is not "no money moved"
     // (1.5.48 review, R3).
     if(this.flowsToday){let n;try{n=this.flowsToday();}catch(e){return {unavailable:`today's deposits and withdrawals could not be read (${code(e)})`};}
@@ -286,14 +285,14 @@ class LiveEngine {
     // baseline reading) are a scenario of their own, never a precise adjustment (release review 2026-11-05, P1).
     const u=f.uncertain??{confirmed:0,unresolved:0};
     // The combined range of uncertain money changes; from the sums when only they are given (each sum real or not).
-    const r=f.range??(()=>{const parts=[f.unresolved,u.confirmed,u.unresolved].map(x=>Number(x)||0),tl=Number(f.timing?.low)||0,th=Number(f.timing?.high)||0;
-      return {low:parts.reduce((n,x)=>n+Math.min(0,x),0)+Math.min(0,tl,th),high:parts.reduce((n,x)=>n+Math.max(0,x),0)+Math.max(0,tl,th)};})();
+    const r=f.range??(()=>{const parts=[f.unresolved,u.confirmed,u.unresolved].map(x=>Number(x)||0);
+      return {low:parts.reduce((n,x)=>n+Math.min(0,x),0),high:parts.reduce((n,x)=>n+Math.max(0,x),0)};})();
     // Each scenario on the settlement adjustment.
     const on=a=>{const low=policy.baseline+a.low,high=(policy.baselineHigh??policy.baseline)+a.high,n=x=>x;
       return [[n('low bounds'),low+f.confirmed,v.low],[n('high bounds'),high+f.confirmed,v.high],...(f.unresolved?[[n('unresolved money changes counted'),low+f.confirmed+f.unresolved,v.low]]:[]),
         ...(u.confirmed||u.unresolved?[[n('flows of uncertain timing counted'),low+f.confirmed+u.confirmed+u.unresolved,v.low]]:[]),
         // Every uncertain money change together (review of f26d33f, P1): unresolved flows, flows of uncertain timing, held
-        // changes and settlement-timing entries, each real or not, at the lowest and highest combined total. The loss
+        // changes, each real or not, at the lowest and highest combined total. The loss
         // grows with the money counted as moved, so these two bound every combination; on both bounds.
         ...(r&&(r.low||r.high)?[[n('all uncertain money changes at their lowest total, low bounds'),low+f.confirmed+r.low,v.low],[n('all uncertain money changes at their highest total, low bounds'),low+f.confirmed+r.high,v.low],
           [n('all uncertain money changes at their lowest total, high bounds'),high+f.confirmed+r.low,v.high],[n('all uncertain money changes at their highest total, high bounds'),high+f.confirmed+r.high,v.high]]:[])];};

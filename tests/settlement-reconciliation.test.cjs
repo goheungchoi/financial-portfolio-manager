@@ -187,12 +187,6 @@ test('R1/R8/R9: a sale needs no route, commits no funding, and its proceeds recl
 });
 // Spec CN25, cleared in step 2b.4: the reconciliation changes the tracker's U.S. basis, which the flow detector now
 // receives as an explained adjustment (InFlight.explained), so it is no deposit.
-test('CN25 (cleared in 2b.4): a reconciliation is an explained adjustment for the flow detector, not a deposit',()=>{
-  const {FlowDetector}=require('../electron/flow-detector.cjs');const w=world();const [A]=w.open(order('A'));let t0=w.clock();const fd=new FlowDetector(w.db,w.perf,()=>t0);
-  const usCash=()=>500-w.current().buysUSD,x=()=>({usExplained:r=>w.f.explained('a',r),usReview:w.current().review});fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A],...x()});w.reconcile();
-  t0+=60000;fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A],...x()});t0+=3*3600000;const flows=fd.observe('a',{krCash:1000000,usCash:usCash(),fx:1300,orders:[A],...x()});
-  assert.deepEqual(flows,[],'no detected deposit from a reconciliation');
-});
 test('R7/E8: a KIS record raised later never restores coverage from a reversed reconciliation',()=>{
   const w=world();const [A]=w.open(order('A'));const first=w.reconcile().record;
   // KIS records $97: $3 of the reconciliation's allocation is released as reduced coverage.

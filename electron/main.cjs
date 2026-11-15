@@ -455,10 +455,9 @@ app.whenReady().then(async () => {
   const reconciliation=new (require('./settlement-reconciliation.cjs').Reconciliation)(store.db,{inFlight,funding:fundingLedger,performance,loss:()=>{const out={};for(const [m,e] of [['KR',live],['US',usLive]]){try{out[m]=e?.currentLoss()??null;}catch{out[m]=null;}}return out;}});
   const settlementPanel=new (require('./settlement-panel.cjs').SettlementPanel)({inFlight,reconciliation,flowDetector,costs});
   // The accounting-correction component of the performance series (stage 3.1): cash-free settlement changes of the U.S.
-  // low basis, kept out of P/L and returns; a day of unknown payment timing has no return. Stage 3.2: each recorded day
-  // keeps the tracker's uncertainty, and a day affected by an uncertain obligation or a misstatement window has no
-  // return unless it is the one bounded case.
-  const settlementCorrections=require('./performance-corrections.cjs').performanceCorrections(store.db,{inFlight,reconciliation});
+  // low basis, kept out of P/L and returns; each recorded day keeps the tracker's state, so a day with a U.S. buy in
+  // flight is an estimate (S2) and a day the tracker could not be read has no return (U4).
+  const settlementCorrections=require('./performance-corrections.cjs').performanceCorrections(store.db,{inFlight});
   // C1a: settlement pieces an approved valuation correction supersedes make no correction in the series.
   settlementCorrections.superseded=account=>corrections.superseded(account);
   performance.corrections=(account,rows)=>settlementCorrections.byDay(account,rows);

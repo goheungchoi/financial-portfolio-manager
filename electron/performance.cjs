@@ -115,7 +115,7 @@ class PerformanceHistory {
   // its market's currency; the recorded values are never changed, the series is computed with them.
   // corrections (stage 3.1, electron/performance-corrections.cjs, set by main): each recorded day's accounting correction
   // in U.S. dollars (the settlement ledger's cash-free changes of the low basis). It is not investment P/L: P/L and the
-  // daily return leave it out; a day whose correction depends on unknown payment timing has no return.
+  // daily return leave it out.
   series(account,kind,{unresolved='exclude',adjustments=this.adjustments?.(account)??[]}={}){
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
@@ -139,13 +139,12 @@ class PerformanceHistory {
       // The valuation range narrowing or widening that day (bounds above): P/L is a range, never an inferred flow.
       const range=row.valuation?.ranges?.[kind]??null,narrowed=range?.narrowed??0,widened=range?.widened??0;
       const netFlow=flow+skipped,base=previous?previous.value+netFlow:null;
-      // The day's correction in the series' currency (U.S. dollars at the day's rate in the combined series), and what
-      // could not be told: the possible corrections of unknown timing give the P/L a range, and the return is unavailable.
+      // The day's correction in the series' currency (U.S. dollars at the day's rate in the combined series).
       const cx=previous?corrections.get(row.day):null,rate=kind==='COMBINED'?lastFx:1,conv=v=>v*(rate??NaN);
-      const correction=cx?.items?.length?conv(cx.usd):0,unknownC=cx?.unknown?.length?cx.items.filter(i=>i.usd==null).map(i=>conv(i.possibleUSD??0)):[];const lost=Boolean(failed&&previous);
+      const correction=cx?.items?.length?conv(cx.usd):0;const lost=Boolean(failed&&previous);
       // A day the settlement tracker's state was not recorded for, or could not be read (U4), is unavailable (blocked).
       const blocked=[...(previous?cx?.unavailable??[]:[])];
-      const out=Boolean(unknownC.length||lost||blocked.length);
+      const out=Boolean(lost||blocked.length);
       const offset=!previous||kind==='KRW'||!(Math.abs(previous.openUSD)>=0.005)?0:-previous.openUSD*(kind==='COMBINED'?previous.fx??NaN:1),returnBase=previous?base-offset:null,gained=previous?value-previous.value-netFlow-correction:null;
       const dailyReturn=out||!previous?null:returnBase>0&&Number.isFinite(returnBase)?gained/returnBase:returnBase===0&&Math.abs(gained)<0.005?0:null;
       const noBase=Boolean(previous&&!out&&dailyReturn==null);if(noBase)blocked.push(NO_BASE);
@@ -160,17 +159,16 @@ class PerformanceHistory {
       const bandAdj=adjustments.find(a=>a.day===row.day&&a.band&&a.market===(kind==='COMBINED'?'COMBINED':kind==='KRW'?'KR':'US'))??null;
       const recHigh=kind==='COMBINED'?row.equityKRWHigh:(kind==='KRW'?row.KRW:row.USD)?.high,recLow=kind==='COMBINED'?row.equityKRWLow:(kind==='KRW'?row.KRW:row.USD)?.low;
       const high=(h=>adj&&Number.isFinite(h)?Math.max(h,value):h)(bandAdj?.band?.high??recHigh),low=(l=>adj&&Number.isFinite(l)?Math.min(l,value):l)(bandAdj?.band?.low??recLow);
-      const known=previous?value-previous.value-netFlow-correction:null,pnl=unknownC.length||lost||(blocked.length&&!noBase)?null:known;
-      const ranged=unknownC.length?{pnlRange:{low:known-unknownC.reduce((n,v)=>n+Math.max(0,v),0)-narrowed,high:known-unknownC.reduce((n,v)=>n+Math.min(0,v),0)+widened},provisional:'a settlement correction of unknown payment timing: P/L is shown as a range'}
-        :pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
+      const known=previous?value-previous.value-netFlow-correction:null,pnl=lost||(blocked.length&&!noBase)?null:known;
+      const ranged=pnl!=null&&(narrowed||widened)?{pnlRange:{low:pnl-narrowed,high:pnl+widened},provisional:'the valuation range changed this day; P/L is shown as a range'}:{};
       // Stage 3.4: how the settlement treatment touched the day (consumers label such days and never call them verified).
       // pending (stage 3.4 review, CN5): U.S. buys awaiting settlement evidence during the day; a payment made meanwhile is
       // counted twice until it is matched or reconciled, so the day's return is shown but not verified.
       // C1d-2 (M8): a day with a U.S. buy whose funding route KIS had not shown is an estimate in the market series.
       const routeOpen=kind!=='COMBINED'&&Boolean(row.fundingRoute?.open)&&Boolean(previous);
-      const settlement=[...(previous&&cx?.pending||routeOpen?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(unknownC.length||lost||blocked.length?['unavailable']:[])];
+      const settlement=[...(previous&&cx?.pending||routeOpen?['pending']:[]),...(cx?.items?.length?['corrected']:[]),...(lost||blocked.length?['unavailable']:[])];
       points.push({day:row.day,value,...(adj?{recorded,adjustment:adj}:{}),...(settlement.length?{settlement}:{}),...(previous&&cx?.pending?{pendingObligation:cx.pending}:{}),...(routeOpen?{fundingRouteOpen:true}:{}),flow:netFlow,...(cx?.items?.length?{correction,correctionItems:cx.items,correctionLabel:'accounting correction, not investment return'}:{}),
-        ...(unknownC.length||lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...(cx?.unknown??[]),...blocked]}:{}),
+        ...(lost||blocked.length?{unavailable:[...(lost?[failed]:[]),...blocked]}:{}),
         ...(noBase?{returnOnly:true}:{}),...(offset?{returnBase}:{}),dailyReturn,index,pnl,...(lost||(blocked.length&&!noBase)?{}:ranged),high:Number.isFinite(high)?high:value,low:Number.isFinite(low)?low:value,...(bandAdj?{bandCorrected:bandAdj.version??true,...(bandAdj.band.estimated?{bandEstimated:true}:{})}:{}),cash,unrealized,positions});
       if(previous&&cx?.items?.length&&Number.isFinite(cx.usd))netUSD+=cx.usd;previous={day:row.day,value,openUSD:kind==='KRW'?0:corrections.get(row.day)?.openUSD??0,fx:lastFx};
     }

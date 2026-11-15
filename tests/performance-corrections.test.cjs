@@ -31,18 +31,7 @@ test('T19: payment and resolution in one reading: no correction; the day\'s retu
   // (a) by evidence: a fill seen after tracking started settles with a matching cash fall in one reading.
   const w=world();w.see([]);const B=order('B',100,{createdAt:w.clock(),filledObservedAt:w.clock(),day:'2026-10-26'});w.see([B]);w.record();
   w.nextDay();w.us.cash=400;w.us.price=1010;w.see([B]);w.record();const [,d]=w.points();assert.equal(d.correction,undefined);close(d.dailyReturn,10/1400,'market only');
-  // (b) a manual reconciliation whose timing was resolved "paid in this interval" (the payment fell in that reading).
-  const x=started();x.nextDay();x.detect();x.later(MIN);x.us.cash=400;x.us.price=1010;const r=x.reconcile('A');x.later(MIN);x.detect();
-  const [e]=x.fd.timing('a');x.fd.resolveTiming('a',e.id,{reconciliationId:r.id,paidHere:true});x.record();
-  const [,p]=x.points();assert.equal(p.correction,0);assert.deepEqual(p.correctionItems.map(i=>[i.kind,i.usd]),[['reconciliation paid that day',0]]);close(p.dailyReturn,10/1400,'market only, E = 0');close(p.pnl,10);
-});
-test('C3: a reconciliation of unknown payment timing leaves the day\'s return and every period through it unavailable; the P/L is a range',()=>{
-  const w=started();w.nextDay();w.us.cash=400;w.us.price=1010;const r=w.reconcile('A');w.record();
-  const [,p]=w.points();assert.equal(p.dailyReturn,null);assert.equal(p.pnl,null);assert.match(p.unavailable[0],/was paid on this day or earlier is not known/);
-  // Paid that day: +$10 (the market; cash and obligation net out). Paid earlier: the +$100 is a correction, and the day's
-  // $100 cash fall is unexplained: -$90.
-  assert.deepEqual(p.pnlRange,{low:-90,high:10});
-  const all=w.summary().periods.find(x=>x.label==='All');assert.equal(all.twr,null);assert.equal(all.gain,null);assert.match(all.unavailable[0],new RegExp(r.id.slice(0,10)));
+  // (S4b-1: case (b), a reconciliation whose timing was resolved "paid in this interval", went with C3.)
 });
 test('T24 (correction part) and C2: a reconciliation of a payment made before the day is a correction of +$100: out of P/L and return',()=>{
   // Paid before tracking started (settlement date before the interval): the value rises $100 with no cash.
@@ -73,17 +62,6 @@ test('T23: the combined series converts the correction at that day\'s rate; the 
   // Combined: 1,400 x 1,300 -> 1,500 x 1,350; less the correction at 1,350, the rest is the FX move on 1,400.
   close(krw.pnl,1400*1350-1400*1300);
 });
-test('C4: a detected flow reclassified as the payment is a correction on its own day, the reconciliation one on its day; a reversal undoes both',()=>{
-  // The cash fell with no tracker reading matching it to the piece (as when it cannot be told apart).
-  const w=started();w.nextDay();w.us.cash=400;w.later(MIN);const at=w.clock();const flow=w.perf.addFlow('a',{day:require('../electron/kis-activity.cjs').seoulDate(at),market:'US',amount:-100,detected:true,note:'Detected',occurredAfter:at-MIN,occurredBy:at});w.record();
-  // Before reconciling: the headline leaves a detected flow out, so day 1 shows the payment as a -$100 loss.
-  close(w.points()[1].pnl,-100);
-  w.nextDay();const r=w.reconcile('A',{flowId:flow.id});w.record();let [,d1,d2]=w.points();
-  assert.equal(d1.correction,-100);close(d1.pnl,0,'the payment is neither P/L nor a flow');assert.equal(d2.correction,100);close(d2.pnl,0);assert.equal(w.perf.flows('a').length,0);
-  // Reversed on day 3: the flow comes back (detected, left out of the headline), day 2 keeps its correction and day 3
-  // reopens the obligation (-$100).
-  w.nextDay();w.reverse(r.id);w.record();[,d1,d2]=w.points();const d3=w.points()[3];assert.equal(d1.correction,undefined);close(d1.pnl,-100);assert.equal(d2.correction,100);assert.equal(d3.correction,-100);close(d3.pnl,0);
-});
 test('C1/C7: events belong to the first recorded day whose last reading follows them; the derivation is stable and rewrites nothing',()=>{
   const w=started();w.nextDay();w.record();w.later(MIN);w.reconcile('A',{settledOn:'2026-11-01'});// after day 1's last reading
   w.nextDay();w.record();const [,d1,d2]=w.points();assert.equal(d1.correction,undefined);assert.equal(d2.correction,100);
@@ -91,24 +69,11 @@ test('C1/C7: events belong to the first recorded day whose last reading follows 
   // Valuation corrections (approved adjustments) still apply on top (C8).
   w.perf.adjustments=()=>[{day:d2.day,market:'US',currency:'USD',amount:5}];const [,,a2]=w.points();assert.equal(a2.adjustment,5);assert.equal(a2.correction,100);
 });
-test('C3 (review of 093b44f, P1): "paid earlier" places the payment before the day only when the reading it was resolved for began at or before the previous day\'s last reading',()=>{
-  // The reading interval began after day 0's last reading: the payment may have been on day 1 before that reading.
-  // Unknown; no loss is reported (the reviewer's case: paid after yesterday's close, before today's detector interval).
-  const w=started();w.nextDay();w.us.cash=400;w.detect();w.later(MIN);w.us.price=1010;const r=w.reconcile('A');w.later(MIN);w.detect();const [e]=w.fd.timing('a');assert.ok(e.after>w.perf.history('a')[0].at);
-  w.fd.resolveTiming('a',e.id,{reconciliationId:r.id,paidHere:false});w.record();const [,p]=w.points();
-  assert.equal(p.dailyReturn,null);assert.equal(p.pnl,null);assert.match(p.unavailable[0],/is not known/);assert.equal(w.summary().periods.find(x=>x.label==='All').twr,null);
-  // The reading interval began at or before day 0's last reading: "earlier" is before the day. A +$100 correction.
-  const x=world();x.see([]);x.see([order('A',100)]);x.detect();x.later(MIN);x.record();x.nextDay();x.us.price=1010;const q=x.reconcile('A');x.later(MIN);x.detect();const [g]=x.fd.timing('a');
-  assert.ok(g.after<=x.perf.history('a')[0].at,'the reading began before the day');x.fd.resolveTiming('a',g.id,{reconciliationId:q.id,paidHere:false});x.record();const [,y]=x.points();
-  assert.equal(y.correction,100);assert.deepEqual(y.correctionItems.map(i=>i.kind),['reconciliation paid before the day']);close(y.pnl,10);close(y.dailyReturn,10/1500 /* S2b: base without the open correction */);
-});
 test('C9 (review of 093b44f, P2): a correction read that fails, or returns something unreadable, leaves every U.S. and combined return unavailable with the reason; never zero',()=>{
   const w=started();w.nextDay();w.reconcile('A',{settledOn:'2026-11-01'});w.record();w.nextDay();w.us.price=1010;w.record();
   for(const broken of [()=>{throw new Error('disk I/O error');},()=>null,()=>({})]){w.perf.corrections=broken;
     for(const kind of ['USD','COMBINED']){const [,d1,d2]=w.points(kind);for(const d of [d1,d2]){assert.equal(d.dailyReturn,null,kind);assert.equal(d.pnl,null,kind);assert.match(d.unavailable[0],/settlement corrections could not be read/);assert.equal(d.pnlRange,undefined);}
       const all=w.summary(kind).periods.find(x=>x.label==='All');assert.equal(all.twr,null);assert.equal(all.gain,null);}
     assert.notEqual(w.points('KRW')[1].dailyReturn,null,'the Korean series reads no U.S. correction');}
-  // A corrupt stored timing record is an error too, not "no timing".
-  const x=world();x.see([]);x.see([order('A',100)]);x.record();x.nextDay();x.detect();x.reconcile('A',{settledOn:'2026-11-01'});x.record();
-  x.db.prepare("UPDATE flow_watch SET payload='{' WHERE account='a'").run();const [,d]=x.points();assert.equal(d.dailyReturn,null);assert.match(d.unavailable[0],/could not be read/);
+  // (S4b-1: the corrupt stored timing record case went with C3, which read it.)
 });
