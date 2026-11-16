@@ -174,19 +174,28 @@ else{
     {const w=two();w.to('2026-11-11T08:25:00');w.kr(3000000-134000);const left=w.f.current('A').krwUnpaidKRW;assert.ok(left===134000||left===134500,String(left));
       w.to('2026-11-11T08:30:00');w.kr(3000000-268500);assert.equal(w.f.current('A').krwUnpaidKRW,0);assert.deepEqual([w.row('a').state,w.row('b').state],['booked','booked']);}
   });
-  test('S3a-3 (1): a kr-paid group KIS\'s report fell for without attribution claims none of a later buy\'s report once past the age rule',()=>{
+  test('S3a-3 (1), with M-1.6d T1: two equal kr-paid groups settle oldest first as KIS\'s report falls by each; neither claims a later buy\'s report',()=>{
     // Two K1 groups of 134,000 each, both paid in Korea (kr-paid); KIS's report then falls by one of them and then the
     // other, which uniqueSet cannot attribute (two equal groups): both stay kr-paid while nothing is reported.
     const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(0,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(0,134000,[a]);
     const b=w.b('b',100);w.to('2026-11-10T09:05:00');w.us(0,134000,[a,b],{open:['b'],openUSD:100});w.to('2026-11-10T09:10:00');w.us(0,268000,[a,b]);assert.deepEqual([w.row('a').state,w.row('b').state],['krw','krw']);
     w.to('2026-11-11T08:25:00');w.kr(2866000);w.to('2026-11-11T08:26:00');w.kr(2732000);assert.deepEqual([w.row('a').state,w.row('b').state],['kr-paid','kr-paid']);
-    w.to('2026-11-18T08:30:00');w.us(0,134000,[a,b]);w.to('2026-11-18T08:31:00');w.us(0,0,[a,b]);assert.deepEqual([w.row('a').state,w.row('b').state],['kr-paid','kr-paid'],'not attributable');
-    assert.equal(w.f.current('A').krwKRW,268000,'still counted as reported by KIS (the stale state)');
+    w.to('2026-11-11T08:30:00');w.us(0,134000,[a,b]);w.to('2026-11-11T08:31:00');w.us(0,0,[a,b]);assert.deepEqual([w.row('a').state,w.row('b').state],['booked','booked'],'T1: the earlier-reported settles first, then the other');assert.deepEqual([w.row('a').via,w.row('b').via],['krw','krw']);
+    assert.equal(w.f.current('A').krwKRW,0,'nothing stale left');
     // A new buy with U.S. cash to carry it, reported after the age limit (New York 11-12 for 11-09/17 fills).
     w.to('2026-11-20T23:40:00');const c=w.b('c',100);w.us(500,0,[a,b,c],{open:['c'],openUSD:100});w.to('2026-11-21T09:00:00');const cur=w.us(500,134000,[a,b,c]);
-    assert.deepEqual([w.row('a').state,w.row('b').state],['booked','booked']);assert.match(w.row('a').reason,/settled by age after its Korean payment/);assert.equal(w.row('c').state,'us');
+    assert.deepEqual([w.row('a').state,w.row('b').state],['booked','booked']);assert.equal(w.row('c').state,'us');
     assert.equal(cur.krwKRW,0,'the old groups claim none of it');assert.equal(cur.usReportedKRW,134000,'the U.S. side carries the new buy');assert.equal(cur.provisionalKRW,0);
     assert.equal(w.notes.length,0,'no System line');assert.deepEqual(w.flows().filter(id=>id.startsWith('funding:a:')||id.startsWith('funding:b:')),['funding:a:out','funding:a:in','funding:b:out','funding:b:in'],'no flow at the change');
+  });
+  // M-1.6d T1: two equal USD-paid groups reported on two days; KIS settles the first day's, then the second's. uniqueSet
+  // finds two fitting sets each time; the oldest-first prefix settles the earlier-reported group first.
+  test('M-1.6d T1: two equal U.S. groups on two days settle oldest first, one per day, by USD',()=>{
+    const w=lone();w.to('2026-11-09T23:00:00');w.us(500,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(500,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(500,134000,[a]);
+    const b=w.b('b',100);w.to('2026-11-10T23:41:00');w.us(500,134000,[a,b],{open:['b'],openUSD:100});w.to('2026-11-11T09:00:00');w.us(500,268000,[a,b]);assert.deepEqual([w.row('a').state,w.row('b').state],['us','us']);
+    w.to('2026-11-11T09:30:00');w.us(400,134000,[a,b]);assert.deepEqual([w.row('a').state,w.row('a').via,w.row('b').state],['booked','usd','us'],'the earlier-reported settles first');
+    w.to('2026-11-12T09:30:00');w.us(300,0,[a,b]);assert.deepEqual([w.row('b').state,w.row('b').via],['booked','usd'],'then the other');
+    assert.deepEqual(w.flows().filter(id=>/^funding:/.test(id)),[],'no transfer: all USD');
   });
   test('S3a-3 (2): KIS still reporting the group at the age limit: its KRW becomes unattributed (provisional); the split and the values do not change',()=>{
     const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const o=k1(w,'o1',100,134000);w.us(0,134000,[o]);w.to('2026-11-11T08:25:00');w.kr(2866000);assert.equal(w.row('o1').state,'kr-paid');

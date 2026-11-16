@@ -42,6 +42,11 @@ const netUSD=o=>{const n=o?.resultCosts?.netCash;return Number.isFinite(n)?Math.
 const fillAt=o=>Number.isFinite(o.filledObservedAt)?o.filledObservedAt:Number.isFinite(o.createdAt)?o.createdAt:null;
 const isBuy=o=>o&&o.side==='Buy'&&Number(o.filled)>0&&(o.market==='US'||String(o.accountKey??'').endsWith(':US'));
 // The one set among the candidates whose amount(c) totals target within the band, or null (none, several, or too many).
+// M-1.6d T1 (oldest first): KIS settles by U.S. trade date, so when several sets of groups fit a settlement, the
+// earlier-reported groups are the ones settling: the one prefix of the groups in report order (then fill order) that fits
+// within the band, or null when none or more than one prefix does.
+function oldestPrefix(groups,target,amount){if(!(target>0)||!groups.length)return null;const g=[...groups].sort((a,b)=>(a.reportedAt??0)-(b.reportedAt??0)||(a.filledAt??0)-(b.filledAt??0));
+  let t=0,found=null;for(let i=0;i<g.length;i++){t+=amount(g[i]);if(Math.abs(t-target)<=BAND*target){if(found)return null;found=g.slice(0,i+1);}}return found;}
 function uniqueSet(cands,target,amount){if(!(target>0)||!cands.length||cands.length>MAX_SET)return null;let found=null;
   for(let m=1;m<1<<cands.length;m++){let t=0;const s=[];for(let i=0;i<cands.length;i++)if(m&1<<i){t+=amount(cands[i]);s.push(cands[i]);}
     if(Math.abs(t-target)<=BAND*target){if(found)return null;found=s;}}
@@ -185,7 +190,7 @@ class FundingTransfers {
           meta.explainedKR-=dR;meta.explainedUS+=total;}
         else this.put(account,key,{state:'us',orders:set.flatMap(r=>r.orders).sort(),usd:total,reportedKRW:dR,reportedAt:now,...extra});}
 }
-    else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW)??this.splitBatch(account,groups,F);
+    else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW)??oldestPrefix(groups,F,r=>r.reportedKRW)??this.splitBatch(account,groups,F);
       if(set){event=true;const total=set.reduce((n,r)=>n+r.usd,0),paid=Math.max(0,-(cashMove+lateDebit)),Y=usd(Math.min(total,paid));
         for(const r of set){const share=total>0?r.usd/total:0,y=usd(Y*share);
           if(r.state==='us'){const S=usd(r.usd-y);
