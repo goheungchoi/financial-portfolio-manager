@@ -452,8 +452,8 @@
    "note": "U.S. consistent",
    "value": {
     "KR": {
-     "low": 3000000,
-     "high": 3000000
+     "low": 2866000,
+     "high": 2866000
     },
     "US": {
      "low": 100,
@@ -783,8 +783,8 @@
    "note": "settlement (USD)",
    "value": {
     "KR": {
-     "low": 3000000,
-     "high": 3000000
+     "low": 2946400,
+     "high": 2946400
     },
     "US": {
      "low": 100,

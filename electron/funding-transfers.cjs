@@ -57,7 +57,11 @@ class FundingTransfers {
   // still reports, for the valuation's split).
   current(account){const m=this.meta(account),rows=this.rows(account);const us=rows.filter(r=>r.state==='us');
     return {krwKRW:won(rows.filter(r=>r.state==='krw'||r.state==='kr-paid').reduce((n,r)=>n+r.reportedKRW,0)),krwUnpaidKRW:won(rows.filter(r=>UNPAID.has(r.state)).reduce((n,r)=>n+r.reportedKRW,0)),usReportedKRW:won(us.reduce((n,r)=>n+r.reportedKRW,0)),usUSD:usd(us.reduce((n,r)=>n+r.usd,0)),usOrders:us.length,
-      provisionalKRW:won(Math.max(0,m?.provisionalKRW??0)),reportedKRW:won(m?.reportedKRW??0),explained:{KR:won(m?.explainedKR??0),US:usd(m?.explainedUS??0)}};}
+      provisionalKRW:won(Math.max(0,m?.provisionalKRW??0)),reportedKRW:won(m?.reportedKRW??0),explained:{KR:won(m?.explainedKR??0),US:usd(m?.explainedUS??0)},
+      // F-d1: the KRW of K1 groups KIS has settled from Korea (its report no longer carries them) not yet seen leaving
+      // Korean cash: the Korean value deducts it, as the loss value does through krwUnpaidKRW. A partial reversal leaves
+      // only the reported KRW less the USD KIS took (at the rate of its settlement).
+      krwSettledUnpaidKRW:won(rows.reduce((n,r)=>n+(r.state==='awaiting-kr'?r.reportedKRW:r.state==='awaiting-reversal'?Math.max(0,r.reportedKRW-(r.paidUSD??0)*(r.fx??0)):0),0))};}
   // S3a (G1, ruling R2): each leg carries the window in which its own market's figure moved: occurredAfter, the reading
   // before that move (after), and occurredBy, the reading that showed it (by, default at). The daily-loss checks place it
   // against their baseline by that window (PerformanceHistory.flowsSince). Where the reading before cannot be named

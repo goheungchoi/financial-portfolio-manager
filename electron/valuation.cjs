@@ -40,8 +40,13 @@ function korea(k,{us,now,funding=null}){
   // C1d-2 (funding-transfers.cjs): with the recorder, the Korean low deducts only the KRW KIS has shown for U.S. buys and
   // the reported amount no tracked buy explains; the U.S. side carries the buys whose route is not yet shown. The high
   // deducts what the funding tracker confirms, at most the low's amount (the rest is in the U.S. high: combined unchanged).
-  const split=funding&&total>0?fundingSplit(funding,total,known):null;
-  if(split){if(split.krLow>0||split.krHigh>0)components.push(part('usBuyFunding',-split.krLow,split.krLow===split.krHigh?'observed':'derived','U.S. buys awaiting settlement (ustl_buy_amt_smtl): the KRW KIS has shown for them',{low:-split.krLow,high:-split.krHigh,note:split.krLow===split.krHigh?'paid in KRW':`${Math.round(split.krLow-split.krHigh)} of it may have been paid in USD`}));}
+  const split0=funding&&total>0?fundingSplit(funding,total,known):null;
+  // F-d1 (multi-order R5): KRW KIS has settled from Korea for K1 groups, gone from its report but not yet seen leaving
+  // Korean cash (the Korean reading after the U.S. one), is still Korean money owed: deducted in the low and the high.
+  // The loss value already deducts it (krwUnpaidKRW); it subtracts this component whole, so the loss value is unchanged.
+  const settledUnpaid=funding?Math.max(0,Number(funding.krwSettledUnpaidKRW)||0):0;
+  const split=split0?{...split0,krLow:split0.krLow+settledUnpaid,krHigh:split0.krHigh+settledUnpaid}:settledUnpaid>0?{krLow:settledUnpaid,krHigh:settledUnpaid}:null;
+  if(split){if(split.krLow>0||split.krHigh>0)components.push(part('usBuyFunding',-split.krLow,split.krLow===split.krHigh?'observed':'derived','U.S. buys awaiting settlement (ustl_buy_amt_smtl): the KRW KIS has shown for them'+(settledUnpaid>0?`, and ₩${Math.round(settledUnpaid).toLocaleString('en-US')} KIS settled from Korea not yet seen leaving Korean cash`:''),{low:-split.krLow,high:-split.krHigh,note:split.krLow===split.krHigh?'paid in KRW':`${Math.round(split.krLow-split.krHigh)} of it may have been paid in USD`}));}
   else if(total>0)components.push(part('usBuyFunding',-total,known===total?'observed':'derived','U.S. buys awaiting settlement (ustl_buy_amt_smtl)',{low:-total,high:-known,note:known===total?'paid in KRW':`${Math.round(total-known)} of it may have been paid in USD`}));
   const credit=Boolean(k.loanTotal||k.shortProceeds||(k.shorts??[]).length);let brokerNet=null;
   if(credit){

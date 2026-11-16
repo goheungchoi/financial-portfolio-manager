@@ -210,8 +210,10 @@ test('generated sequences (C1d-2b): no detected flow, explained = booked + obser
       const b2=usBuy('C'+k,60,start+1999*60000),H2={symbol:'NYSE:C',quantity:1,price:60},cash0=r2(price+200);
       rs=[c(0,kr0,{cash:cash0,holdings:[]},[]),c(21,kr0,{cash:cash0,holdings:[H]}),c(600,kr0,{cash:cash0,holdings:[H]}),c(601,kr0,{cash:cash0,holdings:[H],buyKRW:rep}),c(2000,kr0,{cash:r2(cash0-price),holdings:[H,H2],buyKRW:0},[buy,b2]),c(2400,kr0,{cash:r2(cash0-price),holdings:[H,H2],buyKRW:0},[buy,b2])];}
     const w=world(),o=world({old:true});const restartAt=1+Math.floor(rnd()*(rs.length-1));
-    for(const [i,r] of rs.entries()){if(i===restartAt)w.restart();w.step(r);o.step(r);const a=w.out.at(-1),b=o.out.at(-1);
-      assert.ok(Math.abs(a.low-b.low)<=2&&Math.abs(a.high-b.high)<=2,`kind ${kind} sequence ${k} reading ${i}: ${a.low}/${a.high} against ${b.low}/${b.high}`);}
+    // F-d1: where KIS has settled a K1 group from Korea and the Korean fall is not yet read, the code before had a false
+    // gain of that KRW; it is now deducted. Everywhere else the values are those of the code before (M1).
+    for(const [i,r] of rs.entries()){if(i===restartAt)w.restart();w.step(r);o.step(r);const a=w.out.at(-1),b=o.out.at(-1),d=new FundingTransfers(w.db).current(A).krwSettledUnpaidKRW??0;
+      assert.ok(Math.abs(a.low-(b.low-d))<=2&&Math.abs(a.high-(b.high-d))<=2,`kind ${kind} sequence ${k} reading ${i}: ${a.low}/${a.high} against ${b.low}/${b.high} less ${d}`);}
     // Then five days on, so a buy still waiting for KIS's report ages by the rule.
     for(const h of [3,8,30,120])w.step({...rs.at(-1),at:rs.at(-1).at+h*3600000});
     assert.ok(!w.flows().some(x=>x.detected),`kind ${kind} sequence ${k}: a detected flow ${JSON.stringify(flowList(w))}`);

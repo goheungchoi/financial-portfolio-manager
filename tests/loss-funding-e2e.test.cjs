@@ -194,5 +194,12 @@ else{
     // sequence "K1, Korean paid, KIS keeps reporting" checks .low/.high and the loss checks across the change).
     assert.equal(after.krwKRW+after.provisionalKRW,before.krwKRW+before.provisionalKRW);assert.equal(after.krwUnpaidKRW,0);assert.equal(before.krwUnpaidKRW,0);
   });
-  test('condition 5: the values (.low and .high) of both markets at every reading are those of the code before S3a-2',()=>{
-    const before=JSON.parse(fs.readFileSync(FIXTURE,'utf8'));for(const [name,seq] of Object.entries(SEQUENCES))assert.deepEqual(valuesOf(e2e(seq)),before[name],name);});}
+  test('condition 5: the values (.low and .high) of both markets at every reading are those of the code before S3a-2 (F-d1: less the KRW KIS settled from Korea not yet seen leaving)',()=>{
+    const before=JSON.parse(fs.readFileSync(FIXTURE,'utf8'));for(const [name,seq] of Object.entries(SEQUENCES))assert.deepEqual(valuesOf(e2e(seq)),before[name],name);});
+  // F-d1: the Korean value deducts the KRW KIS has settled from Korea for a K1 group until the Korean reading shows it
+  // leaving (krwSettledUnpaidKRW), as the loss value does. Before, the reading between had a false gain of it.
+  test('F-d1: the combined value never rises above its start in any sequence; the low of K1 with the U.S. reading first and of the partial reversal is right at every reading',()=>{
+    for(const [name,seq] of Object.entries(SEQUENCES)){const run=e2e(seq),fx=seq[0].fx,c=r=>r.value.KR.low+r.value.US.low*fx,c0=c(run.out[0]);
+      for(const r of run.out)assert.ok(c(r)<=c0+2,`${name} at ${r.note}: ${c(r)} above ${c0}`);
+      if(['K1, U.S. reading first','partial reversal'].includes(name))for(const r of run.out)assert.ok(Math.abs(c(r)-c0)<=2,`${name} at ${r.note}: ${c(r)} vs ${c0}`);}
+  });}
