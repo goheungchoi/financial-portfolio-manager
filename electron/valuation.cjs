@@ -133,6 +133,10 @@ function splitContext(us,inFlight,funding,rate){if(!(rate>0)||!us)return null;co
 const groupedOrders=funding=>new Set((funding?.reportedGroups??[]).flatMap(g=>(g.orders??[]).map(String)));
 function coveredInFlight(inFlight,funding,rate){if(!(rate>0))return 0;const open=(inFlight?.open??[]).filter(p=>p.side==='Buy');let n=0;
   for(const g of funding?.reportedGroups??[]){const ids=new Set((g.orders??[]).map(String));const s=open.filter(p=>ids.has(String(p.id))).reduce((t,p)=>t+(Number(p.usd)||0),0);n+=Math.min(s,Math.max(0,g.reportedKRW||0)/rate);}
+  // M-1.6d (R5, seed 116): never more than KIS reports now. A group the recorder could not match to KIS's settlement
+  // (equal amounts: no unique set) stays "reported" after KIS's report is gone; its obligation follows KIS's figure, so
+  // covering its pieces beyond that figure counted them nowhere (a false gain).
+  if(Number.isFinite(funding?.reportedKRW))n=Math.min(n,Math.max(0,funding.reportedKRW)/rate);
   // M-1.6c2: a group KIS settled through the KRW route covers its pieces still in flight up to its KRW part (the reported
   // KRW less the USD KIS took), until the tracker closes them a reading later.
   for(const g of funding?.krwSettledGroups??[]){const ids=new Set((g.orders??[]).map(String));const s=open.filter(p=>ids.has(String(p.id))).reduce((t,p)=>t+(Number(p.usd)||0),0);n+=Math.min(s,Math.max(0,(g.reportedKRW||0)/rate-(g.paidUSD||0)));}

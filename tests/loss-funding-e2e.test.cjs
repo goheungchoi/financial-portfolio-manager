@@ -103,8 +103,10 @@ const FIXTURE=path.join(__dirname,'fixtures','loss-funding-values.json');
 const valuesOf=run=>run.out.map(r=>({note:r.note,value:r.value}));
 
 // node --test runs this file as the main module too, so the command-line uses are chosen by their argument.
-const mode=['summary','detail','fixture'].includes(process.argv[2])?process.argv[2]:null;
-if(mode){
+// Required by another test file (M-1.6d's random test uses e2e): register nothing.
+const mode=require.main!==module?'lib':['summary','detail','fixture'].includes(process.argv[2])?process.argv[2]:null;
+if(mode==='lib'){}
+else if(mode){
   if(mode==='fixture'){fs.writeFileSync(FIXTURE,JSON.stringify(Object.fromEntries(Object.entries(SEQUENCES).map(([n,s])=>[n,valuesOf(e2e(s))])),null,1)+'\n');console.log('written',FIXTURE);}
   else for(const [name,seq] of Object.entries(SEQUENCES)){const run=e2e(seq),w=wrong(run);const by={};for(const x of w)by[kind(x)]=(by[kind(x)]??0)+1;
     console.log(`\n## ${name}: ${JSON.stringify(by)}`);
