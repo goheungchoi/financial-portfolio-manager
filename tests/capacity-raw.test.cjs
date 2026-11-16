@@ -39,3 +39,8 @@ test('the engine records it with the orders open then; a failing record never st
   assert.deepEqual(rows[0].open.app.map(o=>[o.symbol,o.status,o.brokerOrderId]),[['005930','Accepted','5']],'the order open at that moment');assert.deepEqual(rows[1].open.app,[]);
   e.recordCapacity=()=>{throw new Error('disk full');};assert.equal((await e.submit(e.propose({symbol:'000660',side:'Buy',quantity:1,limitPrice:1000}).id,'PLACE MOCK ORDER')).status,'Accepted');
 });
+test('M-1.5c: the dropped order-history rows are kept in the capacity record (count and codes), and only when there are some',()=>{
+  const c=new BrokerCapacity(new DatabaseSync(':memory:'));const base={account:'A:US',market:'US',order:{symbol:'NASD:X',side:'Buy',quantity:1,limitPrice:10},capacity:{tr:'TTTS3007R',fields:{a:1}},open:{app:[],kis:[]}};
+  assert.equal(c.record({...base,historyDropped:{count:2,codes:['TSE','XHKG']}}),true);assert.deepEqual(c.list('A:US','US')[0].historyDropped,{count:2,codes:['TSE','XHKG']});
+  c.record(base);assert.equal(Object.hasOwn(c.list('A:US','US')[0],'historyDropped'),false);
+});

@@ -141,7 +141,7 @@ class LiveEngine {
       const pending=this.pendingOrders(order,prepared);
       // M-1.5b: KIS's orderable answer, with the orders open at this moment, kept for Q1/Q2 (broker-raw.cjs
       // BrokerCapacity, set by the app). Recording never stops or changes the order.
-      try{if(this.recordCapacity&&prepared.capacityRaw)this.recordCapacity({account:order.accountKey,market:this.market,order,capacity:prepared.capacityRaw,
+      try{if(this.recordCapacity&&prepared.capacityRaw)this.recordCapacity({account:order.accountKey,market:this.market,order,capacity:prepared.capacityRaw,...(prepared.historyDropped?{historyDropped:prepared.historyDropped}:{}),
         open:{app:this.orders().filter(o=>o.id!==order.id&&['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'].includes(o.status)).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,filled:o.filled,status:o.status,price:o.currentPrice??o.limitPrice,brokerOrderId:o.currentBrokerOrderId??o.brokerOrderId})),kis:prepared.openOrders??[]}});}catch{}
       // Percentage limits use one base: the account value plus the KRW that funds U.S. buys through integrated margin (the
       // U.S. account alone may hold nothing, which would otherwise block every buy or skip the leveraged-product check).
