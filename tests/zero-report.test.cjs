@@ -7,6 +7,7 @@ const {InFlight}=require('../electron/valuation.cjs');
 const MIN=60000,FX=1340;
 function tracker(){let t=Date.parse('2026-11-09T14:00:00Z');const db=new DatabaseSync(':memory:');const f=new InFlight(db,()=>t);
   return {see:(us,orders=[],krwGroups=null)=>{const r=f.observe('a',{us:{timestamp:new Date(t).toISOString(),...us},orders,fx:FX,krwGroups});t+=MIN;return r;},
+    later:ms=>{t+=ms;},
     state:()=>JSON.parse(db.prepare('SELECT payload FROM inflight_settlement').get().payload).a??JSON.parse(db.prepare('SELECT payload FROM inflight_settlement').get().payload),
     events:kind=>f.evidence.events('a').filter(e=>!kind||e.kind===kind),explained:()=>f.explained('a',{since:0}).usd};}
 const U=(buyKRW,sellKRW=0)=>({unsettled:{buyKRW,sellKRW}});
@@ -120,4 +121,14 @@ test('F-d3: a reported fall the U.S. cash fall did not pay closes with no cash o
   assert.equal(x.see({cash:1900,...U(0)},o).buysUSD,0,'the late debit closes it');
   // The KRW part known to fund it (krwFundedKRW) falling with the report: paid in KRW, closed.
   x=seen(2000,{buyKRW:100*FX,sellKRW:0,krwFundedKRW:100*FX});assert.equal(x.see({cash:2000,unsettled:{buyKRW:0,sellKRW:0,krwFundedKRW:0}},o).buysUSD,0,'its known KRW funding fell with it');
+});
+// M-1.6d: an age close of a piece a credit stood for leaves the basis only by its uncredited part (the credit left with
+// it): proceeds shown at the fill credit the sales; KIS's reported rise covers one; the rest close by age: nothing is
+// explained as a cash-free change (before, the full amount was, and the flow detector booked a false deposit).
+test('M-1.6d: sales credited at the fill, closed by age: the age close explains only its uncredited part',()=>{
+  const x=tracker(),o=batch(13,'Sell'),T=total(o);x.see({cash:1000,...U(0)});x.see({cash:1000,pendingSaleProceeds:T,...U(0)},o);
+  assert.ok(InFlight.creditCents(x.state(),'Sell')>0,'credited at the fill');x.see({cash:1000,pendingSaleProceeds:T,...U(0,Math.round(o[0].fillPrice*FX))},o);
+  const before=x.explained();x.later(6*86400000);const r=x.see({cash:1000,pendingSaleProceeds:T,...U(0,Math.round(o[0].fillPrice*FX))},o);
+  assert.equal(r.open.filter(p=>p.side==='Sell').length,0,'closed by age');assert.ok(x.events('piece-closed').some(e=>e.why==='age'&&e.creditUSD>0),'the credited part recorded');
+  assert.ok(Math.abs(x.explained()-before)<0.01,`no cash-free change: ${before} then ${x.explained()}`);
 });

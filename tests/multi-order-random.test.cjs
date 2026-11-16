@@ -23,14 +23,42 @@ function split(r,list,k){k=Math.min(k,list.length);for(;;){const a=list.map(()=>
 const sum=l=>c2(l.reduce((s,x)=>s+x.fillPrice,0));
 
 // One generated case: the readings, and the truth at each (combined KRW; the U.S. true value in USD; the Korean cash).
-function generate(seed,side){const r=rng(seed*2+(side==='Buy'?0:1)),pick=a=>a[Math.floor(r()*a.length)];
-  const n=1+Math.floor(r()*30),equal=r()<0.25,A0=c2(10+r()*30);
+// profile 'plain': no withdrawals, one report per U.S. trade date (each part on its own day), settlement per report in
+// order, unequal amounts, KIS's observed settlement shape (a debit below 0 held, then the exchange), the report falling
+// with the debit.
+// The plain profile: what daily batches look like. Part i (one U.S. trade date) fills on day i, KIS reports it the
+// next Korean morning and settles it the morning after (a debit below 0 held, then the exchange, for KRW or mixed
+// funding). Parts overlap in time: a later part may fill while an earlier one settles. No withdrawals, unequal amounts.
+function plainGenerate(seed,side){const r=rng(seed*2+(side==='Buy'?0:1)+1e6),pick=a=>a[Math.floor(r()*a.length)];
+  const n=1+Math.floor(r()*30),k=Math.min(n,1+Math.floor(r()*3)),day0=K('2026-11-09T23:40:00');
+  const parts=Array.from({length:k},()=>[]);for(let i=0;i<n;i++)parts[i<k?i:Math.floor(r()*k)].push(i);
+  const o=[];for(const [d,p] of parts.entries())for(const i of p)o.push({...order(side,(side==='Buy'?'B':'S')+i,c2(5+r()*55),day0+d*DAY+i*1000),part:d});
+  const T=sum(o),fund=side==='Buy'?pick(['usd','krw','mixed']):'usd';let cash=side==='Sell'?1000:fund==='usd'?c2(T+300+r()*500):fund==='krw'?0:c2(Math.max(0.01,Math.min(T-0.01,r()*T)));
+  const cash0=cash,desc={seed,side,profile:'plain',independent:false,n,equal:false,fund,cash0,T,report:parts.map(p=>p.length),settle:parts.map(p=>p.length),zeroFirst:false,lateProceeds:false,heldDebit:true,exchangeLater:false,W:0,wAt:null};
+  // Events: [time, kind, part]; fill at day d 23:40 (+ seconds), report at d+1 09:00, settle at d+2 08:24 (exchange 08:25).
+  const ev=[];for(let d=0;d<k;d++){ev.push([day0+d*DAY+60000,'fill',d],[K('2026-11-17T09:00:00')+d*DAY,'report',d],[K('2026-11-18T08:24:00')+d*DAY,'settle',d]);}ev.sort((a,b)=>a[0]-b[0]);
+  let kr=KR0,rep=0,pending=0,proceedsIn=0;const filled=new Set(),settled=new Set(),steps=[];
+  const partSum=d=>sum(o.filter(x=>x.part===d)),seen=()=>o.filter(x=>filled.has(x.part));
+  const usdStillOwed=()=>{let c=cash,owed=0;for(let d=0;d<k;d++){if(settled.has(d)||!filled.has(d))continue;const u=Math.min(Math.max(0,c),partSum(d));owed+=u;c-=u;}return owed;};
+  const truth=()=>{const F=sum(seen());return {combined:KR0+(side==='Buy'?cash0:1000+T)*FX,us:side==='Buy'?cash+F-usdStillOwed():cash+(F-proceedsIn)+(T-F),kr,held:cash<-0.001};};
+  const push=(at,note)=>{const F=seen();const holdings=side==='Buy'?F.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})):o.filter(x=>!filled.has(x.part)).map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice}));
+    steps.push({at,note,fx:FX,kr:{settled:kr,holdings:[]},us:{cash:c2(cash),holdings,...(pending>0.001?{pending:c2(pending)}:{}),buyKRW:side==='Buy'?Math.max(0,rep):0,sellKRW:side==='Sell'?Math.max(0,rep):0},orders:F.map(({part,...x})=>x),truth:truth()});};
+  push(K('2026-11-09T23:00:00'),'before');
+  for(const [at,kind,d] of ev){const P=partSum(d);
+    if(kind==='fill'){filled.add(d);if(side==='Sell')pending=c2(pending+P);push(at,`fill ${d+1}`);}
+    else if(kind==='report'){rep+=Math.round(P*FX);push(at,`report ${d+1}`);}
+    else{rep-=Math.round(P*FX);if(rep<2)rep=0;if(side==='Sell'){pending=c2(pending-P);if(pending<0.005)pending=0;cash=c2(cash+P);proceedsIn=c2(proceedsIn+P);settled.add(d);push(at,`settle ${d+1}`);continue;}
+      const usd=Math.min(Math.max(0,cash),P),short=c2(P-usd);cash=c2(cash-P);settled.add(d);
+      if(short<=0.005){push(at,`debit ${d+1}`);continue;}push(at,`debit ${d+1} (held)`);cash=c2(cash+short);kr-=Math.round(short*FX);push(at+60000,`exchange ${d+1}`);}}
+  const settledAt=steps.length,end=steps.at(-1).at;push(end+DAY,'next day');push(end+9*DAY,'after age');return {desc,steps,settledAt};}
+function generate(seed,side,profile='mix'){if(profile==='plain')return plainGenerate(seed,side);const plain=false,r=rng(seed*2+(side==='Buy'?0:1)+(plain?1e6:0)),pick=a=>a[Math.floor(r()*a.length)];
+  const n=1+Math.floor(r()*30),equal=!plain&&r()<0.25,A0=c2(10+r()*30);
   const o=Array.from({length:n},(_,i)=>order(side,(side==='Buy'?'B':'S')+i,equal?A0:c2(5+r()*55),K('2026-11-09T23:40:00')+i*1000)),T=sum(o);
-  const fund=side==='Buy'?pick(['usd','krw','mixed']):'usd',reportParts=split(r,o,1+Math.floor(r()*3)),independent=seed%5===0,settleParts=independent?split(r,o,1+Math.floor(r()*3)):split(r,reportParts,1+Math.floor(r()*3)).map(g=>g.flat());
-  const zeroFirst=r()<0.4,lateProceeds=side==='Sell'&&r()<0.5,heldDebit=r()<0.5,exchangeLater=r()<0.5;
+  const fund=side==='Buy'?pick(['usd','krw','mixed']):'usd',reportParts=split(r,o,1+Math.floor(r()*3)),independent=!plain&&seed%5===0,settleParts=plain?reportParts:independent?split(r,o,1+Math.floor(r()*3)):split(r,reportParts,1+Math.floor(r()*3)).map(g=>g.flat());
+  const zeroFirst=!plain&&r()<0.4,lateProceeds=side==='Sell'&&r()<0.5,heldDebit=plain||r()<0.5,exchangeLater=!plain&&r()<0.5;
   let cash=side==='Sell'?1000:fund==='usd'?c2(T+300+r()*500):fund==='krw'?0:c2(Math.max(0.01,Math.min(T-0.01,r()*T)));
-  const W=(side==='Sell'||fund==='usd')&&r()<0.5?c2(50+r()*250):0,wAt=W?pick(['early',...(zeroFirst?['between','same']:['same'])]):null;
-  const desc={seed,side,independent,n,equal,fund,cash0:cash,T,report:reportParts.map(p=>p.length),settle:settleParts.map(p=>p.length),zeroFirst,lateProceeds,heldDebit,exchangeLater,W,wAt};
+  const W=!plain&&(side==='Sell'||fund==='usd')&&r()<0.5?c2(50+r()*250):0,wAt=W?pick(['early',...(zeroFirst?['between','same']:['same'])]):null;
+  const desc={seed,side,profile,independent,n,equal,fund,cash0:cash,T,report:reportParts.map(p=>p.length),settle:settleParts.map(p=>p.length),zeroFirst,lateProceeds,heldDebit,exchangeLater,W,wAt};
   const held=side==='Buy'?o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})):[],sold=side==='Sell'?o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})):[];
   let kr=KR0,t=K('2026-11-09T23:00:00'),rep=0,pending=0,gone=0,proceedsIn=0,settledParts=0;const steps=[];
   // The U.S. true value: cash, plus holdings at cost, less the USD KIS will still take for buys not yet debited (it
@@ -46,8 +74,8 @@ function generate(seed,side){const r=rng(seed*2+(side==='Buy'?0:1)),pick=a=>a[Ma
   if(wAt==='early'){withdraw();push('withdrawal');}
   t=K('2026-11-09T23:45:00');filled=true;if(side==='Sell'&&!lateProceeds)pending=T;push('filled');
   if(side==='Sell'&&lateProceeds){pending=T;push('proceeds shown');}
-  t=K('2026-11-17T09:00:00');for(const [i,p] of reportParts.entries()){rep+=Math.round(sum(p)*FX);push(`report ${i+1}`);t+=HOUR;}
-  t=K('2026-11-18T08:20:00');
+  t=K('2026-11-10T09:00:00');for(const [i,p] of reportParts.entries()){rep+=Math.round(sum(p)*FX);push(`report ${i+1}`);t+=plain?DAY:HOUR;}
+  t=Math.max(K('2026-11-11T08:20:00'),t+HOUR);
   for(const [i,p] of settleParts.entries()){const P=sum(p),last=i===settleParts.length-1;rep-=Math.round(P*FX);if(last)rep=0;
     if(last&&zeroFirst){push('zero',{zero:true});if(wAt==='between'){withdraw();push('withdrawal');}}
     if(side==='Sell'){pending=c2(pending-P);if(pending<0.005)pending=0;cash=c2(cash+P);proceedsIn=c2(proceedsIn+P);settledParts++;if(last&&wAt==='same'&&!zeroFirst)withdraw();push(`settle ${i+1}`);
@@ -72,12 +100,13 @@ function generate(seed,side){const r=rng(seed*2+(side==='Buy'?0:1)),pick=a=>a[Ma
 // matched to flagged buys in flight). Liveness: right after age. End: nothing in flight, no credit.
 // Counted: groups by end state, detected Korean flows, withdrawals not detected as exactly one flow.
 const SAFETY_CLASSES=['limit: withdrawal in the zero or debit reading','band: batch set within 5% (M-1.6b)','open: carried and flagged buys mixed (A3/A4)','attribution: mixed funding, the U.S. low alone (combined right; the K1 transfer convention)'];
-function check(seed,side){const {desc,steps}=generate(seed,side),run=e2e(steps.map(({truth,zero,...s})=>s)),out={seed,side,desc,safety:[],afterAge:true,end:true,groups:{},krFlows:0,flowsOff:null};
+function check(seed,side,profile='mix'){const {desc,steps}=generate(seed,side,profile),run=e2e(steps.map(({truth,zero,...s})=>s)),out={seed,side,desc,safety:[],afterAge:true,end:true,groups:{},krFlows:0,flowsOff:null};
   const classOf=ex=>desc.wAt==='same'?SAFETY_CLASSES[0]:ex<=0.05*desc.T*FX+2?SAFETY_CLASSES[1]:SAFETY_CLASSES[2];
   for(const [i,row] of run.out.entries()){const tr=steps[i].truth,v=row.value,low=v.KR.low+v.US.low*FX,high=v.KR.high+v.US.high*FX;
     const exC=Math.max(low-tr.combined-2,v.KR.low-tr.kr-1,side==='Sell'?tr.combined-2-high:0),exU=tr.held?0:(v.US.low-tr.us-0.02)*FX;
     if(exC>0)out.safety.push({at:row.note,ex:Math.round(exC),cls:classOf(exC)});
     else if(exU>0)out.safety.push({at:row.note,ex:Math.round(exU),cls:desc.fund==='mixed'?SAFETY_CLASSES[3]:classOf(exU)});}
+  {const from=steps.findIndex((x,i)=>i>=steps.length-2)-1;out.settledRight=run.out.slice(Math.max(0,steps.length-3)).every((row,j)=>{const tr=steps[Math.max(0,steps.length-3)+j].truth;return tr.held||Math.abs(row.value.KR.low+row.value.US.low*FX-tr.combined)<=2;});}
   const last=run.out.at(-1),lastLow=last.value.KR.low+last.value.US.low*FX;out.afterAge=Math.abs(lastLow-steps.at(-1).truth.combined)<=2;
   const st=JSON.parse(run.db.prepare('SELECT payload FROM inflight_settlement').get().payload),ss=st[A]??st;out.end=(ss.open??[]).length===0&&['Buy','Sell'].every(k=>InFlight.creditCents(ss,k)===0);
   for(const r of run.rec.rows(A).filter(r=>(r.orders??[]).length))out.groups[r.state]=(out.groups[r.state]??0)+1;
@@ -94,6 +123,22 @@ test('R5 pins: seed 84 has no combined excess (the R4 guard); the open class is 
   assert.deepEqual(check(84,'Buy').safety.filter(x=>!x.cls.startsWith('attribution')),[],'seed 84');
   const open=Array.from({length:150},(_,i)=>i+1).filter(seed=>check(seed,'Buy').safety.some(x=>x.cls.startsWith('open')));assert.deepEqual(open,[69]);
 });
+// The plain profile (what daily batches look like): no safety failure and no detected Korean flow, at all. Reported:
+// unmatched groups, and seeds not right at the last settlement (right only after age).
+for(const side of ['Buy','Sell'])test(`R5 plain: ${N} daily-batch lifecycles of U.S. ${side==='Buy'?'buys':'sales'} (one trade date per part, reported and settled by it): no safety failure, no Korean flow, every group closed, right at settlement, no false flow`,t=>{
+  const count={},bump=(k,seed)=>{(count[k]??=[]).push(seed);};
+  for(let seed=1;seed<=N;seed++){const r=check(seed,side,'plain');assert.deepEqual(r.safety.filter(x=>!x.cls.startsWith('attribution')),[],`plain seed ${seed} ${side}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
+    // The U.S. low alone above its USD-first value (mixed funding: K1 books a part U.S. cash cannot pay in full as KRW, so
+    // the U.S. side shows the USD KIS will still take, until the settlement's reversal); bound: the U.S. cash, per reading.
+    const attr=r.safety.filter(x=>x.cls.startsWith('attribution'));if(attr.length){bump('the U.S. low alone above its USD-first value (K1 on a part U.S. cash cannot pay in full)',seed);
+      const worst=Math.max(...attr.map(x=>x.ex))/FX;(count.attrWorst??=[]).push(Math.round(worst*100)/100);assert.ok(worst<=r.desc.cash0+0.05,`plain seed ${seed}: the U.S. excess ${worst.toFixed(2)} is beyond its U.S. cash ${r.desc.cash0}`);(count.attrShare??=[]).push(Math.round(100*worst/r.desc.T));}assert.equal(r.krFlows,0,`plain seed ${seed} ${side}: a Korean flow ${JSON.stringify(r.desc)}`);
+    assert.ok(r.afterAge&&r.end,`plain seed ${seed} ${side}: not right after age, or left in flight`);for(const [k] of Object.entries(r.groups))if(!['booked','none'].includes(k))bump('group ends '+k,seed);
+    // Daily batches: every group closed, right from the last settlement on, no detected flow (all 0 at 500 seeds a side).
+    assert.deepEqual(Object.keys(r.groups).filter(k=>!['booked','none'].includes(k)),[],`plain seed ${seed} ${side}: a group left open`);
+    assert.ok(r.settledRight,`plain seed ${seed} ${side}: not right at the last settlement`);assert.equal(r.flowsOff,null,`plain seed ${seed} ${side}: ${r.flowsOff}`);}
+  const W=count.attrWorst,P=count.attrShare;delete count.attrWorst;delete count.attrShare;
+  for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length} of ${N} (${Math.round(100*v.length/N)}%), seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);
+  if(W)t.diagnostic(`U.S.-only excess, largest per seed: up to ${Math.max(...W).toFixed(2)}; as a share of the batch up to ${Math.max(...P)}% (median ${[...P].sort((a,b)=>a-b)[P.length>>1]}%)`);});
 for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded random lifecycles`} of U.S. ${side==='Buy'?'buys':'sales'} filled together (1 to 30, parts, funding, withdrawals): every failure classed and counted; right after age; nothing left`,t=>{
   const seeds=one?[Number(one)]:Array.from({length:N},(_,i)=>i+1),count={},bump=(k,seed)=>{(count[k]??=[]).push(seed);};
   for(const seed of seeds){const r=check(seed,side);if(one)t.diagnostic(JSON.stringify(r));

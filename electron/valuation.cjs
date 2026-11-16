@@ -551,11 +551,13 @@ class InFlight {
   ageOut(account,st,now,notes,closedBy){
     const B=require('./business-days.cjs'),aged=[];
     if(Number.isInteger(this.settleDays)&&this.settleDays>0)for(const f of st.open){const t=Number.isFinite(f.filledAt)?f.filledAt:f.at;const a=B.agedOut('US',{fillAt:t,now,n:this.settleDays});if(!a.aged)continue;aged.push(f);
-      this.evidence.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'age',usd:f.usd,days:this.settleDays,tradeDay:a.tradeDay});
+      // M-1.6c2: a flagged piece closing by age takes back the credit that stood for it (its payment, unnamed). M-1.6d: the
+      // credited part already left the basis with the credit, so only the rest is a cash-free change (creditUSD, explained()).
+      let credited=0;if(f.unresolved){let left=cents(f.usd);const list=st.credit?.[f.side]??[];while(left>0&&list.length){const x=Math.min(list[0].cents,left);list[0].cents-=x;left-=x;credited+=x;if(!list[0].cents)list.shift();}}
+      this.evidence.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'age',usd:f.usd,...(credited?{creditUSD:credited/100}:{}),days:this.settleDays,tradeDay:a.tradeDay});
       notes.push(`${f.side} ${f.id} ($${f.usd.toFixed(2)}): settled by age, ${this.settleDays} U.S. business days after its trade date ${a.tradeDay}`);}
     if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');
-      // M-1.6c2: a flagged piece closing by age takes back the credit that stood for it (its payment, unnamed).
-      for(const f of aged)if(f.unresolved){let left=cents(f.usd);const list=st.credit?.[f.side]??[];while(left>0&&list.length){const x=Math.min(list[0].cents,left);list[0].cents-=x;left-=x;if(!list[0].cents)list.shift();}}}
+}
     return aged;}
   // M-1.6c2: the paired credit of a side, in cents (R4, C3).
   static creditCents(st,side){return (st.credit?.[side]??[]).reduce((n,c)=>n+c.cents,0);}
@@ -595,7 +597,7 @@ class InFlight {
       if(e.kind==='piece-opened'&&(e.pretracking||e.why==='conflict')){c+=s*cents(e.usd);if(e.pretracking&&e.why!=='conflict')pre[String(e.orderId)]=(pre[String(e.orderId)]??0)+s*cents(e.usd);}
       else if(e.kind==='conflict-reduced')c-=s*e.cents;
       // S1a: a piece settled by age leaves the obligation with no cash movement: the same sign as a reduced conflict.
-      else if(e.kind==='piece-closed'&&e.why==='age'&&Number.isFinite(e.usd))c-=s*cents(e.usd);
+      else if(e.kind==='piece-closed'&&e.why==='age'&&Number.isFinite(e.usd))c-=s*(cents(e.usd)-cents(Number(e.creditUSD)||0));
       // H1: a fee difference closed with its evidence leaves the obligation with no cash movement, like an age close.
       else if(e.kind==='piece-closed'&&Number.isFinite(e.feeUSD))c-=s*cents(e.feeUSD);
       // M-1.6c2 (C3): the part of a zero-report close no cash or credit paid in its reading, like an age close.
