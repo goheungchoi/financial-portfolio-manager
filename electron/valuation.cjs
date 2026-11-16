@@ -28,7 +28,7 @@ const at=s=>{const t=Date.parse(s?.timestamp??'');return Number.isFinite(t)?t:nu
 const part=(name,amount,basis,source,extra={})=>({name,amount,low:extra.low??amount,high:extra.high??amount,basis,source,...(extra.note?{note:extra.note}:{})});
 function equityOf(components){return {low:sum(components,c=>c.low),high:sum(components,c=>c.high)};}
 
-function korea(k,{us,now,funding=null}){
+function korea(k,{us,now,funding=null,inFlight=null,rate=null}){
   if(!k)return {currency:'KRW',available:false,reasons:['Korean balance not loaded']};
   const reasons=[],components=[];const long=k.holdings??[];
   const settled=finite(k.settledCash)?k.settledCash:null;
@@ -40,7 +40,7 @@ function korea(k,{us,now,funding=null}){
   // C1d-2 (funding-transfers.cjs): with the recorder, the Korean low deducts only the KRW KIS has shown for U.S. buys and
   // the reported amount no tracked buy explains; the U.S. side carries the buys whose route is not yet shown. The high
   // deducts what the funding tracker confirms, at most the low's amount (the rest is in the U.S. high: combined unchanged).
-  const split0=funding&&total>0?fundingSplit(funding,total,known):null;
+  const split0=funding&&total>0?fundingSplit(funding,total,known,splitContext(us,inFlight,funding,rate)):null;
   // F-d1 (multi-order R5): KRW KIS has settled from Korea for K1 groups, gone from its report but not yet seen leaving
   // Korean cash (the Korean reading after the U.S. one), is still Korean money owed: deducted in the low and the high.
   // The loss value already deducts it (krwUnpaidKRW); it subtracts this component whole, so the loss value is unchanged.
@@ -97,7 +97,7 @@ function unitedStates(u,{inFlight,now,funding=null,rate=null}){
     if(o>0.005)reasons.push(`$${o.toFixed(2)} of U.S. ${what} in flight from before the age rule; they close at the next reading`);}
   // Bootstrap B1 (stage 2b): fills from before tracking started stay in flight until evidence or the age rule closes them.
   // C1d-2: the U.S. buys KIS reports whose KRW part it has not shown carry their reported amount here, in the low bound.
-  {const {unsettledKRW:total,confirmedKRW:known}=require('./integrated-settlement.cjs').settlement(u);const split=funding&&total>0&&rate>0?fundingSplit(funding,total,known):null;
+  {const {unsettledKRW:total,confirmedKRW:known}=require('./integrated-settlement.cjs').settlement(u);const split=funding&&total>0&&rate>0?fundingSplit(funding,total,known,splitContext(u,inFlight,funding,rate)):null;
     if(split&&(split.usLowKRW>0||split.usHighKRW>0)){components.push(part('fundingRouteOpen',-split.usLowKRW/rate,'derived','U.S. buys KIS reports awaiting settlement whose KRW part it has not shown',{low:-split.usLowKRW/rate,high:-split.usHighKRW/rate,note:'assumed paid from U.S. cash or proceeds; KIS may take KRW'}));
       if(split.usLowKRW>0)reasons.push(`${funding.usOrders||1} U.S. buy${(funding.usOrders||1)>1?'s':''}: funding route not yet shown by KIS, so the value is an estimate`);}}
   const pre=inFlight?.pretracking?.count??0;if(pre)reasons.push(`${pre} pre-tracking U.S. fill${pre>1?'s':''} awaiting verification: the value is provisional`);
@@ -107,8 +107,23 @@ function unitedStates(u,{inFlight,now,funding=null,rate=null}){
 // current): the Korean low takes the KRW shown plus the provisional amount; the U.S. low the groups not yet shown. The
 // Korean high takes the confirmed amount, at most the Korean low's; the rest of it lowers the U.S. high, so the combined
 // bounds equal those without the recorder (M1). What the groups and the provisional amount do not cover stays Korean.
-function fundingSplit(f,total,known){const kr=Math.min(total,Math.max(0,(f.krwKRW??0)+(f.provisionalKRW??0))),usLow=Math.min(total-kr,Math.max(0,f.usReportedKRW??0)),krLow=total-usLow;
+// M-1.6a: the provisional amount (KIS's report no tracked buy explains) is split as KIS pays: from U.S. money first, KRW
+// for the shortfall (settlement clean-up ruling "Option 1, USD first": KIS was seen paying USD first when USD was there,
+// and KRW when it was not). usP: of P less the U.S. buys InFlight still holds as possibly
+// reported (they carry their obligation already), the part U.S. money can pay (ctx.usMoneyUSD at ctx.rate). Without a rate, or
+// without U.S. money, all of it stays Korean, as before. The combined value counts it once either way.
+function fundingSplit(f,total,known,ctx=null){const P=Math.max(0,f.provisionalKRW??0),rate=ctx?.rate>0?ctx.rate:null;
+  // F1 (review): U.S. money already excludes every in-flight buy, so the flagged ones come off P first, and U.S. money
+  // pays what is left of it: min(max(0, P − R), money).
+  const usP=rate==null?0:Math.min(Math.max(0,P-Math.max(0,ctx.reportedInFlightUSD??0)*rate),Math.max(0,ctx.usMoneyUSD??0)*rate);
+  const kr=Math.min(total,Math.max(0,(f.krwKRW??0)+P-usP)),usLow=Math.min(total-kr,Math.max(0,(f.usReportedKRW??0)+usP)),krLow=total-usLow;
   const krHigh=Math.min(known,krLow);return {krLow,krHigh,usLowKRW:usLow,usHighKRW:known-krHigh};}
+// The split's U.S. side (M-1.6a): U.S. money that could pay a report (cash and pending proceeds, less the U.S. buys in
+// flight and the U.S. groups not yet shown) and the in-flight buys flagged as possibly reported. Both markets use it.
+function splitContext(us,inFlight,funding,rate){if(!(rate>0)||!us)return null;
+  const money=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0)-Math.max(0,inFlight?.buysUSD??0)-Math.max(0,funding?.usReportedKRW??0)/rate;
+  const reported=(inFlight?.open??[]).filter(p=>p.side==='Buy'&&REPORTED.includes(p.unresolved?.why)).reduce((n,p)=>n+(Number(p.usd)||0),0);
+  return {rate,usMoneyUSD:money,reportedInFlightUSD:reported};}
 function finish(currency,s,components,reasons,extra,now,broker){
   const t=at(s);const stale=t==null||now-t>STALE_MS;if(stale)reasons.push(t==null?'balance time unknown':`balance is ${Math.round((now-t)/60000)} minutes old`);
   const missing=components.filter(c=>!finite(c.low)||!finite(c.high));if(missing.length)reasons.push(`not a number: ${missing.map(c=>c.name).join(', ')}`);
@@ -121,7 +136,7 @@ function finish(currency,s,components,reasons,extra,now,broker){
 // value in KRW: low (the headline), high, whether it is exact, complete, which markets it covers and why not.
 function value({korea:k=null,us=null,fx=null,inFlight=null,funding=null,now=Date.now()}={}){
   const rate=fx?.usdKRW>0&&Number.isFinite(fx.usdKRW)?fx.usdKRW:null;
-  const KR=korea(k,{us,now,funding}),US=unitedStates(us,{inFlight,now,funding,rate});
+  const KR=korea(k,{us,now,funding,inFlight,rate}),US=unitedStates(us,{inFlight,now,funding,rate});
   const reasons=[...(KR.available?[]:['Korean balance not loaded']),...(US.available?[]:['U.S. balance not loaded'])];
   const usLow=US.equity?.low,usHigh=US.equity?.high;const usZero=US.available&&usLow===0&&usHigh===0;
   if(US.available&&rate==null&&!usZero)reasons.push('no USD/KRW rate');
@@ -481,4 +496,4 @@ function marketValue(market,{korea=null,us=null,fx=null,inFlight=null,funding=nu
   const f=v.components.find(c=>c.name==='usBuyFunding'),route=v.components.find(c=>c.name==='fundingRouteOpen');
   const unpaid=market==='KR'&&Number.isFinite(funding?.krwUnpaidKRW)?funding.krwUnpaidKRW:0,routeRange=route?Math.max(0,(route.high??route.amount)-(route.low??route.amount)):0;
   return {low:v.equity.low,high:v.equity.high,version:VERSION,loss:{low:v.equity.low-(f?.low??0)-unpaid,high:v.equity.high-(f?.high??0)-unpaid-routeRange}};}
-module.exports={value,marketValue,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND,fundingSplit};
+module.exports={value,marketValue,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND,fundingSplit,splitContext};
