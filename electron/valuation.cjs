@@ -347,6 +347,9 @@ class InFlight {
     // M-1.6c2: what a buy settlement in this reading paid in U.S. cash that no piece took (spare), with the reported fall it
     // came with, for the zero-report rule, the C2 marks and the paired credit below.
     let spareCents=0,buyFall=0,buyMatched=false;const cashFall=movement<-0.005?-movement:0;
+    // M-1.6d (R5 seed 84): what KIS reported before this reading beyond the flagged buys in flight is buys it carries that
+    // are not in flight (resolved by its report, A3). A fall within that may be theirs, so it gives no paired credit.
+    const otherReported=Math.max(0,(st.observed?.buys??0)-live('Buy').filter(f=>REPORTED.includes(f.unresolved?.why)).reduce((n,f)=>n+(Number(f.usd)||0),0));
     for(const side of ['Buy','Sell']){const d=delta(side);if(!(d<-0.005))continue;let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
       let covered=InFlight.match(live(side).filter(f=>REPORTED.includes(f.unresolved?.why)),-d);
       // F-d3 (multi-order R5, the narrow rule): with r the reported fall the U.S. cash fall did not pay, a no-cash close
@@ -419,7 +422,7 @@ class InFlight {
       // R4: a reported buy fall with a U.S. cash fall in one reading, outside a zero, with no unique set: a credit only when
       // the two agree within the band, or the cash is the smaller and U.S. cash is exhausted after it (KIS took KRW for the
       // rest: the credit is the cash). Never above the open unresolved buys not already credited.
-      if(accepted&&!buyZero&&buyFall>0.005&&!buyMatched&&spareCents>0){const x=cashFall,cashAfter=Number(us.cash)||0;
+      if(accepted&&!buyZero&&buyFall>0.005&&!buyMatched&&spareCents>0&&buyFall>otherReported*(1+CREDIT_BAND)+0.01){const x=cashFall,cashAfter=Number(us.cash)||0;
         const agree=Math.abs(x-buyFall)<=CREDIT_BAND*buyFall,exhausted=x<buyFall&&cashAfter<=0.01;
         const room=Math.max(0,live('Buy').filter(f=>f.unresolved&&!settled.has(f)).reduce((n,f)=>n+cents(f.usd),0)-creditOf('Buy'));
         if(agree||exhausted){const c=Math.min(room,agree?Math.min(spareCents,cents(buyFall)):spareCents);
