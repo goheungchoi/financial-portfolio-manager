@@ -1,6 +1,8 @@
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');
 const {validateLoss,lossStatus}=require('./loss-policy.cjs');const {FundingLedger}=require('./funding-ledger.cjs');
 // The editable limits of a policy; everything else on it (the day's baseline and its identity) is the loss basis.
+// An order request refused before it left the app by the KIS request limit (M-1a, M-1.5a).
+const notSentError=e=>e?.message==='ORDER_NOT_SENT'||e?.message==='RATE_LIMITED'&&e?.notSent===true;
 const LIMIT_FIELDS=new Set(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','maxDailyLossKRW','lossLimit','anyStock']);
 class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
@@ -493,7 +495,9 @@ class LiveEngine {
       // new terms when confirmed, restored when KIS refuses the request.
       order={...order,pendingRevision:{at:Date.now(),from,cancel,...(cancel?{}:{price}),notional:order.notional},...(!cancel&&nextNotional>order.notional?{notional:nextNotional}:{})};this.save(order);
       let result;try{result=await this.broker.request('revise-order',{command:{originalOrderId:from,organization:order.currentOrganization??order.organization??'',symbol:order.symbol,side:order.side,quantity:remaining,price,cancel}});}
-      catch(error){if(error.message==='BROKER_REJECTED'){const {pendingRevision:p,...rest}=order;order={...rest,notional:p.notional??rest.notional};this.save(order);}throw error;}
+      // M-1.5a: a request the request limit refused before it left the app (ORDER_NOT_SENT, or the service's cooldown) was
+      // not sent: the order is restored as after a refusal, and its tracking goes on. It changes nothing at KIS.
+      catch(error){if(error.message==='BROKER_REJECTED'||notSentError(error)){const {pendingRevision:p,...rest}=order;order={...rest,notional:p.notional??rest.notional};this.save(order);}throw error;}
       {const {pendingRevision:_,...rest}=order;order=rest;}
       order={...order,brokerOrderIds:[...new Set([order.brokerOrderId,...(order.brokerOrderIds??[]),result.brokerOrderId])],currentBrokerOrderId:result.brokerOrderId,...(result.organization?{currentOrganization:result.organization}:{}),
         ...(cancel?{cancelRequestedAt:Date.now()}:{currentPrice:price,notional:nextNotional}),revisions:[...(order.revisions??[]),{at:Date.now(),from,to:result.brokerOrderId,...(cancel?{cancel:true}:{price})}]};

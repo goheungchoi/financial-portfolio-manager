@@ -322,7 +322,7 @@ class KisReadOnlyClient {
       if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
       if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??String(organization??''),at:new Date().toISOString()};
-    }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
+    }catch(error){throw orderError(error);}// M-1.5a: refused by the request-limit window before sending: ORDER_NOT_SENT
   }
 }
 module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS,orderError};

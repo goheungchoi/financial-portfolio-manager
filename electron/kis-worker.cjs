@@ -110,6 +110,7 @@ process.parentPort.on('message',async ({data})=>{
     // M-1a: an order request refused before it left the app (the request-limit window, including the sign-in that may
     // precede it) is not at KIS.
     // An expired or missing ticket (M-1c) keeps its own code: also not sent, for another reason than the request limit.
-    const code=['place-order','us-place-order'].includes(operation)&&error.notSent===true&&error.code!=='TICKET_EXPIRED'?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
+    // M-1.5a: revisions and cancellations too (a sign-in refused before the request included).
+    const code=['place-order','us-place-order','revise-order','us-revise-order'].includes(operation)&&error.notSent===true&&error.code!=='TICKET_EXPIRED'?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
   } finally {busy=false;}
 });
