@@ -191,7 +191,8 @@ class FundingTransfers {
         else this.put(account,key,{state:'us',orders:set.flatMap(r=>r.orders).sort(),usd:total,reportedKRW:dR,reportedAt:now,...extra});}
 }
     else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW)??oldestPrefix(groups,F,r=>r.reportedKRW)??this.splitBatch(account,groups,F);
-      if(set){event=true;const total=set.reduce((n,r)=>n+r.usd,0),paid=Math.max(0,-(cashMove+lateDebit)),Y=usd(Math.min(total,paid));
+      // One set of groups KIS settled in this reading, with the U.S. cash it took (shared by amount): returns the cash used.
+      const settle=(set,paid)=>{event=true;const total=set.reduce((n,r)=>n+r.usd,0),Y=usd(Math.min(total,paid));
         for(const r of set){const share=total>0?r.usd/total:0,y=usd(Y*share);
           if(r.state==='us'){const S=usd(r.usd-y);
             // The U.S. side settled: its obligation left, the cash it took left; what stays is the shortfall.
@@ -216,7 +217,17 @@ class FundingTransfers {
             else if(y>0.005){this.book(account,r.key,'reversal-out',{market:'US',amount:-y,day,at:now,after:window.US,note:'Transfer between markets reversed in part: KIS paid part of this U.S. buy in USD.'});
               this.put(account,r.key,{...r,state:'awaiting-reversal',paidUSD:y,fx,settledAt:now,window});meta.explainedUS-=y;}
             // All KRW: settled by KIS; the KRW stays deducted until the Korean cash fall is read (S3a-2).
-            else this.put(account,r.key,{...r,state:'awaiting-kr',settledAt:now});}}}}
+            else this.put(account,r.key,{...r,state:'awaiting-kr',settledAt:now});}}return Y;};
+      const paid0=Math.max(0,-(cashMove+lateDebit)),used=set?settle(set,paid0):0;
+      // M-1.6d T2 (the recorder's own zero): KIS's reported buys fell to a 0 it returned (its unsettled block present), in an
+      // accepted reading (the caller feeds only completed readings), from a positive total: every group still in a reported
+      // state has settled, whether or not a set matched the fall (equal amounts, reports it could not attribute). Each settles
+      // as above, with the reading's U.S. cash the matched set did not take. A K1 group moved to awaiting-kr this way is
+      // deducted in Korea from then on (F-d1) until its Korean cash fall is read, or it expires unmatched.
+      const unsettled=us.unsettled&&typeof us.unsettled==='object'&&!Array.isArray(us.unsettled)?us.unsettled:null;
+      if(unsettled&&typeof unsettled.buyKRW==='number'&&unsettled.buyKRW===0&&!us.settlementHeld&&!us.settlementProvisional&&prevR>0){
+        const rest=this.rows(account).filter(r=>REPORTED.has(r.state)).sort((a,b)=>(a.reportedAt??0)-(b.reportedAt??0));
+        if(rest.length){settle(rest,Math.max(0,paid0-used));for(const r of rest)this.put(account,r.key,{...this.rows(account).find(x=>x.key===r.key),zeroSettled:now});}}}
     // M4: every won KIS reports is a group's (U.S. obligation or Korean deduction) or provisional: the reported amount
     // no tracked buy explains (purchases outside the app, or a report the rule could not attribute).
     // KIS revalues the KRW it reports at each day's rate: with no buy reported or settled in this reading, a change within

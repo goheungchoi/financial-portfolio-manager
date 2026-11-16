@@ -197,6 +197,28 @@ else{
     w.to('2026-11-12T09:30:00');w.us(300,0,[a,b]);assert.deepEqual([w.row('b').state,w.row('b').via],['booked','usd'],'then the other');
     assert.deepEqual(w.flows().filter(id=>/^funding:/.test(id)),[],'no transfer: all USD');
   });
+  // M-1.6d T2 (the recorder's own zero): KIS's reported buys at a 0 it returned, from a positive total, in an accepted
+  // reading: every group still reported has settled, though no set matched the fall.
+  test('M-1.6d T2: a K1 group behind a report the recorder cannot attribute settles at KIS\'s zero, and its Korean fall then books it',()=>{
+    const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(0,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(0,134000,[a]);
+    // A further 50,000 KIS reports (a purchase outside the app): provisional. The fall of 184,000 matches no set of groups.
+    w.to('2026-11-10T09:30:00');w.us(0,184000,[a]);assert.equal(w.row('a').state,'krw');
+    w.to('2026-11-18T08:25:00');const cur=w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr','settled at the zero');assert.ok(w.row('a').zeroSettled);assert.equal(cur.krwSettledUnpaidKRW,134000,'deducted in Korea until its fall (F-d1)');
+    w.to('2026-11-18T08:26:00');w.kr(3000000-134000);assert.deepEqual([w.row('a').state,w.row('a').via],['booked','krw']);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0);
+    // Not without the block, nor from a 0 already there.
+    const v=lone();v.to('2026-11-09T23:00:00');v.us(0,0,[]);v.kr(3000000);const b=v.b('b',100);v.to('2026-11-09T23:41:00');v.us(0,0,[b],{open:['b'],openUSD:100});v.to('2026-11-10T09:00:00');v.us(0,134000,[b]);v.to('2026-11-10T09:30:00');v.us(0,184000,[b]);
+    v.to('2026-11-11T08:25:00');v.f.observeUS('A',{us:{cash:0},orders:[b],fx:FX,openOrderIds:new Set(),openBuysUSD:0});assert.equal(v.row('b').state,'krw','no block: no zero');
+  });
+  // T2 with the Korean fall first: read before the guard (less than one U.S. business day after the fill), it matched
+  // nothing; KIS's zero then moves the group to awaiting-kr, and Korea deducts its KRW again (a false loss, never a gain)
+  // until the first Korean reading on the next Korean business day, when the group expires unmatched.
+  test('M-1.6d T2, the Korean fall first: deducted twice until the group expires unmatched at the next Korean business day',()=>{
+    const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(0,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(0,134000,[a]);
+    w.to('2026-11-10T09:30:00');w.us(0,184000,[a]);w.to('2026-11-10T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'krw','before the guard: matched nothing');
+    w.to('2026-11-17T10:30:00');w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr');assert.equal(w.f.current('A').krwSettledUnpaidKRW,134000,'deducted again');
+    w.to('2026-11-10T15:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'awaiting-kr','the same Korean day');
+    w.to('2026-11-18T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'unmatched','expired at the reading of the next Korean business day');assert.match(w.row('a').reason,/within one Korean business day/);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0);
+  });
   test('S3a-3 (2): KIS still reporting the group at the age limit: its KRW becomes unattributed (provisional); the split and the values do not change',()=>{
     const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const o=k1(w,'o1',100,134000);w.us(0,134000,[o]);w.to('2026-11-11T08:25:00');w.kr(2866000);assert.equal(w.row('o1').state,'kr-paid');
     w.to('2026-11-12T12:00:00');const before=w.us(0,134000,[o]);assert.equal(w.row('o1').state,'kr-paid');assert.deepEqual([before.krwKRW,before.provisionalKRW],[134000,0]);
