@@ -146,12 +146,12 @@ test('a pending order defers routine reviews until it fills or is cancelled, wit
   const u=scheduler();u.set([]);u.a.lastRun=Date.now()-45*60000;u.tick();assert.deepEqual(u.reviews.map(r=>r.trigger),['Scheduled review'],'without a pending order the schedule is unchanged');
 });
 test('an order fill or cancellation starts a review at once with the order as evidence; first sightings do not',()=>{
-  const s=scheduler();s.set([s.order('Accepted')]);s.a.lastRun=Date.now()-5*60000;s.tick();assert.deepEqual(s.reviews,[],'first seen: recorded only');
+  const s=scheduler();s.a.config.orderUpdateReviews=true;s.set([s.order('Accepted')]);s.a.lastRun=Date.now()-5*60000;s.tick();assert.deepEqual(s.reviews,[],'first seen: recorded only');
   s.set([s.order('Filled',1)]);s.tick();assert.deepEqual(s.reviews.map(r=>r.trigger),['Order update']);
   assert.deepEqual(s.reviews[0].evidence,{kind:'order',orders:[{id:'nwwr',symbol:'NYSE:NWWR',market:'US',side:'Buy',quantity:1,filled:1,status:'Filled',fillPrice:62.79,placedAt:s.reviews[0].evidence.orders[0].placedAt}]});
   s.a.lastRun=Date.now()-60000;s.tick();assert.equal(s.reviews.length,1,'once per change');
-  const c=scheduler();c.a.lastRun=Date.now()-5*60000;c.set([c.order('Accepted')]);c.tick();c.a.busy=true;c.set([c.order('Canceled')]);c.tick();assert.equal(c.reviews.length,0,'waits while a review runs');c.a.busy=false;c.a.lastRun=Date.now()-60000;c.tick();assert.deepEqual(c.reviews.map(r=>r.trigger),['Order update'],'then runs');
-  const closed=scheduler();closed.set([closed.order('Accepted')]);closed.setOpen(false);closed.a.config.closedMarketReviews='pre-open';closed.tick();closed.set([closed.order('Canceled')]);closed.tick();assert.equal(closed.reviews.length,0,'markets closed: noted, not reviewed');
+  const c=scheduler();c.a.config.orderUpdateReviews=true;c.a.lastRun=Date.now()-5*60000;c.set([c.order('Accepted')]);c.tick();c.a.busy=true;c.set([c.order('Canceled')]);c.tick();assert.equal(c.reviews.length,0,'waits while a review runs');c.a.busy=false;c.a.lastRun=Date.now()-60000;c.tick();assert.deepEqual(c.reviews.map(r=>r.trigger),['Order update'],'then runs');
+  const closed=scheduler();closed.a.config.orderUpdateReviews=true;closed.set([closed.order('Accepted')]);closed.setOpen(false);closed.a.config.closedMarketReviews='pre-open';closed.tick();closed.set([closed.order('Canceled')]);closed.tick();assert.equal(closed.reviews.length,0,'markets closed: noted, not reviewed');
   closed.setOpen(true);closed.a.lastRun=Date.now()-60000;closed.tick();assert.deepEqual(closed.reviews.map(r=>r.trigger),['Order update'],'reviewed once a market is open');
 });
 test('the review is told how a pending order is followed',async()=>{
@@ -161,9 +161,32 @@ test('the review is told how a pending order is followed',async()=>{
 });
 // Review of 40d7666..7e2539f: the order-update review reached the model without the order (context assembly passed
 // trigger evidence only for price, news and agent triggers), and orders of a market outside the review delayed it.
+test('M-1b: with "Review after an order update" off (the default), a fill, cancellation or rejection starts no review; scheduled reviews still run',()=>{
+  for(const [status,filled] of [['Filled',1],['Partially filled',0.5],['Canceled',0],['Rejected',0]]){
+    const s=scheduler();assert.equal(s.a.config.orderUpdateReviews,false,'off by default');s.set([s.order('Accepted')]);s.a.lastRun=Date.now()-5*60000;s.tick();
+    s.set([s.order(status,filled)]);s.tick();assert.deepEqual(s.reviews,[],status+': no review of its own');assert.equal(s.a.orderQueue,null,status+': nothing queued');
+    // Switched on afterwards: an update noted while it was off starts nothing.
+    s.a.configure({orderUpdateReviews:true});s.a.lastRun=Date.now()-60000;s.tick();assert.deepEqual(s.reviews,[],status+': no review for an update from before');
+    s.a.configure({orderUpdateReviews:false});}
+  const s=scheduler();s.set([s.order('Accepted')]);s.a.lastRun=Date.now()-5*60000;s.tick();s.set([s.order('Filled',1)]);s.tick();
+  s.a.lastRun=Date.now()-31*60000;s.tick();assert.equal(s.reviews.length,1,'the schedule runs once nothing is pending');assert.notEqual(s.reviews[0].trigger,'Order update');
+  assert.throws(()=>s.a.configure({orderUpdateReviews:'on'}),/INVALID_SETTINGS/);
+});
+test('M-1b: the Journal line of a review waiting for a pending order says what starts the next one, with the switch off and on',()=>{
+  for(const on of [false,true]){const s=scheduler();s.a.config.orderUpdateReviews=on;const lines=[];const log=s.a.log.bind(s.a);s.a.log=(id,kind,title,body)=>{if(title==='Review waits for the pending order')lines.push(body);return log(id,kind,title,body);};
+    s.set([s.order('Accepted')]);s.a.reviewSessionKey=s.a.sessionKey();s.a.lastRun=Date.now()-45*60000;s.tick();assert.equal(lines.length,1);
+    const hm=new Date(s.a.lastRun+120*60000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'});
+    assert.equal(lines[0],`Buy 1 NYSE:NWWR is waiting at the broker (Accepted). The next review starts ${on?'when it fills, partly fills or is cancelled':'at the scheduled time once it has filled or been cancelled'}, on a price, news or agent trigger, when a market opens or closes, or at ${hm} KST at the latest.`);}
+});
+test('M-1b: the review is told truthfully what an order update does, with the switch off and on',async()=>{
+  const {automation}=harness();automation.live.orders=()=>[{id:'o',market:'KR',symbol:'005930',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:Date.now()}];
+  const note=async()=>(await automation.assembleReviewContext({watchScope:automation.watchScope(),trigger:'Scheduled review',setStage:()=>{}})).context.orderFollowUp.note;
+  const off=await note();assert.match(off,/^Routine reviews wait for a pending order up to 120 minutes and resume at their scheduled time once it has filled or been cancelled; a fill or cancellation does not start a review of its own \(price, news/);assert.doesNotMatch(off,/starts a review as soon as/);
+  automation.configure({orderUpdateReviews:true});assert.match(await note(),/^The app starts a review as soon as a pending order fills, partly fills or is cancelled, and otherwise routine reviews wait for it up to 120 minutes \(price, news/);
+});
 test('an order-update review gives the model the order: status, filled quantity and fill price (end to end)',async()=>{
   const {automation:a,supplied}=harness();const order=(status,filled)=>({id:'kr2',market:'KR',symbol:'005930',side:'Buy',quantity:2,filled,status,fillPrice:filled?217000:null,createdAt:Date.now()-60000});
-  let orders=[order('Accepted',0)];const realOrders=a.live.orders.bind(a.live);a.live.orders=()=>[...realOrders(),...orders];
+  a.config.orderUpdateReviews=true;let orders=[order('Accepted',0)];const realOrders=a.live.orders.bind(a.live);a.live.orders=()=>[...realOrders(),...orders];
   a.schedulerStatus=()=>({label:'Monitoring'});a.marketHours=()=>({open:true,markets:[{market:'KR',open:true}],preOpen:null,next:null});a.lastRun=Date.now()-5*60000;
   a.lastDeskCheck=0;a.tick();orders=[order('Filled',2)];a.lastDeskCheck=0;a.tick();
   for(let i=0;i<200&&!supplied.some(([op])=>op==='decision');i++)await new Promise(r=>setTimeout(r,10));
@@ -199,7 +222,7 @@ test('review: an order left from an earlier trading day no longer holds reviews 
 });
 test('review: every order update is queued and reaches the review together; a queue from another scope is dropped',async()=>{
   const {automation:a}=harness();const o=(id,symbol,status,filled=0)=>({id,market:'KR',symbol,side:'Buy',quantity:2,filled,status,fillPrice:filled?100:null,createdAt:Date.now()-60000});
-  let orders=[o('a','005930','Accepted'),o('b','000660','Accepted'),o('c','035420','Accepted')];a.live.orders=()=>orders;const reviews=[];a.review=async trigger=>{reviews.push({trigger,evidence:a.triggerEvidence});a.lastRun=Date.now();};
+  a.config.orderUpdateReviews=true;let orders=[o('a','005930','Accepted'),o('b','000660','Accepted'),o('c','035420','Accepted')];a.live.orders=()=>orders;const reviews=[];a.review=async trigger=>{reviews.push({trigger,evidence:a.triggerEvidence});a.lastRun=Date.now();};
   a.schedulerStatus=()=>({label:'Monitoring'});let open=true;a.marketHours=()=>({open,markets:[{market:'KR',open}],preOpen:null,next:null});a.reviewInterval.get=()=>({minutes:600});a.lastRun=Date.now()-5*60000;
   const tick=()=>{a.lastDeskCheck=0;a.tick();};tick();
   open=false;a.config={...a.config,closedMarketReviews:'pre-open'};orders=[o('a','005930','Filled',2),o('b','000660','Canceled'),o('c','035420','Accepted')];tick();orders=[o('a','005930','Filled',2),o('b','000660','Canceled'),o('c','035420','Rejected')];tick();

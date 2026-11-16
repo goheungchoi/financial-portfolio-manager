@@ -373,7 +373,7 @@ test('a review refused because another is running puts its trigger back',async()
 test('an order update whose review makes no decision goes back in the queue and is held, not retried every 30 seconds',async()=>{
   const base=fixture();const {a,tick,started}=scheduler([new Error('INCOMPLETE_BALANCE'),{...base,environment:'local-paper'}]);const scope='both:acct';
   const fill={id:'o1',symbol:'NASD:GOOGL',market:'US',side:'Sell',quantity:1,filled:1,status:'Filled',fillPrice:280,createdAt:Date.now()-60000};
-  a.orderEvents=()=>[];a.orderQueue={scope:'both',orders:new Map([['o1',fill]])};
+  a.config.orderUpdateReviews=true;a.orderEvents=()=>[];a.orderQueue={scope:'both',orders:new Map([['o1',fill]])};
   a.lastRun=Date.now()-120000;a.lastDeskCheck=0;a.tick();await new Promise(r=>setTimeout(r,40));assert.equal(started.at(-1),'Order update');assert.equal(a.lastError,'INCOMPLETE_BALANCE');
   assert.ok(a.orderQueue?.orders.has('o1'),'back in the queue');assert.ok(a.heldEvents(scope).has('order:o1|Filled|1'));
   const n=started.length;await tick();assert.equal(started.length,n,'held');
