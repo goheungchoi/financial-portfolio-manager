@@ -107,3 +107,17 @@ test('C3: KIS shows no sale proceeds pending and no sale reported, after either 
   const x=tracker(),o=batch(13,'Sell'),T=total(o);x.see({cash:1000,...U(0)});x.see({cash:1000,...U(0)},o);x.see({cash:1000,pendingSaleProceeds:T,...U(0)},o);
   const before=x.explained();x.see({cash:1000+T,...U(0)},o);assert.ok(x.explained()<=before,'a cash-free close is explained (never a detected flow)');
 });
+// A lone buy KIS reports after the app saw it is resolved by the report (A3) and carried by KIS's figure (the recorder's
+// route; loss-funding-e2e's F-d3 test). One reported before the app saw it is flagged and stays in flight: this rule.
+test('F-d3: a reported fall the U.S. cash fall did not pay closes with no cash only once U.S. cash is used up (USD first), or when its known KRW funding fell with it',()=>{
+  const o=[{id:'A',side:'Buy',filled:1,fillPrice:100}];const seen=(cash,unsettled=U(100*FX).unsettled)=>{const x=tracker();x.see({cash,...U(0)});x.see({cash,unsettled});const r=x.see({cash,unsettled},o);assert.equal(r.open[0].unresolved.why,'reported before seen');return x;};
+  // U.S. cash used up after (USD first): KRW paid it: closed (A4).
+  assert.equal(seen(0).see({cash:0,...U(0)},o).buysUSD,0,'U.S. cash used up');
+  // $50 left: KIS has not finished taking USD (a mixed debit to come), even though $50 cannot pay $100: it waits.
+  assert.equal(seen(50).see({cash:50,...U(0)},o).buysUSD,100,'U.S. cash left');
+  // U.S. cash $2,000 after: it could have; the buy waits for its payment, and the late debit closes it.
+  let x=seen(2000),r=x.see({cash:2000,...U(0)},o);assert.equal(r.buysUSD,100,'waits');assert.ok(x.events('flag').some(e=>e.why==='reported fall, unpaid'));
+  assert.equal(x.see({cash:1900,...U(0)},o).buysUSD,0,'the late debit closes it');
+  // The KRW part known to fund it (krwFundedKRW) falling with the report: paid in KRW, closed.
+  x=seen(2000,{buyKRW:100*FX,sellKRW:0,krwFundedKRW:100*FX});assert.equal(x.see({cash:2000,unsettled:{buyKRW:0,sellKRW:0,krwFundedKRW:0}},o).buysUSD,0,'its known KRW funding fell with it');
+});

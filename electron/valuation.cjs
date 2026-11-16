@@ -101,6 +101,9 @@ function unitedStates(u,{inFlight,now,funding=null,rate=null}){
   {const {unsettledKRW:total,confirmedKRW:known}=require('./integrated-settlement.cjs').settlement(u);const split=funding&&total>0&&rate>0?fundingSplit(funding,total,known,splitContext(u,inFlight,funding,rate)):null;
     if(split&&(split.usLowKRW>0||split.usHighKRW>0)){components.push(part('fundingRouteOpen',-split.usLowKRW/rate,'derived','U.S. buys KIS reports awaiting settlement whose KRW part it has not shown',{low:-split.usLowKRW/rate,high:-split.usHighKRW/rate,note:'assumed paid from U.S. cash or proceeds; KIS may take KRW'}));
       if(split.usLowKRW>0)reasons.push(`${funding.usOrders||1} U.S. buy${(funding.usOrders||1)>1?'s':''}: funding route not yet shown by KIS, so the value is an estimate`);}}
+  // F-d3: a U.S. buy whose report KIS dropped before taking U.S. cash or exchanging KRW is still owed (awaiting-krw): in
+  // the low and the high until KIS's debit or the Korean exchange is seen.
+  {const owed=Math.max(0,Number(funding?.usAwaitingUSD)||0);if(owed>0.005){components.push(part('fundingAwaiting',-owed,'derived','U.S. buys KIS settled before taking their payment: owed until its U.S. debit or KRW exchange is seen',{low:-owed,high:-owed}));reasons.push(`${owed.toFixed(2)} of U.S. buys settled by KIS awaits its payment (U.S. debit or KRW exchange)`);}}
   const pre=inFlight?.pretracking?.count??0;if(pre)reasons.push(`${pre} pre-tracking U.S. fill${pre>1?'s':''} awaiting verification: the value is provisional`);
   return finish('USD',u,components,reasons,{},now,{reportedTotal:u.reportedTotal});
 }
@@ -345,7 +348,22 @@ class InFlight {
     // came with, for the zero-report rule, the C2 marks and the paired credit below.
     let spareCents=0,buyFall=0,buyMatched=false;const cashFall=movement<-0.005?-movement:0;
     for(const side of ['Buy','Sell']){const d=delta(side);if(!(d<-0.005))continue;let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
-      const covered=InFlight.match(live(side).filter(f=>REPORTED.includes(f.unresolved?.why)),-d);
+      let covered=InFlight.match(live(side).filter(f=>REPORTED.includes(f.unresolved?.why)),-d);
+      // F-d3 (multi-order R5, the narrow rule): with r the reported fall the U.S. cash fall did not pay, a no-cash close
+      // (A4) needs r paid in KRW: U.S. cash used up after the reading (USD first: KIS takes U.S. cash before KRW). When
+      // U.S. cash could have paid r and did not fall, KIS may not have debited yet: the cash fall closes the set it
+      // uniquely fits, and the rest is marked and waits (a later cash fall, a KRW-route group, or age), as after a zero.
+      if(side==='Buy'&&covered.length){const D=-d,r=D-cashFall,cashAfter=Number(us.cash)||0;
+        // The KRW part known to fund the reported buys (krwFundedKRW, the funding tracker) falling with the report is that KRW
+        // paying: as much of r as it covers is paid. (Its last value is kept per account, lastKrwFunded.)
+        const knownFall=fx>0&&Number.isFinite(st.lastKrwFunded)?Math.max(0,st.lastKrwFunded-(Number(us.unsettled?.krwFundedKRW)||0))/fx:0;
+        // USD first: KIS takes U.S. cash before KRW, so KRW paid r only once U.S. cash is used up (at most $0.01 after): any
+        // U.S. cash left means KIS has not finished taking USD (a mixed debit to come), whether or not it could pay all of r.
+        if(r>Math.max(1,0.005*D)&&cashAfter>0.01&&r-knownFall>Math.max(1,0.005*D)){const fit=cashFall>0.005?InFlight.match(covered,cashFall):[],rest=covered.filter(f=>!fit.includes(f));
+          for(const f of rest)if(!f.zeroReported){f.zeroReported={at:now,why:'reported fall, unpaid'};}
+          if(rest.length)ledger.event(account,'flag',{pieces:rest.map(f=>f.pid),why:'reported fall, unpaid',unpaidUSD:Math.round(r*100)/100});
+          notes.push(`Buy: KIS's reported buys fell by $${D.toFixed(2)} with U.S. cash down $${cashFall.toFixed(2)} and still able to pay the rest: ${rest.length} fill(s) wait for their payment`);
+          if(!fit.length){movement+=paid;paid=0;}covered=fit;}}
       const one=paid?InFlight.match(live(side).filter(f=>f.unresolved?.why==='possibly one purchase'&&!covered.includes(f)),-paid):[];
       let left=-d/TOLERANCE;for(const e of st.evidence)if(e.pairable&&!e.pairedWith&&e.channel==='reported'&&e.side===side&&e.amount<=left){e.pairedWith='settled';left-=e.amount;}
       if(covered.length||one.length||paid){const v=record({channel:paid?'cash and reported':'reported',side,amount:-d,kind:'reported settlement'},covered);let oneLeft=cents(-paid);
@@ -520,7 +538,7 @@ class InFlight {
     // Orders whose last open piece closed in this reading: their funding commitment may release its filled part.
     for(const [orderId,why] of closedBy)if(!st.open.some(f=>String(f.id)===orderId))this.onSettled?.(account,{orderId,why});
     const newlyOverdue=[];
-    Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,lastPending:Number(us.pendingSaleProceeds)||0,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
+    Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,lastPending:Number(us.pendingSaleProceeds)||0,lastKrwFunded:Number(us.unsettled?.krwFundedKRW)||0,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
     // Orders no longer listed are forgotten, so the record stays bounded.
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
     save();return {...InFlight.totals(st),notes,newlyOverdue};

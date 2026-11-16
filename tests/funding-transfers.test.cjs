@@ -104,7 +104,8 @@ test('M2: no Korean fall at all gives no flow of any kind; a fall outside the ba
 test('M4: while KIS reports an amount, every won is a U.S. obligation, a Korean deduction or provisional; and M1 for these replays',()=>{
   for(const rs of [P2A(true),P2A(false),P2B,P2C,K2]){const w=run(rs),o=run(rs,{old:true});
     for(const [i,x] of w.out.entries()){if(x.total>0){const kr=x.used.committedKRW??0,us=x.split.usReportedKRW;assert.equal(Math.round(kr+us),Math.round(x.total),`reading ${i}`);}
-      assert.ok(Math.abs(x.low-o.out[i].low)<=2&&Math.abs(x.high-o.out[i].high)<=2,`combined at reading ${i}: ${x.low}/${x.high} against ${o.out[i].low}/${o.out[i].high}`);}}
+      // F-d3: a buy KIS settled before taking its payment (awaiting-krw) is still owed; the code before had it nowhere.
+      const owed=(x.split?.usAwaitingUSD??0)*rs[Math.min(i,rs.length-1)].fx;assert.ok(Math.abs(x.low-(o.out[i].low-owed))<=2&&Math.abs(x.high-(o.out[i].high-owed))<=2,`combined at reading ${i}: ${x.low}/${x.high} against ${o.out[i].low}/${o.out[i].high} less ${owed}`);}}
 });
 test('M4: a report the rule cannot attribute (one of two equal buys) is provisional, Korean; a report present at the first reading is attributed',()=>{
   assert.equal(uniqueSet([{v:50},{v:50}],50,x=>x.v),null,'two equal sets: none');
@@ -212,7 +213,7 @@ test('generated sequences (C1d-2b): no detected flow, explained = booked + obser
     const w=world(),o=world({old:true});const restartAt=1+Math.floor(rnd()*(rs.length-1));
     // F-d1: where KIS has settled a K1 group from Korea and the Korean fall is not yet read, the code before had a false
     // gain of that KRW; it is now deducted. Everywhere else the values are those of the code before (M1).
-    for(const [i,r] of rs.entries()){if(i===restartAt)w.restart();w.step(r);o.step(r);const a=w.out.at(-1),b=o.out.at(-1),d=new FundingTransfers(w.db).current(A).krwSettledUnpaidKRW??0;
+    for(const [i,r] of rs.entries()){if(i===restartAt)w.restart();w.step(r);o.step(r);const a=w.out.at(-1),b=o.out.at(-1),cur=new FundingTransfers(w.db).current(A),d=(cur.krwSettledUnpaidKRW??0)+(cur.usAwaitingUSD??0)*r.fx;
       assert.ok(Math.abs(a.low-(b.low-d))<=2&&Math.abs(a.high-(b.high-d))<=2,`kind ${kind} sequence ${k} reading ${i}: ${a.low}/${a.high} against ${b.low}/${b.high} less ${d}`);}
     // Then five days on, so a buy still waiting for KIS's report ages by the rule.
     for(const h of [3,8,30,120])w.step({...rs.at(-1),at:rs.at(-1).at+h*3600000});

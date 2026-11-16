@@ -57,11 +57,14 @@ test('T15: two $100 fills and one $100 movement: nothing applied, both unresolve
   // A new fill reflected at once is no exception: an open $100 fill makes the new one's $100 ambiguous too.
   x=tracker();x.see({cash:500});x.see({cash:500},[A]);assert.equal(x.see({cash:400},[A,B]).buysUSD,200);
 });
-test('T16: a split $330 resolves {230, 100} only when it is the unique fitting set',()=>{
+test('T16: a split $330 resolves only the part U.S. cash paid when U.S. cash could have paid the rest (F-d3); with several fitting sets, nothing',()=>{
   // Both were reported before tracking ($330 awaiting settlement at the first reading); then KIS settles them: the
   // reported total falls by $330 and U.S. cash by the USD-paid $100.
   let x=tracker();const K=buy('K',230),U=buy('U',100);const first=x.see({cash:500,unsettled:R(330)},[K,U]);assert.ok(first.open.every(f=>f.unresolved.why==='reported before seen'));
-  assert.equal(x.see({cash:400,unsettled:R(0)},[K,U]).buysUSD,0,'{230, 100} is the only set that fits $330');
+  // F-d3 (multi-order R5, the narrow rule): U.S. cash after ($400) could have paid the $230 the cash fall did not, so it is not taken
+  // as paid in KRW: the $100 fall closes U (the set it uniquely fits); K waits for its payment, at most until age.
+  const settled=x.see({cash:400,unsettled:R(0)},[K,U]);assert.equal(settled.buysUSD,230,'only U is paid');assert.deepEqual(settled.open.map(p=>p.id),['K']);
+  x.later(5*86400000);assert.equal(x.see({cash:400,unsettled:R(0)},[K,U]).buysUSD,0,'K by age');
   // With a third flagged $330 fill also open, {330} fits as well: nothing resolves.
   x=tracker();const T=buy('T',330);x.see({cash:500,unsettled:R(330)},[K,U,T]);const r=x.see({cash:400,unsettled:R(0)},[K,U,T]);assert.equal(r.buysUSD,660);
 });
