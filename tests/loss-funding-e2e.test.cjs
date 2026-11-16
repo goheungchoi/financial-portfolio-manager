@@ -30,12 +30,12 @@ function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=
     const raw={accountKey:A+':US',environment:'live',timestamp:ts,cash:r.us.cash,...(r.us.pending?{pendingSaleProceeds:r.us.pending}:{}),fx:{usdKRW:r.fx,timestamp:ts},holdings:r.us.holdings,unsettled:{buyKRW:r.us.buyKRW??0,sellKRW:0},raw:{}};
     const h=hold.accept(raw);if(!h.held&&!h.provisional){ft.annotate(raw,r.fx);used=raw;}
     const korea={accountKey:A,environment:'live',timestamp:ts,cash:r.kr.settled,settledCash:r.kr.settled,holdings:r.kr.holdings??[]};
-    if(!h.held){f.observe(A,{us:used,orders:r.orders,fx:r.fx});if(!h.provisional){const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD});}}
+    if(!h.held){f.observe(A,{us:used,orders:r.orders,fx:r.fx});if(!h.provisional){const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD,reportedOpenIds:require('../electron/valuation.cjs').reportedOpenIds(tr)});}}
     if(!lastKR||lastKR.settled!==r.kr.settled||r.krRead!==false){lastKR=r.kr;rec.observeKR(A,{korea,orders:[]});}
     const route=rec.current(A),tr=f.current(A);
     // The detector's Korean cash as main.cjs nets it: the KRW of K1 groups not yet seen leaving Korean cash (S3a-2), or
     // the shown KRW before it.
-    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-(tr.buysUSD??0)+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
+    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-Math.max(0,(tr.buysUSD??0)-require('../electron/valuation.cjs').coveredInFlight(tr,route,r.fx))+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
     const input={korea,us:used,fx:used.fx,inFlight:tr,funding:route,now:t},mv={KR:marketValue('KR',input),US:marketValue('US',input)};
     const row={at:t,note:r.note,loss:{KR:mv.KR.loss,US:mv.US.loss},value:{KR:{low:mv.KR.low,high:mv.KR.high},US:{low:mv.US.low,high:mv.US.high}},width:widths(value(input).markets.US,mv.US.loss),checks:[]};
     for(const b of bases)for(const m of b.markets){const e=engines[m];const {at,loss}=b;
@@ -228,11 +228,29 @@ if(!mode){
     const run=right('$100 + $150',two(100,150));assert.equal(run.out.find(r=>r.note==='both filled').width.inFlight,250,'both in flight together');assert.equal(run.out.find(r=>r.note==='report').width.inFlight,0,'the report settles both');
     right('$100 + $100',two(100,100));});
   test('condition C: two equal U.S. buys reported apart: nothing is settled on an ambiguous report, and the value stays right',()=>{
-    const run=right('equal buys reported apart',apart());assert.equal(run.out.find(r=>r.note==='first report').width.inFlight,200,'one report of $100 fits either buy: neither is settled');});
+    // M-1.6c1: the report's group covers one of the two (either: equal amounts), so the in-flight range is $100; neither
+    // piece is settled (both still in flight), and the value stays right (right()).
+    const run=right('equal buys reported apart',apart());assert.equal(run.out.find(r=>r.note==='first report').width.inFlight,100,'the report covers one of the two');
+    {const e=e2e(apart().slice(0,3)),st=JSON.parse(e.db.prepare('SELECT payload FROM inflight_settlement').get().payload);assert.equal((st[A]??st).open.length,2,'neither is settled');}});
   test('condition C: up to 8 U.S. buys filled and reported together: as for one buy',()=>{for(const n of [3,8])right(n+' fills',many(n));});
   // Known limit, found by these tests (m1/condition-c-report.md): with 9 or more U.S. buys filled and reported together,
   // the U.S. value shows a false gain of their total at the report reading, and with 13 or more (over InFlight's BOUND of
   // 12) a false loss after settlement until the age rule closes them. Kept as todo, so it is reported and not hidden; a
   // fix turns it into a plain test. Before several orders per review are activated.
   test('condition C (known limit): 9 and 13 U.S. buys filled and reported together',{todo:'9+ fills: false gain at the report (funding-transfers K1, 8 candidates); 13+: false loss until age (InFlight BOUND 12)'},()=>{for(const n of [9,13])right(n+' fills',many(n));});
+}
+
+// M-1.6c1 (Alt 3): 13 and 25 U.S. buys reported together, over InFlight's bound. From the report the batch is booked and
+// covers its in-flight pieces: each market's low and the combined low are right at the report reading, the KRW-paid
+// transfer pair is booked, and no detected flow appears. (Settlement over the bound is M-1.6c2.)
+if(!mode){
+  const batch=(n,cash)=>{const o=Array.from({length:n},(_,i)=>buy('B'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})),T=o.reduce((s,x)=>s+x.fillPrice,0),R=Math.round(T*FX);
+    return {T,R,steps:[at('2026-11-09T23:00:00','before',3000000,{cash,holdings:[]},[]),at('2026-11-09T23:45:00','filled',3000000,{cash,holdings:h},o),at('2026-11-10T09:00:00','report',3000000,{cash,holdings:h,buyKRW:R},o)]};};
+  test('M-1.6c1: 13 and 25 U.S. buys reported together, USD- and KRW-paid: right at the report, the pair booked once, no detected flow',()=>{
+    for(const n of [13,25])for(const cash of [2000,0]){const {T,R,steps}=batch(n,cash),run=e2e(steps),rep=run.out.find(r=>r.note==='report').value,label=`${n} buys, U.S. cash ${cash}`;
+      const usTrue=cash>0?cash:T,krTrue=cash>0?3000000:3000000-R;
+      assert.ok(Math.abs(rep.US.low-usTrue)<0.01,`${label}: the U.S. low ${rep.US.low} = ${usTrue}`);assert.ok(Math.abs(rep.KR.low-krTrue)<1,`${label}: the Korean low ${rep.KR.low} = ${krTrue}`);
+      assert.ok(Math.abs(rep.KR.low+rep.US.low*FX-(3000000+(cash>0?cash*FX:0)))<2,`${label}: the combined low counts the batch once`);
+      const flows=run.flows();assert.equal(flows.filter(f=>f.detected).length,0,label+': no detected flow');assert.equal(flows.filter(f=>f.transfer).length,cash>0?0:2,label+': the KRW-paid pair, once');}
+  });
 }

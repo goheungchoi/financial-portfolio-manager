@@ -215,7 +215,7 @@ test('an unsettled U.S. sale is not a withdrawal: the U.S. reading counts its pe
     return {flows:out,pending:d.pending('acct')};};
   const before=run(0);assert.equal(before.flows[0]?.amount,-268.47,'cash alone: the false withdrawal, reproduced');
   const now=run(0+267.63);assert.deepEqual(now.flows,[],'cash plus pending proceeds: nothing to record, through the sale and its settlement');assert.deepEqual(now.pending,[]);
-  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'&&!usSnapshot\.settlementProvisional\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-\(f\?\.buysUSD\?\?0\)\+\(f\?\.sellsUSD\?\?0\)-\(route\?\.usUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usCash:usSnapshot\?\.accountKey===s\.accountKey\+':US'&&!usSnapshot\.settlementProvisional\?\(f=>usSnapshot\.cash\+\(usSnapshot\.pendingSaleProceeds\?\?0\)-Math\.max\(0,\(f\?\.buysUSD\?\?0\)-require\('\.\/valuation\.cjs'\)\.coveredInFlight\(f,route,automation\.fx\?\.\(\)\?\.usdKRW\?\?null\)\)\+\(f\?\.sellsUSD\?\?0\)-\(route\?\.usUSD\?\?0\)\)\(inFlightOf\(s\.accountKey\)\):null/);// M-1.6c1: in-flight buys less those a reported group covers
 });
 // 1.5.46 added unsettled U.S. sale proceeds to U.S. cash without a new basis. A saved reading (cash alone) met the
 // first new one (cash plus unsettled sale proceeds), and two hours later the difference was recorded as a deposit and

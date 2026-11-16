@@ -84,7 +84,9 @@ class FundingTransfers {
       // F-d1: the KRW of K1 groups KIS has settled from Korea (its report no longer carries them) not yet seen leaving
       // Korean cash: the Korean value deducts it, as the loss value does through krwUnpaidKRW. A partial reversal leaves
       // only the reported KRW less the USD KIS took (at the rate of its settlement).
-      krwSettledUnpaidKRW:won(rows.reduce((n,r)=>n+(r.state==='awaiting-kr'?r.reportedKRW:r.state==='awaiting-reversal'?Math.max(0,r.reportedKRW-(r.paidUSD??0)*(r.fx??0)):0),0))};}
+      krwSettledUnpaidKRW:won(rows.reduce((n,r)=>n+(r.state==='awaiting-kr'?r.reportedKRW:r.state==='awaiting-reversal'?Math.max(0,r.reportedKRW-(r.paidUSD??0)*(r.fx??0)):0),0)),
+      // M-1.6c1: the groups KIS still reports, with their orders, for the valuation's coverage of in-flight pieces.
+      reportedGroups:rows.filter(r=>REPORTED.has(r.state)).map(r=>({orders:[...(r.orders??[])],reportedKRW:won(r.reportedKRW??0),state:r.state}))};}
   // S3a (G1, ruling R2): each leg carries the window in which its own market's figure moved: occurredAfter, the reading
   // before that move (after), and occurredBy, the reading that showed it (by, default at). The daily-loss checks place it
   // against their baseline by that window (PerformanceHistory.flowsSince). Where the reading before cannot be named
@@ -104,7 +106,9 @@ class FundingTransfers {
   // One U.S. reading (the reading the app uses; a held or provisional one never comes here: C1d-1, M7). us: the U.S.
   // balance; orders: the account's U.S. orders; openOrderIds: orders the settlement tracker still holds in flight.
   observeUS(account,input){return this.tx(()=>this.readUS(account,input));}
-  readUS(account,{us,orders=[],fx=null,openOrderIds=new Set(),openBuysUSD=0}){
+  // reportedOpenIds (M-1.6c1): of openOrderIds, the buys the settlement tracker flags as possibly in KIS's report; only the
+  // batch path may take them (a unique set never does, as before).
+  readUS(account,{us,orders=[],fx=null,openOrderIds=new Set(),openBuysUSD=0,reportedOpenIds=new Set()}){
     if(typeof account!=='string'||!account||!us)return this.current(account);
     const now=this.clock(),day=seoulDate(now),R=won(Math.max(0,(Number(us.unsettled?.buyKRW)||0)-(Number(us.unsettled?.sellKRW)||0))),cash=Number(us.cash)||0,pending=Number(us.pendingSaleProceeds)||0;
     // F3: only sales move U.S. cash plus pending at their fill (the proceeds); KIS takes a buy's cash at settlement, so a
@@ -133,11 +137,16 @@ class FundingTransfers {
     const cashMove=m?cash+pending-(m.cash??0)-(m.pending??0)-fillMove:0;
     const live=[...rows.values()];let event=false;
     if(dR>0){const cands=live.filter(r=>r.state==='filled'&&!r.orders.some(id=>openOrderIds.has(id)));
-      const unique=fx>0?uniqueSet(cands,dR,r=>r.usd*fx):null,batch=!unique&&fx>0?batchSet(cands,dR,r=>r.usd*fx):null,set=unique??batch;
+      // M-1.6c1 (Alt 3): a batch may also take buys still in flight that the tracker flags as possibly reported (over its
+      // bound it settles none of them); the valuation then counts their obligation once, through the group (coverage).
+      const batchCands=live.filter(r=>r.state==='filled'&&!r.orders.some(id=>openOrderIds.has(id)&&!reportedOpenIds.has(id)));
+      const unique=fx>0?uniqueSet(cands,dR,r=>r.usd*fx):null,batch=!unique&&fx>0?batchSet(batchCands,dR,r=>r.usd*fx):null,set=unique??batch;
+      // Their own USD is part of openBuysUSD; it is not another buy's claim on U.S. money.
+      const ownOpen=batch?batch.filter(r=>r.orders.some(id=>reportedOpenIds.has(id))).reduce((n,r)=>n+r.usd,0):0;
       // A batch keeps each order's USD and fill time (parts), so a settlement in parts can be split from it (M-1.6b).
       const extra=batch?{via:'batch',parts:batch.flatMap(r=>r.orders.map(id=>({id,usd:r.usd/r.orders.length,filledAt:r.filledAt??null})))}:{};
       if(set){event=true;const key=keyOf(set.flatMap(r=>r.orders)),total=usd(set.reduce((n,r)=>n+r.usd,0));for(const r of set)this.db.prepare('DELETE FROM funding_transfers WHERE account=? AND key=?').run(account,r.key);
-        const others=live.filter(r=>r.state==='us'&&!set.includes(r)).reduce((n,r)=>n+r.usd,0),money=cash+pending-(Number(openBuysUSD)||0)-others;
+        const others=live.filter(r=>r.state==='us'&&!set.includes(r)).reduce((n,r)=>n+r.usd,0),money=cash+pending-Math.max(0,(Number(openBuysUSD)||0)-ownOpen)-others;
         if(money<=0.005){// K1: nothing in U.S. money could pay it: all of it is KRW.
           // S3a-2: the group keeps its earliest fill time, for the guard on its Korean payment (readKR).
           const filled=set.map(r=>r.filledAt).filter(Number.isFinite);

@@ -91,7 +91,8 @@ function unitedStates(u,{inFlight,now,funding=null,rate=null}){
   // unreported one and a purchase raised equity, labelled exact. Coverage is the tracker's: a fill it matched to KIS
   // evidence is no longer open; one it could not tell apart (unresolved) stays in the low bound, where both obligations
   // count, and out of the high bound, where it may already be counted, and the value says so.
-  const buys=Math.max(0,inFlight?.buysUSD??0);
+  // M-1.6c1: less the pieces a reported group carries already (coverage, capped per group).
+  const buys=Math.max(0,(inFlight?.buysUSD??0)-coveredInFlight(inFlight,funding,rate));
   if(buys>0.005)components.push(part('inFlightBuys',-buys,'derived','U.S. buys the app saw fill that no KIS evidence covers yet (fill records)',{low:-buys,high:0,note:'paid from U.S. cash or proceeds at settlement, or already deducted'}));
   for(const [k,what] of [['buysUSD','buys'],['sellsUSD','sales']]){const u=inFlight?.unresolved?.[k]??0,o=inFlight?.overdue?.[k]??0;if(u>0.005)reasons.push(`$${u.toFixed(2)} of U.S. ${what} in flight may already be in KIS figures: unresolved, so the value is a range`);
     if(o>0.005)reasons.push(`$${o.toFixed(2)} of U.S. ${what} in flight from before the age rule; they close at the next reading`);}
@@ -120,10 +121,19 @@ function fundingSplit(f,total,known,ctx=null){const P=Math.max(0,f.provisionalKR
   const krHigh=Math.min(known,krLow);return {krLow,krHigh,usLowKRW:usLow,usHighKRW:known-krHigh};}
 // The split's U.S. side (M-1.6a): U.S. money that could pay a report (cash and pending proceeds, less the U.S. buys in
 // flight and the U.S. groups not yet shown) and the in-flight buys flagged as possibly reported. Both markets use it.
-function splitContext(us,inFlight,funding,rate){if(!(rate>0)||!us)return null;
-  const money=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0)-Math.max(0,inFlight?.buysUSD??0)-Math.max(0,funding?.usReportedKRW??0)/rate;
-  const reported=(inFlight?.open??[]).filter(p=>p.side==='Buy'&&REPORTED.includes(p.unresolved?.why)).reduce((n,p)=>n+(Number(p.usd)||0),0);
+function splitContext(us,inFlight,funding,rate){if(!(rate>0)||!us)return null;const grouped=groupedOrders(funding);
+  const money=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0)-Math.max(0,(inFlight?.buysUSD??0)-coveredInFlight(inFlight,funding,rate))-Math.max(0,funding?.usReportedKRW??0)/rate;
+  // M-1.6c1: a flagged piece a group covers is the group's, not part of the provisional amount.
+  const reported=(inFlight?.open??[]).filter(p=>p.side==='Buy'&&REPORTED.includes(p.unresolved?.why)&&!grouped.has(String(p.id))).reduce((n,p)=>n+(Number(p.usd)||0),0);
   return {rate,usMoneyUSD:money,reportedInFlightUSD:reported};}
+// M-1.6c1 (Alt 3): an in-flight U.S. buy piece whose order is in a group KIS still reports (funding-transfers current
+// reportedGroups) is covered by that group, which carries its obligation (the U.S. owing it, or the Korean KRW paying it):
+// the piece is not deducted again. Per group at most its reported KRW at the rate, so a piece of a buy KIS has not reported
+// yet (a batch booked with one small buy missing) stays deducted. InFlight itself is unchanged: no piece is closed.
+const groupedOrders=funding=>new Set((funding?.reportedGroups??[]).flatMap(g=>(g.orders??[]).map(String)));
+function coveredInFlight(inFlight,funding,rate){if(!(rate>0))return 0;const open=(inFlight?.open??[]).filter(p=>p.side==='Buy');let n=0;
+  for(const g of funding?.reportedGroups??[]){const ids=new Set((g.orders??[]).map(String));const s=open.filter(p=>ids.has(String(p.id))).reduce((t,p)=>t+(Number(p.usd)||0),0);n+=Math.min(s,Math.max(0,g.reportedKRW||0)/rate);}
+  return n;}
 function finish(currency,s,components,reasons,extra,now,broker){
   const t=at(s);const stale=t==null||now-t>STALE_MS;if(stale)reasons.push(t==null?'balance time unknown':`balance is ${Math.round((now-t)/60000)} minutes old`);
   const missing=components.filter(c=>!finite(c.low)||!finite(c.high));if(missing.length)reasons.push(`not a number: ${missing.map(c=>c.name).join(', ')}`);
@@ -496,4 +506,6 @@ function marketValue(market,{korea=null,us=null,fx=null,inFlight=null,funding=nu
   const f=v.components.find(c=>c.name==='usBuyFunding'),route=v.components.find(c=>c.name==='fundingRouteOpen');
   const unpaid=market==='KR'&&Number.isFinite(funding?.krwUnpaidKRW)?funding.krwUnpaidKRW:0,routeRange=route?Math.max(0,(route.high??route.amount)-(route.low??route.amount)):0;
   return {low:v.equity.low,high:v.equity.high,version:VERSION,loss:{low:v.equity.low-(f?.low??0)-unpaid,high:v.equity.high-(f?.high??0)-unpaid-routeRange}};}
-module.exports={value,marketValue,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND,fundingSplit,splitContext};
+// M-1.6c1: the in-flight buys flagged as possibly in KIS's report, by order (for the funding recorder's batch candidates).
+const reportedOpenIds=inFlight=>new Set((inFlight?.open??[]).filter(p=>p.side==='Buy'&&REPORTED.includes(p.unresolved?.why)).map(p=>String(p.id)));
+module.exports={value,marketValue,VERSION,STALE_MS,InFlight,MAX_DAYS,BOUND,fundingSplit,splitContext,coveredInFlight,reportedOpenIds};
