@@ -267,23 +267,24 @@ class KisReadOnlyClient {
     const price=amount(output?.stck_prpr),unit=amount(output?.aspr_unit);
     if(price<=0||unit<=0||command.limitPrice%unit!==0||output.temp_stop_yn!=='N')throw new KisError('INVALID_ORDER');
     if(Math.abs(command.limitPrice/price-1)>.02)throw new KisError('PRICE_MOVED');
-    const balance=await this.getBalance();let availableQuantity;
+    // capacity (M-1.5b): KIS's orderable answer for this order, numeric fields only, for broker_capacity (broker-raw.cjs).
+    const balance=await this.getBalance();let availableQuantity;let capacity=null;const numeric=require('./broker-raw.cjs').numericFields;
     if(command.credit) {
       // New margin loans and short sales: the broker's credit capacity. Repayments: the matching loan or short position.
       const {kind,type,loanDate}=command.credit;
       // APBK1617: the account has no KIS credit-trading agreement (신용계좌만 신용주문가능금액조회가 가능합니다).
-      if(['margin-buy','short'].includes(kind)){const body=await this.tradingQuery('inquire-credit-psamount','TTTC8909R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'00',CRDT_TYPE:type,CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});availableQuantity=amount(body.output?.max_buy_qty);}
+      if(['margin-buy','short'].includes(kind)){const body=await this.tradingQuery('inquire-credit-psamount','TTTC8909R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'00',CRDT_TYPE:type,CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});availableQuantity=amount(body.output?.max_buy_qty);capacity={tr:'TTTC8909R',fields:numeric(body.output)};}
       else if(kind==='margin-sell'){const loan=balance.holdings.find(row=>row.symbol===command.symbol)?.loans?.find(row=>row.loanDate===loanDate);availableQuantity=loan?loan.availableQuantity??loan.quantity:null;}
       else {const short=balance.shorts?.find(row=>row.symbol===command.symbol&&row.loanDate===loanDate);availableQuantity=short?short.availableQuantity??short.quantity:null;}
       if(availableQuantity==null||command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');
     } else if(command.side==='Buy') {
       const body=await this.tradingQuery('inquire-psbl-order',this.#credentials.environment==='live'?'TTTC8908R':'VTTC8908R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'01',CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});
-      const cash=amount(body.output?.nrcvb_buy_amt),quantity=amount(body.output?.nrcvb_buy_qty);
+      const cash=amount(body.output?.nrcvb_buy_amt),quantity=amount(body.output?.nrcvb_buy_qty);capacity={tr:'TTTC8908R',fields:numeric(body.output)};
       if(command.quantity>quantity || command.limitPrice*command.quantity*1.02>cash)throw new KisError('INSUFFICIENT_CAPACITY');availableQuantity=quantity;
-    } else {availableQuantity=balance.holdings.find(row=>row.symbol===command.symbol)?.availableQuantity;if(availableQuantity==null || command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');}
+    } else {{const held=balance.holdings.find(row=>row.symbol===command.symbol);capacity={tr:'balance',fields:{ord_psbl_qty:held?.availableQuantity,hldg_qty:held?.quantity}};}availableQuantity=balance.holdings.find(row=>row.symbol===command.symbol)?.availableQuantity;if(availableQuantity==null || command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');}
     const {orders}=await this.getActivity('orders',today,today);
     const open=require('./broker-open-orders.cjs').openGuard(orders,command,{severalOpen,fail:()=>new KisError('OPEN_BROKER_ORDERS')});
-    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open};
+    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{})};
   }
   // Credit order (order-credit): margin buy/repay and short sale/cover. Live accounts only; KIS does not support it on mock.
   async placeCreditOrder(command) {

@@ -28,4 +28,22 @@ class BrokerBalances {
   }
   list(account,market,limit=50){return this.db.prepare('SELECT at,payload FROM broker_balances WHERE account=? AND market=? ORDER BY id DESC LIMIT ?').all(account,market,limit).map(r=>({at:r.at,...JSON.parse(r.payload)}));}
 }
-module.exports={MEANINGS,numericFields,BrokerBalances,LIMITS};
+// M-1.5b (artifacts/reviews/2026-11-16-multi-order, Q1/Q2): KIS's orderable figures at each order preparation, kept with
+// the orders open at that moment, so the first live use can show whether KIS nets open orders: Korean buys
+// inquire-psbl-order (TTTC8908R; nrcvb_buy_amt, ord_psbl_cash...), Korean credit buys inquire-credit-psamount (TTTC8909R),
+// U.S. buys inquire-psamount (TTTS3007R), sales the holding's orderable quantity. Numeric fields only (numericFields);
+// no request is added. Same retention as the balances. Recording never stops an order: a failure is swallowed by the
+// caller.
+class BrokerCapacity {
+  constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS broker_capacity(id INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT NOT NULL,market TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
+  record({account,market,order,capacity,open}){if(typeof account!=='string'||!account||!['KR','US'].includes(market)||!capacity||typeof capacity!=='object')return false;
+    const payload={order:{symbol:String(order?.symbol??''),side:order?.side==='Sell'?'Sell':'Buy',quantity:Number(order?.quantity)||0,limitPrice:Number(order?.limitPrice)||0},
+      capacity:{tr:String(capacity.tr??'').slice(0,20),at:Number.isFinite(capacity.at)?capacity.at:null,fields:numericFields(capacity.fields)},
+      open:{app:(open?.app??[]).slice(0,50).map(o=>({id:String(o.id??''),symbol:String(o.symbol??''),side:o.side,quantity:Number(o.quantity)||0,filled:Number(o.filled)||0,status:String(o.status??''),price:Number(o.price)||0,brokerOrderId:o.brokerOrderId==null?null:String(o.brokerOrderId)})),
+        kis:(open?.kis??[]).slice(0,50).map(o=>({orderId:String(o.orderId??''),symbol:String(o.symbol??''),side:o.side,quantity:o.quantity==null?null:Number(o.quantity),remaining:Number(o.remaining)||0,price:o.price==null?null:Number(o.price)}))}};
+    const now=this.clock();this.db.prepare('INSERT INTO broker_capacity(account,market,at,payload) VALUES(?,?,?,?)').run(account,market,now,JSON.stringify(payload));
+    this.db.prepare('DELETE FROM broker_capacity WHERE at<?').run(now-LIMITS.days*86400000);
+    this.db.prepare('DELETE FROM broker_capacity WHERE id NOT IN (SELECT id FROM broker_capacity ORDER BY id DESC LIMIT ?)').run(LIMITS.rows);return true;}
+  list(account,market,limit=50){return this.db.prepare('SELECT at,payload FROM broker_capacity WHERE account=? AND market=? ORDER BY id DESC LIMIT ?').all(account,market,limit).map(r=>({at:r.at,...JSON.parse(r.payload)}));}
+}
+module.exports={MEANINGS,numericFields,BrokerBalances,BrokerCapacity,LIMITS};

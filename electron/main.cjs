@@ -437,6 +437,8 @@ app.whenReady().then(async () => {
   const flowDetector=new (require('./flow-detector.cjs').FlowDetector)(store.db,performance);flowDetector.onNote=(title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message);
   // The broker's own balance figures, kept when they change (electron/broker-raw.cjs), for reconciliation.
   const brokerBalances=new (require('./broker-raw.cjs').BrokerBalances)(store.db);
+  // M-1.5b: KIS's orderable answers at each order preparation, with the orders open then (for Q1/Q2).
+  const brokerCapacity=new (require('./broker-raw.cjs').BrokerCapacity)(store.db);for(const e of [live,usLive])if(e)e.recordCapacity=x=>brokerCapacity.record(x);
   // U.S. fills KIS does not reflect yet (electron/valuation.cjs InFlight), decided at each U.S. balance reading.
   const inFlight=new (require('./valuation.cjs').InFlight)(store.db);
   // C1d-2: the KRW part of each U.S. buy, booked once as a transfer where KIS's figures show it (funding-transfers.cjs).
