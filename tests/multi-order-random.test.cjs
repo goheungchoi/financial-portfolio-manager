@@ -29,14 +29,15 @@ const sum=l=>c2(l.reduce((s,x)=>s+x.fillPrice,0));
 // The plain profile: what daily batches look like. Part i (one U.S. trade date) fills on day i, KIS reports it the
 // next Korean morning and settles it the morning after (a debit below 0 held, then the exchange, for KRW or mixed
 // funding). Parts overlap in time: a later part may fill while an earlier one settles. No withdrawals, unequal amounts.
-function plainGenerate(seed,side){const r=rng(seed*2+(side==='Buy'?0:1)+1e6),pick=a=>a[Math.floor(r()*a.length)];
+function plainGenerate(seed,side,profile='plain'){const r=rng(seed*2+(side==='Buy'?0:1)+1e6),pick=a=>a[Math.floor(r()*a.length)];
   const n=1+Math.floor(r()*30),k=Math.min(n,1+Math.floor(r()*3)),day0=K('2026-11-09T23:40:00');
   const parts=Array.from({length:k},()=>[]);for(let i=0;i<n;i++)parts[i<k?i:Math.floor(r()*k)].push(i);
   const o=[];for(const [d,p] of parts.entries())for(const i of p)o.push({...order(side,(side==='Buy'?'B':'S')+i,c2(5+r()*55),day0+d*DAY+i*1000),part:d});
   const T=sum(o),fund=side==='Buy'?pick(['usd','krw','mixed']):'usd';let cash=side==='Sell'?1000:fund==='usd'?c2(T+300+r()*500):fund==='krw'?0:c2(Math.max(0.01,Math.min(T-0.01,r()*T)));
-  const cash0=cash,desc={seed,side,profile:'plain',independent:false,n,equal:false,fund,cash0,T,report:parts.map(p=>p.length),settle:parts.map(p=>p.length),zeroFirst:false,lateProceeds:false,heldDebit:true,exchangeLater:false,W:0,wAt:null};
+  const cash0=cash,desc={seed,side,profile,overlap:profile==='plain-overlap'?['before','same','after'][seed%3]:'after',independent:false,n,equal:false,fund,cash0,T,report:parts.map(p=>p.length),settle:parts.map(p=>p.length),zeroFirst:false,lateProceeds:false,heldDebit:true,exchangeLater:false,W:0,wAt:null};
   // Events: [time, kind, part]; fill at day d 23:40 (+ seconds), report at d+1 09:00, settle at d+2 08:24 (exchange 08:25).
-  const ev=[];for(let d=0;d<k;d++){ev.push([day0+d*DAY+60000,'fill',d],[K('2026-11-17T09:00:00')+d*DAY,'report',d],[K('2026-11-18T08:24:00')+d*DAY,'settle',d]);}ev.sort((a,b)=>a[0]-b[0]);
+  const overlap=profile==='plain-overlap'?['before','same','after'][seed%3]:'after',settleAt=d=>K('2026-11-11T08:24:00')+d*DAY,reportAt=d=>d===0?K('2026-11-10T09:00:00'):settleAt(d-1)+({before:-60000,same:0,after:60000})[overlap];
+  const ev=[];for(let d=0;d<k;d++){ev.push([day0+d*DAY+60000,'fill',d],[reportAt(d),'report',d],[settleAt(d),'settle',d]);}ev.sort((a,b)=>a[0]-b[0]||(a[1]==='settle'?-1:1));
   let kr=KR0,rep=0,pending=0,proceedsIn=0;const filled=new Set(),settled=new Set(),steps=[];
   const partSum=d=>sum(o.filter(x=>x.part===d)),seen=()=>o.filter(x=>filled.has(x.part));
   const usdStillOwed=()=>{let c=cash,owed=0;for(let d=0;d<k;d++){if(settled.has(d)||!filled.has(d))continue;const u=Math.min(Math.max(0,c),partSum(d));owed+=u;c-=u;}return owed;};
@@ -44,14 +45,15 @@ function plainGenerate(seed,side){const r=rng(seed*2+(side==='Buy'?0:1)+1e6),pic
   const push=(at,note)=>{const F=seen();const holdings=side==='Buy'?F.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})):o.filter(x=>!filled.has(x.part)).map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice}));
     steps.push({at,note,fx:FX,kr:{settled:kr,holdings:[]},us:{cash:c2(cash),holdings,...(pending>0.001?{pending:c2(pending)}:{}),buyKRW:side==='Buy'?Math.max(0,rep):0,sellKRW:side==='Sell'?Math.max(0,rep):0},orders:F.map(({part,...x})=>x),truth:truth()});};
   push(K('2026-11-09T23:00:00'),'before');
-  for(const [at,kind,d] of ev){const P=partSum(d);
-    if(kind==='fill'){filled.add(d);if(side==='Sell')pending=c2(pending+P);push(at,`fill ${d+1}`);}
-    else if(kind==='report'){rep+=Math.round(P*FX);push(at,`report ${d+1}`);}
-    else{rep-=Math.round(P*FX);if(rep<2)rep=0;if(side==='Sell'){pending=c2(pending-P);if(pending<0.005)pending=0;cash=c2(cash+P);proceedsIn=c2(proceedsIn+P);settled.add(d);push(at,`settle ${d+1}`);continue;}
-      const usd=Math.min(Math.max(0,cash),P),short=c2(P-usd);cash=c2(cash-P);settled.add(d);
-      if(short<=0.005){push(at,`debit ${d+1}`);continue;}push(at,`debit ${d+1} (held)`);cash=c2(cash+short);kr-=Math.round(short*FX);push(at+60000,`exchange ${d+1}`);}}
+  for(let i=0;i<ev.length;){const at=ev[i][0],batch=[];while(i<ev.length&&ev[i][0]===at)batch.push(ev[i++]);const notes=[];let exchange=0;
+    for(const [,kind,d] of batch){const P=partSum(d);
+      if(kind==='fill'){filled.add(d);if(side==='Sell')pending=c2(pending+P);notes.push(`fill ${d+1}`);}
+      else if(kind==='report'){rep+=Math.round(P*FX);notes.push(`report ${d+1}`);}
+      else{rep-=Math.round(P*FX);if(rep<2)rep=0;if(side==='Sell'){pending=c2(pending-P);if(pending<0.005)pending=0;cash=c2(cash+P);proceedsIn=c2(proceedsIn+P);settled.add(d);notes.push(`settle ${d+1}`);continue;}
+        const usd=Math.min(Math.max(0,cash),P),short=c2(P-usd);cash=c2(cash-P);settled.add(d);notes.push(short>0.005?`debit ${d+1} (held)`:`debit ${d+1}`);exchange+=short;}}
+    push(at,notes.join(' + '));if(exchange>0.005){cash=c2(cash+exchange);kr-=Math.round(exchange*FX);push(at+30000,'exchange');}}
   const settledAt=steps.length,end=steps.at(-1).at;push(end+DAY,'next day');push(end+9*DAY,'after age');return {desc,steps,settledAt};}
-function generate(seed,side,profile='mix'){if(profile==='plain')return plainGenerate(seed,side);const plain=false,r=rng(seed*2+(side==='Buy'?0:1)+(plain?1e6:0)),pick=a=>a[Math.floor(r()*a.length)];
+function generate(seed,side,profile='mix'){if(profile==='plain'||profile==='plain-overlap')return plainGenerate(seed,side,profile);const plain=false,r=rng(seed*2+(side==='Buy'?0:1)+(plain?1e6:0)),pick=a=>a[Math.floor(r()*a.length)];
   const n=1+Math.floor(r()*30),equal=!plain&&r()<0.25,A0=c2(10+r()*30);
   const o=Array.from({length:n},(_,i)=>order(side,(side==='Buy'?'B':'S')+i,equal?A0:c2(5+r()*55),K('2026-11-09T23:40:00')+i*1000)),T=sum(o);
   const fund=side==='Buy'?pick(['usd','krw','mixed']):'usd',reportParts=split(r,o,1+Math.floor(r()*3)),independent=!plain&&seed%5===0,settleParts=plain?reportParts:independent?split(r,o,1+Math.floor(r()*3)):split(r,reportParts,1+Math.floor(r()*3)).map(g=>g.flat());
