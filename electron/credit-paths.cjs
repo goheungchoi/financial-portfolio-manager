@@ -22,7 +22,9 @@ function lots(balance,symbol){
     margin:loans.map(l=>({loanDate:l.loanDate,quantity:l.quantity,available:l.availableQuantity??l.quantity,source:l.source??null})),
     short:(balance?.shorts??[]).filter(s=>s.symbol===symbol).map(s=>({loanDate:s.loanDate,quantity:s.quantity,available:s.availableQuantity??s.quantity,source:s.source??null}))};
 }
-const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled'];
+// M-1c: an order whose cancellation is not confirmed may still fill, so it keeps reserving its lot (as the funding
+// ledger, the flow detector and the engine already treat it).
+const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 const lotKey=(kind,loanDate)=>kind==='margin-sell'?'margin|'+loanDate:kind==='cover'?'short|'+loanDate:'cash';
 // What a closing order may still take from its lot: the lot's orderable quantity less the unfilled part of closing
 // orders already waiting on the same lot (orders: the engine's). Returns {lot, available, reserved} or throws:
