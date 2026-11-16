@@ -37,6 +37,19 @@ function uniqueSet(cands,target,amount){if(!(target>0)||!cands.length||cands.len
   for(let m=1;m<1<<cands.length;m++){let t=0;const s=[];for(let i=0;i<cands.length;i++)if(m&1<<i){t+=amount(cands[i]);s.push(cands[i]);}
     if(Math.abs(t-target)<=BAND*target){if(found)return null;found=s;}}
   return found;}
+// M-1.6b (multi-order design, c1 half 2): a batch, when uniqueSet gives up (more than MAX_SET candidates, or several sets
+// fit): KIS reports what filled since its last report, in the order trades occur. The whole candidate set when its total
+// fits the band; else the one prefix by fill time whose total fits; else none (the amount stays provisional and the
+// valuation's split places it). Only which orders belong is assumed (all, or the earliest); every amount booked stays
+// KIS's (the reported KRW) or the fills' (their USD).
+function batchSet(cands,target,amount){if(!(target>0)||!cands.length)return null;const fits=t=>Math.abs(t-target)<=BAND*target;
+  const sorted=[...cands].sort((a,b)=>(a.filledAt??Infinity)-(b.filledAt??Infinity)||String(a.key).localeCompare(String(b.key)));
+  if(fits(sorted.reduce((n,r)=>n+amount(r),0)))return sorted;
+  let t=0,found=null;for(let k=0;k<sorted.length-1;k++){t+=amount(sorted[k]);if(fits(t)){if(found)return null;found=sorted.slice(0,k+1);}}return found;}
+// A group's key: its order ids joined, as before, while a booking id built from it fits addFlow's fixed-id limit
+// (funding:<key>:reversal-out within 160 characters); a longer one (5 or more app orders) is a digest of them, so the
+// booking keeps a deterministic id and a repeat writes nothing twice.
+const keyOf=ids=>{const k=[...ids].sort().join('+');return k.length<=139?k:'g'+require('node:crypto').createHash('sha256').update(k).digest('hex').slice(0,32);};
 class FundingTransfers {
   // performance: PerformanceHistory (addFlow); clock; log(title, body): one System line (S3a-2: a group whose Korean
   // payment or exchange is never seen).
@@ -44,6 +57,16 @@ class FundingTransfers {
   // S3a-2: a group no evidence closed: the row keeps its reason, one System line says what and how much; no booking.
   unmatched(account,r,reason,now){this.put(account,r.key,{...r,state:'unmatched',expiredAt:now,reason});
     try{this.log?.('U.S. buy funding not matched',`${(r.orders??[]).join('+')}: ${reason}. KRW ${Math.round(r.reportedKRW??0).toLocaleString('en-US')} (U.S. $${usd(r.usd??0).toFixed(2)}); nothing was booked for it.`);}catch{}}
+  // M-1.6b: a batch group KIS settles in parts. When no unique set of groups matches a fall F, the one batch group with a
+  // prefix of its orders (by fill time) whose share of the group's reported KRW fits F within the band is split: the
+  // settled part takes F (KIS's figure), the rest keeps the group's remaining KRW and USD. Several fits, or none: no
+  // split (the fall settles nothing now, as before). Returns [the settled part] or null.
+  splitBatch(account,groups,F){let found=null;
+    for(const g of groups){if(g.via!=='batch'||!(g.parts?.length>1)||!(g.usd>0))continue;const parts=[...g.parts].sort((a,b)=>(a.filledAt??Infinity)-(b.filledAt??Infinity)||String(a.id).localeCompare(String(b.id)));
+      let u=0;for(let k=0;k<parts.length-1;k++){u+=parts[k].usd;if(Math.abs(g.reportedKRW*u/g.usd-F)<=BAND*F){if(found)return null;found={g,head:parts.slice(0,k+1),tail:parts.slice(k+1)};}}}
+    if(!found)return null;const {g,head,tail}=found,hu=usd(head.reduce((n,p)=>n+p.usd,0));
+    const a={...g,key:keyOf(head.map(p=>p.id)),orders:head.map(p=>p.id),usd:hu,reportedKRW:F,parts:head,splitFrom:g.key},b={...g,key:keyOf(tail.map(p=>p.id)),orders:tail.map(p=>p.id),usd:usd(g.usd-hu),reportedKRW:won(g.reportedKRW-F),parts:tail,splitFrom:g.key};
+    this.db.prepare('DELETE FROM funding_transfers WHERE account=? AND key=?').run(account,g.key);this.put(account,a.key,a);this.put(account,b.key,b);return [a];}
   rows(account){return this.db.prepare("SELECT key,payload FROM funding_transfers WHERE account=? AND key<>'#meta'").all(account).map(r=>({key:r.key,...JSON.parse(r.payload)}));}
   meta(account){const r=this.db.prepare("SELECT payload FROM funding_transfers WHERE account=? AND key='#meta'").get(account);return r?JSON.parse(r.payload):null;}
   put(account,key,v){const {key:_k,...rest}=v;this.db.prepare('INSERT INTO funding_transfers VALUES(?,?,?) ON CONFLICT(account,key) DO UPDATE SET payload=excluded.payload').run(account,key,JSON.stringify(rest));}
@@ -110,19 +133,21 @@ class FundingTransfers {
     const cashMove=m?cash+pending-(m.cash??0)-(m.pending??0)-fillMove:0;
     const live=[...rows.values()];let event=false;
     if(dR>0){const cands=live.filter(r=>r.state==='filled'&&!r.orders.some(id=>openOrderIds.has(id)));
-      const set=fx>0?uniqueSet(cands,dR,r=>r.usd*fx):null;
-      if(set){event=true;const key=set.flatMap(r=>r.orders).sort().join('+'),total=usd(set.reduce((n,r)=>n+r.usd,0));for(const r of set)this.db.prepare('DELETE FROM funding_transfers WHERE account=? AND key=?').run(account,r.key);
+      const unique=fx>0?uniqueSet(cands,dR,r=>r.usd*fx):null,batch=!unique&&fx>0?batchSet(cands,dR,r=>r.usd*fx):null,set=unique??batch;
+      // A batch keeps each order's USD and fill time (parts), so a settlement in parts can be split from it (M-1.6b).
+      const extra=batch?{via:'batch',parts:batch.flatMap(r=>r.orders.map(id=>({id,usd:r.usd/r.orders.length,filledAt:r.filledAt??null})))}:{};
+      if(set){event=true;const key=keyOf(set.flatMap(r=>r.orders)),total=usd(set.reduce((n,r)=>n+r.usd,0));for(const r of set)this.db.prepare('DELETE FROM funding_transfers WHERE account=? AND key=?').run(account,r.key);
         const others=live.filter(r=>r.state==='us'&&!set.includes(r)).reduce((n,r)=>n+r.usd,0),money=cash+pending-(Number(openBuysUSD)||0)-others;
         if(money<=0.005){// K1: nothing in U.S. money could pay it: all of it is KRW.
           // S3a-2: the group keeps its earliest fill time, for the guard on its Korean payment (readKR).
           const filled=set.map(r=>r.filledAt).filter(Number.isFinite);
-          this.put(account,key,{state:'krw',orders:key.split('+'),usd:total,reportedKRW:dR,reportedAt:now,via:'report',...(filled.length?{filledAt:Math.min(...filled)}:{})});
+          this.put(account,key,{state:'krw',orders:set.flatMap(r=>r.orders).sort(),usd:total,reportedKRW:dR,reportedAt:now,via:'report',...extra,...(filled.length?{filledAt:Math.min(...filled)}:{})});
           this.book(account,key,'out',{market:'KR',amount:-dR,day,at:now,after:window.KR,note:'Transfer between markets: KRW paying a U.S. buy (KIS reported it awaiting settlement; no U.S. cash could pay it).'});
           this.book(account,key,'in',{market:'US',amount:total,day,at:now,after:window.US,note:'Transfer between markets: into the U.S. account, paying a U.S. buy with KRW.'});
           meta.explainedKR-=dR;meta.explainedUS+=total;}
-        else this.put(account,key,{state:'us',orders:key.split('+'),usd:total,reportedKRW:dR,reportedAt:now});}
+        else this.put(account,key,{state:'us',orders:set.flatMap(r=>r.orders).sort(),usd:total,reportedKRW:dR,reportedAt:now,...extra});}
 }
-    else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW);
+    else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW)??this.splitBatch(account,groups,F);
       if(set){event=true;const total=set.reduce((n,r)=>n+r.usd,0),paid=Math.max(0,-cashMove),Y=usd(Math.min(total,paid));
         for(const r of set){const share=total>0?r.usd/total:0,y=usd(Y*share);
           if(r.state==='us'){const S=usd(r.usd-y);
