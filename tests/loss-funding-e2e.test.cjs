@@ -284,6 +284,17 @@ if(!mode){
       // The recorder books KIS's late debit by usd (no exchange is awaited for it, nothing is left unmatched).
       const groups=run.rec.rows(A).filter(r=>(r.orders??[]).length>0&&r.state!=='none');assert.ok(groups.length>0&&groups.every(r=>r.state==='booked'&&r.via==='usd'),`${label}: ${JSON.stringify(groups.map(r=>[r.state,r.via]))}`);}
   });
+  // F-d4: a withdrawal in the zero's own reading, smaller than what the batch owes: not KIS's debit, so it pays nothing;
+  // the debit a reading later closes the batch. Right at every reading, one detected flow (the withdrawal).
+  test('F-d4: the report at 0 with a smaller withdrawal in the same reading: it pays no buy; right throughout, one flow',()=>{
+    for(const n of [13,25])for(const W of [50,150]){const o=Array.from({length:n},(_,i)=>buy('B'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})),T=sum(o);
+      const s=[at('2026-11-09T23:00:00','before',3000000,{cash:2000,holdings:[]},[]),at('2026-11-09T23:45:00','filled',3000000,{cash:2000,holdings:h},o),at('2026-11-10T09:00:00','report',3000000,{cash:2000,holdings:h,buyKRW:Math.round(T*FX)},o),
+        at('2026-11-11T08:20:00','zero and withdrawal',3000000,{cash:2000-W,holdings:h,buyKRW:0},o),at('2026-11-11T08:24:00','debit',3000000,{cash:c2(2000-W-T),holdings:h,buyKRW:0},o),
+        at('2026-11-11T12:00:00','later',3000000,{cash:c2(2000-W-T),holdings:h,buyKRW:0},o),at('2026-11-27T12:00:00','after age',3000000,{cash:c2(2000-W-T),holdings:h,buyKRW:0},o)];
+      const run=e2e(s),label=`${n} buys, withdrawal ${W}`;
+      for(const r of run.out){const gone=['before','filled','report'].includes(r.note)?0:W,low=r.value.KR.low+r.value.US.low*FX;assert.ok(Math.abs(low-(3000000+(2000-gone)*FX))<=2,`${label} at ${r.note}: ${low}`);}
+      assert.deepEqual(run.flows().filter(f=>f.detected).map(f=>[f.market,f.amount]),[['US',-W]],label);}
+  });
   // D5 (the planner's addition): the zero at n with U.S. cash $100 untouched; at n + 1 KIS takes the $100 (cash to 0) and
   // exchanges the rest, in the same reading or the next.
   test('M-1.6c2 D5: the zero, then a mixed debit a reading later: right from then on, no detected flow, the exchange matched',()=>{

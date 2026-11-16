@@ -384,7 +384,11 @@ class InFlight {
       // Or smaller than it, with U.S. cash exhausted after it (USD ran out, KRW takes the rest: R4's second condition): it
       // pays oldest first, and what it does not cover stays marked for the KRW route.
       const fitsOwed=owed>0&&(Math.abs(fall-owed)<=Math.max(100,Math.round(owed*0.005))||fall>0&&fall<owed&&(Number(us.cash)||0)<=0.01);
-      let budget=spareCents+(buyZero||fitsOwed?fall:0);const startBudget=budget;
+      // F-d4: at the zero's own reading too, the cash pays the marked buys only if it is at least what they owe (the fee
+      // bound) or U.S. cash is exhausted after it. A smaller fall with cash left is not KIS's debit (a withdrawal, say):
+      // it pays nothing, and the buys wait for the debit. Left: a withdrawal at least as large as the batch in that reading.
+      const zeroPays=buyZero&&(spareCents+fall>=owed-Math.max(100,Math.round(Math.max(0,owed)*0.005))||(Number(us.cash)||0)<=0.01);
+      let budget=buyZero?(zeroPays?spareCents+fall:0):spareCents+(fitsOwed?fall:0);const startBudget=budget;
       for(const f of marked){const g=krwGroupOf(f.id);if(carried(g)){f.closeWhy='zero-report';f.zeroClose={group:g.key??null};settled.add(f);continue;}
         const c=cents(f.usd),cash=Math.min(c,budget),credit=Math.min(c-cash,creditOf('Buy'));
         // Not paid in full: the cash left takes part of it (exactly what U.S. cash paid), and the rest stays marked.
