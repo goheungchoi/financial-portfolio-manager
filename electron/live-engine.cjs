@@ -174,7 +174,12 @@ class LiveEngine {
       try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
       // credit-path check before the request: the order was not placed.
-      catch(error){if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
+      // M-1a: refused by the request limit before it left the app (ORDER_NOT_SENT from the worker, or the service's own
+      // cooldown, which never reaches the worker): nothing is at KIS. Recorded as not placed with when KIS may be asked
+      // again, its funds released (a rejection with no shares filled), and this market's trading stays on. A rate limit
+      // KIS returns for the order request itself is not this case: that request was sent, so it stays uncertain.
+      catch(error){if(error.message==='ORDER_NOT_SENT'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
+        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
       this.save(order);return order;
     }finally{this.busy=false;}
   }

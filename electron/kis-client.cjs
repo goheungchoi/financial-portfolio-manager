@@ -1,5 +1,11 @@
 const ORIGINS = { live:'https://openapi.koreainvestment.com:9443', mock:'https://openapivts.koreainvestment.com:29443' };
 class KisError extends Error { constructor(code) { super(code); this.code=code; } }
+// What a failed order request means (M-1a): KIS refused it, it never left the app (refused by the request-limit window
+// before it was sent: ORDER_NOT_SENT, with when to try again), or anything else, which may have reached KIS.
+// A rate limit KIS returns for the request itself stays uncertain: the request was sent.
+function orderError(error){if(error?.code==='BROKER_REJECTED')return new KisError('BROKER_REJECTED');
+  if(error?.notSent===true){const e=new KisError('ORDER_NOT_SENT');if(Number.isFinite(error.retryAt))e.retryAt=error.retryAt;return e;}
+  return new KisError('ORDER_UNCERTAIN');}
 function parseCredentials(text) {
   try {
     const value=JSON.parse(text);
@@ -59,7 +65,8 @@ class KisReadOnlyClient {
     const task=(this.httpQueue??Promise.resolve()).then(async()=>{
       for(let attempt=0;attempt<2;attempt++){
         const spacing=(this.#credentials.environment==='mock'?1500:650)-(Date.now()-(this.lastHttpAt??0));if(spacing>0)await this.wait(spacing);
-        if(Date.now()<(this.rateLimitedUntil??0)){const error=new KisError('RATE_LIMITED');error.retryAt=this.rateLimitedUntil;throw error;}
+        // notSent: refused here, before the request left the app (M-1a); an order request refused so is not at KIS.
+        if(Date.now()<(this.rateLimitedUntil??0)){const error=new KisError('RATE_LIMITED');error.retryAt=this.rateLimitedUntil;error.notSent=true;throw error;}
         this.lastHttpAt=Date.now();
         try{return await this.performRequest(path,options);}catch(error){if(error.code==='RATE_LIMITED'){this.throttleCount=(Date.now()-(this.lastThrottleAt??0)>600000?0:this.throttleCount??0)+1;this.lastThrottleAt=Date.now();this.rateLimitedUntil=Date.now()+Math.min(300000,60000*2**(this.throttleCount-1));error.retryAt=this.rateLimitedUntil;}if(options.method!=='GET'||attempt===1||!['NETWORK_UNAVAILABLE','REQUEST_TIMEOUT','SERVER_ERROR'].includes(error.code))throw error;await this.wait(1200);}
       }
@@ -290,7 +297,7 @@ class KisReadOnlyClient {
       if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
       if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
-    }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
+    }catch(error){throw orderError(error);}
   }
   // session.route picks the exchange (KRX or NXT) and order type (00 limit).
   async placeOrder(command,session=null) {
@@ -302,7 +309,7 @@ class KisReadOnlyClient {
       if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
       if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
-    }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
+    }catch(error){throw orderError(error);}
   }
   // Revises the price of an open order, or cancels it, for all its unfilled shares (order-rvsecncl). originalOrderId
   // and organization are the order's current number and KRX forwarding organization; a revision gets a new number.
@@ -318,4 +325,4 @@ class KisReadOnlyClient {
     }catch(error){throw new KisError(error.code==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN');}
   }
 }
-module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS};
+module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS,orderError};

@@ -107,7 +107,9 @@ process.parentPort.on('message',async ({data})=>{
     stream.setSymbols(streamSymbols());
     process.parentPort.postMessage({id,ok:true,snapshot});
   } catch(error) {
-    const allowed=['INVALID_CREDENTIAL_FILE','CREDIT_ACCOUNT_REQUIRED','INVALID_RESPONSE','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','INCOMPLETE_BALANCE','INCOMPLETE_HISTORY','INVALID_DATE_RANGE','FEATURE_UNAVAILABLE','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','ORDER_UNCERTAIN'];
-    const code=error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
+    const allowed=['INVALID_CREDENTIAL_FILE','CREDIT_ACCOUNT_REQUIRED','INVALID_RESPONSE','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','INCOMPLETE_BALANCE','INCOMPLETE_HISTORY','INVALID_DATE_RANGE','FEATURE_UNAVAILABLE','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','ORDER_UNCERTAIN','ORDER_NOT_SENT'];
+    // M-1a: an order request refused before it left the app (the request-limit window, including the sign-in that may
+    // precede it) is not at KIS.
+    const code=['place-order','us-place-order'].includes(operation)&&error.notSent===true?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
   } finally {busy=false;}
 });

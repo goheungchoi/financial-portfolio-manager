@@ -412,7 +412,8 @@ class Automation {
   orderEvents(){
     this.orderSeen??=new Map();const events=[];
     for(const o of this.scopedOrders()){if(!o?.id)continue;const key=`${o.status}|${o.filled??0}`;const prev=this.orderSeen.get(o.id);this.orderSeen.set(o.id,key);
-      if(prev!==undefined&&prev!==key&&ORDER_EVENTS.includes(o.status))events.push(o);}
+      // An order the request limit stopped before it was sent (M-1a) has its own review request, after KIS may be asked.
+      if(prev!==undefined&&prev!==key&&ORDER_EVENTS.includes(o.status)&&!(o.status==='Rejected'&&o.reason==='ORDER_NOT_SENT'))events.push(o);}
     return events;
   }
   // Orders waiting at the broker on their own trading day. One left from an earlier day has expired: KIS reports some
@@ -792,7 +793,12 @@ class Automation {
         if(autoEligible&&!slot){executionNote=`Guardrail: the daily limit of ${orderCap} automatic orders is reached. Proposal awaits manual approval.`;this.log(id,'System','Guardrail · order limit',executionNote);this.trip('order-limit',`Daily automatic order limit (${orderCap}) reached; later proposals need approval.`);}
         else if(autoEligible) {const statusOf=()=>{try{return context.environment==='local-paper'?null:execution.orders?.().find(r=>r.id===proposal.id)??null;}catch{return null;}};
           try{order=context.environment!=='local-paper'?await execution.autoSubmit(proposal.id):this.paper.submit(proposal.id);}catch(error){this.settleAutoSlot(slot,statusOf());throw error;}
-          this.settleAutoSlot(slot,context.environment==='local-paper'?{status:'Filled'}:statusOf()??order);this.log(id,'Tool','Order submission',JSON.stringify(order));}
+          this.settleAutoSlot(slot,context.environment==='local-paper'?{status:'Filled'}:statusOf()??order);this.log(id,'Tool','Order submission',JSON.stringify(order));
+          // M-1a: refused by KIS's request limit before it was sent: nothing is at KIS, trading stays on, and a review
+          // decides again once KIS may be asked (on fresh prices and checks), not before.
+          if(order?.status==='Rejected'&&order.reason==='ORDER_NOT_SENT'){const at=Number.isFinite(order.retryAt)?order.retryAt:Date.now()+60000;
+            executionNote=`Not sent: KIS's request limit was reached just before ${result.decision.action} ${result.decision.quantity} ${result.decision.symbol} went out, so nothing reached KIS. Trading stays on; a review decides again after ${new Date(at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST.`;
+            this.log(id,'System','Order not sent · request limit',executionNote);this.requestReview('Order not sent',`${result.decision.action} ${result.decision.symbol} was not sent (KIS request limit); decide again.`,result.decision.symbol,{notBefore:at});}}
         if(proposal?.reason)this.db.prepare('INSERT INTO lessons(id,text) VALUES(?,?)').run(randomUUID(),`Candidate lesson: avoid proposals blocked by ${proposal.reason}. Review freshness, reservations and configured limits before retrying.`);
         if(context.environment!=='local-paper'&&this.config.autoSubmit&&execution.autoEnabled===false){executionNote=(execution.market==='US'?'U.S.':'Korea')+' automatic execution is off. Proposal awaits manual approval.';this.log(id,'System','Approval required',executionNote);}}
 
@@ -1044,7 +1050,7 @@ class Automation {
       const unknown=c.results.filter(r=>r.error);if(strict&&unknown.length)return 'a cancel condition cannot be checked now: '+unknown.map(r=>`${r.expr} (${r.error})`).join(', ');}return null;}
   // A review the app asks for itself (an order that could not be priced); it starts when nothing else runs.
   // At most one per symbol every 15 minutes, so a book that stays unreadable cannot start a review a minute.
-  requestReview(trigger,reason,symbol=null){const now=Date.now();this.requested??=new Map();if(symbol&&now-(this.requested.get(symbol)??-Infinity)<15*60000)return false;if(symbol)this.requested.set(symbol,now);this.reviewRequested={trigger,reason,at:now};return true;}
+  requestReview(trigger,reason,symbol=null,{notBefore=null}={}){const now=Date.now();this.requested??=new Map();if(symbol&&now-(this.requested.get(symbol)??-Infinity)<15*60000)return false;if(symbol)this.requested.set(symbol,now);this.reviewRequested={trigger,reason,at:now,...(Number.isFinite(notBefore)?{notBefore}:{})};return true;}
   // An open app order as the agents see it: its price now and how it got there, its bounds, and whether the app still
   // moves it (not when you took it over in KIS, or while it is paused after an unclear reply).
   openOrderView(o){const tracked=this.config.orderTracking!==false&&!o.handsOff&&!o.trackingStopped&&!o.cancelRequestedAt;
@@ -1213,8 +1219,10 @@ class Automation {
     const BUSY='another order in progress';const busy=()=>{retire();if(order.waiting!==BUSY)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): another order for this market is being sent; checking again in 10 seconds.`);this.desk.update(order,{status:'armed',waiting:BUSY,nextCheckAt:Date.now()+10000});};
     // A passing refusal before anything reached KIS (rate limit, timeout, network, server): armed again for up to three
     // attempts a minute apart, each logged as not executed, then closed as rejected (temporary).
-    const retry=code=>{retire();const retries=(order.retries??0)+1;if(retries>3)return note('rejected',`Not sent: ${code} on three attempts in a row (temporary). Nothing reached the broker.`,{retries});
-      this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not executed, ${code} before anything reached the broker; trying again in a minute (attempt ${retries} of 3).`);this.desk.update(order,{status:'armed',waiting:`temporary refusal (${code})`,retries,nextCheckAt:Date.now()+60000});};
+    // at: when the broker may be asked again (a request-limit refusal's retryAt, M-1a); never sooner than a minute.
+    const retry=(code,at=null)=>{retire();const retries=(order.retries??0)+1;if(retries>3)return note('rejected',`Not sent: ${code} on three attempts in a row (temporary). Nothing reached the broker.`,{retries});
+      const next=Math.max(Date.now()+60000,Number.isFinite(at)?at:0),when=next-Date.now()>61000?`at ${new Date(next).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST`:'in a minute';
+      this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not executed, ${code} before anything reached the broker; trying again ${when} (attempt ${retries} of 3).`);this.desk.update(order,{status:'armed',waiting:`temporary refusal (${code})`,retries,nextCheckAt:next});};
     const closed=()=>this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
@@ -1282,6 +1290,8 @@ class Automation {
       const placed=await engine.autoSubmit(proposal.id);const sent=placed?.status??'Accepted';this.settleAutoSlot(slot,engine.orders?.().find(r=>r.id===proposal.id)??placed);slot=null;
       if(placed?.reason==='APPROVAL_REQUIRED')return waits('needs your approval (extended session or product rule)');
       if(sent==='Rejected'&&placed.reason==='SESSION_CLOSED')return closed();
+      // M-1a: KIS's request limit refused it before it was sent; armed again for when KIS may be asked.
+      if(sent==='Rejected'&&placed.reason==='ORDER_NOT_SENT')return retry('RATE_LIMITED',placed.retryAt);
       if(sent==='Rejected')return note('rejected',`The broker rejected it (${placed.reason??'BROKER_REJECTED'}${placed.brokerCode?`, KIS ${placed.brokerCode}`:''}). No order was placed.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,results:check.results});
       // A sale went out: the other armed cash sells of this symbol wait a minute, so the next one is judged on a balance read
       // after this fill. This narrows, not closes, the window where a fill is recorded before the balance shows it.
@@ -1304,7 +1314,7 @@ class Automation {
   // Settles an automatic-order slot from the engine's record of the order (1.5.48 audit, A6): released only when it shows
   // nothing was sent (still Ready, waiting for approval, or refused by the app before sending); otherwise used.
   settleAutoSlot(slot,record){if(!slot)return;const s=record?.status??null,reason=record?.reason??null;
-    const unsent=s==='Ready'||s==='Rejected'&&['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(reason)||reason==='APPROVAL_REQUIRED'&&s!=='Submitting';
+    const unsent=s==='Ready'||s==='Rejected'&&['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED','ORDER_NOT_SENT'].includes(reason)||reason==='APPROVAL_REQUIRED'&&s!=='Submitting';
     this.guardrails.settleSlot(slot,unsent?'released':'used',{status:s,...(reason?{reason}:{})});}
   // ATR(14) for a trailing stop's distance (T2): completed daily bars only, so a bar of the exchange's current day is left
   // out. {value, date of the last bar used} or null.
@@ -1691,7 +1701,7 @@ class Automation {
     // Open app orders follow the best bid or ask every 3 seconds while the app runs, auto trading on or not.
     if(this.config.orderTracking!==false&&this.config.scope!=='paper'&&!this.trackingOrders&&Date.now()-(this.lastTrack??0)>=3000){this.lastTrack=Date.now();this.trackingOrders=true;void this.trackOrders().catch(()=>{}).finally(()=>{this.trackingOrders=false;});}
     if(this.schedulerStatus().label!=='Monitoring')return;
-    if(this.reviewRequested&&!this.busy&&this.config.scope!=='paper'){const r=this.reviewRequested;this.reviewRequested=null;this.triggerEvidence={kind:'placement',reason:r.reason};this.log(randomUUID(),'System',r.trigger,r.reason);void this.review(r.trigger).catch(()=>{});return;}
+    if(this.reviewRequested&&!this.busy&&this.config.scope!=='paper'&&Date.now()>=(this.reviewRequested.notBefore??0)){const r=this.reviewRequested;this.reviewRequested=null;this.triggerEvidence={kind:'placement',reason:r.reason};this.log(randomUUID(),'System',r.trigger,r.reason);void this.review(r.trigger).catch(()=>{});return;}
     // Order updates are noted every 5 seconds, also while markets are closed, and start a review when one can run.
     // Each order keeps its latest update; the queue belongs to the scope it was noted in.
     if(deskDue&&this.config.scope!=='paper'){const events=this.orderEvents();if(events.length){if(this.orderQueue?.scope!==this.config.scope)this.orderQueue={scope:this.config.scope,orders:new Map()};for(const o of events)this.orderQueue.orders.set(o.id,o);}}

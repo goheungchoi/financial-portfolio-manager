@@ -232,6 +232,13 @@ test('an automatic submission follows what KIS replied: rejected, unclear, needs
   ({automation:a}=harness());engines(a,reply({status:'Rejected',reason:'SESSION_CLOSED'}));o=await fired(a,armOrder(a));assert.equal(o.status,'armed');assert.equal(o.waiting,'market closed');
   ({automation:a}=harness());a.configure({conditionalAutoSubmit:false});engines(a);o=await fired(a,armOrder(a));assert.equal(o.status,'proposed');assert.match(o.outcome,/^Not executed: proposal P1 .* awaits your approval\. Nothing is at the broker/);
 });
+test('M-1a: an order the request limit stopped before it was sent is armed again for when KIS may be asked, not closed as rejected',async()=>{
+  const at=Date.now()+180000;const {automation,events}=harness();const reply=r=>({kr:{autoSubmit:async function(id){return {id,...r};}}});
+  const a=engines(automation,reply({status:'Rejected',reason:'ORDER_NOT_SENT',retryAt:at}));const o=await fired(a,armOrder(a,{side:'Sell'}));
+  assert.equal(o.status,'armed');assert.equal(o.waiting,'temporary refusal (RATE_LIMITED)');assert.equal(o.retries,1);assert.ok(o.nextCheckAt>=at,'not before KIS may be asked');
+  assert.ok(events.some(e=>e.title==='Conditional order · waiting'&&/RATE_LIMITED before anything reached the broker; trying again at .* KST \(attempt 1 of 3\)/.test(e.body)));
+  assert.equal(a.guardrails.autoOrdersToday(),0,'its slot is released: it was never sent');
+});
 test('a temporary refusal before anything reached KIS is retried three times without leaving a second proposal',async()=>{
   const {automation,events}=harness();const a=engines(automation,{kr:{autoSubmit:async()=>{throw new Error('RATE_LIMITED');}}});const order=armOrder(a,{side:'Sell'});const scope=a.watchScope();
   for(let i=1;i<=3;i++){const o=await fired(a,a.desk.orders(scope)[0]);assert.equal(o.status,'armed',`attempt ${i}`);assert.equal(o.waiting,'temporary refusal (RATE_LIMITED)');assert.equal(o.retries,i);}

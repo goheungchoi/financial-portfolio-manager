@@ -24,7 +24,7 @@ class KisService {
   request(operation,payload) {
     this.queued=(this.queued??0)+1;
     const generation=this.generation;
-    const result=this.queue.then(()=>{if(generation!==this.generation)throw new Error('BROKER_UNAVAILABLE');if(Date.now()<(this.cooldownUntil??0)){const error=new Error('RATE_LIMITED');error.retryAt=this.cooldownUntil;throw error;}return this.send(operation,payload);});
+    const result=this.queue.then(()=>{if(generation!==this.generation)throw new Error('BROKER_UNAVAILABLE');if(Date.now()<(this.cooldownUntil??0)){const error=new Error('RATE_LIMITED');error.retryAt=this.cooldownUntil;error.notSent=true;throw error;}return this.send(operation,payload);});
     this.queue=result.catch(()=>{});return result.finally(()=>{this.queued--;});
   }
   get isBusy(){return (this.queued??0)>0;}
