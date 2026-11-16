@@ -99,13 +99,14 @@ class LiveEngine {
     const notional=command.quantity*command.limitPrice;if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)throw new Error('ORDER_SIZE_LIMIT');
     const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(command.symbol)??null}):null;
     // Leveraged and inverse products need their own opt-in and cap; without automatic mode they wait for manual approval.
-    const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:this.exposureBase(balance,{buy:command.side==='Buy'&&credit?.kind!=='cover'})+this.integratedFunding(balance),holdings:balance.holdings}):null;
+    const pending=this.pendingOrders(null,null);// M-1.4: the app's open orders (none with the switch off)
+    const gate=this.exposure?this.exposure.check({account:this.identity(),symbol:command.symbol,side:command.side,notional,equity:this.exposureBase(balance,{buy:command.side==='Buy'&&credit?.kind!=='cover'})+this.integratedFunding(balance),holdings:balance.holdings,pending}):null;
     // Stage 3 (audit 2026-11-04): a credit path whose broker fields are not confirmed cannot be proposed at all (the app
     // records the idea as a draft instead), and a closing order is limited to what remains in its own lot after closing
     // orders already waiting on it, so it can never flip the position (electron/credit-paths.cjs).
     const CP=require('./credit-paths.cjs');const path=CP.pathStatus(credit?.kind,{approved:this.creditApproved?.()===true});if(!path.executable)throw Object.assign(new Error('CREDIT_PATH_UNVERIFIED'),{detail:path.reason});
     CP.check(balance,{symbol:command.symbol,side:command.side,quantity:command.quantity,credit},this.orders());
-    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null});}
+    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null,pending});}
     // A short cover reduces exposure: the product approval of a buy does not apply to it (1.5.48 review, R2).
     const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
     const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
@@ -127,12 +128,15 @@ class LiveEngine {
       if(this.severalOpen){const stop=this.openBlock(order);if(stop)throw Object.assign(new Error('RECONCILIATION_REQUIRED'),{detail:stop});}
       else if(this.orders().some(row=>['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'].includes(row.status)) || this.db.prepare("SELECT id FROM live_intents WHERE json_extract(payload,'$.status') IN ('Uncertain','Submitting') LIMIT 1").get())throw new Error('RECONCILIATION_REQUIRED');
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
-      const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
+      const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled',...(this.severalOpen?['Cancellation uncertain']:[])].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
       const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})},...(this.severalOpen?{severalOpen:true}:{})});
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
+      // M-1.4: the other open orders (the app's, and yours in KIS from this preparation) every limit counts with this one;
+      // none with the switch off.
+      const pending=this.pendingOrders(order,prepared);
       // Percentage limits use one base: the account value plus the KRW that funds U.S. buys through integrated margin (the
       // U.S. account alone may hold nothing, which would otherwise block every buy or skip the leveraged-product check).
       const accountBase=this.exposureBase(prepared.balance,{buy:order.side==='Buy'&&order.credit?.kind!=='cover'})+this.integratedFunding(prepared.balance);
@@ -140,7 +144,8 @@ class LiveEngine {
       // capped at a smaller share of equity. Nothing has been sent to KIS yet, so the order simply stays Ready.
       if(prepared.session&&!prepared.session.regular){
         if(prepared.session.approval&&automatic)throw new Error('EXTENDED_APPROVAL_REQUIRED');
-        const pct=this.extendedMaxOrderPct?.()??5;if(order.notional>accountBase*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
+        // D6: summed across the app's open extended-session orders (yours in KIS carry no session the app can read).
+        const pct=this.extendedMaxOrderPct?.()??5;if(order.notional+pending.filter(o=>o.extended).reduce((n,o)=>n+o.notional,0)>accountBase*pct/100)throw new Error('EXTENDED_SIZE_LIMIT');
         order={...order,session:prepared.session.id};}
       // S3a (G2): this reading passes through the settlement hold once (acceptReading, U.S.); a held or provisional one sets
       // no risk balance, baseline or peak. The order's own checks keep the reading as read: in a settlement debit it shows
@@ -148,12 +153,15 @@ class LiveEngine {
       this.observeBalance(this.acceptReading?this.acceptReading(prepared.balance):prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
-      if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
+      if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate,pending});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
       // The product and credit rules as they are now (1.5.48 review, R2): an approval they require now holds an automatic
       // submission, whatever the proposal recorded. Checked here and again after the funds are admitted.
-      const approvalNow=()=>this.approvalNow(order,prepared.balance,accountBase);
+      const approvalNow=()=>this.approvalNow(order,prepared.balance,accountBase,pending);
       if(automatic){const why=approvalNow();if(why)this.holdForApproval(order,why);}else approvalNow();
-      if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+order.quantity)*order.limitPrice/accountBase*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
+      // Company share: held, plus the unfilled shares of the stock's other open buys (the balance was read after the app's
+      // last fill count, so a fill not yet counted is in both: over, never under), plus this order.
+      const sameOpen=pending.filter(o=>o.side==='Buy'&&o.credit!=='cover'&&require('./broker-open-orders.cjs').sameStock(o.symbol,order.symbol)).reduce((n,o)=>n+o.quantity,0);
+      if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+sameOpen+order.quantity)*order.limitPrice/accountBase*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
       if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
       if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(order.symbol)??null})};}
       // A margin buy is funded by the loan; the broker's credit capacity was checked when preparing the order.
@@ -162,7 +170,9 @@ class LiveEngine {
       if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
       // Both markets' buys share one funding ledger: checked under its lock against fresh balances, and reserved
       // durably before anything is sent. Sales are never held back here.
-      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy')await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment});
+      // Your own open buys at KIS in this market must fit beside it (at this order's fee factor); the app's are in the ledger.
+      const yoursCost=pending.filter(o=>o.yours&&o.side==='Buy').reduce((n,o)=>n+o.notional,0)*FundingLedger.feeFactor(order);
+      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy')await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,...(yoursCost>0?{alsoOpen:yoursCost}:{})});
       // Rechecked immediately before sending, with no wait until the order is marked Submitting: trading may have been
       // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
       // been sent, so the reservation is released.
@@ -217,14 +227,27 @@ class LiveEngine {
     const key=n=>String(n).replace(/^0+(?=\d)/,'');
     for(const o of all??[])for(const n of [o.brokerOrderId,o.currentBrokerOrderId,...(o.brokerOrderIds??[])])if(n!=null)ours.add(key(n));
     return (prepared?.openOrders??[]).filter(o=>!ours.has(key(o.orderId)));}
+  // M-1.4 (several orders open): the open orders a new order or a revision is counted with, [] with the switch off.
+  // - the app's: this account's orders that are being sent, open, unclear or cancelling (not the order itself), with
+  //   their unfilled shares (quantity) and all their shares (fullQuantity), at the highest price they may carry
+  //   (limit, confirmed revision, or one sent but not confirmed), and whether they are in an extended session;
+  // - yours in KIS (othersOpen of a preparation): their full ordered shares at their listed price (0 when KIS lists none).
+  pendingOrders(order,prepared){if(!this.severalOpen)return [];
+    const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'],px=o=>Math.max(o.limitPrice??0,o.currentPrice??0,o.pendingRevision?.price??0,o.unconfirmed?.price??0);
+    const app=this.orders().filter(o=>o.id!==order?.id&&OPEN.includes(o.status)).map(o=>{const left=Math.max(0,(o.quantity??0)-(o.filled??0));
+      return {symbol:o.symbol,side:o.side,credit:o.credit?.kind??null,quantity:left,fullQuantity:o.quantity??0,price:px(o),notional:left*px(o),extended:Boolean(o.session&&!/regular/.test(o.session))};});
+    // F2 (M-1.4 review): yours count at their full ordered quantity. The Korean preparation reads the balance before the
+    // order history, so a fill of yours between the two reads is in neither; the ordered quantity covers it.
+    const yours=this.othersOpen(prepared).map(o=>{const q=Number.isFinite(o.quantity)&&o.quantity>=o.remaining?o.quantity:o.remaining;return {symbol:o.symbol,side:o.side,credit:null,quantity:q,fullQuantity:q,price:o.price??0,notional:q*(o.price??0),extended:false,yours:true};});
+    return [...app,...yours];}
   // Why the current product and credit rules require your approval for an order, or null; their refusals throw.
   // Protective orders (sales, repayments, short covers) never need it (1.5.48 review, R2). Synchronous.
-  approvalNow(order,balance,base){const why=[];let product=null;
-    if(this.exposure&&order.credit?.kind!=='cover'){const g=this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:base,holdings:balance.holdings});
+  approvalNow(order,balance,base,pending=[]){const why=[];let product=null;
+    if(this.exposure&&order.credit?.kind!=='cover'){const g=this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:base,holdings:balance.holdings,pending});
       if(g.requiresApproval){product=g.product??null;why.push(g.product?.kind==='unclassified'?'the security master cannot classify this product now':`the ${g.product?.kind??'product'} rule requires your approval now`);}}
     if(order.credit&&['margin-buy','short'].includes(order.credit.kind)){const CP=require('./credit-paths.cjs');
       if(!CP.pathStatus(order.credit.kind,{approved:this.creditApproved?.()===true}).automatic)why.push('this credit path requires your approval');
-      else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
+      else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null,pending});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
     return why.length?{why:why.join('; '),product}:null;}
   // Why the daily-loss check holds an automatic order that opens exposure now, or null (1.5.48 review rounds 2-3): the
   // check unavailable (including a pending day), unreadable, or the day restricted after a late basis. Orders that close
@@ -488,15 +511,19 @@ class LiveEngine {
     // A raise is new exposure: held while the daily loss cannot be checked or the day's basis was taken late (1.5.48
     // review round 2). These restrict automatic buys whatever the loss-limit response; a known breach is automation's.
     {const stop=this.lossRestriction({side:'Buy',credit:order.credit});if(stop)return stop;}
-    const turnover=this.orders().filter(row=>row.id!==order.id&&row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
+    const turnover=this.orders().filter(row=>row.id!==order.id&&row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled',...(this.severalOpen?['Cancellation uncertain']:[])].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
     if(policy.maxDailyTurnoverKRW!=null&&turnover+notional>policy.maxDailyTurnoverKRW)return 'DAILY_TURNOVER_LIMIT';
     const current=this.getConnection().snapshot,balance=this.riskBalance?.accountKey===current?.accountKey?this.riskBalance:current;if(!balance)return 'KIS_NOT_CONNECTED';
     let base;try{base=this.exposureBase(balance,{buy:true})+this.integratedFunding(balance);}catch(error){return error.message;}
     const held=balance.holdings?.find(row=>row.symbol===order.symbol)?.quantity??0;
-    if(policy.maxCompanyPct!=null&&!(base>0&&(held+remaining)*price/base*100<=policy.maxCompanyPct))return 'CONCENTRATION_LIMIT';
+    // D5 (several orders open): the held balance may be older than the app's fill counts, so the stock's other open buys
+    // count at their full quantity, never their remainder: a fill newer than the balance can only overstate.
+    const pending=this.pendingOrders(order,null),others=pending.filter(o=>o.side==='Buy'&&o.credit!=='cover'&&require('./broker-open-orders.cjs').sameStock(o.symbol,order.symbol)).reduce((n,o)=>n+o.fullQuantity,0);
+    if(policy.maxCompanyPct!=null&&!(base>0&&(held+others+remaining)*price/base*100<=policy.maxCompanyPct))return 'CONCENTRATION_LIMIT';
     // Revisions are made by automatic tracking only: a product rule that requires your approval now holds the raise
     // (1.5.48 review, R2); lower prices, sale revisions and cancellations never come here.
-    if(this.exposure)try{if(this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings}).requiresApproval)return 'APPROVAL_REQUIRED';}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
+    // F1 (M-1.4 review): the leveraged cap of a raise counts the other open buys at their full quantity too (D5's reason).
+    if(this.exposure)try{if(this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings,pending:pending.map(o=>({...o,notional:o.fullQuantity*o.price}))}).requiresApproval)return 'APPROVAL_REQUIRED';}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
     return null;}
   async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);
     // Automatic U.S. buys can draw on the KRW pool through integrated margin: blocked unless a separate-pool regime is

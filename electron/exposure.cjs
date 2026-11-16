@@ -68,7 +68,9 @@ class Exposure {
     return {equity,positions:special,leveragedValue:sum(rows.filter(r=>r.kind!=='standard')),leveragedPct:equity>0?sum(rows.filter(r=>r.kind!=='standard'))/equity*100:null,effectiveExposure:rows.reduce((n,r)=>n+(r.short?-Math.abs(r.value):r.effective),0),effectivePct:equity>0?rows.reduce((n,r)=>n+(r.short?-Math.abs(r.value):r.effective),0)/equity*100:null};
   }
   // Checks an order against the policy. Returns {product, requiresApproval} or throws a policy error code.
-  check({account,symbol,side,notional,equity,holdings,name=null}){
+  // pending (M-1.4, several orders open): open orders not yet in the holdings, [{symbol, side, notional, credit}]; their
+  // buys of leveraged or inverse products count toward the leveraged cap with this order. Empty: as before.
+  check({account,symbol,side,notional,equity,holdings,name=null,pending=[]}){
     const policy=this.policy(account),product=this.classify(symbol,name);
     // A buy of a product the security master cannot classify (no row, no name: the master is missing, unreadable or
     // incomplete) is not assumed standard (1.5.48 review, B1): it could be a leveraged or inverse product, so it waits for
@@ -76,25 +78,30 @@ class Exposure {
     if(side!=='Sell'&&product.source==='Unknown product')return {product:{...product,kind:'unclassified'},requiresApproval:true};
     if(product.kind==='standard'||side==='Sell')return {product,requiresApproval:false};
     const p=policy.leveragedEtps;if(!p.enabled)throw new Error('LEVERAGED_NOT_ENABLED');
-    const current=this.summary(holdings,equity).leveragedValue;
+    const current=this.summary(holdings,equity).leveragedValue+this.pendingLeveraged(pending);
     if(equity>0&&(current+notional)/equity*100>p.maxPctOfEquity)throw new Error('LEVERAGED_EXPOSURE_LIMIT');
     return {product,requiresApproval:!p.auto};
   }
   // Credit orders (Korea): new margin loans and short sales need their switch and cap; repayments always reduce risk.
   // Returns {type, requiresApproval}, with the KIS credit type for the order.
-  checkCredit({account,kind,symbol,notional,equity,balance,loanDate=null}){
+  // The open buys (not covers) among pending that are leveraged or inverse products, or that the security master cannot
+  // classify (counted as leveraged: they could be); their notional.
+  pendingLeveraged(pending){return (pending??[]).filter(o=>o.side==='Buy'&&o.credit!=='cover').reduce((n,o)=>{const p=this.classify(o.symbol,o.name??null);return n+(p.kind!=='standard'||p.source==='Unknown product'?Math.abs(Number(o.notional)||0):0);},0);}
+  // pending: as for check; open margin buys count toward the loan cap, open short sales toward the short cap.
+  checkCredit({account,kind,symbol,notional,equity,balance,loanDate=null,pending=[]}){
+    const sumOf=k=>(pending??[]).filter(o=>o.credit===k).reduce((n,o)=>n+Math.abs(Number(o.notional)||0),0);
     const policy=this.policy(account);if(!CREDIT_TYPES[kind])throw new Error('INVALID_ORDER');
     if(kind==='margin-sell'){const loan=balance.holdings?.find(h=>h.symbol===symbol)?.loans?.find(l=>l.loanDate===loanDate);if(!loan)throw new Error('INSUFFICIENT_CAPACITY');return {type:CREDIT_TYPES[kind][loan.source],requiresApproval:false};}
     if(kind==='cover'){const short=balance.shorts?.find(s=>s.symbol===symbol&&s.loanDate===loanDate);if(!short)throw new Error('INSUFFICIENT_CAPACITY');return {type:CREDIT_TYPES[kind][short.source],requiresApproval:false};}
     if(kind==='margin-buy'){
       const p=policy.margin;if(!p.enabled)throw new Error('MARGIN_NOT_ENABLED');
-      if(!(equity>0)||((balance.loanTotal??0)+notional)/equity*100>p.maxLoanPctOfEquity)throw new Error('MARGIN_LIMIT');
-      const leveraged=this.check({account,symbol,side:'Buy',notional,equity,holdings:balance.holdings});
+      if(!(equity>0)||((balance.loanTotal??0)+sumOf('margin-buy')+notional)/equity*100>p.maxLoanPctOfEquity)throw new Error('MARGIN_LIMIT');
+      const leveraged=this.check({account,symbol,side:'Buy',notional,equity,holdings:balance.holdings,pending});
       return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto||leveraged.requiresApproval};
     }
     const p=policy.short;if(!p.enabled)throw new Error('SHORT_NOT_ENABLED');
     const gross=(balance.shorts??[]).reduce((n,s)=>n+s.quantity*s.price,0);
-    if(!(equity>0)||(gross+notional)/equity*100>p.maxGrossPctOfEquity)throw new Error('SHORT_LIMIT');
+    if(!(equity>0)||(gross+sumOf('short')+notional)/equity*100>p.maxGrossPctOfEquity)throw new Error('SHORT_LIMIT');
     return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto};
   }
   // Margin loans and short positions: estimated interest/fees so far, expiry and collateral warnings, short stop levels.

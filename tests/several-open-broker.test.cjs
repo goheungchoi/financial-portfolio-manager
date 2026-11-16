@@ -15,7 +15,7 @@ test('the guard: off refuses any open order and returns nothing; on refuses only
   const fail=()=>new Error('OPEN_BROKER_ORDERS');const rows=[kr('1','000660','Buy',3),kr('2','035420','Sell',1,'Partially filled'),kr('3','051910','Buy',0,'Filled'),kr('4','005380','Buy',5,'Rejected')];
   assert.throws(()=>openGuard(rows,cmd,{fail}),/OPEN_BROKER_ORDERS/);assert.deepEqual(openGuard([rows[2],rows[3]],cmd,{fail}),{},'off: nothing open, nothing returned');
   for(const v of ['true',1,{}])assert.throws(()=>openGuard(rows,cmd,{severalOpen:v,fail}),/OPEN_BROKER_ORDERS/,JSON.stringify(v));
-  assert.deepEqual(openGuard(rows,cmd,{severalOpen:true,fail}).openOrders,[{orderId:'1',symbol:'000660',side:'Buy',remaining:3,price:100},{orderId:'2',symbol:'035420',side:'Sell',remaining:1,price:100}],'open ones only, closed and rejected left out');
+  assert.deepEqual(openGuard(rows,cmd,{severalOpen:true,fail}).openOrders,[{orderId:'1',symbol:'000660',side:'Buy',quantity:null,remaining:3,price:100},{orderId:'2',symbol:'035420',side:'Sell',quantity:null,remaining:1,price:100}],'open ones only, closed and rejected left out');
   assert.throws(()=>openGuard([...rows,kr('5','005930','Sell',2)],cmd,{severalOpen:true,fail}),/OPEN_BROKER_ORDERS/,'the same stock, the other side');
   assert.deepEqual(openGuard([kr('6','005930','Buy',0,'Filled')],cmd,{severalOpen:true,fail}).openOrders,[],'the same stock, closed: no refusal');
 });
@@ -33,7 +33,7 @@ test('F1: an order of unknown state blocks its U.S. stock under any exchange cod
   assert.match(e.openBlock({id:'n',symbol:'NASD:XYZ'}),/has an order whose state is not confirmed \(Uncertain\)/);assert.equal(e.openBlock({id:'n',symbol:'NASD:XYZW'}),null);
 });
 test('Korea: with the switch on, another stock\'s open order passes and is returned; the same stock\'s refuses; off returns no list',async()=>{
-  const r=await korea([kr('0000123','000660','Buy',3)]).prepareOrder(cmd,null,{severalOpen:true});assert.equal(r.availableQuantity,100);assert.deepEqual(r.openOrders,[{orderId:'0000123',symbol:'000660',side:'Buy',remaining:3,price:100}]);
+  const r=await korea([kr('0000123','000660','Buy',3)]).prepareOrder(cmd,null,{severalOpen:true});assert.equal(r.availableQuantity,100);assert.deepEqual(r.openOrders,[{orderId:'0000123',symbol:'000660',side:'Buy',quantity:null,remaining:3,price:100}]);
   await assert.rejects(korea([kr('9','005930','Buy',1,'Partially filled')]).prepareOrder(cmd,null,{severalOpen:true}),/OPEN_BROKER_ORDERS/);
   await assert.rejects(korea([kr('9','005930','Buy',1)]).prepareOrder({...cmd,side:'Sell',quantity:1},null,{severalOpen:true}),/OPEN_BROKER_ORDERS/,'a sale of the stock too');
   const off=await korea([]).prepareOrder(cmd);assert.equal('openOrders' in off,false,'off: the result is as before');
@@ -46,7 +46,7 @@ function overseas(rows){const raw=new KisReadOnlyClient(credentials,async url=>{
 const ccnl=(odno,pdno,qty,filled,buy=true)=>({odno,orgn_odno:'',ovrs_excg_cd:'NASD',pdno,sll_buy_dvsn_cd:buy?'02':'01',ft_ord_qty:String(qty),ft_ccld_qty:String(filled),nccs_qty:String(qty-filled),ft_ord_unpr3:'150.5',ft_ccld_unpr3:'150.5',rvse_cncl_dvsn:'00',rjct_rson:''});
 test('U.S.: with the switch on, another stock\'s open order passes and is returned; the same stock\'s refuses; off returns no list',async()=>{
   const buy={symbol:'NASD:AAPL',side:'Buy',quantity:2,limitPrice:200.01};
-  const r=await overseas([ccnl('77','MSFT',3,1,false)]).prepare(buy,null,{severalOpen:true});assert.deepEqual(r.openOrders,[{orderId:'77',symbol:'NASD:MSFT',side:'Sell',remaining:2,price:150.5}]);
+  const r=await overseas([ccnl('77','MSFT',3,1,false)]).prepare(buy,null,{severalOpen:true});assert.deepEqual(r.openOrders,[{orderId:'77',symbol:'NASD:MSFT',side:'Sell',quantity:3,remaining:2,price:150.5}]);
   await assert.rejects(overseas([ccnl('78','AAPL',3,0)]).prepare(buy,null,{severalOpen:true}),/OPEN_BROKER_ORDERS/);
   assert.equal('openOrders' in await overseas([]).prepare(buy),false);
 });

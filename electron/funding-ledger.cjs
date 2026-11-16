@@ -142,11 +142,13 @@ class FundingLedger {
   // Whether a buy costing cost (its currency) fits, and if it does, its durable reservation. Throws when it does not.
   // The balances are read first; the commitments are read after them, and the check and the reservation follow with
   // no wait in between, so nothing that changed during the reads is missed (stage 1 review, P1).
-  async admit({order,market,cost,balance,environment=null}){
+  // alsoOpen (M-1.4, several orders open): the cost of open buys at KIS in this market the app did not place (yours), in
+  // this market's currency. It must fit beside this order but is not reserved: it is not the app's. 0: as before.
+  async admit({order,market,cost,balance,environment=null,alsoOpen=0}){
     return this.lock(async()=>{
       const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment});
       const c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
-      const check=this.check({market,cost,commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);
+      const check=this.check({market,cost:cost+(Number(alsoOpen)>0?Number(alsoOpen):0),commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);
       const prev=this.row(order.id);const reserved={...FundingLedger.commitment({...order,status:'Submitting'},prev),state:'reserved',reason:'reserved before submission'};
       this.write(reserved);this.event(order.id,{kind:'commitment',from:prev?.state??null,to:'reserved',amount:reserved.amount,currency:reserved.currency,check});return check;});
   }
