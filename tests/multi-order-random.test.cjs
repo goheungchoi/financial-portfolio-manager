@@ -99,13 +99,16 @@ function generate(seed,side,profile='mix'){if(profile==='plain')return plainGene
 // (a combined excess beyond those; traced for seed 69: a reported fall of buys KIS carries, resolved by their report,
 // matched to flagged buys in flight). Liveness: right after age. End: nothing in flight, no credit.
 // Counted: groups by end state, detected Korean flows, withdrawals not detected as exactly one flow.
+// The open class's seeds at 600 (A3/A4 with unattributed KRW: the recorder's provisional KRW leaves Korea's deduction
+// when KIS's report falls, before the Korean exchange): a new one fails.
+const OPEN_SEEDS=[69,184,240,280,368,434,470,482];
 const SAFETY_CLASSES=['limit: withdrawal in the zero or debit reading','band: batch set within 5% (M-1.6b)','open: carried and flagged buys mixed (A3/A4)','attribution: mixed funding, the U.S. low alone (combined right; the K1 transfer convention)'];
 function check(seed,side,profile='mix'){const {desc,steps}=generate(seed,side,profile),run=e2e(steps.map(({truth,zero,...s})=>s)),out={seed,side,desc,safety:[],afterAge:true,end:true,groups:{},krFlows:0,flowsOff:null};
   const classOf=ex=>desc.wAt==='same'?SAFETY_CLASSES[0]:ex<=0.05*desc.T*FX+2?SAFETY_CLASSES[1]:SAFETY_CLASSES[2];
   for(const [i,row] of run.out.entries()){const tr=steps[i].truth,v=row.value,low=v.KR.low+v.US.low*FX,high=v.KR.high+v.US.high*FX;
     const exC=Math.max(low-tr.combined-2,v.KR.low-tr.kr-1,side==='Sell'?tr.combined-2-high:0),exU=tr.held?0:(v.US.low-tr.us-0.02)*FX;
     if(exC>0)out.safety.push({at:row.note,ex:Math.round(exC),cls:classOf(exC)});
-    else if(exU>0)out.safety.push({at:row.note,ex:Math.round(exU),cls:desc.fund==='mixed'?SAFETY_CLASSES[3]:classOf(exU)});}
+    else if(exU>0)out.safety.push({at:row.note,ex:Math.round(exU),combinedOff:Math.round(Math.abs(low-tr.combined)),cls:desc.fund==='mixed'?SAFETY_CLASSES[3]:classOf(exU)});}
   {const from=steps.findIndex((x,i)=>i>=steps.length-2)-1;out.settledRight=run.out.slice(Math.max(0,steps.length-3)).every((row,j)=>{const tr=steps[Math.max(0,steps.length-3)+j].truth;return tr.held||Math.abs(row.value.KR.low+row.value.US.low*FX-tr.combined)<=2;});}
   const last=run.out.at(-1),lastLow=last.value.KR.low+last.value.US.low*FX;out.afterAge=Math.abs(lastLow-steps.at(-1).truth.combined)<=2;
   const st=JSON.parse(run.db.prepare('SELECT payload FROM inflight_settlement').get().payload),ss=st[A]??st;out.end=(ss.open??[]).length===0&&['Buy','Sell'].every(k=>InFlight.creditCents(ss,k)===0);
@@ -128,7 +131,7 @@ test('R5 pins: seed 84 has no combined excess (the R4 guard); the open class is 
 // The plain profile (what daily batches look like): no safety failure and no detected Korean flow, at all. Reported:
 // unmatched groups, and seeds not right at the last settlement (right only after age).
 for(const side of ['Buy','Sell'])test(`R5 plain: ${N} daily-batch lifecycles of U.S. ${side==='Buy'?'buys':'sales'} (one trade date per part, reported and settled by it): no safety failure, no Korean flow, every group closed, right at settlement, no false flow`,t=>{
-  const count={},bump=(k,seed)=>{(count[k]??=[]).push(seed);};
+  const count={},bump=(k,seed)=>{if(k.startsWith('BOUND'))k=k.replace(/[$]?[0-9][0-9.,]*/g,'#');const l=(count[k]??=[]);if(!l.includes(seed))l.push(seed);};
   for(let seed=1;seed<=N;seed++){const r=check(seed,side,'plain');assert.deepEqual(r.safety.filter(x=>!x.cls.startsWith('attribution')),[],`plain seed ${seed} ${side}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
     // The U.S. low alone above its USD-first value (mixed funding: K1 books a part U.S. cash cannot pay in full as KRW, so
     // the U.S. side shows the USD KIS will still take, until the settlement's reversal); bound: the U.S. cash, per reading.
@@ -142,9 +145,15 @@ for(const side of ['Buy','Sell'])test(`R5 plain: ${N} daily-batch lifecycles of 
   for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length} of ${N} (${Math.round(100*v.length/N)}%), seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);
   if(W)t.diagnostic(`U.S.-only excess, largest per seed: up to ${Math.max(...W).toFixed(2)}; as a share of the batch up to ${Math.max(...P)}% (median ${[...P].sort((a,b)=>a-b)[P.length>>1]}%)`);});
 for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded random lifecycles`} of U.S. ${side==='Buy'?'buys':'sales'} filled together (1 to 30, parts, funding, withdrawals): every failure classed and counted; right after age; nothing left`,t=>{
-  const seeds=one?[Number(one)]:Array.from({length:N},(_,i)=>i+1),count={},bump=(k,seed)=>{(count[k]??=[]).push(seed);};
+  const seeds=one?[Number(one)]:Array.from({length:N},(_,i)=>i+1),count={},bump=(k,seed)=>{if(k.startsWith('BOUND'))k=k.replace(/[$]?[0-9][0-9.,]*/g,'#');const l=(count[k]??=[]);if(!l.includes(seed))l.push(seed);};
   for(const seed of seeds){const r=check(seed,side);if(one)t.diagnostic(JSON.stringify(r));
     for(const c of new Set(r.safety.map(x=>x.cls)))bump('safety, '+c,seed);
+    // Bounds (ruling 1): a seed in a class still fails when its error is larger or longer than the class allows.
+    const of=c=>r.safety.filter(x=>x.cls===c),say=m=>`seed ${seed} ${side}: ${m} ${JSON.stringify(r.desc)}`;
+    {const x=of(SAFETY_CLASSES[1]);if(x.length){if(!(Math.max(...x.map(y=>y.ex))<=0.05*r.desc.T*FX+2))bump('BOUND EXCEEDED, '+('band beyond 5% of the batch').split(' {')[0].replace(/^seed d+ w+: /,''),seed);if(!(x.length<=2))bump('BOUND EXCEEDED, '+(`band over ${x.length} readings`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);}}
+    {const x=of(SAFETY_CLASSES[0]);if(x.length)if(!(x.length<=1))bump('BOUND EXCEEDED, '+(`limit over ${x.length} readings`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);}
+    {const x=of(SAFETY_CLASSES[3]);for(const y of x){if(!(y.combinedOff<=2))bump('BOUND EXCEEDED, '+(`attribution with the combined value off by ${y.combinedOff}`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);if(!(y.ex/FX<=r.desc.cash0+0.05))bump('BOUND EXCEEDED, '+(`attribution beyond the U.S. cash: ${(y.ex/FX).toFixed(2)}`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);}}
+    if(of(SAFETY_CLASSES[2]).length)if(!(OPEN_SEEDS.includes(seed)))bump('BOUND EXCEEDED, '+('a combined false gain outside the open list').split(' {')[0].replace(/^seed d+ w+: /,''),seed);
     if(!r.desc.independent){assert.ok(r.afterAge,`seed ${seed} ${side}: not right after age ${JSON.stringify(r.desc)}`);assert.ok(r.end,`seed ${seed} ${side}: something left in flight or credited ${JSON.stringify(r.desc)}`);}
     else bump('independent split (safety only)',seed);
     for(const [k,v] of Object.entries(r.groups))if(!['booked','none'].includes(k))bump('group ends '+k,seed);
