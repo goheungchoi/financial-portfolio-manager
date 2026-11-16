@@ -124,7 +124,8 @@ class LiveEngine {
       const environment=this.getConnection().snapshot.environment;
       if(confirmation!==(environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER'))throw new Error('APPROVAL_REQUIRED');
       if(!this.enabled||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
-      if(this.orders().some(row=>['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'].includes(row.status)) || this.db.prepare("SELECT id FROM live_intents WHERE json_extract(payload,'$.status') IN ('Uncertain','Submitting') LIMIT 1").get())throw new Error('RECONCILIATION_REQUIRED');
+      if(this.severalOpen){const stop=this.openBlock(order);if(stop)throw Object.assign(new Error('RECONCILIATION_REQUIRED'),{detail:stop});}
+      else if(this.orders().some(row=>['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'].includes(row.status)) || this.db.prepare("SELECT id FROM live_intents WHERE json_extract(payload,'$.status') IN ('Uncertain','Submitting') LIMIT 1").get())throw new Error('RECONCILIATION_REQUIRED');
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
       const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
@@ -185,10 +186,27 @@ class LiveEngine {
       // M-1c: so is a prepared ticket the worker refused as missing or expired (15 s) before sending (TICKET_EXPIRED);
       // notSentCause says which.
       catch(error){if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
-        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
+        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};
+        // Rule U (M-1.2): with several orders open allowed, an unclear order blocks only its own stock (openBlock) and is
+        // counted in full in every sum; the market's trading stays on. Off: the market stops, as before.
+        if(!this.severalOpen)this.enabled=false;}
       this.save(order);return order;
     }finally{this.busy=false;}
   }
+  // Rule U (M-1.2, several orders open allowed): why a new order may not be sent while others are open, or null.
+  // - Order history unreadable while this account has an open order: no open order's state is known, so nothing is sent,
+  //   protective sales included (D4, unchanged).
+  // - An order whose state is not known for its stock, of any account in the database (as the one-order rule checked it):
+  //   being sent (Submitting), sent with an unclear reply (Uncertain), a cancellation not confirmed, or a revision whose
+  //   reply was lost (pendingRevision, unconfirmed). Its lot and quantity are unknown, so no other order of that stock,
+  //   either side. Other stocks are sent: the unclear order is counted in full in every sum (the funding ledger already
+  //   keeps it committed). Accepted and partly filled orders of the stock do not block here.
+  openBlock(order){const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
+    if((this.reconcileHealth?.failures??0)>0&&this.orders().some(o=>OPEN.includes(o.status)))return 'order history could not be read, so the open orders\' states are not confirmed';
+    // Fails closed: records that cannot be read or parsed are never taken as "nothing unknown".
+    let all;try{all=this.db.prepare('SELECT payload FROM live_intents').all().map(r=>JSON.parse(r.payload));}catch{return 'the app\'s order records could not be read';}
+    const unknown=all.find(o=>o.id!==order.id&&o.symbol===order.symbol&&(['Submitting','Uncertain','Cancellation uncertain'].includes(o.status)||(['Accepted','Partially filled'].includes(o.status)&&(o.pendingRevision||o.unconfirmed))));
+    return unknown?`${order.symbol} has an order whose state is not confirmed (${unknown.pendingRevision||unknown.unconfirmed?'an unconfirmed revision':unknown.status})`:null;}
   // Why the current product and credit rules require your approval for an order, or null; their refusals throw.
   // Protective orders (sales, repayments, short covers) never need it (1.5.48 review, R2). Synchronous.
   approvalNow(order,balance,base){const why=[];let product=null;
