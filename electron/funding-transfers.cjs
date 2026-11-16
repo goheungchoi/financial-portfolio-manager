@@ -106,7 +106,7 @@ class FundingTransfers {
       reportedGroups:rows.filter(r=>REPORTED.has(r.state)).map(r=>({orders:[...(r.orders??[])],reportedKRW:won(r.reportedKRW??0),state:r.state})),
       // M-1.6c2 (C1): the groups whose KRW route KIS has shown (reported KRW-paid, settled with a KRW part, or booked from
       // KRW within ten days), with their orders, for the settlement tracker's zero-report closes.
-      krwRouteGroups:rows.filter(r=>KRW_ROUTE.has(r.state)||krwSettled(r,this.clock())||r.state==='booked'&&r.via==='age'&&this.clock()-(r.settledAt??r.krPaidAt??r.exchangedAt??0)<=10*86400000).map(r=>({key:r.key,orders:[...(r.orders??[])],state:r.state,settled:krwSettled(r,this.clock()),paidUSD:usd(r.paidUSD??0)})),
+      krwRouteGroups:rows.filter(r=>KRW_ROUTE.has(r.state)||krwSettled(r,this.clock())||r.state==='booked'&&r.via==='age'&&this.clock()-(r.settledAt??r.krPaidAt??r.exchangedAt??0)<=10*86400000).map(r=>({key:r.key,orders:[...(r.orders??[])],state:r.state,settled:krwSettled(r,this.clock()),paidUSD:usd(r.paidUSD??0),...(r.state==='awaiting-krw'?{shortfallUSD:usd(r.shortfallUSD??0),deferred:Boolean(r.deferred)}:{})})),
       // The groups KIS settled through the KRW route (its reported total fell by them and U.S. cash did not pay all):
       // their pieces still in flight are covered up to the KRW part until the tracker closes them (no one-reading gap).
       krwSettledGroups:rows.filter(r=>krwSettled(r,this.clock())).map(r=>({key:r.key,orders:[...(r.orders??[])],state:r.state,reportedKRW:won(r.reportedKRW??0),paidUSD:usd(r.paidUSD??0)}))};}
@@ -164,6 +164,12 @@ class FundingTransfers {
     let lateDebit=0;
     // F-d3: any group awaiting a KRW shortfall, deferred or not (KIS's report gone with U.S. cash still able to pay it).
     // A group that was not deferred had its shortfall explained as a U.S. rise at the report's fall: the debit takes it back.
+    // M-1.6d (R5 600 seeds): KIS debits a batch's parts in one U.S. cash fall: when no single group fits it, the oldest-
+    // first prefix of the awaiting groups that does (T1's rule) is debited together, each for its shortfall.
+    {const waiting=live.filter(x=>x.state==='awaiting-krw'),fall=-cashMove;
+      if(waiting.length>1&&fall>0&&!waiting.some(r=>Math.abs(fall-r.shortfallUSD)<=BAND*r.shortfallUSD)){const set=oldestPrefix(waiting.map(r=>({...r,reportedAt:r.settledAt})),fall,r=>r.shortfallUSD);
+        if(set)for(const r of set){const x=r.shortfallUSD;lateDebit+=x;event=true;const next={...rows.get(r.key),state:'booked',paidUSD:usd((r.paidUSD??0)+x),settledAt:now,via:'usd',lateDebit:true};delete next.deferred;delete next.reportedAt_;if(!r.deferred)meta.explainedUS-=x;this.put(account,r.key,next);rows.set(r.key,{key:r.key,...next});}}}
+    live=[...rows.values()];
     for(const r of live.filter(x=>x.state==='awaiting-krw').sort((a,b)=>a.settledAt-b.settledAt)){const fall=-(cashMove+lateDebit);
       if(fall>0&&Math.abs(fall-r.shortfallUSD)<=BAND*r.shortfallUSD){lateDebit+=fall;event=true;const next={...r,state:'booked',paidUSD:usd((r.paidUSD??0)+fall),settledAt:now,via:'usd',lateDebit:true};delete next.deferred;if(!r.deferred)meta.explainedUS-=fall;this.put(account,r.key,next);rows.set(r.key,{key:r.key,...next});}
       // Smaller, with U.S. cash exhausted after it: KIS took the USD there was and exchanges the rest; the shortfall the

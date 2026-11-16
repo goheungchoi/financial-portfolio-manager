@@ -122,6 +122,8 @@ const one=process.env.MULTI_ORDER_SEED,N=Number(process.env.MULTI_ORDER_SEEDS)||
 test('R5 pins: seed 84 has no combined excess (the R4 guard); the open class is seed 69 alone',()=>{
   assert.deepEqual(check(84,'Buy').safety.filter(x=>!x.cls.startsWith('attribution')),[],'seed 84');
   const open=Array.from({length:150},(_,i)=>i+1).filter(seed=>check(seed,'Buy').safety.some(x=>x.cls.startsWith('open')));assert.deepEqual(open,[69]);
+  // A batch KIS debits in one fall after its report's zero (several groups awaiting): the withdrawal is one flow.
+  for(const seed of [312,478,553,596])assert.equal(check(seed,'Buy').flowsOff,null,`seed ${seed}`);
 });
 // The plain profile (what daily batches look like): no safety failure and no detected Korean flow, at all. Reported:
 // unmatched groups, and seeds not right at the last settlement (right only after age).
