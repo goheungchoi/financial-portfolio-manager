@@ -134,18 +134,23 @@ test('R5 pins: seed 84 has no combined excess (the R4 guard); the open class is 
 // unmatched groups, and seeds not right at the last settlement (right only after age).
 for(const side of ['Buy','Sell'])test(`R5 plain: ${N} daily-batch lifecycles of U.S. ${side==='Buy'?'buys':'sales'} (one trade date per part, reported and settled by it): no safety failure, no Korean flow, every group closed, right at settlement, no false flow`,t=>{
   const count={},bump=(k,seed)=>{if(k.startsWith('BOUND'))k=k.replace(/[$]?[0-9][0-9.,]*/g,'#');const l=(count[k]??=[]);if(!l.includes(seed))l.push(seed);};
-  for(let seed=1;seed<=N;seed++){const r=check(seed,side,'plain');assert.deepEqual(r.safety.filter(x=>!x.cls.startsWith('attribution')),[],`plain seed ${seed} ${side}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
-    // The U.S. low alone above its USD-first value (mixed funding: K1 books a part U.S. cash cannot pay in full as KRW, so
-    // the U.S. side shows the USD KIS will still take, until the settlement's reversal); bound: the U.S. cash, per reading.
-    const attr=r.safety.filter(x=>x.cls.startsWith('attribution'));if(attr.length){bump('the U.S. low alone above its USD-first value (K1 on a part U.S. cash cannot pay in full)',seed);
-      const worst=Math.max(...attr.map(x=>x.ex))/FX;(count.attrWorst??=[]).push(Math.round(worst*100)/100);assert.ok(worst<=r.desc.cash0+0.05,`plain seed ${seed}: the U.S. excess ${worst.toFixed(2)} is beyond its U.S. cash ${r.desc.cash0}`);(count.attrShare??=[]).push(Math.round(100*worst/r.desc.T));}assert.equal(r.krFlows,0,`plain seed ${seed} ${side}: a Korean flow ${JSON.stringify(r.desc)}`);
+  // K1 step (m1/k1-design.md, C3): the attribution class too: a part U.S. money can pay is owed in the U.S., not booked as KRW.
+  for(let seed=1;seed<=N;seed++){const r=check(seed,side,'plain');assert.deepEqual(r.safety,[],`plain seed ${seed} ${side}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
+    assert.equal(r.krFlows,0,`plain seed ${seed} ${side}: a Korean flow ${JSON.stringify(r.desc)}`);
     assert.ok(r.afterAge&&r.end,`plain seed ${seed} ${side}: not right after age, or left in flight`);for(const [k] of Object.entries(r.groups))if(!['booked','none'].includes(k))bump('group ends '+k,seed);
     // Daily batches: every group closed, right from the last settlement on, no detected flow (all 0 at 500 seeds a side).
     assert.deepEqual(Object.keys(r.groups).filter(k=>!['booked','none'].includes(k)),[],`plain seed ${seed} ${side}: a group left open`);
     assert.ok(r.settledRight,`plain seed ${seed} ${side}: not right at the last settlement`);assert.equal(r.flowsOff,null,`plain seed ${seed} ${side}: ${r.flowsOff}`);}
-  const W=count.attrWorst,P=count.attrShare;delete count.attrWorst;delete count.attrShare;
-  for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length} of ${N} (${Math.round(100*v.length/N)}%), seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);
-  if(W)t.diagnostic(`U.S.-only excess, largest per seed: up to ${Math.max(...W).toFixed(2)}; as a share of the batch up to ${Math.max(...P)}% (median ${[...P].sort((a,b)=>a-b)[P.length>>1]}%)`);});
+  for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length} of ${N} (${Math.round(100*v.length/N)}%), seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);});
+// K1 step (C3): the morning where one trade date settles and the next is reported a reading before ('before') or after
+// it ('after'): no safety failure of any class, the attribution class included, no flow, nothing left. The 'same' morning
+// (one reading) is gate 2 (same-reading netting): measured until that step.
+test(`R5 plain-overlap: the 'before' and 'after' mornings of ${N} lifecycles of U.S. buys: no safety failure (attribution included), no flow; 'same' measured`,t=>{
+  const count={};for(let seed=1;seed<=N;seed++){const r=check(seed,'Buy','plain-overlap'),m=r.desc.overlap;
+    if(m==='same'){for(const c of new Set(r.safety.map(x=>x.cls.split(':')[0])))(count['same, safety '+c]??=[]).push(seed);if(r.flowsOff)(count['same, '+r.flowsOff]??=[]).push(seed);continue;}
+    assert.deepEqual(r.safety,[],`plain-overlap '${m}' seed ${seed}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
+    assert.equal(r.flowsOff,null,`plain-overlap '${m}' seed ${seed}: ${r.flowsOff}`);assert.ok(r.afterAge&&r.end,`plain-overlap '${m}' seed ${seed}: not right after age, or left in flight`);}
+  for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length}, seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);});
 for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded random lifecycles`} of U.S. ${side==='Buy'?'buys':'sales'} filled together (1 to 30, parts, funding, withdrawals): every failure classed and counted; right after age; nothing left`,t=>{
   const seeds=one?[Number(one)]:Array.from({length:N},(_,i)=>i+1),count={},bump=(k,seed)=>{if(k.startsWith('BOUND'))k=k.replace(/[$]?[0-9][0-9.,]*/g,'#');const l=(count[k]??=[]);if(!l.includes(seed))l.push(seed);};
   for(const seed of seeds){const r=check(seed,side);if(one)t.diagnostic(JSON.stringify(r));

@@ -143,9 +143,11 @@ else{
     const r=w.row('o1');assert.equal(r.state,'unmatched');assert.match(r.reason,/no Korean cash fall paying it/);assert.equal(w.f.current('A').krwUnpaidKRW,0);
     assert.equal(w.notes.length,1,'one System line');assert.match(w.notes[0].body,/o1/);assert.match(w.notes[0].body,/134,000/);
     assert.deepEqual(w.flows(),['funding:o1:out','funding:o1:in'],'no reversal, no other booking');
-    // A K2 exchange never seen: the same.
-    const v=lone();v.to('2026-11-16T23:00:00');v.us(50,0,[]);v.kr(3000000);const p=k1(v,'p1',100,134000);v.us(50,134000,[p]);v.to('2026-11-18T08:25:00');v.us(0,0,[p]);assert.equal(v.row('p1').state,'awaiting-krw');
-    for(const s of ['2026-11-19T09:00:00','2026-11-20T09:00:00']){v.to(s);v.kr(3000000);}assert.equal(v.row('p1').state,'unmatched');assert.equal(v.notes.length,1);assert.deepEqual(v.flows(),[]);
+    // The K2 case ($50 of U.S. cash) with its exchange never seen: under the K1 step its KRW part is booked at the report
+    // as K1's is, so it ends the same: its KRW part unmatched, one System line, nothing booked beyond the report's pair.
+    const v=lone();v.to('2026-11-09T23:00:00');v.us(50,0,[]);v.kr(3000000);const p=k1(v,'p1',100,134000);v.us(50,134000,[p]);v.to('2026-11-11T08:25:00');v.us(0,0,[p]);assert.equal(v.row('p1').state,'awaiting-kr');
+    for(const s of ['2026-11-12T09:00:00','2026-11-20T09:00:00']){v.to(s);v.kr(3000000);}assert.equal(v.row('p1').state,'unmatched');assert.equal(v.notes.length,1);assert.deepEqual(v.flows(),['funding:p1:out','funding:p1:in']);
+    assert.equal(v.row('p1#us').state,'booked','the U.S. part, paid by the $50');
   });
   test('condition 2: a krw row written by 1.5.59 (no fill time) is guarded by its report time and paid by its Korean fall, in either order',()=>{
     for(const order of ['us-first','kr-first']){const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const o=k1(w,'o1',100,134000);w.us(0,134000,[o]);
@@ -231,7 +233,15 @@ else{
     assert.equal(after.krwKRW+after.provisionalKRW,before.krwKRW+before.provisionalKRW);assert.equal(after.krwUnpaidKRW,0);assert.equal(before.krwUnpaidKRW,0);
   });
   test('condition 5: the values (.low and .high) of both markets at every reading are those of the code before S3a-2 (F-d1: less the KRW KIS settled from Korea not yet seen leaving)',()=>{
-    const before=JSON.parse(fs.readFileSync(FIXTURE,'utf8'));for(const [name,seq] of Object.entries(SEQUENCES))assert.deepEqual(valuesOf(e2e(seq)),before[name],name);});
+    const before=JSON.parse(fs.readFileSync(FIXTURE,'utf8'));
+    // K1 step (m1/k1-design.md): K2's KRW part (67,000) is booked at the report, not at the exchange. From the report to
+    // the debit: the U.S. low is its USD-first truth ($50 of cash + the $100 buy - the $50 it owes) and Korea deducts
+    // the KRW part; the high moves between the markets (KIS's confirmed ₩65,660 now under Korea's deduction) and the
+    // combined bounds are unchanged. Every other sequence and reading is the fixture's.
+    const k2={KR:{low:2933000,high:2934340},US:{low:100,high:150}};
+    before.K2=before.K2.map(x=>['report (us)','next Korean day','debit (held)'].includes(x.note)?{...x,value:k2}:x);
+    for(const [name,seq] of Object.entries(SEQUENCES))assert.deepEqual(valuesOf(e2e(seq)),before[name],name);
+    {const old=JSON.parse(fs.readFileSync(FIXTURE,'utf8')).K2,c=v=>[v.KR.low+v.US.low*1340,v.KR.high+v.US.high*1340];for(const [i,x] of before.K2.entries())assert.deepEqual(c(x.value),c(old[i].value),'K2 combined at '+x.note);}});
   // F-d1: the Korean value deducts the KRW KIS has settled from Korea for a K1 group until the Korean reading shows it
   // leaving (krwSettledUnpaidKRW), as the loss value does. Before, the reading between had a false gain of it.
   test('F-d1: the combined value never rises above its start in any sequence; the low of K1 with the U.S. reading first and of the partial reversal is right at every reading',()=>{
@@ -349,7 +359,9 @@ if(!mode){
       const run=e2e(s),label=`${n} buys, exchange ${same?'with the debit':'a reading later'}`;
       for(const r of run.out){const low=r.value.KR.low+r.value.US.low*FX;assert.ok(Math.abs(low-(3000000+100*FX))<=2,`${label} at ${r.note}: ${low}`);}
       assert.deepEqual(run.flows().filter(f=>f.detected).map(f=>[f.market,f.amount]),[],label+': no detected flow');
-      const groups=run.rec.rows(A).filter(r=>(r.orders??[]).length>0&&r.state!=='none');assert.ok(groups.every(r=>r.state==='booked'&&r.via==='exchange'),`${label}: ${JSON.stringify(groups.map(r=>[r.state,r.via]))}`);}
+      // K1 step: the batch is split at its report ($100 U.S., the rest KRW): the U.S. part ends paid by the $100, the KRW
+      // part by the Korean fall.
+      const groups=run.rec.rows(A).filter(r=>(r.orders??[]).length>0&&r.state!=='none');assert.deepEqual(groups.map(r=>[r.state,r.via]).sort(),[['booked','krw'],['booked','usd']],label);}
   });
   // C3 (the planner's addition): 13 and 25 sales, the reported sale total modelled (sellKRW), proceeds pending at the fill
   // or a reading later, reported and settled together or in two parts. The high is right from settlement on (from the

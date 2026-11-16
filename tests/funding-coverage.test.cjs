@@ -28,7 +28,10 @@ let x0=2000;
 test('the recorder: flagged in-flight buys join a batch, never a unique set; their own USD does not count against U.S. money',()=>{
   const o=Array.from({length:13},(_,i)=>buy(i,10+i)),ids=o.map(x=>x.id),T=o.reduce((n,x)=>n+x.fillPrice,0),R=Math.round(T*RATE);
   x0=150;let w=recorder();w.read({cash:150,R:0,orders:o,at:T0+H,open:ids,openUSD:T});w.read({cash:150,R,orders:o,at:T0+10*H,open:ids,openUSD:T,flagged:ids});
-  let g=w.rec.current('a').reportedGroups;assert.equal(g.length,1);assert.equal(g[0].orders.length,13);assert.equal(g[0].state,'us','$150 of U.S. cash can pay part of the $208 batch: U.S. first (its own in-flight USD is not another claim; counted, it would read as all KRW)');
+  let g=w.rec.current('a').reportedGroups;assert.equal(g.length,1);assert.equal(g[0].orders.length,13);
+  // K1 step (m1/k1-design.md): $150 of U.S. cash pays $150 of the $208 batch, USD first (its own in-flight USD is not
+  // another claim; counted, it would read as all KRW); only the rest is KRW, booked as the pair.
+  {const c=w.rec.current('a');assert.equal(g[0].state,'krw');assert.equal(c.usUSD,150,'the U.S. part');assert.equal(c.krwKRW,R-150*RATE,'the KRW part, KIS\'s KRW less the U.S. part at the rate');}
   x0=600;w=recorder();w.read({cash:600,R:0,orders:o,at:T0+H,open:ids,openUSD:T});w.read({cash:600,R,orders:o,at:T0+10*H,open:ids,openUSD:T});
   assert.equal(w.rec.current('a').reportedGroups.length,0,'not flagged: in-flight buys are not candidates (as before)');
   x0=2000;w=recorder();const three=o.slice(0,3);w.read({cash:2000,R:0,orders:three,at:T0+H,open:three.map(x=>x.id),openUSD:33});w.read({cash:2000,R:Math.round(33*RATE),orders:three,at:T0+10*H,open:three.map(x=>x.id),openUSD:33,flagged:three.map(x=>x.id)});

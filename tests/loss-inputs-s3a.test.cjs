@@ -40,19 +40,21 @@ test('G1/R2 K1: each leg\'s window is its own market\'s; a Korean baseline betwe
 // (S3a's second test, the K1 loss check with netEquityOf set by hand, is replaced by tests/loss-funding-e2e.test.cjs,
 // which runs the real valuation: review F1 of S3a round 1.)
 
-test('G1/R2 K2: the Korean leg between two Korean readings, the U.S. leg at the U.S. settlement reading\'s pair',()=>{
-  // The U.S. side carries the buy ($50 of U.S. cash), KIS settles: $50 in USD, $50 short, exchanged at the next
-  // Korean reading (67,000). Korean readings: kr[0] before the settlement, kr[1] between it and the exchange, kr[2].
-  const w=lone();w.us(50,0,[]);const o=[w.b('o1',100)];w.us(50,0,o,{open:['o1'],openUSD:100});w.us(50,134000,o);assert.equal(w.f.rows('A')[0].state,'us');
-  w.kr(3000000);w.us(0,0,o);assert.equal(w.f.rows('A')[0].state,'awaiting-krw');w.kr(3000000);w.kr(2933000);
+test('G1/R2 K2 (K1 step): the KRW part\'s legs at the report reading\'s pairs, as K1\'s; the exchange books nothing more',()=>{
+  // $50 of U.S. cash pays $50 of the $100 buy (USD first); the rest (67,000) is the KRW part, booked at the report
+  // (m1/k1-design.md; 1.5.64 booked it at the exchange). KIS settles: $50 in USD, the 67,000 exchanged at kr[2].
+  const w=lone();w.us(50,0,[]);const o=[w.b('o1',100)];w.us(50,0,o,{open:['o1'],openUSD:100});w.us(50,134000,o);
+  {const r=w.f.rows('A')[0],c=w.f.current('A');assert.equal(r.state,'krw');assert.equal(c.usUSD,50,'the U.S. part');assert.equal(c.krwUnpaidKRW,67000,'the KRW part');}
+  w.kr(3000000);w.us(0,0,o);w.kr(3000000);w.kr(2933000);
   const out=flow(w,'out'),inn=flow(w,'in');assert.equal(out.amount,-67000);assert.equal(inn.amount,50);
-  assert.deepEqual([out.occurredAfter,out.occurredBy],[w.at.kr[1],w.at.kr[2]]);
-  assert.deepEqual([inn.occurredAfter,inn.occurredBy],[w.at.us[2],w.at.us[3]],'the U.S. figure rose by the shortfall at the settlement reading');
+  // As K1: the Korean deduction moved after the later of the previous U.S. and Korean readings (us[1]; no Korean reading
+  // yet), by the reporting U.S. reading (us[2]); the U.S. leg's window is the U.S. pair.
+  assert.deepEqual([out.occurredAfter,out.occurredBy],[w.at.us[1],w.at.us[2]]);assert.deepEqual([inn.occurredAfter,inn.occurredBy],[w.at.us[1],w.at.us[2]]);
   assert.equal(inn.day,out.day,'booked on the day of the reading that booked it');
-  // Korean baselines: before the exchange (kr[0], kr[1]) after; at the exchange reading, in it.
-  for(const b of [w.at.kr[0],w.at.kr[1]])assert.deepEqual(w.side('KR',b),{after:-67000,uncertain:0});assert.deepEqual(w.side('KR',w.at.kr[2]),{after:0,uncertain:0});
-  // U.S. baselines: before the settlement reading after; at it, in it (the exchange reading changes no U.S. figure).
-  assert.deepEqual(w.side('US',w.at.us[2]),{after:50,uncertain:0});assert.deepEqual(w.side('US',w.at.us[3]),{after:0,uncertain:0});
+  assert.deepEqual(w.flows().map(f=>f.id.split(':').at(-1)).sort(),['in','out'],'KIS exchanged the part booked: nothing more');
+  // Korean baselines after the report: in it already. U.S.: before the report after; at it, in it.
+  for(const b of w.at.kr)assert.deepEqual(w.side('KR',b),{after:0,uncertain:0});
+  assert.deepEqual(w.side('US',w.at.us[1]),{after:50,uncertain:0});assert.deepEqual(w.side('US',w.at.us[2]),{after:0,uncertain:0});
 });
 
 test('G1/R2 reversal pairs: the full reversal at a U.S. reading; the partial one\'s U.S. leg at the U.S. settlement reading, its Korean leg at the Korean pair',()=>{

@@ -20,7 +20,7 @@ function world({old=false,db=new DatabaseSync(':memory:')}={}){let t=0;const clo
     if(!h.held){f.observe(A,{us:used,orders:r.orders,fx:r.fx});if(rec&&!h.provisional){seen.us.push(t);const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD});}}
     if(rec&&(!lastKR||lastKR.settled!==r.kr.settled||r.krRead)){lastKR=r.kr;rec.observeKR(A,{korea,orders:r.krOrders??[]});}
     const fund=settlement(used),route=rec?rec.current(A):null,tr=f.current(A);
-    const flows=fd.observe(A,{krCash:korea.settledCash-(route?route.krwKRW:fund.confirmedKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-(tr.buysUSD??0)+(tr.sellsUSD??0)-(route?.usUSD??0),fx:r.fx,orders:[...r.orders,...(r.krOrders??[])],provisionalKRW:route?route.provisionalKRW:fund.uncertainKRW,unsettledKRW:fund.unsettledKRW,usExplained:x=>f.explained(A,x),...(route?{funding:route.explained}:{})});
+    const flows=fd.observe(A,{krCash:korea.settledCash-(route?(route.krwUnpaidKRW??route.krwKRW):fund.confirmedKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-(tr.buysUSD??0)+(tr.sellsUSD??0)-(route?.usUSD??0),fx:r.fx,orders:[...r.orders,...(r.krOrders??[])],provisionalKRW:route?route.provisionalKRW:fund.uncertainKRW,unsettledKRW:fund.unsettledKRW,usExplained:x=>f.explained(A,x),...(route?{funding:route.explained}:{})});
     const st=combinePortfolio(korea,used,used.fx,{},{inFlight:tr,...(route?{funding:route}:{}),now:t});perf.record(A,st);
     const V=st.valuation;out.push({at:t,low:V.combined.low,high:V.combined.high,KR:V.markets.KR.equity,US:V.markets.US.equity,split:route,total:fund.unsettledKRW,flows,used:st});};
   return {db,perf,fd,notes,seen,out,step,restart:()=>{f=new InFlight(db,clock);if(rec)rec=new FundingTransfers(db,{performance:perf,clock});},later:(ms)=>{t+=ms;},flows:()=>perf.flows(A),series:k=>perf.series(A,k)};}
@@ -75,8 +75,11 @@ test('P2 (b) USD-paid: no flow, no non-market P/L, the days marked as an estimat
   assert.equal(w.series('USD').find(p=>p.day==='2026-10-27').fundingRouteOpen,undefined,'settled: no longer marked');
   const old=run(P2B,{old:true});assert.equal(pnl(old,'KRW')['10-26'],-126205,'W4 before this step');
 });
-test('P2 (c) partly USD-paid: nothing booked at the report; the exchange is booked at KIS\'s amounts; no non-market P/L',()=>{
-  const w=run(P2C);assert.deepEqual(flowList(w),[['11-18','KR',-63864,'transfer',''],['11-18','US',47.66,'transfer','']]);
+// K1 step (m1/k1-design.md): $50 of U.S. cash pays $50 of the $94.38 buy (USD first); the rest of KIS's KRW is the KRW
+// part, booked at the report (KIS's ₩126,471 less $50 at 1,340), where 1.5.64 booked the exchange at settlement.
+test('P2 (c) partly USD-paid: the KRW part booked at the report (KIS\'s KRW less the U.S. part); no non-market P/L',()=>{
+  // KIS exchanged ₩59,469: the ₩2 difference is booked at that Korean fall, so the Korean legs total KIS's KRW.
+  const w=run(P2C);assert.deepEqual(flowList(w),[['11-10','KR',-59471,'transfer',''],['11-10','US',44.38,'transfer',''],['11-11','KR',2,'transfer','']]);
   for(const k of ['KRW','USD'])for(const [d,v] of Object.entries(pnl(w,k)))assert.ok(Math.abs(v)<0.01,`${k} ${d} ${v}`);
 });
 test('the K2 case (KIS takes KRW although U.S. cash could pay): booked at settlement; no non-market P/L',()=>{
@@ -94,12 +97,15 @@ test('M3: K1 at the report, then USD arriving, then a partly USD settlement: a r
   assert.deepEqual(f.slice(2).map(x=>x.slice(1,3)).sort(),[['KR',80402],['US',-60]].sort(),'the reversal, its own entry');
   assert.ok(!f.some(x=>x[4]==='detected'));for(const k of ['KRW','USD'])for(const [d,v] of Object.entries(pnl(w,k)))assert.ok(Math.abs(v)<0.01,`${k} ${d} ${v}`);
 });
-test('M2: no Korean fall at all gives no flow of any kind; a fall outside the band goes through the detector as usual',()=>{
+// K1 step: the KRW part is booked at the report (as K1's pair); a Korean fall never seen leaves it unmatched with one
+// System line and nothing else booked (as K1, condition 1), and no detected flow.
+test('M2: no Korean fall at all gives no detected flow; a fall outside the band goes through the detector as usual',()=>{
   const none=C(50,{exchange:{debitCash:-44.38,krw:0,afterCash:0}});const w=run(none);
-  assert.deepEqual(flowList(w),[],'no flow, no false deposit');assert.ok(!w.notes.length,'no note');
+  assert.deepEqual(flowList(w),[['11-10','KR',-59471,'transfer',''],['11-10','US',44.38,'transfer','']],'the KRW part\'s pair only: no detected flow, no false deposit');
   // A Korean withdrawal of ₩200,000 the same day, far outside the band: the detector records it as it would without the recorder.
   const far=C(50,{exchange:{debitCash:-44.38,krw:200000,afterCash:0}});const v=run(far);const d=flowList(v);
-  assert.ok(d.some(x=>x[1]==='KR'&&x[4]==='detected'&&x[2]===-200000),JSON.stringify(d));assert.ok(!d.some(x=>x[3]==='transfer'),'not taken for the exchange');
+  assert.ok(d.some(x=>x[1]==='KR'&&x[4]==='detected'&&x[2]===-200000),JSON.stringify(d));
+  assert.deepEqual(d.filter(x=>x[3]==='transfer'),[['11-10','KR',-59471,'transfer',''],['11-10','US',44.38,'transfer','']],'not taken for the exchange: the report\'s pair only');
 });
 test('M4: while KIS reports an amount, every won is a U.S. obligation, a Korean deduction or provisional; and M1 for these replays',()=>{
   for(const rs of [P2A(true),P2A(false),P2B,P2C,K2]){const w=run(rs),o=run(rs,{old:true});
