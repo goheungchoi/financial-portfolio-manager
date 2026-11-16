@@ -35,7 +35,7 @@ function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=
     const route=rec.current(A),tr=f.current(A);
     // The detector's Korean cash as main.cjs nets it: the KRW of K1 groups not yet seen leaving Korean cash (S3a-2), or
     // the shown KRW before it.
-    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-Math.max(0,(tr.buysUSD??0)-require('../electron/valuation.cjs').coveredInFlight(tr,route,r.fx))+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
+    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-Math.max(0,(tr.buysUSD??0)-require('../electron/valuation.cjs').coveredInFlight(tr,route,r.fx))+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,provisionalOutsideKRW:Math.max(0,route.provisionalKRW-(require('../electron/valuation.cjs').splitContext(used,tr,route,r.fx)?.reportedInFlightUSD??0)*r.fx),unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
     const input={korea,us:used,fx:used.fx,inFlight:tr,funding:route,now:t},mv={KR:marketValue('KR',input),US:marketValue('US',input)};
     const row={at:t,note:r.note,loss:{KR:mv.KR.loss,US:mv.US.loss},value:{KR:{low:mv.KR.low,high:mv.KR.high},US:{low:mv.US.low,high:mv.US.high}},width:widths(value(input).markets.US,mv.US.loss),checks:[]};
     for(const b of bases)for(const m of b.markets){const e=engines[m];const {at,loss}=b;
@@ -218,7 +218,9 @@ else{
     w.to('2026-11-10T09:30:00');w.us(0,184000,[a]);w.to('2026-11-10T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'krw','before the guard: matched nothing');
     w.to('2026-11-10T10:30:00');w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr');assert.equal(w.f.current('A').krwSettledUnpaidKRW,184000,'deducted again (with P1\'s ₩50,000 settled for the purchase outside the app)');
     w.to('2026-11-10T15:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'awaiting-kr','the same Korean day');
-    w.to('2026-11-18T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'unmatched','expired at the reading of the next Korean business day');assert.match(w.row('a').reason,/within one Korean business day/);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0);
+    w.to('2026-11-11T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'unmatched','expired at the reading of the next Korean business day');assert.match(w.row('a').reason,/within one Korean business day/);
+    // P1/P2: the ₩50,000 KIS settled for the purchase outside the app lives as long as the flow detector's evidence for it (24 hours).
+    assert.equal(w.f.current('A').krwSettledUnpaidKRW,50000,'the outside purchase\'s KRW, within its 24 hours');w.to('2026-11-11T11:00:00');w.kr(3000000-134000);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0,'then gone');
   });
   test('S3a-3 (2): KIS still reporting the group at the age limit: its KRW becomes unattributed (provisional); the split and the values do not change',()=>{
     const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const o=k1(w,'o1',100,134000);w.us(0,134000,[o]);w.to('2026-11-11T08:25:00');w.kr(2866000);assert.equal(w.row('o1').state,'kr-paid');

@@ -106,13 +106,13 @@ class FlowDetector {
   // (A late pre-tracking fill or a correction is no deposit or withdrawal. S5: the coverage under review, usReview, is
   // gone; a stored usReview, always 0, is not read.)
   // funding: the recorder's cumulative explained amounts {KR, US} (electron/funding-transfers.cjs explained).
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,unsettledKRW=0,usExplained=null,funding=null}){
+  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,provisionalOutsideKRW=null,unsettledKRW=0,usExplained=null,funding=null}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
     let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=Number(x?.usd)||0;usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{})};
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),provOut:Math.round(Number.isFinite(provisionalOutsideKRW)?provisionalOutsideKRW:Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{})};
     // Provisional changes and settlement evidence carry over between readings. (S4b-1: settlement-timing entries are no
     // longer kept; a stored one is dropped at this save.)
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
@@ -143,7 +143,11 @@ class FlowDetector {
     // unknown funding, less the Korean or U.S. cash that already fell in this reading. Only that outstanding amount can
     // later explain a fall in cash; nothing is kept when the payment was already seen or cannot be measured.
     const pf=prev.provisionalKRW??0;
-    if(pf!==now.provisionalKRW||pf>0&&(prev.unsettledKRW??0)!==now.unsettledKRW){
+    // P2 (multi-order, m1/p2-design.md): with a rate the readings are compared even when unattributed KRW changes; only the
+    // falls its settlement can explain are taken out (below). Only that settlement case: any other change of it (a report
+    // whose funding is unknown, which moves the Korean basis by the confirmed KRW) and a reading without a rate are, as
+    // before, not compared.
+    if((!(fx>0)||!(pf>now.provisionalKRW&&(prev.unsettledKRW??0)>now.unsettledKRW))&&(pf!==now.provisionalKRW||pf>0&&(prev.unsettledKRW??0)!==now.unsettledKRW)){
       if(orders.some(o=>OPEN.includes(o.status)))return [];
       const paidOff=pf-now.provisionalKRW;
       if(pf>0&&(prev.unsettledKRW??0)>now.unsettledKRW&&paidOff>0){const seen=compare();
@@ -155,11 +159,33 @@ class FlowDetector {
         if(outstanding>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:outstanding});}
       const found=this.resolve(account,state,now,prev,fx);save();return found;}
     const u=compare();if(!u)return [];
+    // P2: the provisional KRW that settled in this reading (p) explains falls up to it, USD first (KIS takes U.S. cash before
+    // KRW): those parts leave the comparison, and the rest of p is kept as settlement evidence for a later fall. A rise is
+    // never taken out (a deposit always shows), and nothing beyond p is (a larger withdrawal leaves its excess).
+    {const p=Math.max(0,pf-now.provisionalKRW);
+      if(p>0&&fx>0&&(prev.unsettledKRW??0)>now.unsettledKRW){
+        // A change that returns a held change to its earlier balance is that reversal, not part of the payment (as before).
+        for(const m of ['KR','US']){const held=state.pending[m];if(held&&u[m]&&Math.sign(u[m])!==Math.sign(held.amount)&&!big(m,held.amount+u[m],fx)){add(held,m,u[m]);u[m]=0;}}
+        const pOut=Math.max(0,(prev.provOut??pf)-now.provOut),usPart=usStart?0:Math.min(Math.max(0,-(u.US??0))*fx,p,pOut);
+        // A Korean fall offsetting a U.S. rise at the rate is the exchange paying the buys (a transfer between the markets, which
+        // resolve pairs): left in the comparison, counted only toward what the settlement has been paid.
+        const pair=(u.US??0)>0&&(u.KR??0)<0&&!big('KR',(u.KR??0)+(u.US??0)*fx,fx),krPaid=Math.min(Math.max(0,-(u.KR??0)),p-usPart),krPart=pair?0:krPaid;
+        if(usPart>0)u.US=round('US',(u.US??0)+usPart/fx);if(krPart>0)u.KR=round('KR',(u.KR??0)+krPart);
+        // At the first U.S. reading the U.S. side of the payment was not seen, so it cannot be measured: no evidence (as before).
+        const outstanding=usStart?0:Math.round(p-usPart-krPaid),krOnly=Math.min(outstanding,Math.max(0,Math.round(p-pOut))),any=outstanding-krOnly;
+        // The part inside the app's buys in flight (p − pOut) can be paid only by a Korean fall: the settlement tracker explains
+        // their U.S. payment (seed 252: a withdrawal matched as it). Only the rest may match a U.S. fall.
+        if(any>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:any});if(krOnly>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:krOnly,krOnly:true});}}
     // A change starts being held only when it is large; once held, every later change in that market adds to it, so the
     // threshold applies to the accumulated difference (a gradual return to the earlier balance cancels it). Each change
     // keeps its own amount and the window it happened in (fix review 2026-11-05, P1: the accumulated amount took the
     // first change's window, so a deposit after the day's baseline was counted as before it). since stays the first
     // change's time: the hold runs from it, and a later change does not restart the wait.
+    // P2: a fall matching a settlement's evidence is its payment before it can join a change already held in that market
+    // (a deposit held, then the settlement's Korean fall: they must not net into one flow).
+    for(const market of ['KR','US']){const amount=u[market];if(!(amount<0)||!state.pending[market])continue;const krw=market==='US'?(fx>0?amount*fx:null):amount;if(krw==null)continue;
+      const ev=state.settled.find(e=>!e.usedKR&&!e.usedUS&&!(market==='US'&&e.krOnly)&&near(Math.abs(krw),e.krw,THRESHOLD_KRW));if(!ev)continue;state.settled=state.settled.filter(e=>e!==ev);u[market]=0;
+      try{this.onNote?.('Settlement matched',`${label(market)} cash fell by ${money(market,amount)}, matching the ₩${ev.krw.toLocaleString('en-US')} still to be paid for U.S. buys that settled; not a withdrawal.`);}catch{}}
     for(const market of ['KR','US']){const amount=u[market],held=state.pending[market];if(!amount||!held&&!big(market,amount,fx))continue;
       const mark=usStart&&market==='KR'?{usUnseen:true}:{};
       if(held){Object.assign(held,{funding:held.funding||u.usTraded,...mark});add(held,market,amount);}
@@ -217,7 +243,7 @@ class FlowDetector {
     // A fall in Korean or U.S. cash matching the outstanding payment for U.S. buys that settled while their funding was
     // unknown is that payment; the settlement record is used up. A fall that does not match stays held.
     for(const m of ['KR','US']){const q=p[m];if(!q||q.amount>=0)continue;const krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;if(krw==null)continue;
-      const s=state.settled.find(e=>!e.usedKR&&!e.usedUS&&near(Math.abs(krw),e.krw,THRESHOLD_KRW));if(!s)continue;state.settled=state.settled.filter(e=>e!==s);
+      const s=state.settled.find(e=>!e.usedKR&&!e.usedUS&&!(m==='US'&&e.krOnly)&&near(Math.abs(krw),e.krw,THRESHOLD_KRW));if(!s)continue;state.settled=state.settled.filter(e=>e!==s);
       note('Settlement matched',`${label(m)} cash fell by ${money(m,q.amount)}, matching the ₩${s.krw.toLocaleString('en-US')} still to be paid for U.S. buys that settled; not a withdrawal.`);delete p[m];}
     // Nothing explains it after the hold: a detected flow for the user to confirm or remove.
     for(const m of ['KR','US']){const q=p[m];if(!q)continue;const age=now.at-q.since,krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;

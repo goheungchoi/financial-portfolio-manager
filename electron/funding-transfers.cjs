@@ -20,7 +20,7 @@ const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activ
 const BAND=0.05,MAX_SET=8;
 // P1: settled provisional KRW (a report no group explains) is matched to its Korean fall with the flow detector's own
 // tolerance for a settlement's payment, so both readers of one fall agree (planner C2).
-const PROV_MIN=1000,DETECT_FLOOR=10000,nearPay=(a,b)=>Math.abs(a-b)<=Math.max(DETECT_FLOOR,Math.abs(b)*0.03);
+const PROV_MIN=1000,DETECT_FLOOR=10000,PROV_LIFE_MS=86400000,nearPay=(a,b)=>Math.abs(a-b)<=Math.max(DETECT_FLOOR,Math.abs(b)*0.03);
 // S3a-2: the states whose KRW has not been seen leaving Korean cash (current().krwUnpaidKRW); and the states KIS still
 // reports (the split's groups).
 const UNPAID=new Set(['krw','awaiting-kr','awaiting-reversal']),REPORTED=new Set(['us','krw','kr-paid']);
@@ -207,7 +207,9 @@ class FundingTransfers {
 }
     else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW)??oldestPrefix(groups,F,r=>r.reportedKRW)??this.splitBatch(account,groups,F);
       // One set of groups KIS settled in this reading, with the U.S. cash it took (shared by amount): returns the cash used.
-      const settle=(set,paid)=>{event=true;const total=set.reduce((n,r)=>n+r.usd,0),Y=usd(Math.min(total,paid));
+      // USD first (as F-d4 in the tracker): KIS takes all the U.S. cash it can, so a fall smaller than the set's amount with
+      // U.S. cash left after it is not KIS's debit (a withdrawal, say): it pays nothing, and the set waits for the debit.
+      const settle=(set,paid)=>{event=true;const total=set.reduce((n,r)=>n+r.usd,0),usable=paid>=total*(1-BAND)||cash<=0.01?paid:0,Y=usd(Math.min(total,usable));
         for(const r of set){const share=total>0?r.usd/total:0,y=usd(Y*share);
           if(r.state==='us'){const S=usd(r.usd-y);
             // The U.S. side settled: its obligation left, the cash it took left; what stays is the shortfall.
@@ -313,7 +315,7 @@ class FundingTransfers {
         if(!set){let t=0;for(let i=0;i<entries.length;i++){t+=entries[i].krw;if(nearPay(left,t)){set=entries.slice(0,i+1);break;}}}
         if(set){left=0;paidKeys=new Set(set.map(e=>e.at+':'+e.krw));}}
       const keep=[];for(const e of entries){if(paidKeys.has(e.at+':'+e.krw))continue;
-        if(B.agedOut('KR',{fillAt:e.at,now,n:1}).aged){try{this.log?.('U.S. buy funding not matched',`KRW ${Math.round(e.krw).toLocaleString('en-US')} KIS settled for U.S. buys the app could not attribute was not seen leaving Korean cash within one Korean business day; it is no longer deducted.`);}catch{}continue;}keep.push(e);}
+        if(now-e.at>PROV_LIFE_MS){try{this.log?.('U.S. buy funding not matched',`KRW ${Math.round(e.krw).toLocaleString('en-US')} KIS settled for U.S. buys the app could not attribute was not seen leaving Korean cash within 24 hours; it is no longer deducted.`);}catch{}continue;}keep.push(e);}
       m.provSettled=keep;}
     m.kr={settled,effects,at:now};this.put(account,'#meta',m);return this.current(account);}
 }

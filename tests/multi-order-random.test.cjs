@@ -117,7 +117,7 @@ function check(seed,side,profile='mix'){const {desc,steps}=generate(seed,side,pr
   for(const r of run.rec.rows(A).filter(r=>(r.orders??[]).length))out.groups[r.state]=(out.groups[r.state]??0)+1;
   const flows=run.flows().filter(f=>f.detected);out.krFlows=flows.filter(f=>f.market==='KR').length;
   const total=c2(flows.filter(f=>f.market==='US').reduce((n,f)=>n+f.amount,0)),one=!desc.W||flows.length===1;
-  if(Math.abs(total+desc.W)>0.02||!one||out.krFlows)out.flowsOff=out.krFlows?'a detected Korean flow':desc.wAt==='same'?'withdrawal in a settlement reading (the detector skips a reading where unattributed KRW settles)':!desc.W?'a detected U.S. flow with no withdrawal':'a withdrawal (early or between) not exactly one flow';
+  if(Math.abs(total+desc.W)>0.02||!one||out.krFlows)out.flowsOff=out.krFlows?'a detected Korean flow':desc.wAt==='same'?'withdrawal in a settlement reading: right in total, or off by the batch band (main model)':!desc.W?'a detected U.S. flow with no withdrawal':'a withdrawal (early or between) not exactly one flow';
   return out;}
 module.exports={generate,check};
 if(require.main===module){
