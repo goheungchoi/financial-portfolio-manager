@@ -203,3 +203,36 @@ else{
       for(const r of run.out)assert.ok(c(r)<=c0+2,`${name} at ${r.note}: ${c(r)} above ${c0}`);
       if(['K1, U.S. reading first','partial reversal'].includes(name))for(const r of run.out)assert.ok(Math.abs(c(r)-c0)<=2,`${name} at ${r.note}: ${c(r)} vs ${c0}`);}
   });}
+
+// Condition C of the several-orders work (artifacts/reviews/2026-11-16-multi-order/m1/plan.md): several U.S. buys filled
+// in one reading, USD-funded as the control is. Right: no Korean check wrong, no U.S. low-bound drift, and every U.S.
+// high-bound check is the in-flight range change, as for one buy. Not run in the command-line modes.
+if(!mode){
+  const hold=list=>list.map(o=>({symbol:o.symbol,quantity:1,price:o.fillPrice}));
+  const two=(a,b)=>{const o=[buy('X',a,K('2026-11-09T23:40:00')),buy('Y',b,K('2026-11-09T23:40:30'))],h=hold(o);
+    return [at('2026-11-09T23:00:00','before',3000000,{cash:500,holdings:[]},[]),at('2026-11-09T23:45:00','both filled',3000000,{cash:500,holdings:h},o),at('2026-11-10T08:59:00','before report',3000000,{cash:500,holdings:h},o),
+      at('2026-11-10T09:00:00','report',3000000,{cash:500,holdings:h,buyKRW:Math.round((a+b)*FX)},o),at('2026-11-11T08:25:00','settled in USD',3000000,{cash:500-a-b,holdings:h,buyKRW:0},o),at('2026-11-11T23:00:00','end',3000000,{cash:500-a-b,holdings:h,buyKRW:0},o)];};
+  const apart=()=>{const o=[buy('X',100,K('2026-11-09T23:40:00')),buy('Y',100,K('2026-11-09T23:41:00'))],h=hold(o);
+    return [at('2026-11-09T23:00:00','before',3000000,{cash:500,holdings:[]},[]),at('2026-11-09T23:45:00','both filled',3000000,{cash:500,holdings:h},o),
+      at('2026-11-10T09:00:00','first report',3000000,{cash:500,holdings:h,buyKRW:134000},o),at('2026-11-10T10:00:00','second report',3000000,{cash:500,holdings:h,buyKRW:268000},o),
+      at('2026-11-11T08:25:00','settled in USD',3000000,{cash:300,holdings:h,buyKRW:0},o),at('2026-11-11T23:00:00','end',3000000,{cash:300,holdings:h,buyKRW:0},o)];};
+  const many=n=>{const o=Array.from({length:n},(_,i)=>buy('B'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=hold(o),total=o.reduce((s,x)=>s+x.fillPrice,0);
+    return [at('2026-11-09T23:00:00','before',3000000,{cash:1000,holdings:[]},[]),at('2026-11-09T23:45:00','all filled',3000000,{cash:1000,holdings:h},o),
+      at('2026-11-10T09:00:00','report',3000000,{cash:1000,holdings:h,buyKRW:Math.round(total*FX)},o),at('2026-11-11T08:25:00','settled in USD',3000000,{cash:1000-total,holdings:h,buyKRW:0},o),
+      at('2026-11-11T23:00:00','end',3000000,{cash:1000-total,holdings:h,buyKRW:0},o),at('2026-11-21T23:00:00','after the age rule',3000000,{cash:1000-total,holdings:h,buyKRW:0},o)];};
+  const right=(name,seq)=>{const run=e2e(seq),w=wrong(run);
+    assert.deepEqual(w.filter(x=>x.market==='KR'),[],name+': the Korean check');
+    assert.deepEqual(w.filter(x=>x.market==='US'&&Math.abs(x.drift.low)>TOL.US).map(x=>[x.from,x.at,x.drift.low]),[],name+': the U.S. low bound (the value)');
+    for(const x of w.filter(x=>x.market==='US'))assert.ok(Math.abs(x.drift.high-x.cause.inFlight)<=TOL.US&&Math.abs(x.cause.other)<=TOL.US&&Math.abs(x.cause.receivable)<=TOL.US,`${name}: U.S. at "${x.at}" from "${x.from}": ${JSON.stringify(x.cause)}`);return run;};
+  test('condition C: two U.S. buys filled in one reading ($100 + $150, and $100 + $100): as for one buy, only the in-flight range',()=>{
+    const run=right('$100 + $150',two(100,150));assert.equal(run.out.find(r=>r.note==='both filled').width.inFlight,250,'both in flight together');assert.equal(run.out.find(r=>r.note==='report').width.inFlight,0,'the report settles both');
+    right('$100 + $100',two(100,100));});
+  test('condition C: two equal U.S. buys reported apart: nothing is settled on an ambiguous report, and the value stays right',()=>{
+    const run=right('equal buys reported apart',apart());assert.equal(run.out.find(r=>r.note==='first report').width.inFlight,200,'one report of $100 fits either buy: neither is settled');});
+  test('condition C: up to 8 U.S. buys filled and reported together: as for one buy',()=>{for(const n of [3,8])right(n+' fills',many(n));});
+  // Known limit, found by these tests (m1/condition-c-report.md): with 9 or more U.S. buys filled and reported together,
+  // the U.S. value shows a false gain of their total at the report reading, and with 13 or more (over InFlight's BOUND of
+  // 12) a false loss after settlement until the age rule closes them. Kept as todo, so it is reported and not hidden; a
+  // fix turns it into a plain test. Before several orders per review are activated.
+  test('condition C (known limit): 9 and 13 U.S. buys filled and reported together',{todo:'9+ fills: false gain at the report (funding-transfers K1, 8 candidates); 13+: false loss until age (InFlight BOUND 12)'},()=>{for(const n of [9,13])right(n+' fills',many(n));});
+}
