@@ -178,7 +178,9 @@ class LiveEngine {
       // cooldown, which never reaches the worker): nothing is at KIS. Recorded as not placed with when KIS may be asked
       // again, its funds released (a rejection with no shares filled), and this market's trading stays on. A rate limit
       // KIS returns for the order request itself is not this case: that request was sent, so it stays uncertain.
-      catch(error){if(error.message==='ORDER_NOT_SENT'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
+      // M-1c: so is a prepared ticket the worker refused as missing or expired (15 s) before sending (TICKET_EXPIRED);
+      // notSentCause says which.
+      catch(error){if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
         if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};this.enabled=false;}
       this.save(order);return order;
     }finally{this.busy=false;}

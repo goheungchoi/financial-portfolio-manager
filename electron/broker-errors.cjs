@@ -8,7 +8,7 @@ function responseError(status,body){const code=body?.msg_cd;const safeCode=typeo
 //   session); retrying can work.
 // - uncertain: the order may be at KIS; it must be reconciled before anything is retried.
 // - check: one of the app's own order checks refused it (limits, exposure, approval, account change).
-const TEMPORARY=['KIS_ORDER_BUSY','RATE_LIMITED','ORDER_NOT_SENT','REQUEST_TIMEOUT','NETWORK_UNAVAILABLE','SERVER_ERROR','SESSION_CLOSED'];
+const TEMPORARY=['KIS_ORDER_BUSY','RATE_LIMITED','ORDER_NOT_SENT','TICKET_EXPIRED','REQUEST_TIMEOUT','NETWORK_UNAVAILABLE','SERVER_ERROR','SESSION_CLOSED'];
 const BROKER=['BROKER_REJECTED','CREDIT_ACCOUNT_REQUIRED'];
 function classify(error){
   const raw=error?.code??error?.message;const code=typeof raw==='string'&&/^[A-Z][A-Z0-9_]{2,39}$/.test(raw)&&!raw.startsWith('ERR_')?raw:null;

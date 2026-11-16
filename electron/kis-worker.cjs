@@ -35,7 +35,7 @@ process.parentPort.on('message',async ({data})=>{
       else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
       else if(operation==='us-revise-order')snapshot=await us.revise(data.command??{});
       else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
-      else if(operation==='us-place-order'){const entry=prepared.get(data.ticket);prepared.delete(data.ticket);if(!entry||entry.market!=='US'||entry.expiresAt<Date.now())throw new Error();if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
+      else if(operation==='us-place-order'){const entry=require('./order-tickets.cjs').takeTicket(prepared,data.ticket,'US');if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
       else throw new Error();
       process.parentPort.postMessage({id,ok:true,snapshot});return;
     }
@@ -56,8 +56,7 @@ process.parentPort.on('message',async ({data})=>{
       process.parentPort.postMessage({id,ok:true,snapshot:{...check,ticket,session:sess}});return;
     }
     if(data.operation==='place-order') {
-      const entry=prepared.get(data.ticket);prepared.delete(data.ticket);
-      if(!entry||entry.market||Date.now()>entry.expiresAt)throw new Error();
+      const entry=require('./order-tickets.cjs').takeTicket(prepared,data.ticket,'KR');
       // The session must still be open at placement (the same one the order was prepared for).
       if(entry.session&&!entry.session.regular){const now=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[require('./market-sessions.cjs').TOGGLES[entry.session.id]]:true}});if(now?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}
       process.parentPort.postMessage({id,ok:true,snapshot:await client.placeOrder(entry.command,entry.session)});return;
@@ -107,9 +106,10 @@ process.parentPort.on('message',async ({data})=>{
     stream.setSymbols(streamSymbols());
     process.parentPort.postMessage({id,ok:true,snapshot});
   } catch(error) {
-    const allowed=['INVALID_CREDENTIAL_FILE','CREDIT_ACCOUNT_REQUIRED','INVALID_RESPONSE','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','INCOMPLETE_BALANCE','INCOMPLETE_HISTORY','INVALID_DATE_RANGE','FEATURE_UNAVAILABLE','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','ORDER_UNCERTAIN','ORDER_NOT_SENT'];
+    const allowed=['INVALID_CREDENTIAL_FILE','CREDIT_ACCOUNT_REQUIRED','INVALID_RESPONSE','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','INCOMPLETE_BALANCE','INCOMPLETE_HISTORY','INVALID_DATE_RANGE','FEATURE_UNAVAILABLE','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','ORDER_UNCERTAIN','ORDER_NOT_SENT','TICKET_EXPIRED'];
     // M-1a: an order request refused before it left the app (the request-limit window, including the sign-in that may
     // precede it) is not at KIS.
-    const code=['place-order','us-place-order'].includes(operation)&&error.notSent===true?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
+    // An expired or missing ticket (M-1c) keeps its own code: also not sent, for another reason than the request limit.
+    const code=['place-order','us-place-order'].includes(operation)&&error.notSent===true&&error.code!=='TICKET_EXPIRED'?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
   } finally {busy=false;}
 });

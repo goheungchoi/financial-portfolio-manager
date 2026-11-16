@@ -798,8 +798,8 @@ class Automation {
           // M-1a: refused by KIS's request limit before it was sent: nothing is at KIS, trading stays on, and a review
           // decides again once KIS may be asked (on fresh prices and checks), not before.
           if(order?.status==='Rejected'&&order.reason==='ORDER_NOT_SENT'){const at=Number.isFinite(order.retryAt)?order.retryAt:Date.now()+60000;
-            executionNote=`Not sent: KIS's request limit was reached just before ${result.decision.action} ${result.decision.quantity} ${result.decision.symbol} went out, so nothing reached KIS. Trading stays on; a review decides again after ${new Date(at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST.`;
-            this.log(id,'System','Order not sent · request limit',executionNote);this.requestReview('Order not sent',`${result.decision.action} ${result.decision.symbol} was not sent (KIS request limit); decide again.`,result.decision.symbol,{notBefore:at});}}
+            executionNote=`Not sent: ${order.notSentCause==='ticket-expired'?'the broker check made for':'KIS\'s request limit was reached just before'} ${result.decision.action} ${result.decision.quantity} ${result.decision.symbol} ${order.notSentCause==='ticket-expired'?'expired (15 seconds) before it could go out':'went out'}, so nothing reached KIS. Trading stays on; a review decides again after ${new Date(at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST.`;
+            this.log(id,'System',order.notSentCause==='ticket-expired'?'Order not sent · check expired':'Order not sent · request limit',executionNote);this.requestReview('Order not sent',`${result.decision.action} ${result.decision.symbol} was not sent (${order.notSentCause==='ticket-expired'?'its broker check expired':'KIS request limit'}); decide again.`,result.decision.symbol,{notBefore:at});}}
         if(proposal?.reason)this.db.prepare('INSERT INTO lessons(id,text) VALUES(?,?)').run(randomUUID(),`Candidate lesson: avoid proposals blocked by ${proposal.reason}. Review freshness, reservations and configured limits before retrying.`);
         if(context.environment!=='local-paper'&&this.config.autoSubmit&&execution.autoEnabled===false){executionNote=(execution.market==='US'?'U.S.':'Korea')+' automatic execution is off. Proposal awaits manual approval.';this.log(id,'System','Approval required',executionNote);}}
 
@@ -1292,7 +1292,7 @@ class Automation {
       if(placed?.reason==='APPROVAL_REQUIRED')return waits('needs your approval (extended session or product rule)');
       if(sent==='Rejected'&&placed.reason==='SESSION_CLOSED')return closed();
       // M-1a: KIS's request limit refused it before it was sent; armed again for when KIS may be asked.
-      if(sent==='Rejected'&&placed.reason==='ORDER_NOT_SENT')return retry('RATE_LIMITED',placed.retryAt);
+      if(sent==='Rejected'&&placed.reason==='ORDER_NOT_SENT')return retry(placed.notSentCause==='ticket-expired'?'TICKET_EXPIRED':'RATE_LIMITED',placed.retryAt);
       if(sent==='Rejected')return note('rejected',`The broker rejected it (${placed.reason??'BROKER_REJECTED'}${placed.brokerCode?`, KIS ${placed.brokerCode}`:''}). No order was placed.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,results:check.results});
       // A sale went out: the other armed cash sells of this symbol wait a minute, so the next one is judged on a balance read
       // after this fill. This narrows, not closes, the window where a fill is recorded before the balance shows it.
