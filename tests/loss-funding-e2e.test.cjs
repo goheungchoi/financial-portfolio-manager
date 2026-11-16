@@ -27,10 +27,10 @@ function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=
   const engine=market=>new LiveEngine(db,{request:async()=>{throw new Error('no broker');}},()=>({status:'connected',snapshot:{accountKey:market==='US'?A+':US':A}}),market==='US'?{market:'US'}:{});
   const engines={KR:engine('KR'),US:engine('US')};
   for(const r of readings){t=r.at;const ts=new Date(t).toISOString();
-    const raw={accountKey:A+':US',environment:'live',timestamp:ts,cash:r.us.cash,...(r.us.pending?{pendingSaleProceeds:r.us.pending}:{}),fx:{usdKRW:r.fx,timestamp:ts},holdings:r.us.holdings,unsettled:{buyKRW:r.us.buyKRW??0,sellKRW:0},raw:{}};
+    const raw={accountKey:A+':US',environment:'live',timestamp:ts,cash:r.us.cash,...(r.us.pending?{pendingSaleProceeds:r.us.pending}:{}),fx:{usdKRW:r.fx,timestamp:ts},holdings:r.us.holdings,unsettled:{buyKRW:r.us.buyKRW??0,sellKRW:r.us.sellKRW??0},raw:{}};
     const h=hold.accept(raw);if(!h.held&&!h.provisional){ft.annotate(raw,r.fx);used=raw;}
     const korea={accountKey:A,environment:'live',timestamp:ts,cash:r.kr.settled,settledCash:r.kr.settled,holdings:r.kr.holdings??[]};
-    if(!h.held){f.observe(A,{us:used,orders:r.orders,fx:r.fx});if(!h.provisional){const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD,reportedOpenIds:require('../electron/valuation.cjs').reportedOpenIds(tr)});}}
+    if(!h.held){f.observe(A,{us:used,orders:r.orders,fx:r.fx,krwGroups:rec.current(A).krwRouteGroups});if(!h.provisional){const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD,reportedOpenIds:require('../electron/valuation.cjs').reportedOpenIds(tr)});}}
     if(!lastKR||lastKR.settled!==r.kr.settled||r.krRead!==false){lastKR=r.kr;rec.observeKR(A,{korea,orders:[]});}
     const route=rec.current(A),tr=f.current(A);
     // The detector's Korean cash as main.cjs nets it: the KRW of K1 groups not yet seen leaving Korean cash (S3a-2), or
@@ -233,11 +233,9 @@ if(!mode){
     const run=right('equal buys reported apart',apart());assert.equal(run.out.find(r=>r.note==='first report').width.inFlight,100,'the report covers one of the two');
     {const e=e2e(apart().slice(0,3)),st=JSON.parse(e.db.prepare('SELECT payload FROM inflight_settlement').get().payload);assert.equal((st[A]??st).open.length,2,'neither is settled');}});
   test('condition C: up to 8 U.S. buys filled and reported together: as for one buy',()=>{for(const n of [3,8])right(n+' fills',many(n));});
-  // Known limit, found by these tests (m1/condition-c-report.md): with 9 or more U.S. buys filled and reported together,
-  // the U.S. value shows a false gain of their total at the report reading, and with 13 or more (over InFlight's BOUND of
-  // 12) a false loss after settlement until the age rule closes them. Kept as todo, so it is reported and not hidden; a
-  // fix turns it into a plain test. Before several orders per review are activated.
-  test('condition C (known limit): 9 and 13 U.S. buys filled and reported together',{todo:'9+ fills: false gain at the report (funding-transfers K1, 8 candidates); 13+: false loss until age (InFlight BOUND 12)'},()=>{for(const n of [9,13])right(n+' fills',many(n));});
+  // The limit these tests found (m1/condition-c-report.md: 9+ buys a false gain at the report, 13+ a false loss until
+  // age), fixed by M-1.6a to c2; a todo until then, a plain test now.
+  test('condition C: 9 and 13 U.S. buys filled and reported together: as for one buy (M-1.6a to c2)',()=>{for(const n of [9,13])right(n+' fills',many(n));});
 }
 
 // M-1.6c1 (Alt 3): 13 and 25 U.S. buys reported together, over InFlight's bound. From the report the batch is booked and
@@ -252,5 +250,64 @@ if(!mode){
       assert.ok(Math.abs(rep.US.low-usTrue)<0.01,`${label}: the U.S. low ${rep.US.low} = ${usTrue}`);assert.ok(Math.abs(rep.KR.low-krTrue)<1,`${label}: the Korean low ${rep.KR.low} = ${krTrue}`);
       assert.ok(Math.abs(rep.KR.low+rep.US.low*FX-(3000000+(cash>0?cash*FX:0)))<2,`${label}: the combined low counts the batch once`);
       const flows=run.flows();assert.equal(flows.filter(f=>f.detected).length,0,label+': no detected flow');assert.equal(flows.filter(f=>f.transfer).length,cash>0?0:2,label+': the KRW-paid pair, once');}
+  });
+  // M-1.6c2: the same batches through settlement and age, reading by reading. Funding: USD (U.S. cash $2,000), KRW ($0)
+  // or mixed ($100: KIS takes the cash first, then exchanges the shortfall a reading later). Reported, and settled, together
+  // or in two parts (the second part the odd-numbered buys: not a prefix). The combined low against the true value.
+  const parts=(o,k)=>k===1?[o]:[o.filter((_,i)=>i%2===0),o.filter((_,i)=>i%2===1)],sum=l=>l.reduce((s,x)=>s+x.fillPrice,0),c2=v=>Math.round(v*100)/100;
+  function lifecycle(n,fund,k){const cash0={usd:2000,krw:0,mixed:100}[fund],o=Array.from({length:n},(_,i)=>buy('B'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice}));
+    const s=[at('2026-11-09T23:00:00','before',3000000,{cash:cash0,holdings:[]},[]),at('2026-11-09T23:45:00','filled',3000000,{cash:cash0,holdings:h},o)];
+    let rep=0,t=K('2026-11-10T09:00:00');for(const [i,p] of parts(o,k).entries()){rep+=Math.round(sum(p)*FX);s.push({...at('2026-11-10T09:00:00',`report ${i+1}`,3000000,{cash:cash0,holdings:h,buyKRW:rep},o),at:t+i*3600000});}
+    let cash=cash0,kr=3000000;t=K('2026-11-11T08:24:00');const step=(note)=>{s.push({...at('2026-11-11T08:24:00',note,kr,{cash:c2(cash),holdings:h,buyKRW:Math.max(0,rep)},o),at:t});t+=60000;};
+    for(const [i,p] of parts(o,k).entries()){const P=sum(p),short=P-Math.min(Math.max(0,cash),P);rep-=Math.round(P*FX);cash-=P;step(`debit ${i+1}`);if(short>0.001){kr-=Math.round(short*FX);cash+=short;step(`exchange ${i+1}`);}}
+    t+=86400000;step('next day');t+=7*86400000;step('after age');return {s,combined:3000000+cash0*FX};}
+  test('M-1.6c2: 13 and 25 buys, USD-, KRW- and mixed-paid, together and in parts: never above the true value, right from settlement on, no detected flow',()=>{
+    for(const n of [13,25])for(const fund of ['usd','krw','mixed'])for(const k of [1,2]){const {s,combined}=lifecycle(n,fund,k),run=e2e(s),label=`${n} buys, ${fund}, in ${k}`;
+      const settledFrom=run.out.findIndex(r=>r.note===(k===1?'debit 1':'debit 2'));
+      for(const [i,r] of run.out.entries()){const low=r.value.KR.low+r.value.US.low*FX;assert.ok(low<=combined+2,`${label} at ${r.note}: ${low} is above the true ${combined}`);
+        // Right at every reading except while KIS reports a batch in parts (the batch set within the band: M-1.6b).
+        if(k===1||i>=settledFrom&&!(fund!=='usd'&&r.note==='debit 2'))assert.ok(Math.abs(low-combined)<=2,`${label} at ${r.note}: ${low} vs ${combined}`);}
+      assert.ok(run.out.slice(run.out.findIndex(r=>r.note==='next day')).every(r=>Math.abs(r.value.KR.low+r.value.US.low*FX-combined)<=2),`${label}: right after settlement`);
+      assert.deepEqual(run.flows().filter(f=>f.detected).map(f=>f.amount),[],label+': no detected flow');}
+  });
+  // C2 (the planner's addition): KIS's report reaches 0 a reading before its debit, with a $300 withdrawal between.
+  test('M-1.6c2 C2: the report at 0 before KIS\'s debit, a withdrawal between: right throughout, one detected flow (the withdrawal)',()=>{
+    for(const n of [13,25])for(const W of [0,300]){const o=Array.from({length:n},(_,i)=>buy('B'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})),T=sum(o);
+      const s=[at('2026-11-09T23:00:00','before',3000000,{cash:2000,holdings:[]},[]),at('2026-11-09T23:45:00','filled',3000000,{cash:2000,holdings:h},o),at('2026-11-10T09:00:00','report',3000000,{cash:2000,holdings:h,buyKRW:Math.round(T*FX)},o),
+        at('2026-11-11T08:20:00','zero',3000000,{cash:2000,holdings:h,buyKRW:0},o),...(W?[at('2026-11-11T08:22:00','withdrawal',3000000,{cash:2000-W,holdings:h,buyKRW:0},o)]:[]),
+        at('2026-11-11T08:24:00','debit',3000000,{cash:c2(2000-W-T),holdings:h,buyKRW:0},o),at('2026-11-11T12:00:00','later',3000000,{cash:c2(2000-W-T),holdings:h,buyKRW:0},o),at('2026-11-27T12:00:00','after age',3000000,{cash:c2(2000-W-T),holdings:h,buyKRW:0},o)];
+      const run=e2e(s),label=`${n} buys, withdrawal ${W}`;let gone=0;
+      for(const r of run.out){if(r.note==='withdrawal')gone=W;const low=r.value.KR.low+r.value.US.low*FX;assert.ok(Math.abs(low-(3000000+(2000-gone)*FX))<=2,`${label} at ${r.note}: ${low}`);}
+      assert.deepEqual(run.flows().filter(f=>f.detected).map(f=>[f.market,f.amount]),W?[['US',-W]]:[],label);
+      // The recorder books KIS's late debit by usd (no exchange is awaited for it, nothing is left unmatched).
+      const groups=run.rec.rows(A).filter(r=>(r.orders??[]).length>0&&r.state!=='none');assert.ok(groups.length>0&&groups.every(r=>r.state==='booked'&&r.via==='usd'),`${label}: ${JSON.stringify(groups.map(r=>[r.state,r.via]))}`);}
+  });
+  // D5 (the planner's addition): the zero at n with U.S. cash $100 untouched; at n + 1 KIS takes the $100 (cash to 0) and
+  // exchanges the rest, in the same reading or the next.
+  test('M-1.6c2 D5: the zero, then a mixed debit a reading later: right from then on, no detected flow, the exchange matched',()=>{
+    for(const n of [13,25])for(const same of [true,false]){const o=Array.from({length:n},(_,i)=>buy('B'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})),T=sum(o),S=Math.round((T-100)*FX);
+      const s=[at('2026-11-09T23:00:00','before',3000000,{cash:100,holdings:[]},[]),at('2026-11-09T23:45:00','filled',3000000,{cash:100,holdings:h},o),at('2026-11-10T09:00:00','report',3000000,{cash:100,holdings:h,buyKRW:Math.round(T*FX)},o),
+        at('2026-11-11T08:20:00','zero',3000000,{cash:100,holdings:h,buyKRW:0},o),
+        ...(same?[at('2026-11-11T08:24:00','debit',3000000-S,{cash:0,holdings:h,buyKRW:0},o)]:[at('2026-11-11T08:24:00','debit',3000000,{cash:0,holdings:h,buyKRW:0},o),at('2026-11-11T08:26:00','exchange',3000000-S,{cash:0,holdings:h,buyKRW:0},o)]),
+        at('2026-11-11T12:00:00','later',3000000-S,{cash:0,holdings:h,buyKRW:0},o),at('2026-11-27T12:00:00','after age',3000000-S,{cash:0,holdings:h,buyKRW:0},o)];
+      const run=e2e(s),label=`${n} buys, exchange ${same?'with the debit':'a reading later'}`;
+      for(const r of run.out){const low=r.value.KR.low+r.value.US.low*FX;assert.ok(Math.abs(low-(3000000+100*FX))<=2,`${label} at ${r.note}: ${low}`);}
+      assert.deepEqual(run.flows().filter(f=>f.detected).map(f=>[f.market,f.amount]),[],label+': no detected flow');
+      const groups=run.rec.rows(A).filter(r=>(r.orders??[]).length>0&&r.state!=='none');assert.ok(groups.every(r=>r.state==='booked'&&r.via==='exchange'),`${label}: ${JSON.stringify(groups.map(r=>[r.state,r.via]))}`);}
+  });
+  // C3 (the planner's addition): 13 and 25 sales, the reported sale total modelled (sellKRW), proceeds pending at the fill
+  // or a reading later, reported and settled together or in two parts. The high is right from settlement on (from the
+  // fill when KIS shows the proceeds then), and the low is never above the true value.
+  test('M-1.6c2 C3: 13 and 25 U.S. sales: the high right from settlement on, the low never above the true value',()=>{
+    for(const n of [13,25])for(const late of [false,true])for(const k of [1,2]){const o=Array.from({length:n},(_,i)=>sell('S'+i,10+i,K('2026-11-09T23:40:00')+i*1000)),h=o.map(x=>({symbol:x.symbol,quantity:1,price:x.fillPrice})),T=sum(o);
+      const s=[at('2026-11-09T23:00:00','before',3000000,{cash:1000,holdings:h},[]),at('2026-11-09T23:45:00','filled',3000000,{cash:1000,holdings:[],...(late?{}:{pending:T})},o)];
+      if(late)s.push(at('2026-11-09T23:55:00','proceeds shown',3000000,{cash:1000,holdings:[],pending:T},o));
+      let rep=0,pending=T,cash=1000,t=K('2026-11-10T09:00:00');for(const [i,p] of parts(o,k).entries()){rep+=Math.round(sum(p)*FX);s.push({...at('2026-11-10T09:00:00',`report ${i+1}`,3000000,{cash,holdings:[],pending,sellKRW:rep},o),at:t+i*3600000});}
+      t=K('2026-11-11T08:24:00');for(const [i,p] of parts(o,k).entries()){const P=sum(p);rep-=Math.round(P*FX);pending=c2(pending-P);cash=c2(cash+P);s.push({...at('2026-11-11T08:24:00',`settle ${i+1}`,3000000,{cash,holdings:[],...(pending>0.001?{pending}:{}),sellKRW:Math.max(0,rep)},o),at:t});t+=60000;}
+      s.push({...at('2026-11-11T08:24:00','next day',3000000,{cash,holdings:[]},o),at:t+86400000},{...at('2026-11-11T08:24:00','after age',3000000,{cash,holdings:[]},o),at:t+8*86400000});
+      const run=e2e(s),label=`${n} sales, proceeds ${late?'late':'at the fill'}, in ${k}`,truth=3000000+(1000+T)*FX,from=run.out.findIndex(r=>r.note===(k===1?'settle 1':'settle 2'));
+      for(const [i,r] of run.out.entries()){const low=r.value.KR.low+r.value.US.low*FX,high=r.value.KR.high+r.value.US.high*FX;assert.ok(low<=truth+2,`${label} at ${r.note}: low ${low}`);
+        if(i>=from||!late&&i>=1)assert.ok(Math.abs(high-truth)<=2,`${label} at ${r.note}: high ${high} vs ${truth}`);}
+      assert.deepEqual(run.flows().filter(f=>f.detected).map(f=>f.amount),[],label+': no detected flow');}
   });
 }

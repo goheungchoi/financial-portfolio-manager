@@ -256,7 +256,8 @@ test('contract: random purchase lifecycles conserve equity and log every allocat
     // (a payment seen before its order; a new report netted against another's settlement in one reading) is settled
     // after 3 U.S. business days. Eight more days with no broker change: nothing is left in flight, the value is the
     // start value again, exact, and the rise is the amount that was still open.
-    const settledLow=a.mark().low,before=a.state().open.filter(f=>f.side==='Buy').reduce((n,f)=>n+f.usd,0);if(before>0)leftover++;
+    // M-1.6c2: a paired credit (R4) already lowered the deduction, so what was still deducted is the open buys less it.
+    const settledLow=a.mark().low,before=a.state().open.filter(f=>f.side==='Buy').reduce((n,f)=>n+f.usd,0)-InFlight.creditCents(a.state(),'Buy')/100;if(before>0)leftover++;
     a.later(8*DAY);a.read();const end=a.mark();assert.equal(a.state().open.length,0,`case ${c}: everything settles by age`);assert.equal(end.exact,true,`case ${c}: exact`);
     assert.ok(Math.abs(end.low-e0)<=1,`case ${c}: back to the start value`);assert.ok(Math.abs(end.low-settledLow-Math.round(before*1300))<=1,`case ${c}: the rise is what was open`);
     const allocated=a.state().evidence.flatMap(e=>e.allocated.map(x=>x.id));assert.equal(new Set(allocated).size,allocated.length,`case ${c}: no fill allocated twice`);}

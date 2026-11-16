@@ -133,6 +133,9 @@ function splitContext(us,inFlight,funding,rate){if(!(rate>0)||!us)return null;co
 const groupedOrders=funding=>new Set((funding?.reportedGroups??[]).flatMap(g=>(g.orders??[]).map(String)));
 function coveredInFlight(inFlight,funding,rate){if(!(rate>0))return 0;const open=(inFlight?.open??[]).filter(p=>p.side==='Buy');let n=0;
   for(const g of funding?.reportedGroups??[]){const ids=new Set((g.orders??[]).map(String));const s=open.filter(p=>ids.has(String(p.id))).reduce((t,p)=>t+(Number(p.usd)||0),0);n+=Math.min(s,Math.max(0,g.reportedKRW||0)/rate);}
+  // M-1.6c2: a group KIS settled through the KRW route covers its pieces still in flight up to its KRW part (the reported
+  // KRW less the USD KIS took), until the tracker closes them a reading later.
+  for(const g of funding?.krwSettledGroups??[]){const ids=new Set((g.orders??[]).map(String));const s=open.filter(p=>ids.has(String(p.id))).reduce((t,p)=>t+(Number(p.usd)||0),0);n+=Math.min(s,Math.max(0,(g.reportedKRW||0)/rate-(g.paidUSD||0)));}
   return n;}
 function finish(currency,s,components,reasons,extra,now,broker){
   const t=at(s);const stale=t==null||now-t>STALE_MS;if(stale)reasons.push(t==null?'balance time unknown':`balance is ${Math.round((now-t)/60000)} minutes old`);
@@ -213,7 +216,7 @@ function value({korea:k=null,us=null,fx=null,inFlight=null,funding=null,now=Date
 // resolve nothing, but one more than a cent from what was allocated reopens the difference (a conflict). (S5: coverage
 // by citation and "under review" are gone.)
 // orders: the U.S. engine's.
-const MAX_DAYS=7,PAIR_DAYS=4,TOLERANCE=0.95,BOUND=12,EVIDENCE_KEPT=60,DAY=86400000;
+const MAX_DAYS=7,PAIR_DAYS=4,TOLERANCE=0.95,BOUND=12,EVIDENCE_KEPT=60,DAY=86400000,CREDIT_BAND=0.05;
 // When an order filled: when the app saw it filled, or failing that when it was placed.
 // When the order was placed (the app creates it before submitting it): a fill cannot have executed earlier. Unlike the
 // fill time, which can be when the app first saw the fill (stage 3.2 review, P1), it bounds the execution from below.
@@ -247,9 +250,14 @@ class InFlight {
   // sellsUSD, unresolved: the part of each marked unresolved, open, notes}.
   // One transaction per reading: the state, the evidence, the allocations and the events commit together, or nothing.
   observe(account,input){return this.evidence.tx(()=>this.read(account,input));}
-  read(account,{us,orders=[],fx=null}){
+  // krwGroups (M-1.6c2): the funding recorder's groups whose KRW route KIS has shown (funding-transfers current
+  // krwRouteGroups, as of its previous reading): a zero-report close of their buys needs no U.S. cash.
+  read(account,{us,orders=[],fx=null,krwGroups=null}){
     if(typeof account!=='string'||!account||!us)return {...InFlight.totals({open:[]}),notes:[]};
-    const now=this.clock(),st=this.state(account),notes=[];const basis=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0),readAt=at(us);
+    const now=this.clock(),st=this.state(account),notes=[];
+    // M-1.6c2: unallocated paired credit per side (R4; and C3 for sales), in cents, consumed as flagged pieces close.
+    st.credit??={Buy:[],Sell:[]};const creditOf=side=>InFlight.creditCents(st,side);
+    const useCredit=(side,c)=>{let left=c;const list=st.credit[side];while(left>0&&list.length){const x=Math.min(list[0].cents,left);list[0].cents-=x;left-=x;if(!list[0].cents)list.shift();}};const basis=(Number(us.cash)||0)+(Number(us.pendingSaleProceeds)||0),readAt=at(us);
     const save=()=>this.save(account,st);
     const reported={buys:fx>0?Math.max(0,Number(us.unsettled?.buyKRW)||0)/fx:0,sells:fx>0?Math.max(0,Number(us.unsettled?.sellKRW)||0)/fx:0};
     const filled=o=>o.filled>0&&o.fillPrice>0&&['Buy','Sell'].includes(o.side);
@@ -329,12 +337,80 @@ class InFlight {
     // buys. It resolves fills marked as possibly covered by the reported total, and, when cash fell with it, fills marked
     // as possibly one purchase with an earlier allocation: whether the earlier cash was theirs or the reported trade's,
     // cash has now gone out for both.
+    // M-1.6c2: what a buy settlement in this reading paid in U.S. cash that no piece took (spare), with the reported fall it
+    // came with, for the zero-report rule, the C2 marks and the paired credit below.
+    let spareCents=0,buyFall=0,buyMatched=false;const cashFall=movement<-0.005?-movement:0;
     for(const side of ['Buy','Sell']){const d=delta(side);if(!(d<-0.005))continue;let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
       const covered=InFlight.match(live(side).filter(f=>REPORTED.includes(f.unresolved?.why)),-d);
       const one=paid?InFlight.match(live(side).filter(f=>f.unresolved?.why==='possibly one purchase'&&!covered.includes(f)),-paid):[];
       let left=-d/TOLERANCE;for(const e of st.evidence)if(e.pairable&&!e.pairedWith&&e.channel==='reported'&&e.side===side&&e.amount<=left){e.pairedWith='settled';left-=e.amount;}
-      if(covered.length||one.length||paid){const v=record({channel:paid?'cash and reported':'reported',side,amount:-d,kind:'reported settlement'},covered);
-        if(one.length){const t=take(one,cents(-paid),v.id,{evidenceId:source(true,side),rule:'reported settlement: its payment'});v.allocated.push(...t.allocated);if(t.left)v.unallocatedPaid=t.left/100;}}}
+      if(covered.length||one.length||paid){const v=record({channel:paid?'cash and reported':'reported',side,amount:-d,kind:'reported settlement'},covered);let oneLeft=cents(-paid);
+        if(one.length){const t=take(one,cents(-paid),v.id,{evidenceId:source(true,side),rule:'reported settlement: its payment'});v.allocated.push(...t.allocated);oneLeft=t.left;if(t.left)v.unallocatedPaid=t.left/100;}
+        if(side==='Buy'){spareCents=covered.length?0:Math.max(0,oneLeft);buyFall=-d;buyMatched=covered.length>0;}}}
+    // M-1.6c2 (multi-order design m1-6c-design.md; rulings R3, R4, C1-C3).
+    {const accepted=Boolean(us.unsettled&&typeof us.unsettled==='object'&&!Array.isArray(us.unsettled))&&!us.settlementHeld&&!us.settlementProvisional;
+      const krwGroupOf=id=>(krwGroups??[]).find(g=>(g.orders??[]).map(String).includes(String(id)))??null;
+      // A flagged buy of a group KIS settled through the KRW route (the recorder saw its reported total fall by the group
+      // and U.S. cash not pay all of it) has settled, zero or not: it closes against the group (a part of a batch settling
+      // over the bound; the group's KRW part covered it meanwhile, coveredInFlight).
+      // The USD KIS took for such a group is what an earlier paired credit (R4) stood for: the close uses that much of it,
+      // once per group, so the credit cannot lower another group's deduction.
+      {const usedFor=new Set();for(const f of live('Buy'))if(REPORTED.includes(f.unresolved?.why)&&krwGroupOf(f.id)?.settled){const g=krwGroupOf(f.id);
+        if(!usedFor.has(g.key)){usedFor.add(g.key);const c=Math.min(creditOf('Buy'),cents(g.paidUSD||0));if(c>0)useCredit('Buy',c);}
+        f.closeWhy='krw-route';f.zeroClose={group:g.key??null};settled.add(f);}}
+      // R3: KIS's reported buys fell to a 0 it returned (its unsettled block present; numeric() refuses blanks), in an
+      // accepted reading, from a positive total: every buy flagged as possibly reported has settled. Marked, then closed below.
+      // Only when the flagged buys fit inside the total that fell to zero (within the band): flagged is "possibly"
+      // reported, so flagged buys worth more than KIS reported cannot all be in it, and which settled is unknown (T16).
+      const flaggedNew=live('Buy').filter(f=>REPORTED.includes(f.unresolved?.why)&&!f.zeroReported);
+      // The credit stands for flagged buys already paid in an earlier partial settlement, so it comes off the flagged total.
+      const fits=flaggedNew.reduce((n,f)=>n+cents(f.usd),0)-creditOf('Buy')<=Math.round((st.observed?.buys??0)*100*(1+CREDIT_BAND))+1;
+      const buyZero=accepted&&Number(us.unsettled.buyKRW)===0&&(st.observed?.buys??0)>0.005;
+      if(buyZero&&fits)for(const f of flaggedNew){f.zeroReported={at:now};ledger.event(account,'flag',{pieces:[f.pid],why:'zero-report'});}
+      // C1, C2: a marked buy closes against its group when KIS has shown that group's KRW route (no U.S. cash moves for it);
+      // otherwise against U.S. cash: this reading's settlement payment no piece took, then any further fall, then the paired
+      // credit, oldest first. One that cannot be paid yet stays marked for a later reading's cash, at most until age.
+      const marked=live('Buy').filter(f=>f.zeroReported).sort((a,b)=>(a.filledAt??a.at??0)-(b.filledAt??b.at??0));
+      // A group whose KRW Korea carries: settled through the KRW route, or a K1 group (krw, kr-paid). Not awaiting-krw:
+      // its shortfall is deducted nowhere until the exchange is seen, so its pieces wait for cash or that exchange.
+      const carried=g=>g&&(g.settled||['krw','kr-paid'].includes(g.state));
+      // The further fall: at the zero reading, any (the debit with the report gone); in a later reading only a fall that
+      // fits what is still marked and not paid (the fee bound), so a withdrawal before KIS's debit stays a flow (C2).
+      const fall=movement<-0.005?cents(-movement):0,owed=marked.filter(f=>!carried(krwGroupOf(f.id))).reduce((n,f)=>n+cents(f.usd),0)-creditOf('Buy');
+      // Or smaller than it, with U.S. cash exhausted after it (USD ran out, KRW takes the rest: R4's second condition): it
+      // pays oldest first, and what it does not cover stays marked for the KRW route.
+      const fitsOwed=owed>0&&(Math.abs(fall-owed)<=Math.max(100,Math.round(owed*0.005))||fall>0&&fall<owed&&(Number(us.cash)||0)<=0.01);
+      let budget=spareCents+(buyZero||fitsOwed?fall:0);const startBudget=budget;
+      for(const f of marked){const g=krwGroupOf(f.id);if(carried(g)){f.closeWhy='zero-report';f.zeroClose={group:g.key??null};settled.add(f);continue;}
+        const c=cents(f.usd),cash=Math.min(c,budget),credit=Math.min(c-cash,creditOf('Buy'));
+        // Not paid in full: the cash left takes part of it (exactly what U.S. cash paid), and the rest stays marked.
+        if(cash+credit<c){if(cash>0&&!credit)try{ledger.allocate({account,evidenceId:source(true,'Buy'),pieceId:f.pid,orderId:f.id,cents:cash,pieceCents:f.cents0,rule:'zero-report: part'});budget-=cash;f.usd=(c-cash)/100;
+          notes.push(`Buy ${f.id}: U.S. cash paid $${(cash/100).toFixed(2)} of it at KIS's zero; $${f.usd.toFixed(2)} stays marked for its payment`);}catch{}continue;}
+        if(cash>0)try{ledger.allocate({account,evidenceId:source(true,'Buy'),pieceId:f.pid,orderId:f.id,cents:cash,pieceCents:f.cents0,rule:'zero-report'});}catch{continue;}
+        budget-=cash;useCredit('Buy',credit);f.closeWhy='zero-report';f.zeroClose={cashUSD:cash/100,creditUSD:credit/100};settled.add(f);}
+      // The cash those closes used is not free for step 4.
+      {const used=startBudget-budget,fromSpare=Math.min(used,spareCents);spareCents-=fromSpare;if(used-fromSpare>0)movement=Math.min(0,movement+(used-fromSpare)/100);}
+      // R4: a reported buy fall with a U.S. cash fall in one reading, outside a zero, with no unique set: a credit only when
+      // the two agree within the band, or the cash is the smaller and U.S. cash is exhausted after it (KIS took KRW for the
+      // rest: the credit is the cash). Never above the open unresolved buys not already credited.
+      if(accepted&&!buyZero&&buyFall>0.005&&!buyMatched&&spareCents>0){const x=cashFall,cashAfter=Number(us.cash)||0;
+        const agree=Math.abs(x-buyFall)<=CREDIT_BAND*buyFall,exhausted=x<buyFall&&cashAfter<=0.01;
+        const room=Math.max(0,live('Buy').filter(f=>f.unresolved&&!settled.has(f)).reduce((n,f)=>n+cents(f.usd),0)-creditOf('Buy'));
+        if(agree||exhausted){const c=Math.min(room,agree?Math.min(spareCents,cents(buyFall)):spareCents);
+          if(c>0){st.credit.Buy.push({cents:c,at:now});ledger.event(account,'credit',{side:'Buy',cents:c,why:agree?'cash and report agree':'U.S. cash exhausted'});spareCents-=c;
+            notes.push(`Buy: KIS's reported buys fell by $${buyFall.toFixed(2)} and U.S. cash by $${x.toFixed(2)}, matching no single set of fills: $${(c/100).toFixed(2)} is credited against the buys in flight until they close`);}}}
+      // C3: KIS shows no sale proceeds pending and no sale reported (both returned, accepted), after either was positive:
+      // every flagged sale has settled. Closing a sale only lowers the high bound, so no amount fit is needed.
+      const pendingNow=Number(us.pendingSaleProceeds)||0;
+      if(accepted&&Number(us.unsettled.sellKRW)===0&&pendingNow<=0.005&&((st.observed?.sells??0)>0.005||(st.lastPending??0)>0.005))
+        {// The reading's cash rise is theirs first, oldest first, in the ledger; what no cash paid in this reading (proceeds
+         // already counted, or the credit) leaves the basis with no cash movement, like an age close (freeUSD, explained()).
+         let rise=movement>0.005?cents(movement):0;const r0=rise;
+         for(const f of live('Sell').filter(f=>f.unresolved).sort((a,b)=>(a.filledAt??a.at??0)-(b.filledAt??b.at??0))){const c=cents(f.usd),cash=Math.min(c,rise);let fromCash=0;
+           if(cash>0)try{ledger.allocate({account,evidenceId:source(true,'Sell'),pieceId:f.pid,orderId:f.id,cents:cash,pieceCents:f.cents0,rule:'zero-report'});rise-=cash;fromCash=cash;}catch{}
+           const credit=Math.min(c-fromCash,creditOf('Sell'));useCredit('Sell',credit);
+           f.closeWhy='zero-report';f.zeroClose={cashUSD:fromCash/100,creditUSD:credit/100};if(c-fromCash-credit>0)f.freeUSD=(c-fromCash-credit)/100;settled.add(f);}
+         if(r0>rise)movement=Math.max(0,movement-(r0-rise)/100);}}
     // 2. New pieces the reading already moved by (buys down, sales up), all together, within the tolerance either way: a
     // cash allocation like any other, recorded and paired. Paired with an earlier reported allocation, the cash may be
     // that purchase's, so the new pieces stay in flight, marked unresolved.
@@ -376,7 +452,11 @@ class InFlight {
       const v=record({channel,side,amount,kind:run.length?'settled':several?'ambiguous fit':'unmatched'},run,[],{...extra,...(several?(over?{overBound:pool.length}:{ambiguousCandidates:sets.map(s=>s.map(f=>f.id))}):{})});v.pairable=run.length>0;
       // Several fits of a cash movement: each candidate may be the one paid, so it is marked (a reported total's
       // candidates are marked below, as possibly reported, so that its settling can resolve them).
-      if(several&&channel==='cash'){const marked=[];for(const f of over?pool:new Set(sets.flat()))if(!f.unresolved){f.unresolved={why:'ambiguous evidence',evidence:v.id,at:now};marked.push(f.pid);}if(marked.length)ledger.event(account,'flag',{pieces:marked,why:'ambiguous evidence',evidence:v.id});}
+      if(several&&channel==='cash'){const marked=[];for(const f of over?pool:new Set(sets.flat()))if(!f.unresolved){f.unresolved={why:'ambiguous evidence',evidence:v.id,at:now};marked.push(f.pid);}if(marked.length)ledger.event(account,'flag',{pieces:marked,why:'ambiguous evidence',evidence:v.id});
+        // M-1.6c2 (C3): proceeds KIS shows (cash plus pending rose) for sales no unique set fits are already in the value's
+        // low; a credit keeps them out of the sales in flight in the high. It only lowers the high, so no agreement is needed.
+        if(side==='Sell'){const room=Math.max(0,live('Sell').filter(f=>f.unresolved&&!settled.has(f)).reduce((n,f)=>n+cents(f.usd),0)-InFlight.creditCents(st,'Sell')),c=Math.min(room,cents(amount));
+          if(c>0){st.credit.Sell.push({cents:c,at:now});ledger.event(account,'credit',{side:'Sell',cents:c,why:'proceeds shown, no unique set'});}}}
       if(several)notes.push(`${side}: ${channel==='cash'?'U.S. cash':'the reported settlement total'} moved by $${(cents(amount)/100).toFixed(2)}, which ${over?`more than ${BOUND} open fills could explain`:`${sets.length} different sets of open fills fit`}; nothing is settled`);
       // A reported rise matching no open fill while fills of its side are open may cover part of them: they stay in
       // flight, marked unresolved.
@@ -391,7 +471,7 @@ class InFlight {
     if(Math.abs(movement)>0.005&&!(openSide('Buy')&&openSide('Sell')))allocate('cash',movement<0?'Buy':'Sell',Math.abs(movement));
     // H1: a remainder from before the fee bound, already within it, closes now as the same fee difference.
     for(const f of st.open)if(!settled.has(f)&&f.unresolved?.why==='evidence short'&&cents(f.usd)>0&&cents(f.usd)<=feeBound(f)){f.feeUSD=f.usd;settled.add(f);notes.push(`${f.side} ${f.id}: the $${f.usd.toFixed(2)} left after its evidence is within the fee bound, so it is settled (a fee or conversion difference)`);}
-    st.open=st.open.filter(f=>!settled.has(f));for(const f of settled)ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'evidence',...(Number.isFinite(f.feeUSD)?{feeUSD:f.feeUSD}:{})});
+    st.open=st.open.filter(f=>!settled.has(f));for(const f of settled)ledger.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:f.closeWhy??'evidence',...(f.zeroClose?{zeroClose:f.zeroClose}:{}),...(Number.isFinite(f.freeUSD)?{freeUSD:f.freeUSD}:{}),...(Number.isFinite(f.feeUSD)?{feeUSD:f.feeUSD}:{})});
     const closedBy=new Map();for(const f of settled)closedBy.set(String(f.id),closedBy.get(String(f.id))??'evidence');
     // A KIS settled-trade row linked with certainty to an order whose pieces evidence resolved contradicts the allocation
     // when it is more than a cent away (design v3 §3, T13). Every version is reconciled against what the conflict already
@@ -423,10 +503,16 @@ class InFlight {
       if(was.kCents!==k||was.version!==l.version)ledger.event(account,'conflict',{orderId:id,groupId:l.groupId,version:l.version,kCents:k,allocatedCents:ledger.allocatedToOrder(account,id),conflictCents:held(),releasedCents:c.released.reduce((n,r)=>n+r.cents,0)});
       if(!held()&&!c.released.length&&Math.abs(k-ledger.allocatedToOrder(account,id))<=1)c.settled=now;}
     this.ageOut(account,st,now,notes,closedBy);
+    // A credit never outlives the pieces it can stand for: when the side's open unresolved pieces closed by their own
+    // evidence, the credit was their payment (or another's), so it is trimmed to what is still open, newest first.
+    // Trimming only raises the deduction; a credit left over would lower a later buy's.
+    for(const side of ['Buy','Sell']){const room=st.open.filter(f=>f.side===side&&f.unresolved).reduce((n,f)=>n+cents(f.usd),0),list=st.credit[side];
+      const had=InFlight.creditCents(st,side);let over=had-room;while(over>0&&list.length){const last=list.at(-1),x=Math.min(last.cents,over);last.cents-=x;over-=x;if(!last.cents)list.pop();}
+      if(had>room)ledger.event(account,'credit-trimmed',{side,fromCents:had,toCents:InFlight.creditCents(st,side)});}
     // Orders whose last open piece closed in this reading: their funding commitment may release its filled part.
     for(const [orderId,why] of closedBy)if(!st.open.some(f=>String(f.id)===orderId))this.onSettled?.(account,{orderId,why});
     const newlyOverdue=[];
-    Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
+    Object.assign(st,{basis,observed:reported,readAt:readAt??st.readAt,lastAt:now,lastPending:Number(us.pendingSaleProceeds)||0,evidence:st.evidence.slice(-EVIDENCE_KEPT)});
     // Orders no longer listed are forgotten, so the record stays bounded.
     const listed=new Set(orders.map(o=>String(o.id)));for(const id of Object.keys(st.seen))if(!listed.has(id)&&!st.open.some(f=>f.id===id))delete st.seen[id];
     save();return {...InFlight.totals(st),notes,newlyOverdue};
@@ -438,10 +524,16 @@ class InFlight {
     if(Number.isInteger(this.settleDays)&&this.settleDays>0)for(const f of st.open){const t=Number.isFinite(f.filledAt)?f.filledAt:f.at;const a=B.agedOut('US',{fillAt:t,now,n:this.settleDays});if(!a.aged)continue;aged.push(f);
       this.evidence.event(account,'piece-closed',{pieceId:f.pid,orderId:f.id,side:f.side,why:'age',usd:f.usd,days:this.settleDays,tradeDay:a.tradeDay});
       notes.push(`${f.side} ${f.id} ($${f.usd.toFixed(2)}): settled by age, ${this.settleDays} U.S. business days after its trade date ${a.tradeDay}`);}
-    if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');}
+    if(aged.length){const gone=new Set(aged);st.open=st.open.filter(f=>!gone.has(f));for(const f of aged)closedBy.set(String(f.id),'age');
+      // M-1.6c2: a flagged piece closing by age takes back the credit that stood for it (its payment, unnamed).
+      for(const f of aged)if(f.unresolved){let left=cents(f.usd);const list=st.credit?.[f.side]??[];while(left>0&&list.length){const x=Math.min(list[0].cents,left);list[0].cents-=x;left-=x;if(!list[0].cents)list.shift();}}}
     return aged;}
+  // M-1.6c2: the paired credit of a side, in cents (R4, C3).
+  static creditCents(st,side){return (st.credit?.[side]??[]).reduce((n,c)=>n+c.cents,0);}
   static totals(st){const sum=(side,only=()=>true)=>st.open.filter(f=>f.side===side&&only(f)).reduce((n,f)=>n+cents(f.usd),0)/100;
-    return {buysUSD:sum('Buy'),sellsUSD:sum('Sell'),unresolved:{buysUSD:sum('Buy',f=>f.unresolved),sellsUSD:sum('Sell',f=>f.unresolved)},overdue:{buysUSD:sum('Buy',f=>f.overdueAt),sellsUSD:sum('Sell',f=>f.overdueAt)},
+    // The credit stands for payments of flagged pieces not yet named: it lowers that side's in flight and unresolved.
+    const less=(side,v)=>Math.max(0,Math.round((v-InFlight.creditCents(st,side)/100)*100)/100);
+    return {buysUSD:less('Buy',sum('Buy')),sellsUSD:less('Sell',sum('Sell')),unresolved:{buysUSD:less('Buy',sum('Buy',f=>f.unresolved)),sellsUSD:less('Sell',sum('Sell',f=>f.unresolved))},credit:{buysUSD:InFlight.creditCents(st,'Buy')/100,sellsUSD:InFlight.creditCents(st,'Sell')/100},overdue:{buysUSD:sum('Buy',f=>f.overdueAt),sellsUSD:sum('Sell',f=>f.overdueAt)},
       // Evidence released by KIS records lower than what was allocated: reported, not an obligation.
       reducedCoverage:Object.entries(st.conflicts??{}).filter(([,c])=>c.released?.length).map(([orderId,c])=>({orderId,usd:c.released.reduce((n,r)=>n+r.cents,0)/100,groupId:c.groupId,version:c.version})),
       pretracking:{count:st.open.filter(f=>f.pretracking).length,buysUSD:sum('Buy',f=>f.pretracking),sellsUSD:sum('Sell',f=>f.pretracking)},
@@ -476,7 +568,9 @@ class InFlight {
       // S1a: a piece settled by age leaves the obligation with no cash movement: the same sign as a reduced conflict.
       else if(e.kind==='piece-closed'&&e.why==='age'&&Number.isFinite(e.usd))c-=s*cents(e.usd);
       // H1: a fee difference closed with its evidence leaves the obligation with no cash movement, like an age close.
-      else if(e.kind==='piece-closed'&&Number.isFinite(e.feeUSD))c-=s*cents(e.feeUSD);}
+      else if(e.kind==='piece-closed'&&Number.isFinite(e.feeUSD))c-=s*cents(e.feeUSD);
+      // M-1.6c2 (C3): the part of a zero-report close no cash or credit paid in its reading, like an age close.
+      else if(e.kind==='piece-closed'&&e.why==='zero-report'&&Number.isFinite(e.freeUSD))c-=s*cents(e.freeUSD);}
     return {usd:c/100,through,pretracking:Object.fromEntries(Object.entries(pre).map(([k,v])=>[k,v/100]))};}
   explainedSince(account,since){return this.explained(account,{since}).usd;}
   // S2b: the part of the U.S. low basis that is a correction still open at `until`: buy pieces opened as a correction

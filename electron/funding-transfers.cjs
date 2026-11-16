@@ -21,6 +21,15 @@ const BAND=0.05,MAX_SET=8;
 // S3a-2: the states whose KRW has not been seen leaving Korean cash (current().krwUnpaidKRW); and the states KIS still
 // reports (the split's groups).
 const UNPAID=new Set(['krw','awaiting-kr','awaiting-reversal']),REPORTED=new Set(['us','krw','kr-paid']);
+// M-1.6c2: groups KIS paid at least in part from KRW, as far as its figures have shown it.
+const KRW_ROUTE=new Set(['krw','kr-paid','awaiting-kr','awaiting-krw','awaiting-reversal']);
+// Of those, the ones KIS has settled (its reported total fell by them): awaiting the Korean fall, a KRW shortfall or a
+// reversal, or booked by KRW or an exchange within 10 days. Booked by age is no evidence of how KIS paid.
+// A K1 group KIS paid partly in USD ends booked by reversal with an exchange (exchangedKRW): a KRW-route settlement too;
+// a full reversal (KIS paid it all in USD) is not.
+// Not awaiting-krw: the Korean side does not deduct a shortfall before its exchange is seen (UNPAID), so until then the
+// U.S. side keeps the obligation (a report gone before KIS's debit would otherwise read as paid: a false gain).
+const krwSettled=(r,now)=>['awaiting-kr','awaiting-reversal'].includes(r.state)||r.state==='booked'&&(['krw','exchange'].includes(r.via)||r.via==='reversal'&&r.exchangedKRW>0)&&now-(r.settledAt??r.krPaidAt??r.exchangedAt??0)<=10*86400000;
 // The first set (fewest members, then the earliest in the given order) whose amount(c) totals target within the band:
 // the payment of groups of equal amount is the same whichever of them it is (no booking follows from it).
 function firstSet(cands,target,amount){if(!(target>0)||!cands.length)return null;const c=cands.slice(0,MAX_SET),n=c.length,masks=[];
@@ -86,7 +95,13 @@ class FundingTransfers {
       // only the reported KRW less the USD KIS took (at the rate of its settlement).
       krwSettledUnpaidKRW:won(rows.reduce((n,r)=>n+(r.state==='awaiting-kr'?r.reportedKRW:r.state==='awaiting-reversal'?Math.max(0,r.reportedKRW-(r.paidUSD??0)*(r.fx??0)):0),0)),
       // M-1.6c1: the groups KIS still reports, with their orders, for the valuation's coverage of in-flight pieces.
-      reportedGroups:rows.filter(r=>REPORTED.has(r.state)).map(r=>({orders:[...(r.orders??[])],reportedKRW:won(r.reportedKRW??0),state:r.state}))};}
+      reportedGroups:rows.filter(r=>REPORTED.has(r.state)).map(r=>({orders:[...(r.orders??[])],reportedKRW:won(r.reportedKRW??0),state:r.state})),
+      // M-1.6c2 (C1): the groups whose KRW route KIS has shown (reported KRW-paid, settled with a KRW part, or booked from
+      // KRW within ten days), with their orders, for the settlement tracker's zero-report closes.
+      krwRouteGroups:rows.filter(r=>KRW_ROUTE.has(r.state)||krwSettled(r,this.clock())||r.state==='booked'&&r.via==='age'&&this.clock()-(r.settledAt??r.krPaidAt??r.exchangedAt??0)<=10*86400000).map(r=>({key:r.key,orders:[...(r.orders??[])],state:r.state,settled:krwSettled(r,this.clock()),paidUSD:usd(r.paidUSD??0)})),
+      // The groups KIS settled through the KRW route (its reported total fell by them and U.S. cash did not pay all):
+      // their pieces still in flight are covered up to the KRW part until the tracker closes them (no one-reading gap).
+      krwSettledGroups:rows.filter(r=>krwSettled(r,this.clock())).map(r=>({key:r.key,orders:[...(r.orders??[])],state:r.state,reportedKRW:won(r.reportedKRW??0),paidUSD:usd(r.paidUSD??0)}))};}
   // S3a (G1, ruling R2): each leg carries the window in which its own market's figure moved: occurredAfter, the reading
   // before that move (after), and occurredBy, the reading that showed it (by, default at). The daily-loss checks place it
   // against their baseline by that window (PerformanceHistory.flowsSince). Where the reading before cannot be named
@@ -135,7 +150,16 @@ class FundingTransfers {
     // The U.S. cash change since the previous reading less the fills seen meanwhile: what the settlement itself took.
     const prevFx=m?.effects??{},fillMove=Object.entries(effects).reduce((n,[id,e])=>n+e-(prevFx[id]??0),0);
     const cashMove=m?cash+pending-(m.cash??0)-(m.pending??0)-fillMove:0;
-    const live=[...rows.values()];let event=false;
+    let live=[...rows.values()];let event=false;
+    // M-1.6c2: KIS's late debit of a deferred group (its report gone, U.S. cash still holding it): a U.S. cash fall
+    // within the band of its shortfall, oldest first. Booked by usd; what it took is not a settlement payment again below.
+    let lateDebit=0;
+    for(const r of live.filter(x=>x.state==='awaiting-krw'&&x.deferred).sort((a,b)=>a.settledAt-b.settledAt)){const fall=-(cashMove+lateDebit);
+      if(fall>0&&Math.abs(fall-r.shortfallUSD)<=BAND*r.shortfallUSD){lateDebit+=fall;event=true;const next={...r,state:'booked',paidUSD:usd((r.paidUSD??0)+fall),settledAt:now,via:'usd',lateDebit:true};delete next.deferred;this.put(account,r.key,next);rows.set(r.key,{key:r.key,...next});}
+      // Smaller, with U.S. cash exhausted after it: KIS took the USD there was and exchanges the rest; the shortfall the
+      // Korean exchange must match is what is left.
+      else if(fall>0.005&&fall<r.shortfallUSD&&cash<=0.01){lateDebit+=fall;event=true;const next={...r,paidUSD:usd((r.paidUSD??0)+fall),shortfallUSD:usd(r.shortfallUSD-fall),settledAt:now};this.put(account,r.key,next);rows.set(r.key,{key:r.key,...next});}}
+    live=[...rows.values()];
     if(dR>0){const cands=live.filter(r=>r.state==='filled'&&!r.orders.some(id=>openOrderIds.has(id)));
       // M-1.6c1 (Alt 3): a batch may also take buys still in flight that the tracker flags as possibly reported (over its
       // bound it settles none of them); the valuation then counts their obligation once, through the group (coverage).
@@ -157,12 +181,16 @@ class FundingTransfers {
         else this.put(account,key,{state:'us',orders:set.flatMap(r=>r.orders).sort(),usd:total,reportedKRW:dR,reportedAt:now,...extra});}
 }
     else if(dR<0){const F=-dR,groups=live.filter(r=>REPORTED.has(r.state));const set=uniqueSet(groups,F,r=>r.reportedKRW)??this.splitBatch(account,groups,F);
-      if(set){event=true;const total=set.reduce((n,r)=>n+r.usd,0),paid=Math.max(0,-cashMove),Y=usd(Math.min(total,paid));
+      if(set){event=true;const total=set.reduce((n,r)=>n+r.usd,0),paid=Math.max(0,-(cashMove+lateDebit)),Y=usd(Math.min(total,paid));
         for(const r of set){const share=total>0?r.usd/total:0,y=usd(Y*share);
           if(r.state==='us'){const S=usd(r.usd-y);
             // The U.S. side settled: its obligation left, the cash it took left; what stays is the shortfall.
             if(S<=0.005)this.put(account,r.key,{...r,state:'booked',paidUSD:y,settledAt:now,via:'usd'});
-            else{this.put(account,r.key,{...r,state:'awaiting-krw',paidUSD:y,shortfallUSD:S,fx,settledAt:now,window});meta.explainedUS+=S;}}
+            // M-1.6c2: explained only when the tracker closed its pieces in this reading (as for one buy: the unique
+            // reported fall). A batch over the tracker's bound keeps its pieces until their payment (zero-report): then
+            // the U.S. basis has not moved, and the group is deferred: a later U.S. cash fall that fits it is KIS's
+            // late debit (booked by usd), the Korean exchange is booked as usual.
+            else{const deferred=r.orders.some(id=>openOrderIds.has(String(id)));this.put(account,r.key,{...r,state:'awaiting-krw',paidUSD:y,shortfallUSD:S,fx,settledAt:now,window,...(deferred?{deferred:true}:{})});if(!deferred)meta.explainedUS+=S;}}
           else if(r.state==='kr-paid'){// S3a-2: its Korean payment was read before this U.S. reading.
             if(y>0.005)this.unmatched(account,{...r,paidUSD:y,settledAt:now},'KIS took U.S. cash for it after its KRW payment was seen',now);
             else this.put(account,r.key,{...r,state:'booked',settledAt:now,via:'krw'});}
@@ -202,7 +230,9 @@ class FundingTransfers {
       if(left>0&&need>0&&Math.abs(left-need)<=BAND*need){const X=won(left);left=0;
         if(r.state==='awaiting-krw'){this.book(account,r.key,'out',{market:'KR',amount:-X,day,at:now,after:prevKR,note:'Transfer between markets: KRW exchanged at settlement for the part of a U.S. buy U.S. cash did not cover.'});
           this.book(account,r.key,'in',{market:'US',amount:r.shortfallUSD,day,at:now,by:r.settledAt,after:r.window?.US,note:'Transfer between markets: into the U.S. account, the exchange paying part of a U.S. buy.'});
-          this.put(account,r.key,{...r,state:'booked',exchangedKRW:X,exchangedAt:now,via:'exchange'});m.explainedKR-=X;}
+          // M-1.6c2: a deferred group's shortfall leaves the U.S. basis now (the settled group covers its pieces), not at
+          // its report's fall: explained here.
+          {const next={...r,state:'booked',exchangedKRW:X,exchangedAt:now,via:'exchange'};delete next.deferred;this.put(account,r.key,next);}m.explainedKR-=X;if(r.deferred)m.explainedUS+=r.shortfallUSD;}
         else{// The K1 booking took the whole reported KRW; KIS exchanged only X: the rest comes back as a reversal.
           // S3a-2: the reported KRW stayed deducted until now (krwUnpaidKRW), so the Korean loss value moves here only, by
           // + reported - X: the KRW leg's window is the Korean pair. The U.S. leg was booked at the U.S. settlement reading
