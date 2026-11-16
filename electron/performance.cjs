@@ -81,6 +81,10 @@ class PerformanceHistory {
   // A recorded transfer whose currency exchange has now been seen: kept as it is, marked so it is not matched again.
   markExchanged(account,ids,exchange){for(const id of ids){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)continue;
     this.db.prepare('UPDATE cash_flows SET payload=? WHERE id=? AND account=?').run(JSON.stringify({...JSON.parse(row.payload),exchangedAt:exchange.at,exchange:{KRW:exchange.KRW,USD:exchange.USD}}),id,account);}}
+  // A flow you recorded that the flow detector found explains a held cash change (M-1c): it keeps the change's part ids, so
+  // the change is not counted again (flowsSince) and the flow explains no other change.
+  explainHeld(account,id,{pendingIds,at}){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)return;const f=JSON.parse(row.payload);
+    this.db.prepare('UPDATE cash_flows SET payload=? WHERE id=? AND account=?').run(JSON.stringify({...f,pendingIds:[...new Set([...(f.pendingIds??[]),...(pendingIds??[]).map(String)])].slice(0,40),explainedHeldAt:at}),id,account);}
   removeFlow(account,id){this.db.prepare('DELETE FROM cash_flows WHERE id=? AND account=?').run(id,account);}
   // A detected flow the user confirmed keeps its amount and stops being flagged.
   confirmFlow(account,id){const row=this.db.prepare('SELECT payload FROM cash_flows WHERE id=? AND account=?').get(id,account);if(!row)throw new Error('INVALID_FLOW');

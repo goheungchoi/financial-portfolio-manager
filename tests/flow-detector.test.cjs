@@ -275,3 +275,30 @@ test('a U.S. buy paid from unsettled proceeds is no deposit: in-flight fills are
   assert.equal(run(false)[0]?.amount,94.38,'reproduced: counted at the fill, nothing moved, recorded as a deposit');
   assert.deepEqual(run(true),[],'netted: nothing to record at the fill or at settlement');
 });
+// M-1c: a deposit was held, the user recorded it soon after, and the detector
+// still added a "Detected" row the next morning. A flow the user recorded explains the held change.
+function incident(){let now=at('2026-11-08T22:56:00+09:00');const db=new DatabaseSync(':memory:');const perf=new PerformanceHistory(db,()=>now);const d=new FlowDetector(db,perf,()=>now);
+  d.observe('acct',{krCash:3618240});now=at('2026-11-08T22:57:00+09:00');assert.deepEqual(d.observe('acct',{krCash:8618240}),[],'held');return {d,perf,tick:s=>{now=at(s);}};}
+test('M-1c: a held deposit the user recorded is not detected again; its held parts are marked as explained by the user flow',()=>{
+  const {d,perf,tick}=incident();tick('2026-11-08T23:24:00+09:00');const mine=perf.addFlow('acct',{day:'2026-11-08',market:'KR',amount:5000000,note:'Deposit'});
+  tick('2026-11-09T09:03:00+09:00');assert.deepEqual(d.observe('acct',{krCash:8618240}),[],'nothing new recorded');assert.deepEqual(d.pending('acct'),[],'no longer held');
+  const rows=perf.flows('acct');assert.equal(rows.length,1,'one row: the user\'s');assert.equal(rows[0].id,mine.id);assert.equal(rows[0].detected,undefined);assert.equal(rows[0].pendingIds.length,1,'the held part is marked as explained by it');
+  const since=d.flowsSince('acct','KR',at('2026-11-08T09:00:00+09:00'));assert.equal(since.uncertain.confirmed,5000000,'the user\'s flow (a date only, so its timing is uncertain)');assert.equal(since.unresolved,0);assert.equal(since.held,undefined,'nothing held');assert.deepEqual(since.range,{low:0,high:5000000},'counted once, not twice');
+});
+test('M-1c: matched before the hold ends, and a user flow recorded just before the change is seen also explains it',()=>{
+  let {d,perf,tick}=incident();tick('2026-11-08T23:24:00+09:00');perf.addFlow('acct',{day:'2026-11-08',market:'KR',amount:4995000,note:'Deposit, net of a fee'});
+  tick('2026-11-08T23:30:00+09:00');assert.deepEqual(d.observe('acct',{krCash:8618240}),[]);assert.deepEqual(d.pending('acct'),[],'within the ₩10,000 threshold, matched at the next reading');
+  let now=at('2026-11-08T20:00:00+09:00');const db=new DatabaseSync(':memory:');perf=new PerformanceHistory(db,()=>now);d=new FlowDetector(db,perf,()=>now);
+  d.observe('acct',{krCash:1000000});perf.addFlow('acct',{day:'2026-11-08',market:'KR',amount:5000000,note:'Deposit'});now=at('2026-11-08T20:05:00+09:00');d.observe('acct',{krCash:6000000});
+  now=at('2026-11-08T22:30:00+09:00');assert.deepEqual(d.observe('acct',{krCash:6000000}),[]);assert.equal(perf.flows('acct').length,1);
+});
+test('M-1c: a second deposit of the same amount on a later day is still detected; a withdrawal is never matched to a deposit',()=>{
+  const {d,perf,tick}=incident();tick('2026-11-08T23:24:00+09:00');perf.addFlow('acct',{day:'2026-11-08',market:'KR',amount:5000000,note:'Deposit'});tick('2026-11-09T09:03:00+09:00');d.observe('acct',{krCash:8618240});
+  tick('2026-11-10T10:00:00+09:00');assert.deepEqual(d.observe('acct',{krCash:13618240}),[],'a new deposit is held');
+  tick('2026-11-10T12:01:00+09:00');const [again]=d.observe('acct',{krCash:13618240});assert.equal(again?.detected,true,'the recorded flow already explains the first deposit');assert.equal(again.amount,5000000);
+  const w=incident();w.tick('2026-11-08T23:24:00+09:00');w.perf.addFlow('acct',{day:'2026-11-08',market:'KR',amount:5000000,note:'Deposit'});
+  w.tick('2026-11-09T09:03:00+09:00');w.d.observe('acct',{krCash:8618240});w.tick('2026-11-09T10:00:00+09:00');w.d.observe('acct',{krCash:3618240});
+  w.tick('2026-11-09T12:01:00+09:00');const [out]=w.d.observe('acct',{krCash:3618240});assert.equal(out?.amount,-5000000,'the fall is a detected withdrawal');assert.equal(out.detected,true);
+  const z=incident();z.tick('2026-11-08T23:24:00+09:00');z.perf.addFlow('acct',{day:'2026-11-08',market:'KR',amount:-5000000,note:'Withdrawal'});z.tick('2026-11-09T09:03:00+09:00');
+  const [dep]=z.d.observe('acct',{krCash:8618240});assert.equal(dep?.amount,5000000,'a recorded withdrawal does not explain a deposit');assert.equal(dep.detected,true);
+});

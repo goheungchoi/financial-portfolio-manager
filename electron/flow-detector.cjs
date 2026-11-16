@@ -196,6 +196,13 @@ class FlowDetector {
     const p=state.pending,out=[];const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};
     // Balances back where they were: nothing happened that needs recording.
     for(const m of ['KR','US'])if(p[m]&&!big(m,p[m].amount,fx)){note('Cash change reversed',`${label(m)} cash returned to its earlier level; nothing recorded.`);delete p[m];}
+    // M-1c: a change you have already recorded yourself (a deposit or withdrawal of this market, the same direction, an
+    // amount within the threshold, dated within the change's window and not yet explaining another change) is that
+    // flow: it is not recorded again, and its held parts are marked as explained by it (a deposit the user
+    // recorded while the change was held was otherwise detected again the next morning).
+    for(const m of ['KR','US']){const q=p[m];if(!q)continue;const mine=this.recordedByYou(account,m,q,now.at,fx);if(!mine)continue;
+      this.performance.explainHeld(account,mine.id,{pendingIds:idsOf(q.parts??[]),at:now.at});
+      note('Recorded flow matched',`${label(m)} cash ${q.amount>0?'rose':'fell'} by ${money(m,q.amount)}, matching the ${mine.amount>0?'deposit':'withdrawal'} you recorded for ${mine.day}; it is not recorded again.`);delete p[m];}
     // Offsetting at the exchange rate: money moving between the markets.
     if(p.KR&&p.US&&fx>0&&!big('KR',p.KR.amount+p.US.amount*fx,fx)){
       const kr=p.KR.amount,us=p.US.amount,day=seoulDate(Math.max(p.KR.since,p.US.since)),funding=p.KR.funding||p.US.funding;
@@ -222,6 +229,12 @@ class FlowDetector {
         note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen} Confirm or remove.`.slice(0,200)})));delete p[m];}
     return out;
   }
+  // A deposit or withdrawal you recorded that explains a held change (M-1c): not detected, not a transfer, not already
+  // explaining a change (no pendingIds), same market and sign, the amount within the detection threshold, and its date
+  // between the Seoul day of the change's earliest possible time and today. The first such flow by recording time.
+  recordedByYou(account,m,q,at,fx){if(typeof this.performance?.explainHeld!=='function'||typeof this.performance?.flows!=='function')return null;const starts=(q.parts??[]).map(x=>x.after).filter(Number.isFinite);const from=seoulDate(starts.length?Math.min(...starts):Number.isFinite(q.after)?q.after:q.since),to=seoulDate(at);
+    return this.performance.flows(account).filter(f=>f.market===m&&!f.detected&&!f.transfer&&!(f.pendingIds?.length)&&Math.sign(f.amount)===Math.sign(q.amount)&&!big(m,f.amount-q.amount,fx)&&f.day>=from&&f.day<=to)
+      .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))[0]??null;}
   // A transfer pair recorded in the last MATCH_DAYS days as funding awaiting its exchange (or by the user), not yet
   // completed, with the same direction and amounts within 3% (exchange rates differ between the two moments).
   recordedTransfer(account,kr,us,at){
