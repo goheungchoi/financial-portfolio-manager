@@ -203,8 +203,9 @@ else{
     const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(0,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(0,134000,[a]);
     // A further 50,000 KIS reports (a purchase outside the app): provisional. The fall of 184,000 matches no set of groups.
     w.to('2026-11-10T09:30:00');w.us(0,184000,[a]);assert.equal(w.row('a').state,'krw');
-    w.to('2026-11-18T08:25:00');const cur=w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr','settled at the zero');assert.ok(w.row('a').zeroSettled);assert.equal(cur.krwSettledUnpaidKRW,134000,'deducted in Korea until its fall (F-d1)');
-    w.to('2026-11-18T08:26:00');w.kr(3000000-134000);assert.deepEqual([w.row('a').state,w.row('a').via],['booked','krw']);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0);
+    w.to('2026-11-11T08:25:00');const cur=w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr','settled at the zero');assert.ok(w.row('a').zeroSettled);assert.equal(cur.krwSettledUnpaidKRW,184000,'the group and (P1) the ₩50,000 KIS settled for the purchase outside the app: deducted in Korea until their falls');
+    w.to('2026-11-11T08:26:00');w.kr(3000000-134000);assert.deepEqual([w.row('a').state,w.row('a').via],['booked','krw']);assert.equal(w.f.current('A').krwSettledUnpaidKRW,50000,'the ₩50,000 waits for its own fall');
+    w.to('2026-11-11T08:27:00');w.kr(3000000-184000);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0,'then leaves with it');
     // Not without the block, nor from a 0 already there.
     const v=lone();v.to('2026-11-09T23:00:00');v.us(0,0,[]);v.kr(3000000);const b=v.b('b',100);v.to('2026-11-09T23:41:00');v.us(0,0,[b],{open:['b'],openUSD:100});v.to('2026-11-10T09:00:00');v.us(0,134000,[b]);v.to('2026-11-10T09:30:00');v.us(0,184000,[b]);
     v.to('2026-11-11T08:25:00');v.f.observeUS('A',{us:{cash:0},orders:[b],fx:FX,openOrderIds:new Set(),openBuysUSD:0});assert.equal(v.row('b').state,'krw','no block: no zero');
@@ -215,7 +216,7 @@ else{
   test('M-1.6d T2, the Korean fall first: deducted twice until the group expires unmatched at the next Korean business day',()=>{
     const w=lone();w.to('2026-11-09T23:00:00');w.us(0,0,[]);w.kr(3000000);const a=w.b('a',100);w.to('2026-11-09T23:41:00');w.us(0,0,[a],{open:['a'],openUSD:100});w.to('2026-11-10T09:00:00');w.us(0,134000,[a]);
     w.to('2026-11-10T09:30:00');w.us(0,184000,[a]);w.to('2026-11-10T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'krw','before the guard: matched nothing');
-    w.to('2026-11-17T10:30:00');w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr');assert.equal(w.f.current('A').krwSettledUnpaidKRW,134000,'deducted again');
+    w.to('2026-11-10T10:30:00');w.us(0,0,[a]);assert.equal(w.row('a').state,'awaiting-kr');assert.equal(w.f.current('A').krwSettledUnpaidKRW,184000,'deducted again (with P1\'s ₩50,000 settled for the purchase outside the app)');
     w.to('2026-11-10T15:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'awaiting-kr','the same Korean day');
     w.to('2026-11-18T10:00:00');w.kr(3000000-134000);assert.equal(w.row('a').state,'unmatched','expired at the reading of the next Korean business day');assert.match(w.row('a').reason,/within one Korean business day/);assert.equal(w.f.current('A').krwSettledUnpaidKRW,0);
   });

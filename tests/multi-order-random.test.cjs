@@ -103,7 +103,7 @@ function generate(seed,side,profile='mix'){if(profile==='plain'||profile==='plai
 // Counted: groups by end state, detected Korean flows, withdrawals not detected as exactly one flow.
 // The open class's seeds at 600 (A3/A4 with unattributed KRW: the recorder's provisional KRW leaves Korea's deduction
 // when KIS's report falls, before the Korean exchange): a new one fails.
-const OPEN_SEEDS=[69,184,240,280,368,434,470,482];
+const OPEN_SEEDS=[280,470]; // after P1: both independent-split seeds (safety only); a main-model open seed fails
 const SAFETY_CLASSES=['limit: withdrawal in the zero or debit reading','band: batch set within 5% (M-1.6b)','open: carried and flagged buys mixed (A3/A4)','attribution: mixed funding, the U.S. low alone (combined right; the K1 transfer convention)'];
 function check(seed,side,profile='mix'){const {desc,steps}=generate(seed,side,profile),run=e2e(steps.map(({truth,zero,...s})=>s)),out={seed,side,desc,safety:[],afterAge:true,end:true,groups:{},krFlows:0,flowsOff:null};
   const classOf=ex=>desc.wAt==='same'?SAFETY_CLASSES[0]:ex<=0.05*desc.T*FX+2?SAFETY_CLASSES[1]:SAFETY_CLASSES[2];
@@ -124,9 +124,9 @@ if(require.main===module){
 const one=process.env.MULTI_ORDER_SEED,N=Number(process.env.MULTI_ORDER_SEEDS)||150;
 // The R4 guard (seed 84): a buy KIS carried after its own report (A3) settling by USD gives no paired credit, so the
 // combined value is never above the true one; and the one open class is exactly seed 69 (named, for its fix).
-test('R5 pins: seed 84 has no combined excess (the R4 guard); the open class is seed 69 alone',()=>{
+test('R5 pins: seed 84 has no combined excess (the R4 guard); the open class is empty (P1)',()=>{
   assert.deepEqual(check(84,'Buy').safety.filter(x=>!x.cls.startsWith('attribution')),[],'seed 84');
-  const open=Array.from({length:150},(_,i)=>i+1).filter(seed=>check(seed,'Buy').safety.some(x=>x.cls.startsWith('open')));assert.deepEqual(open,[69]);
+  const open=Array.from({length:150},(_,i)=>i+1).filter(seed=>check(seed,'Buy').safety.some(x=>x.cls.startsWith('open')));assert.deepEqual(open,[],'P1: settled provisional KRW stays deducted until it leaves');
   // A batch KIS debits in one fall after its report's zero (several groups awaiting): the withdrawal is one flow.
   for(const seed of [312,478,553,596])assert.equal(check(seed,'Buy').flowsOff,null,`seed ${seed}`);
 });

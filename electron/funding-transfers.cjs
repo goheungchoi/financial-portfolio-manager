@@ -18,6 +18,9 @@
 // explained(): cumulative amounts per market the flow detector leaves out (only changes this recorder has seen: M2).
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');const B=require('./business-days.cjs');
 const BAND=0.05,MAX_SET=8;
+// P1: settled provisional KRW (a report no group explains) is matched to its Korean fall with the flow detector's own
+// tolerance for a settlement's payment, so both readers of one fall agree (planner C2).
+const PROV_MIN=1000,DETECT_FLOOR=10000,nearPay=(a,b)=>Math.abs(a-b)<=Math.max(DETECT_FLOOR,Math.abs(b)*0.03);
 // S3a-2: the states whose KRW has not been seen leaving Korean cash (current().krwUnpaidKRW); and the states KIS still
 // reports (the split's groups).
 const UNPAID=new Set(['krw','awaiting-kr','awaiting-reversal']),REPORTED=new Set(['us','krw','kr-paid']);
@@ -100,8 +103,8 @@ class FundingTransfers {
       // only the reported KRW less the USD KIS took (at the rate of its settlement).
       // F-d3: the USD still owed by U.S. buys whose report KIS dropped before taking U.S. cash or exchanging KRW (awaiting-krw,
       // not deferred: a deferred group's pieces are still in flight and carry it). The U.S. value deducts it until then.
-      usAwaitingUSD:usd(rows.filter(r=>r.state==='awaiting-krw'&&!r.deferred).reduce((n,r)=>n+(r.shortfallUSD??0),0)),
-      krwSettledUnpaidKRW:won(rows.reduce((n,r)=>n+(r.state==='awaiting-kr'?r.reportedKRW:r.state==='awaiting-reversal'?Math.max(0,r.reportedKRW-(r.paidUSD??0)*(r.fx??0)):0),0)),
+      usAwaitingUSD:usd(rows.filter(r=>r.state==='awaiting-krw'&&!r.deferred).reduce((n,r)=>n+(r.shortfallUSD??0),0)+(m?.provOwedUS??[]).reduce((n,e)=>n+(e.usd??0),0)),
+      krwSettledUnpaidKRW:won(rows.reduce((n,r)=>n+(r.state==='awaiting-kr'?r.reportedKRW:r.state==='awaiting-reversal'?Math.max(0,r.reportedKRW-(r.paidUSD??0)*(r.fx??0)):0),0)+(m?.provSettled??[]).reduce((n,e)=>n+(e.krw??0),0)),
       // M-1.6c1: the groups KIS still reports, with their orders, for the valuation's coverage of in-flight pieces.
       reportedGroups:rows.filter(r=>REPORTED.has(r.state)).map(r=>({orders:[...(r.orders??[])],reportedKRW:won(r.reportedKRW??0),state:r.state})),
       // M-1.6c2 (C1): the groups whose KRW route KIS has shown (reported KRW-paid, settled with a KRW part, or booked from
@@ -161,7 +164,13 @@ class FundingTransfers {
     let live=[...rows.values()];let event=false;
     // M-1.6c2: KIS's late debit of a deferred group (its report gone, U.S. cash still holding it): a U.S. cash fall
     // within the band of its shortfall, oldest first. Booked by usd; what it took is not a settlement payment again below.
-    let lateDebit=0;
+    let lateDebit=0,groupsCash=0;
+    // P1 (C1): a U.S.-owed part of settled provisional KRW ends at the U.S. cash fall that fits it (USD first), oldest first,
+    // or after one U.S. business day.
+    {const owed=(meta.provOwedUS??[]).slice().sort((a,b)=>a.at-b.at),fall=-(cashMove+lateDebit);
+      const paid=fall>0.005?(owed.find(e=>Math.abs(fall-e.usd)<=BAND*e.usd)?[owed.find(e=>Math.abs(fall-e.usd)<=BAND*e.usd)]:oldestPrefix(owed.map(e=>({...e,reportedAt:e.at})),fall,e=>e.usd)):null;
+      if(paid){const ats=new Set(paid.map(e=>e.at+':'+e.usd));meta.provOwedUS=(meta.provOwedUS??[]).filter(e=>!ats.has(e.at+':'+e.usd));lateDebit+=paid.reduce((n,e)=>n+e.usd,0);event=true;}
+      meta.provOwedUS=(meta.provOwedUS??[]).filter(e=>!B.agedOut('US',{fillAt:e.at,now,n:1}).aged);}
     // F-d3: any group awaiting a KRW shortfall, deferred or not (KIS's report gone with U.S. cash still able to pay it).
     // A group that was not deferred had its shortfall explained as a U.S. rise at the report's fall: the debit takes it back.
     // M-1.6d (R5 600 seeds): KIS debits a batch's parts in one U.S. cash fall: when no single group fits it, the oldest-
@@ -224,7 +233,7 @@ class FundingTransfers {
               this.put(account,r.key,{...r,state:'awaiting-reversal',paidUSD:y,fx,settledAt:now,window});meta.explainedUS-=y;}
             // All KRW: settled by KIS; the KRW stays deducted until the Korean cash fall is read (S3a-2).
             else this.put(account,r.key,{...r,state:'awaiting-kr',settledAt:now});}}return Y;};
-      const paid0=Math.max(0,-(cashMove+lateDebit)),used=set?settle(set,paid0):0;
+      const paid0=Math.max(0,-(cashMove+lateDebit)),used=set?settle(set,paid0):0;groupsCash+=used;
       // M-1.6d T2 (the recorder's own zero): KIS's reported buys fell to a 0 it returned (its unsettled block present), in an
       // accepted reading (the caller feeds only completed readings), from a positive total: every group still in a reported
       // state has settled, whether or not a set matched the fall (equal amounts, reports it could not attribute). Each settles
@@ -233,14 +242,27 @@ class FundingTransfers {
       const unsettled=us.unsettled&&typeof us.unsettled==='object'&&!Array.isArray(us.unsettled)?us.unsettled:null;
       if(unsettled&&typeof unsettled.buyKRW==='number'&&unsettled.buyKRW===0&&!us.settlementHeld&&!us.settlementProvisional&&prevR>0){
         const rest=this.rows(account).filter(r=>REPORTED.has(r.state)).sort((a,b)=>(a.reportedAt??0)-(b.reportedAt??0));
-        if(rest.length){settle(rest,Math.max(0,paid0-used));for(const r of rest)this.put(account,r.key,{...this.rows(account).find(x=>x.key===r.key),zeroSettled:now});}}}
+        if(rest.length){groupsCash+=settle(rest,Math.max(0,paid0-used));for(const r of rest)this.put(account,r.key,{...this.rows(account).find(x=>x.key===r.key),zeroSettled:now});}}}
     // M4: every won KIS reports is a group's (U.S. obligation or Korean deduction) or provisional: the reported amount
     // no tracked buy explains (purchases outside the app, or a report the rule could not attribute).
     // KIS revalues the KRW it reports at each day's rate: with no buy reported or settled in this reading, a change within
     // the band rescales the groups and the provisional amount together, so the split keeps summing to what KIS reports.
     let groups=this.rows(account).filter(r=>REPORTED.has(r.state));const before=groups.reduce((n,r)=>n+r.reportedKRW,0)+(m?.provisionalKRW??0);
-    if(!event&&dR!==0&&before>0&&R>0&&Math.abs(R-before)<=BAND*before){const k=R/before;for(const r of groups)this.put(account,r.key,{...r,reportedKRW:won(r.reportedKRW*k)});groups=this.rows(account).filter(r=>REPORTED.has(r.state));}
+    let rescaled=false;
+    if(!event&&dR!==0&&before>0&&R>0&&Math.abs(R-before)<=BAND*before){rescaled=true;const k=R/before;for(const r of groups)this.put(account,r.key,{...r,reportedKRW:won(r.reportedKRW*k)});groups=this.rows(account).filter(r=>REPORTED.has(r.state));}
     const tracked=groups.reduce((n,r)=>n+r.reportedKRW,0);meta.provisionalKRW=Math.max(0,R-tracked);
+    // P1 (planner-cleared, m1/p1-design.md): provisional KRW KIS settled in this reading (its total fell, no revaluation) and
+    // U.S. cash did not pay (USD first: z, the fall the groups did not take). By USD first again (C1), the part U.S. cash
+    // still holds is owed in the U.S. (KIS has not finished taking USD); the rest is Korean, deducted until its fall.
+    {const dP=Math.max(0,m?.provisionalKRW??0)-meta.provisionalKRW;
+      if(m&&dR<0&&!rescaled&&dP>0&&fx>0){const z=Math.max(0,-(cashMove+lateDebit)-groupsCash),k=Math.max(0,dP-z*fx);
+        // F1 (planner): the U.S. money that can still pay it is K1's (cash + pending less the in-flight buys and the 'us'
+        // groups), less what earlier U.S.-owed parts and awaiting shortfalls already claim; the rest is Korean.
+        const claims=Math.max(0,Number(openBuysUSD)||0)+this.rows(account).reduce((n,r)=>n+(r.state==='us'?r.usd:r.state==='awaiting-krw'&&!r.deferred?(r.shortfallUSD??0):0),0)+(meta.provOwedUS??[]).reduce((n,e)=>n+(e.usd??0),0);
+        const money=Math.max(0,cash+pending-claims);
+        if(k>=PROV_MIN){const owedUS=cash>0.01?Math.min(k/fx,money):0,kr=won(k-owedUS*fx);
+          if(owedUS>0.005)meta.provOwedUS=[...(meta.provOwedUS??[]),{usd:usd(owedUS),at:now}];
+          if(kr>=PROV_MIN)meta.provSettled=[...(meta.provSettled??[]),{krw:kr,at:now}];}}}
     Object.assign(meta,{reportedKRW:R,cash,pending,effects,usAt:now});this.put(account,'#meta',meta);return this.current(account);}
   // One Korean reading: the change in D+2 cash less the Korean fills seen meanwhile pays any shortfall awaiting it.
   observeKR(account,input){return this.tx(()=>this.readKR(account,input));}
@@ -284,6 +306,15 @@ class FundingTransfers {
     const paid=left>0?firstSet(unpaid,left,r=>r.reportedKRW):null;
     if(paid){left=0;for(const r of paid)this.put(account,r.key,r.state==='awaiting-kr'?{...r,state:'booked',krPaidAt:now,via:'krw'}:{...r,state:'kr-paid',krPaidAt:now});}
     for(const r of this.rows(account).filter(x=>x.state==='awaiting-kr'))if(B.agedOut('KR',{fillAt:r.settledAt,now,n:1}).aged)this.unmatched(account,r,'no Korean cash fall paying it within one Korean business day of the U.S. settlement',now);
+    // P1: settled provisional KRW leaves with a Korean fall within the detector's tolerance (one entry, else the
+    // oldest-first prefix), or expires after one Korean business day (a System line).
+    {const entries=(m.provSettled??[]).slice().sort((a,b)=>a.at-b.at);let paidKeys=new Set();
+      if(left>0&&entries.length){const one=entries.find(e=>nearPay(left,e.krw));let set=one?[one]:null;
+        if(!set){let t=0;for(let i=0;i<entries.length;i++){t+=entries[i].krw;if(nearPay(left,t)){set=entries.slice(0,i+1);break;}}}
+        if(set){left=0;paidKeys=new Set(set.map(e=>e.at+':'+e.krw));}}
+      const keep=[];for(const e of entries){if(paidKeys.has(e.at+':'+e.krw))continue;
+        if(B.agedOut('KR',{fillAt:e.at,now,n:1}).aged){try{this.log?.('U.S. buy funding not matched',`KRW ${Math.round(e.krw).toLocaleString('en-US')} KIS settled for U.S. buys the app could not attribute was not seen leaving Korean cash within one Korean business day; it is no longer deducted.`);}catch{}continue;}keep.push(e);}
+      m.provSettled=keep;}
     m.kr={settled,effects,at:now};this.put(account,'#meta',m);return this.current(account);}
 }
 module.exports={FundingTransfers,uniqueSet,BAND};
