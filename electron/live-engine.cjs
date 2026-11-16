@@ -129,7 +129,7 @@ class LiveEngine {
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
       const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled'].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
-      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})}});
+      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})},...(this.severalOpen?{severalOpen:true}:{})});
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
@@ -205,8 +205,18 @@ class LiveEngine {
     if((this.reconcileHealth?.failures??0)>0&&this.orders().some(o=>OPEN.includes(o.status)))return 'order history could not be read, so the open orders\' states are not confirmed';
     // Fails closed: records that cannot be read or parsed are never taken as "nothing unknown".
     let all;try{all=this.db.prepare('SELECT payload FROM live_intents').all().map(r=>JSON.parse(r.payload));}catch{return 'the app\'s order records could not be read';}
-    const unknown=all.find(o=>o.id!==order.id&&o.symbol===order.symbol&&(['Submitting','Uncertain','Cancellation uncertain'].includes(o.status)||(['Accepted','Partially filled'].includes(o.status)&&(o.pendingRevision||o.unconfirmed))));
+    const same=require('./broker-open-orders.cjs').sameStock;
+    const unknown=all.find(o=>o.id!==order.id&&same(o.symbol,order.symbol)&&(['Submitting','Uncertain','Cancellation uncertain'].includes(o.status)||(['Accepted','Partially filled'].includes(o.status)&&(o.pendingRevision||o.unconfirmed))));
     return unknown?`${order.symbol} has an order whose state is not confirmed (${unknown.pendingRevision||unknown.unconfirmed?'an unconfirmed revision':unknown.status})`:null;}
+  // M-1.3: the open KIS orders a preparation returned (several orders open allowed) that are not the app's: yours in KIS
+  // (the user's D3: counted in the sums, M-1.4). An order is the app's when its number is in any app order's chain (its
+  // first number, its revisions' and its current one), in any market. Without the switch the preparation returns none.
+  othersOpen(prepared){const ours=new Set();let all=[];try{all=this.db.prepare('SELECT payload FROM live_intents').all().map(r=>JSON.parse(r.payload));}catch{all=null;}
+    // Fails closed: when the app's records cannot be read, every open KIS order is treated as yours (counted in full).
+    // Numbers compared without leading zeros (KIS may pad them); a mismatch could only count an app order as yours.
+    const key=n=>String(n).replace(/^0+(?=\d)/,'');
+    for(const o of all??[])for(const n of [o.brokerOrderId,o.currentBrokerOrderId,...(o.brokerOrderIds??[])])if(n!=null)ours.add(key(n));
+    return (prepared?.openOrders??[]).filter(o=>!ours.has(key(o.orderId)));}
   // Why the current product and credit rules require your approval for an order, or null; their refusals throw.
   // Protective orders (sales, repayments, short covers) never need it (1.5.48 review, R2). Synchronous.
   approvalNow(order,balance,base){const why=[];let product=null;

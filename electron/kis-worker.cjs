@@ -34,7 +34,7 @@ process.parentPort.on('message',async ({data})=>{
       else if(operation==='us-charges')snapshot=await us.trades(data.start,data.end,{maxPages:data.maxPages});
       else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
       else if(operation==='us-revise-order')snapshot=await us.revise(data.command??{});
-      else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
+      else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess,{severalOpen:data.severalOpen===true});const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
       else if(operation==='us-place-order'){const entry=require('./order-tickets.cjs').takeTicket(prepared,data.ticket,'US');if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
       else throw new Error();
       process.parentPort.postMessage({id,ok:true,snapshot});return;
@@ -52,7 +52,7 @@ process.parentPort.on('message',async ({data})=>{
     if(data.operation==='prepare-order') {
       for(const [key,entry] of prepared)if(entry.expiresAt<Date.now())prepared.delete(key);
       const sess=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:data.sessions??{}});
-      const check=await client.prepareOrder(data.command,sess);const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,session:sess,expiresAt:Date.now()+15000});
+      const check=await client.prepareOrder(data.command,sess,{severalOpen:data.severalOpen===true});const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,session:sess,expiresAt:Date.now()+15000});
       process.parentPort.postMessage({id,ok:true,snapshot:{...check,ticket,session:sess}});return;
     }
     if(data.operation==='place-order') {

@@ -255,7 +255,7 @@ class KisReadOnlyClient {
     }
     return {open:true,basis:'KRX holiday calendar and trading hours'};
   }
-  async prepareOrder(command,session=null) {
+  async prepareOrder(command,session=null,{severalOpen=false}={}) {
     if(session&&!session.regular&&command?.credit!=null)throw new KisError('FEATURE_UNAVAILABLE');
     if(!command||!/^\d{6}$/.test(command.symbol)||!['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!Number.isSafeInteger(command.limitPrice)||command.limitPrice<=0)throw new KisError('INVALID_ORDER');
     if(command.credit!=null){
@@ -282,8 +282,8 @@ class KisReadOnlyClient {
       if(command.quantity>quantity || command.limitPrice*command.quantity*1.02>cash)throw new KisError('INSUFFICIENT_CAPACITY');availableQuantity=quantity;
     } else {availableQuantity=balance.holdings.find(row=>row.symbol===command.symbol)?.availableQuantity;if(availableQuantity==null || command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');}
     const {orders}=await this.getActivity('orders',today,today);
-    if(orders.some(order=>order.remaining>0 && ['Pending','Partially filled'].includes(order.status)))throw new KisError('OPEN_BROKER_ORDERS');
-    return {balance,price,unit,availableQuantity,checkedAt:Date.now()};
+    const open=require('./broker-open-orders.cjs').openGuard(orders,command,{severalOpen,fail:()=>new KisError('OPEN_BROKER_ORDERS')});
+    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open};
   }
   // Credit order (order-credit): margin buy/repay and short sale/cover. Live accounts only; KIS does not support it on mock.
   async placeCreditOrder(command) {
