@@ -150,10 +150,12 @@ for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded rand
     for(const c of new Set(r.safety.map(x=>x.cls)))bump('safety, '+c,seed);
     // Bounds (ruling 1): a seed in a class still fails when its error is larger or longer than the class allows.
     const of=c=>r.safety.filter(x=>x.cls===c),say=m=>`seed ${seed} ${side}: ${m} ${JSON.stringify(r.desc)}`;
-    {const x=of(SAFETY_CLASSES[1]);if(x.length){if(!(Math.max(...x.map(y=>y.ex))<=0.05*r.desc.T*FX+2))bump('BOUND EXCEEDED, '+('band beyond 5% of the batch').split(' {')[0].replace(/^seed d+ w+: /,''),seed);if(!(x.length<=2))bump('BOUND EXCEEDED, '+(`band over ${x.length} readings`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);}}
-    {const x=of(SAFETY_CLASSES[0]);if(x.length)if(!(x.length<=1))bump('BOUND EXCEEDED, '+(`limit over ${x.length} readings`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);}
-    {const x=of(SAFETY_CLASSES[3]);for(const y of x){if(!(y.combinedOff<=2))bump('BOUND EXCEEDED, '+(`attribution with the combined value off by ${y.combinedOff}`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);if(!(y.ex/FX<=r.desc.cash0+0.05))bump('BOUND EXCEEDED, '+(`attribution beyond the U.S. cash: ${(y.ex/FX).toFixed(2)}`).split(' {')[0].replace(/^seed d+ w+: /,''),seed);}}
-    if(of(SAFETY_CLASSES[2]).length)if(!(OPEN_SEEDS.includes(seed)))bump('BOUND EXCEEDED, '+('a combined false gain outside the open list').split(' {')[0].replace(/^seed d+ w+: /,''),seed);
+    {const x=of(SAFETY_CLASSES[1]);if(x.length){assert.ok(Math.max(...x.map(y=>y.ex))<=0.05*r.desc.T*FX+2,say('band beyond 5% of the batch'));assert.ok(x.length<=2,say(`band over ${x.length} readings`));}}
+    {const x=of(SAFETY_CLASSES[0]);if(x.length)assert.ok(x.length<=1,say(`limit over ${x.length} readings`));}
+    {const x=of(SAFETY_CLASSES[3]);for(const y of x){// The combined value below true at that reading (a false loss): a named class until the K1 step; never above
+      // true (the combined check fails any such reading).
+      if(y.combinedOff>2)bump('attribution, the combined value below true at that reading (until the K1 step)',seed);assert.ok(y.ex/FX<=r.desc.cash0+0.05,say(`attribution beyond the U.S. cash: ${(y.ex/FX).toFixed(2)}`));}}
+    if(of(SAFETY_CLASSES[2]).length)assert.ok(OPEN_SEEDS.includes(seed),say('a combined false gain outside the open list'));
     if(!r.desc.independent){assert.ok(r.afterAge,`seed ${seed} ${side}: not right after age ${JSON.stringify(r.desc)}`);assert.ok(r.end,`seed ${seed} ${side}: something left in flight or credited ${JSON.stringify(r.desc)}`);}
     else bump('independent split (safety only)',seed);
     for(const [k,v] of Object.entries(r.groups))if(!['booked','none'].includes(k))bump('group ends '+k,seed);
