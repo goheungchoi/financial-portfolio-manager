@@ -6,6 +6,10 @@ class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
     this.market=options.market??'KR';this.day=this.market==='US'?require('./kis-overseas.cjs').localDate:seoulDate;this.validSymbol=symbol=>this.market==='US'?/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(symbol):/^\d{6}$/.test(symbol);this.validPrice=price=>Number.isFinite(price)&&price>=1&&(this.market==='US'?Math.abs(price*100-Math.round(price*100))<1e-7:Number.isSafeInteger(price));
     this.db=db;this.broker=broker;this.getConnection=getConnection;this.enabled=false;this.autoEnabled=false;this.busy=false;
+    // M-1 (several orders open at once, artifacts/reviews/2026-11-16-multi-order): off unless the constructor is given
+    // severalOpen:true. It is not a saved setting, so no configuration file can turn it on; the app passes nothing (off)
+    // and only tests and the desktop harness set it. Off: today's one-open-order rule, byte for byte (tests/several-open).
+    this.severalOpen=options.severalOpen===true;
     db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_orders(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,day TEXT NOT NULL,seenAt INTEGER NOT NULL,payload TEXT NOT NULL);');
     // A revision whose reply was lost to a restart stays unconfirmed, its higher price still committed, until history shows it.
     try{for(const r of db.prepare('SELECT payload FROM live_intents').all()){const o=JSON.parse(r.payload);if(o.pendingRevision&&String(o.accountKey??'').endsWith(':US')===(this.market==='US')){const {pendingRevision:p,...rest}=o;this.writeOrder({...rest,trackingStopped:{at:Date.now(),reason:'restart during a revision'},unconfirmed:{from:p.from,cancel:p.cancel,...(p.cancel?{}:{price:p.price})}});}}}catch{}
