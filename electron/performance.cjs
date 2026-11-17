@@ -76,6 +76,12 @@ class PerformanceHistory {
       // When the money moved, if known (release review 2026-11-05, P1): after one balance reading and by the next. A flow
       // entered by hand has only its date. createdAt and confirmedAt say when it was recorded, never when it happened.
       ...(Number.isFinite(value.occurredBy)?{occurredBy:value.occurredBy}:{}),...(Number.isFinite(value.occurredAfter)?{occurredAfter:value.occurredAfter}:{})};
+    // Item 9: a deposit or withdrawal you record replaces a detected one it matches (not yet confirmed; same market and
+    // sign; the amount within ₩10,000 or $10; your date between the detected change's earliest and latest Seoul day), so
+    // the same money is never counted twice. Your record takes its part ids, so the held change stays explained.
+    if(!value.detected&&!value.transfer&&!fixed){const span=f=>[f.occurredAfter??f.occurredBy,f.occurredBy].map(t=>Number.isFinite(t)?seoulDate(t):f.day);
+      const twin=this.flows(account).find(f=>f.detected&&!f.transfer&&f.market===flow.market&&Math.sign(f.amount)===Math.sign(flow.amount)&&Math.abs(f.amount-flow.amount)<(flow.market==='US'?10:10000)&&(([a,b])=>flow.day>=a&&flow.day<=b)(span(f)));
+      if(twin){this.removeFlow(account,twin.id);if(twin.pendingIds?.length)flow.pendingIds=[...new Set([...(flow.pendingIds??[]),...twin.pendingIds])].slice(0,40);flow.replaced={id:twin.id,amount:twin.amount};}}
     this.db.prepare('INSERT INTO cash_flows VALUES(?,?,?)').run(flow.id,account,JSON.stringify(flow));return flow;
   }
   // A recorded transfer whose currency exchange has now been seen: kept as it is, marked so it is not matched again.

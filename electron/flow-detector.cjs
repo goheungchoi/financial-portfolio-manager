@@ -19,6 +19,14 @@ const {seoulDate}=require('./kis-activity.cjs');const {randomUUID}=require('node
 const THRESHOLD_KRW=10000;
 // Settlement evidence lasts a day: KIS takes the payment at settlement, so an older record would only hide a withdrawal.
 const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=10;
+// Item 9 (artifacts/reviews/2026-11-17-deposit-detection/design-note.md, cleared): a rise is recorded after SHORT_MS
+// instead of HOLD_MS when nothing else the detector knows can explain it at that reading (shortReason is null): no open
+// order could fill it, it came with no U.S. buy, no settlement of any kind is in progress, the U.S. balance was compared,
+// the other market shows no held change, and the other market's balance has been read OTHER_READS times since the
+// change's last part (readAt, the snapshots' times; without them nothing is recorded early). Falls keep HOLD_MS.
+// R1: while such a record is unconfirmed and under HOLD_MS old, any new unexplained part in its market or a change in
+// the other market takes it back into pending with its parts, and resolve runs as it would have under HOLD_MS.
+const SHORT_MS=10*60000,OTHER_READS=2;
 // What each market's cash reading includes. Change a market's name here whenever what the caller passes as its cash
 // changes: a saved reading of another basis is not compared, so the change in definition is never taken for money moving.
 // KR: Korean cash net of the KRW known to be committed to unsettled U.S. buys (electron/integrated-settlement.cjs).
@@ -117,23 +125,31 @@ class FlowDetector {
   // (A late pre-tracking fill or a correction is no deposit or withdrawal. S5: the coverage under review, usReview, is
   // gone; a stored usReview, always 0, is not read.)
   // funding: the recorder's cumulative explained amounts {KR, US} (electron/funding-transfers.cjs explained).
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,provisionalOutsideKRW=null,unsettledKRW=0,usExplained=null,funding=null}){
+  // readAt {KR, US}: when each market's balance was read (item 9; the short hold counts the other market's reads).
+  // krwUnpaid: the route's KRW for U.S. buys not yet seen leaving Korean cash (item 9: any settlement keeps the long hold).
+  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,provisionalOutsideKRW=null,unsettledKRW=0,usExplained=null,funding=null,readAt=null,krwUnpaid=0}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
     let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=Number(x?.usd)||0;usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),provOut:Math.round(Number.isFinite(provisionalOutsideKRW)?provisionalOutsideKRW:Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{})};
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),provOut:Math.round(Number.isFinite(provisionalOutsideKRW)?provisionalOutsideKRW:Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{}),
+      // Item 9: the snapshots' read times, unpaid KRW of the route, and whether a U.S. balance was ever read for this account.
+      ...(readAt&&typeof readAt==='object'?{readAt:{KR:Number.isFinite(readAt.KR)?readAt.KR:null,US:Number.isFinite(readAt.US)?readAt.US:null}}:{}),krwUnpaid:Math.round(Number(krwUnpaid)||0),
+      usEver:Boolean(prev?.usEver||prev?.usCash!=null||Number.isFinite(usCash))};
     // Provisional changes and settlement evidence carry over between readings. (S4b-1: settlement-timing entries are no
     // longer kept; a stored one is dropped at this save.)
-    const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS)};
+    const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS),
+      // Item 9: short-hold records that may still be taken back (R1), and your act on one (R2), each for HOLD_MS.
+      ...(prev?.recent?{recent:{...prev.recent}}:{}),...(prev?.acted?{acted:Object.fromEntries(Object.entries(prev.acted).filter(([,a])=>now.at-a.at<HOLD_MS))}:{})};
     // A change held since before parts were kept: when its later additions happened is unknown, so its one part spans
     // from before its first change to the last reading.
     for(const [m,q] of Object.entries(state.pending))if(q&&!Array.isArray(q.parts))state.pending[m]={...q,parts:[{id:randomUUID(),amount:q.amount,after:q.after??null,by:prev?.at??q.since}]};
     // A later change in a held market: added to it as a part of its own, in the window since the previous reading.
     // M-3.2: a change with no cash move in its market is only a fill being counted that the held change already holds (KIS
     // showed it first): it joins the last part, so the held change stays one flow with that part's window.
-    const add=(held,m,amount)=>{held.amount=round(m,held.amount+amount);const cashMoved=m==='US'?now.usCash!==prev.usCash:now.krCash!==prev.krCash,last=held.parts[held.parts.length-1];
+    // Item 9: a new part restarts the count of the other market's reads (they must come after the change's last part).
+    const add=(held,m,amount)=>{held.amount=round(m,held.amount+amount);held.otherReads=0;const cashMoved=m==='US'?now.usCash!==prev.usCash:now.krCash!==prev.krCash,last=held.parts[held.parts.length-1];
       if(!cashMoved&&last){held.parts=[...held.parts.slice(0,-1),{...last,amount:round(m,last.amount+amount)}];return;}
       held.parts=[...held.parts,{id:randomUUID(),amount:round(m,amount),after:prev.at??null,by:now.at}];};
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...now,...state}));
@@ -164,7 +180,7 @@ class FlowDetector {
     // before, not compared.
     if((!(fx>0)||!(pf>now.provisionalKRW&&(prev.unsettledKRW??0)>now.unsettledKRW))&&(pf!==now.provisionalKRW||pf>0&&(prev.unsettledKRW??0)!==now.unsettledKRW)){
       const paidOff=pf-now.provisionalKRW;
-      if(pf>0&&(prev.unsettledKRW??0)>now.unsettledKRW&&paidOff>0){const seen=compare();
+      if(pf>0&&(prev.unsettledKRW??0)>now.unsettledKRW&&paidOff>0){const seen=compare();if(seen)this.takeBack(account,state,now,fx,seen);
         // A change that returns a held change to its earlier balance is that reversal (for example dollars from an
         // exchange spent at settlement), not part of the payment.
         if(seen)for(const m of ['KR','US']){const held=state.pending[m];if(held&&seen[m]&&Math.sign(seen[m])!==Math.sign(held.amount)&&!big(m,held.amount+seen[m],fx)){add(held,m,seen[m]);seen[m]=0;}}
@@ -172,7 +188,7 @@ class FlowDetector {
         const usFall=usStart?Infinity:seen&&seen.US<0?(fx>0?-seen.US*fx:Infinity):0,outstanding=seen?Math.round(paidOff-Math.max(0,-seen.KR)-usFall):0;
         if(outstanding>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:outstanding});}
       markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;}
-    const u=compare();if(!u)return [];
+    const u=compare();if(!u)return [];this.takeBack(account,state,now,fx,u);
     // P2: the provisional KRW that settled in this reading (p) explains falls up to it, USD first (KIS takes U.S. cash before
     // KRW): those parts leave the comparison, and the rest of p is kept as settlement evidence for a later fall. A rise is
     // never taken out (a deposit always shows), and nothing beyond p is (a larger withdrawal leaves its excess).
@@ -203,7 +219,9 @@ class FlowDetector {
     for(const market of ['KR','US']){const amount=u[market],held=state.pending[market];if(!amount||!held&&!big(market,amount,fx))continue;
       const mark=usStart&&market==='KR'?{usUnseen:true}:{};
       if(held){Object.assign(held,{funding:held.funding||u.usTraded,...mark});add(held,market,amount);}
-      else state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{id:randomUUID(),amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark};}
+      // R2: a change that begins after you confirmed or removed an early record carries it, so its note names that record.
+      else{const acted=Object.entries(state.acted??{})[0];state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{id:randomUUID(),amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark,
+        ...(acted?{earlier:{market:acted[0],amount:acted[1].amount,act:acted[1].act}}:{})};if(acted)delete state.acted[acted[0]];}}
     markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;
   }
   // Money moved since the day's baseline for the loss checks: the recorded flows (PerformanceHistory.flowsSince) and,
@@ -227,13 +245,43 @@ class FlowDetector {
     const counted=parts.filter(x=>day!=null?seoulDate(x.by)===day:x.by>since);
     return widen({...recorded,unresolved:(recorded.unresolved??0)+after,uncertain:{confirmed:recorded.uncertain?.confirmed??0,unresolved:(recorded.uncertain?.unresolved??0)+unsure},held:{after,uncertain:unsure,parts:parts.map(x=>x.id??null)}},counted.reduce((n,x)=>n+Math.min(0,x.amount),0),counted.reduce((n,x)=>n+Math.max(0,x.amount),0));
   }
+  // Item 9, R1: a short-hold record still unconfirmed and under HOLD_MS old goes back into pending, with its parts, when a
+  // new unexplained part arrives in its market (u) or the other market shows a change (u, or one held); resolve then runs
+  // as under HOLD_MS (a reversal, net change, exchange pair or the 2 h record). R2: once you confirmed or removed it, your
+  // act stands: the record is dropped from this list and kept as `acted` so a later change's note can name it.
+  takeBack(account,state,now,fx,u){const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};
+    for(const m of ['KR','US']){const r=state.recent?.[m];if(!r)continue;const o=m==='KR'?'US':'KR';
+      // The age as the hold counts it: from when no open order could fill it, if later than the change (planner, minor).
+      if(now.at-Math.max(r.q.since,r.q.fillClearedAt??-Infinity)>=HOLD_MS){delete state.recent[m];continue;}
+      const flows=this.performance.flows(account),live=r.ids.map(id=>flows.find(f=>f.id===id));
+      // Your act: confirmed, removed, or replaced by a flow you recorded yourself (performance.addFlow keeps replaced.id).
+      if(live.some(f=>!f||!f.detected)){const yours=flows.some(f=>r.ids.includes(f.replaced?.id));state.acted={...(state.acted??{}),[m]:{at:now.at,amount:r.q.amount,act:yours?'recorded':live.some(f=>!f)?'removed':'confirmed',seen:r.q.since}};delete state.recent[m];continue;}
+      // F2 (planner): only a move over the threshold in its own market takes it back (as for the other market); a smaller
+      // one is dropped, as it is whenever nothing is held, so a record is not removed and made again for a won.
+      const mine=u&&Number.isFinite(u[m])&&big(m,u[m],fx),other=u&&Number.isFinite(u[o])&&big(o,u[o],fx)||Boolean(state.pending[o]);if(!mine&&!other)continue;
+      for(const id of r.ids)this.performance.removeFlow(account,id);
+      // Taken back, it keeps the 2 h hold ("as today"): no second early record, no second notice for the same money.
+      const q=state.pending[m];state.pending[m]=q?{...r.q,amount:round(m,r.q.amount+q.amount),parts:[...r.q.parts,...(q.parts??[])],otherReads:0,takenBack:true}:{...r.q,otherReads:0,takenBack:true};delete state.recent[m];
+      note('Detected change reviewed',`${label(m)} cash ${mine?'moved again':`changed with the ${label(o)} account`} within 2 hours of the ${money(m,r.q.amount)} ${r.q.amount>0?'rise':'fall'} recorded early; it is checked again as one change.`);}
+    if(state.recent&&!Object.keys(state.recent).length)delete state.recent;}
+  // Item 9: counts, for each held change, the other market's reads after its last part: a new snapshot time whose cash
+  // was compared in this reading (compared: {KR, US}). F1 (planner): a U.S. snapshot not compared (its cash withheld, for
+  // example while it is provisional) is no read.
+  countReads(state,now,compared){for(const [m,q] of Object.entries(state.pending)){if(!q)continue;const o=m==='KR'?'US':'KR',t=now.readAt?.[o],lastBy=q.parts?.at(-1)?.by??q.since;
+    if(compared[o]&&Number.isFinite(t)&&t>lastBy&&t!==q.otherReadAt){q.otherReads=(q.otherReads??0)+1;q.otherReadAt=t;}}}
+  // Item 9: why a held rise cannot be recorded after SHORT_MS now (null: it can). R3: the reasons that keep the long hold
+  // are shown on Home and in the note; 'waiting' (the other market not yet read twice) is not one of them.
+  shortReason(m,q,state,now,fx){if(!(q.amount>0))return 'fall';if(q.takenBack)return 'it changed again after an early record';if(q.couldBeFill)return 'an open order could fill it';if(q.funding)return 'a U.S. buy filled with it';
+    if(q.usUnseen)return 'the U.S. balance was not compared';if(now.provisionalKRW>0||now.unsettledKRW>0||state.settled.length||now.krwUnpaid>0)return 'U.S. buys are settling';
+    if(m==='US'&&!(fx>0))return 'no exchange rate';const o=m==='KR'?'US':'KR';if(state.pending[o])return `the ${label(o)} account changed too`;
+    if(!now.readAt)return 'waiting';if((o==='KR'||now.usEver)&&(q.otherReads??0)<OTHER_READS)return 'waiting';return null;}
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const p=row?JSON.parse(row.payload).pending??{}:{};
-    return Object.entries(p).map(([market,q])=>({market,currency:market==='US'?'USD':'KRW',amount:q.amount,since:new Date(q.since).toISOString(),...(q.usUnseen?{usBalanceUnseen:true}:{})}));
+    return Object.entries(p).map(([market,q])=>({market,currency:market==='US'?'USD':'KRW',amount:q.amount,since:new Date(q.since).toISOString(),...(q.usUnseen?{usBalanceUnseen:true}:{}),...(q.holdReason?{holdReason:q.holdReason}:{})}));
   }
   resolve(account,state,now,prev,fx){
-    const p=state.pending,out=[];const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};
+    const p=state.pending,out=[];const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};this.countReads(state,now,{KR:Number.isFinite(now.krCash),US:now.usCash!=null&&prev?.usCash!=null});
     // Balances back where they were: nothing happened that needs recording.
     for(const m of ['KR','US'])if(p[m]&&!big(m,p[m].amount,fx)){note('Cash change reversed',`${label(m)} cash returned to its earlier level; nothing recorded.`);delete p[m];}
     // M-1c: a change you have already recorded yourself (a deposit or withdrawal of this market, the same direction, an
@@ -264,11 +312,19 @@ class FlowDetector {
     // from then (fillClearedAt), not from when it began.
     for(const m of ['KR','US']){const q=p[m];if(!q||q.couldBeFill)continue;const age=now.at-Math.max(q.since,q.fillClearedAt??-Infinity),krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;
       const couldSettle=now.provisionalKRW>0&&(m==='KR'?q.amount<0:q.amount>0)&&(krw==null||Math.abs(krw)<=now.provisionalKRW*1.05+THRESHOLD_KRW);
-      if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
+      // Item 9: a rise nothing else can explain is recorded after SHORT_MS; otherwise the long hold, with its reason kept (R3).
+      const why=this.shortReason(m,q,state,now,fx);if(q.amount>0){if(why&&why!=='waiting')q.holdReason=why;else delete q.holdReason;}
+      const early=!why&&!couldSettle&&age>=SHORT_MS&&age<HOLD_MS;
+      if(!early&&(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS))continue;
       const unseen=q.usUnseen?' The U.S. balance could not be compared first, so a move to or from the U.S. account cannot be ruled out.':'';
-      const pieces=piecesOf(m,q,fx);
-      pieces.forEach((x,i)=>out.push(this.performance.addFlow(account,{day:seoulDate(x.occurredBy),market:m,amount:x.amount,detected:true,occurredAfter:x.occurredAfter,occurredBy:x.occurredBy,pendingIds:x.pendingIds,
-        note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen} Confirm or remove.`.slice(0,200)})));delete p[m];}
+      // R2: your earlier act on a record taken early stands; a change after it says so.
+      const earlier=q.earlier?q.earlier.act==='recorded'?` The earlier ${money(q.earlier.market,q.earlier.amount)} change you recorded yourself stands.`:` The earlier ${money(q.earlier.market,q.earlier.amount)} record you ${q.earlier.act} stands.`:'';
+      const pieces=piecesOf(m,q,fx),added=[];
+      pieces.forEach((x,i)=>{const flow=this.performance.addFlow(account,{day:seoulDate(x.occurredBy),market:m,amount:x.amount,detected:true,occurredAfter:x.occurredAfter,occurredBy:x.occurredBy,pendingIds:x.pendingIds,
+        note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen}${earlier}${!early&&x.amount>0&&q.holdReason?` Held 2 h: ${q.holdReason}.`:''} Confirm or remove.`.slice(0,200)});added.push(flow);out.push(flow);});
+      if(early){state.recent={...(state.recent??{}),[m]:{ids:added.map(f=>f.id),q:JSON.parse(JSON.stringify(q)),at:now.at}};
+        note('Cash change recorded',`${label(m)} cash rose by ${money(m,q.amount)} and nothing else could explain it; recorded after 10 minutes. Confirm or remove it on the Performance page.`);}
+      delete p[m];}
     return out;
   }
   // A deposit or withdrawal you recorded that explains a held change (M-1c): not detected, not a transfer, not already
@@ -286,4 +342,4 @@ class FlowDetector {
     return null;
   }
 }
-module.exports={FlowDetector,unexplained,flowsFrom,cashEffect,THRESHOLD_KRW,HOLD_MS,MAX_HOLD_MS,BASIS};
+module.exports={FlowDetector,unexplained,flowsFrom,cashEffect,THRESHOLD_KRW,HOLD_MS,MAX_HOLD_MS,SHORT_MS,OTHER_READS,BASIS};

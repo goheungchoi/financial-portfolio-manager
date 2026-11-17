@@ -20,7 +20,8 @@ const A='acct',K=s=>Date.parse(s+'+09:00'),r2=v=>Math.round(v*100)/100;
 // the loss value's range since S3a-2, valuation.cjs marketValue).
 const widths=(v,loss)=>{const w=n=>{const c=v.components.find(x=>x.name===n);return c?r2((c.high??c.amount)-(c.low??c.amount)):0;};const inFlight=w('inFlightBuys'),receivable=w('receivable');
   return {inFlight,receivable,other:r2(loss.high-loss.low-inFlight-receivable)};};
-function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=readings[0].at;const clock=()=>t;
+// short (item 9): pass the snapshots' read times and the route's unpaid KRW, so the short hold applies as in the app.
+function e2e(readings,{limit=1,short=false}={}){const db=new DatabaseSync(':memory:');let t=readings[0].at;const clock=()=>t;
   const perf=new PerformanceHistory(db,clock),fd=new FlowDetector(db,perf,clock),ft=new FundingTracker(db,clock),hold=new UsBalanceHold({clock});
   const notes=[];const f=new InFlight(db,clock),rec=new FundingTransfers(db,{performance:perf,clock,log:(title,body)=>notes.push({title,body})});
   let used=null,lastKR=null;const bases=[],out=[];
@@ -37,7 +38,7 @@ function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=
     const route=rec.current(A),tr=f.current(A);
     // The detector's Korean cash as main.cjs nets it: the KRW of K1 groups not yet seen leaving Korean cash (S3a-2), or
     // the shown KRW before it.
-    fd.observe(A,{krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-Math.max(0,(tr.buysUSD??0)-require('../electron/valuation.cjs').coveredInFlight(tr,route,r.fx))+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,provisionalOutsideKRW:Math.max(0,route.provisionalKRW-(require('../electron/valuation.cjs').splitContext(used,tr,route,r.fx)?.reportedInFlightUSD??0)*r.fx),unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
+    fd.observe(A,{...(short?{readAt:{KR:t,US:used?Date.parse(used.timestamp):null},krwUnpaid:route.krwUnpaidKRW??0}:{}),krCash:korea.settledCash-(route.krwUnpaidKRW??route.krwKRW),usCash:used.cash+(used.pendingSaleProceeds??0)-Math.max(0,(tr.buysUSD??0)-require('../electron/valuation.cjs').coveredInFlight(tr,route,r.fx))+(tr.sellsUSD??0)-(route.usUSD??0),fx:r.fx,orders:r.orders,provisionalKRW:route.provisionalKRW,provisionalOutsideKRW:Math.max(0,route.provisionalKRW-(require('../electron/valuation.cjs').splitContext(used,tr,route,r.fx)?.reportedInFlightUSD??0)*r.fx),unsettledKRW:settlement(used).unsettledKRW,usExplained:x=>f.explained(A,x),funding:route.explained});
     const input={korea,us:used,fx:used.fx,inFlight:tr,funding:route,now:t},mv={KR:marketValue('KR',input),US:marketValue('US',input)};
     const row={at:t,note:r.note,loss:{KR:mv.KR.loss,US:mv.US.loss},value:{KR:{low:mv.KR.low,high:mv.KR.high},US:{low:mv.US.low,high:mv.US.high}},width:widths(value(input).markets.US,mv.US.loss),checks:[]};
     for(const b of bases)for(const m of b.markets){const e=engines[m];const {at,loss}=b;

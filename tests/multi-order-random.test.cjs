@@ -105,7 +105,7 @@ function generate(seed,side,profile='mix'){if(profile==='plain'||profile==='plai
 // when KIS's report falls, before the Korean exchange): a new one fails.
 const OPEN_SEEDS=[280,470]; // after P1: both independent-split seeds (safety only); a main-model open seed fails
 const SAFETY_CLASSES=['limit: withdrawal in the zero or debit reading','band: batch set within 5% (M-1.6b)','open: carried and flagged buys mixed (A3/A4)','attribution: mixed funding, the U.S. low alone (combined right; the K1 transfer convention)'];
-function check(seed,side,profile='mix'){const {desc,steps}=generate(seed,side,profile),run=e2e(steps.map(({truth,zero,...s})=>s)),out={seed,side,desc,safety:[],afterAge:true,end:true,groups:{},krFlows:0,flowsOff:null};
+function check(seed,side,profile='mix',{short=false}={}){const {desc,steps}=generate(seed,side,profile),run=e2e(steps.map(({truth,zero,...s})=>s),{short}),out={seed,side,desc,safety:[],afterAge:true,end:true,groups:{},krFlows:0,flowsOff:null};
   const classOf=ex=>desc.wAt==='same'?SAFETY_CLASSES[0]:ex<=0.05*desc.T*FX+2?SAFETY_CLASSES[1]:SAFETY_CLASSES[2];
   for(const [i,row] of run.out.entries()){const tr=steps[i].truth,v=row.value,low=v.KR.low+v.US.low*FX,high=v.KR.high+v.US.high*FX;
     const exC=Math.max(low-tr.combined-2,v.KR.low-tr.kr-1,side==='Sell'?tr.combined-2-high:0),exU=tr.held?0:(v.US.low-tr.us-0.02)*FX;
@@ -153,6 +153,13 @@ test(`R5 plain-overlap: the 'before', 'same' and 'after' mornings of ${N} lifecy
     assert.deepEqual(r.safety,[],`plain-overlap '${m}' seed ${seed}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
     assert.equal(r.flowsOff,null,`plain-overlap '${m}' seed ${seed}: ${r.flowsOff}`);assert.ok(r.afterAge&&r.end,`plain-overlap '${m}' seed ${seed}: not right after age, or left in flight`);
     assert.deepEqual(Object.keys(r.groups).filter(k=>!['booked','none'].includes(k)),[],`plain-overlap '${m}' seed ${seed}: a group left open`);assert.ok(r.settledRight,`plain-overlap '${m}' seed ${seed}: not right at the last settlement`);}});
+// Item 9: the same plain and plain-overlap lifecycles with the snapshots' read times passed (the short hold in force): still
+// no safety failure, no Korean flow, no false flow, every group closed, right at settlement.
+for(const profile of ['plain','plain-overlap'])for(const side of profile==='plain'?['Buy','Sell']:['Buy'])test(`R5 ${profile} with the short hold: ${N} lifecycles of U.S. ${side==='Buy'?'buys':'sales'}: no safety failure, no flow, every group closed`,()=>{
+  for(let seed=1;seed<=N;seed++){const r=check(seed,side,profile,{short:true});
+    assert.deepEqual(r.safety,[],`${profile} short seed ${seed} ${side}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);assert.equal(r.krFlows,0,`${profile} short seed ${seed} ${side}: a Korean flow`);
+    assert.equal(r.flowsOff,null,`${profile} short seed ${seed} ${side}: ${r.flowsOff}`);assert.ok(r.afterAge&&r.end,`${profile} short seed ${seed} ${side}: not right after age, or left in flight`);
+    assert.deepEqual(Object.keys(r.groups).filter(k=>!['booked','none'].includes(k)),[],`${profile} short seed ${seed} ${side}: a group left open`);assert.ok(r.settledRight,`${profile} short seed ${seed} ${side}: not right at the last settlement`);}});
 for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded random lifecycles`} of U.S. ${side==='Buy'?'buys':'sales'} filled together (1 to 30, parts, funding, withdrawals): every failure classed and counted; right after age; nothing left`,t=>{
   const seeds=one?[Number(one)]:Array.from({length:N},(_,i)=>i+1),count={},bump=(k,seed)=>{if(k.startsWith('BOUND'))k=k.replace(/[$]?[0-9][0-9.,]*/g,'#');const l=(count[k]??=[]);if(!l.includes(seed))l.push(seed);};
   for(const seed of seeds){const r=check(seed,side);if(one)t.diagnostic(JSON.stringify(r));

@@ -86,7 +86,9 @@ test('G1/R2: the window changes nothing else: ids, days, amounts and states equa
   // occurredAfter is read only where a loss check places a flow (PerformanceHistory.flowsSince) and by the settlement
   // records of S4 (reconciliations and restatements, for flows they reclassify; funding flows are never reclassified).
   const read=f=>fs.readFileSync(path.join(__dirname,'..','electron',f),'utf8');
-  const perf=read('performance.cjs').split('\n').filter(l=>l.includes('occurredAfter'));assert.equal(perf.length,2);assert.ok(perf.some(l=>l.includes('addFlow')||l.includes('...(Number.isFinite(value.occurredAfter)')));assert.ok(perf.some(l=>l.includes('const side=f=>')));
+  // Item 9: a third reader, your record replacing a detected flow it matches (its window, to match your date).
+  const perf=read('performance.cjs').split('\n').filter(l=>l.includes('occurredAfter'));assert.equal(perf.length,3);assert.ok(perf.some(l=>l.includes('addFlow')||l.includes('...(Number.isFinite(value.occurredAfter)')));assert.ok(perf.some(l=>l.includes('const side=f=>')));
+  assert.ok(perf.some(l=>l.includes('const span=f=>')),'item 9: the replacement rule reads the detected window');
   assert.ok(read('flow-detector.cjs').split('\n').filter(l=>l.includes('occurredAfter')).every(l=>/addFlow|spanOf/.test(l)),'the detector only writes it, on its own detected flows');
 });
 
