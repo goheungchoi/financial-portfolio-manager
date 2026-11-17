@@ -8,6 +8,7 @@ const cases=[
   ['U.S. and combined portfolios','overseas-desktop.cjs',[],groups.overseas],
   ['Remembered file import','reconnect-desktop.cjs',[],groups.connections],['Remembered file restore','reconnect-desktop.cjs',['--restore-files'],groups.connections],['Remembered file forget','reconnect-desktop.cjs',['--forgotten'],groups.connections],
   ['Layout, themes, navigation and read-only review regressions','ui-regression-desktop.cjs',[],groups.regression],
+  ['Several orders per review: scenario reviews in the Journal, Home and Engine settings','several-orders-desktop.cjs',[],data('several-orders')],
   ['In-app updates against a local release server','update-desktop.cjs',[],data('updates')]
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};
