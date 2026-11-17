@@ -735,6 +735,8 @@ class Automation {
         const selected=this.agentModel('trading');
         // The validation snapshot: position memory and quotes before compression, for every request of this review.
         const validation=validationOf(context);
+        // M-6: n for this review, once; the context says it only when it is above 1 (the more-orders instruction part).
+        const reviewOrders=this.ordersFor({openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort});if(reviewOrders>1)context.ordersPerReview=reviewOrders;
         let providerContext=saver.compact(context);
         const shaped=require('./review-context.cjs').shape(providerContext);providerContext=shaped.context;const detail=shaped.detail;
         this.log(id,'System','Review size',JSON.stringify({...shaped.report,mandatoryBytes:shaped.mandatoryBytes,steps:shaped.steps}));
@@ -742,7 +744,7 @@ class Automation {
         this.replays.saveContext(id,providerContext);firstRequest=providerContext;
         const research=()=>require('./research-review.cjs').researchReview({context,detail,watched:watchedIn(this.discovery,context),evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:this.researchFor({watchScope,trigger,emergency:emergency.active,gate,gateMode,id})}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config,{heldMoves:this.heldMoves(context)});},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');},formulaUse):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
           {const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
-          const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};const n=this.ordersFor(modelConfig);options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};
+          const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};const n=reviewOrders;options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};
           const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options)});
           const day=seoulDate();
           const callId=randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now()};

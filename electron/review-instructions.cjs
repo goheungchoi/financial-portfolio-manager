@@ -21,7 +21,14 @@ function factsOf(c){return {
   scoutBrief:Boolean(c?.scoutBrief),
   interval:c?.reviewInterval?.auto===true,
   conditional:c?.agentDesk?.conditionalOrders?.allowed===true,
-  desk:Boolean(c?.agentDesk)};}
+  desk:Boolean(c?.agentDesk),
+  moreOrders:Number.isInteger(c?.ordersPerReview)&&c.ordersPerReview>1};}
+// M-6 part 2 (multi-order, m6-plan.md section 3; the text as cleared by the planner, 2026-11-17): the part sent only when
+// the review may return several orders (context.ordersPerReview > 1, present only then). It is kept apart from
+// REVIEW_PARTS so the single-order text, its fingerprint and INSTRUCTIONS_VERSION stay byte for byte; a context with it
+// carries ORDERS_VERSION and its own fingerprint (fingerprint(set,{orders:true})). Same text in both sets.
+const MORE_ORDERS_TEXT='context.ordersPerReview is the most orders this review may return. Put the first in the decision fields and the others in moreOrders, each a Buy or a Sell of a different stock with its own plan, execution and reversal. Where these instructions say one bounded trade, read up to ordersPerReview. Fewer orders, one order or Hold are complete answers, and each order needs the same evidence as a single one. The app checks each order on its own and holds back any that fails, with its reason; the others go on to be sent. An order for a stock that already has an open order is held back. Closing orders (sales, repayments and covers) are sent first, then the others in your order; limits and cash are checked as each is sent, so a later order can be refused when earlier ones have used the room.';
+const MORE_ORDERS_PART=Object.freeze({id:'more-orders',when:f=>f.moreOrders,text:MORE_ORDERS_TEXT});
 // The parts in their fixed order. Step 1: no text yet.
 const REVIEW_PARTS=Object.freeze([
   {id:'two-markets',when:f=>f.twoMarkets,text:''},
@@ -39,9 +46,9 @@ function assemble(core,parts,ids){
   if(!Array.isArray(ids)||new Set(ids).size!==ids.length)throw new Error('INVALID_INSTRUCTION_PARTS');
   for(const id of ids)if(!parts.some(p=>p.id===id))throw new Error('INVALID_INSTRUCTION_PARTS');
   return [core,...parts.filter(p=>ids.includes(p.id)&&p.text).map(p=>p.text)].join('\n\n');}
-const partsFor=context=>{const f=factsOf(context);return REVIEW_PARTS.filter(p=>p.when(f)).map(p=>p.id);};
+const partsFor=context=>{const f=factsOf(context);return [...REVIEW_PARTS,MORE_ORDERS_PART].filter(p=>p.when(f)).map(p=>p.id);};
 const scoutPartsFor=context=>SCOUT_PARTS.filter(p=>p.when(context)).map(p=>p.id);
-const reviewText=ids=>assemble(REVIEW_CORE,REVIEW_PARTS,ids);
+const reviewText=ids=>assemble(REVIEW_CORE,[...REVIEW_PARTS,MORE_ORDERS_PART],ids);
 const scoutText=ids=>assemble(SCOUT_CORE,SCOUT_PARTS,ids);
 // Every part: the longest text, for size bounds and the fingerprint.
 const REVIEW_ALL=reviewText(REVIEW_PARTS.map(p=>p.id));
@@ -53,12 +60,15 @@ const SCOUT_ALL=scoutText(SCOUT_PARTS.map(p=>p.id));
 // 'review 2026-11-15' (trailing stops T2): no text changed; the fingerprint now covers the trail variants of the
 // decision schema and of set_conditional_order, sent only while Engine settings allow trailing stops.
 const INSTRUCTIONS_VERSION='review 2026-11-15';
+// M-6 part 2: a review that may return several orders (the more-orders part, the decision schema with moreOrders).
+const ORDERS_VERSION='review 2026-11-17 orders';
 
 // Step 3: the proposed text, draft-2.md with the rulings of review.md (W1 to W6, the quantity and execution sentences,
 // the desk part, R1). No live review sends it: only the replay's "Built-in text: proposed" does, so the user can compare
 // it with the current text on saved reviews before a later release makes it the built-in one. Same part ids, order and
 // conditions as the current set, so a context gives the same part list under both.
 const PROPOSED_VERSION='proposed 2026-11-15';// trailing stops T2: the trail variants, as for the current set
+const PROPOSED_ORDERS_VERSION='proposed 2026-11-17 orders';// M-6 part 2, as ORDERS_VERSION
 const PROPOSED_REVIEW_CORE=`TASK
 Review this portfolio for the goals in userGuidelines. Answer with one bounded trade or Hold. Count transaction costs and estimated taxes in every comparison.
 Hold is a complete answer when the evidence does not justify a trade. When uncertainty is the reason, name what is unknown and whether it could change the decision. A trade whose expected gain does not cover its costs is not justified.
@@ -306,24 +316,32 @@ They are permitted within the caps in products.leveragedOrInverseEtps, for a def
 
 // The two sets. 'current' is what every live request sends; 'proposed' is sent only by the replay's option.
 const SETS=Object.freeze({
-  current:Object.freeze({name:'current',version:INSTRUCTIONS_VERSION,core:REVIEW_CORE,parts:REVIEW_PARTS,scoutCore:SCOUT_CORE,scoutParts:SCOUT_PARTS}),
-  proposed:Object.freeze({name:'proposed',version:PROPOSED_VERSION,core:PROPOSED_REVIEW_CORE,parts:PROPOSED_REVIEW_PARTS,scoutCore:PROPOSED_SCOUT_CORE,scoutParts:PROPOSED_SCOUT_PARTS})});
+  current:Object.freeze({name:'current',version:INSTRUCTIONS_VERSION,ordersVersion:ORDERS_VERSION,core:REVIEW_CORE,parts:REVIEW_PARTS,scoutCore:SCOUT_CORE,scoutParts:SCOUT_PARTS}),
+  proposed:Object.freeze({name:'proposed',version:PROPOSED_VERSION,ordersVersion:PROPOSED_ORDERS_VERSION,core:PROPOSED_REVIEW_CORE,parts:PROPOSED_REVIEW_PARTS,scoutCore:PROPOSED_SCOUT_CORE,scoutParts:PROPOSED_SCOUT_PARTS})});
 function setOf(name){if(name==null||name==='current')return SETS.current;if(name==='proposed')return SETS.proposed;throw new Error('INVALID_INSTRUCTION_SET');}
+// A set's parts with the more-orders part after them (M-6): it is in the text only when a context's ids include it.
+const withOrders=s=>[...s.parts,MORE_ORDERS_PART];
 // The review text of a set, and the same text as two blocks for Claude's system (the core with a cache breakpoint, then
 // the parts, which change only with a setting): parts is '' when no part with text applies.
-const setReviewText=(ids,set)=>{const s=setOf(set);return assemble(s.core,s.parts,ids);};
+const setReviewText=(ids,set)=>{const s=setOf(set);return assemble(s.core,withOrders(s),ids);};
 const setScoutText=(ids,set)=>{const s=setOf(set);return assemble(s.scoutCore,s.scoutParts,ids);};
-function reviewBlocks(ids,set){const s=setOf(set);assemble(s.core,s.parts,ids);return {core:s.core,parts:s.parts.filter(p=>ids.includes(p.id)&&p.text).map(p=>p.text).join('\n\n')};}
+function reviewBlocks(ids,set){const s=setOf(set),parts=withOrders(s);assemble(s.core,parts,ids);return {core:s.core,parts:parts.filter(p=>ids.includes(p.id)&&p.text).map(p=>p.text).join('\n\n')};}
 // Any change to the review text, a part, its id or position, the decision schema or the review tools needs a new
 // version of that set; tests/instructions-version.test.cjs pins each version to its fingerprint.
 const fingerprints={};
-function fingerprint(set){const s=setOf(set);if(fingerprints[s.name])return fingerprints[s.name];const C=require('./ai-client.cjs');
+// orders (M-6 part 2): the fingerprint of the set's several-orders version: the single-order inputs, unchanged and in
+// the same order, then the more-orders part and the decision schema variants with moreOrders (one further order stands
+// for any count: the count changes only maxItems, not the form).
+function fingerprint(set,{orders=false}={}){const s=setOf(set),key=s.name+(orders?':orders':'');if(fingerprints[key])return fingerprints[key];const C=require('./ai-client.cjs');
   const all={reviewInterval:{auto:true},discovery:{enabled:true},agentDesk:{conditionalOrders:{allowed:true}}},trail={...all,agentDesk:{conditionalOrders:{allowed:true,trailing:{allowed:true}}}};
-  return fingerprints[s.name]=require('node:crypto').createHash('sha256').update(JSON.stringify([s.core,s.parts.map(p=>[p.id,p.text]),[false,true].flatMap(a=>[false,true].flatMap(b=>[false,true].map(t=>C.decisionSchema(a,b,t)))),C.reviewTools(all),C.reviewTools(trail)])).digest('hex').slice(0,16);}
-// The review record's instructions: the set's version and fingerprint, and the parts this context was given.
-const record=(context,set)=>({version:setOf(set).version,fingerprint:fingerprint(set),parts:partsFor(context)});
+  const inputs=[s.core,s.parts.map(p=>[p.id,p.text]),[false,true].flatMap(a=>[false,true].flatMap(b=>[false,true].map(t=>C.decisionSchema(a,b,t)))),C.reviewTools(all),C.reviewTools(trail)];
+  if(orders)inputs.push([MORE_ORDERS_PART.id,MORE_ORDERS_PART.text],[false,true].flatMap(a=>[false,true].flatMap(b=>[false,true].map(t=>C.decisionSchema(a,b,t,1)))));
+  return fingerprints[key]=require('node:crypto').createHash('sha256').update(JSON.stringify(inputs)).digest('hex').slice(0,16);}
+// The review record's instructions: the set's version and fingerprint, and the parts this context was given. A context
+// that may return several orders carries the set's orders version and fingerprint.
+const record=(context,set)=>{const s=setOf(set),orders=factsOf(context).moreOrders;return {version:orders?s.ordersVersion:s.version,fingerprint:fingerprint(set,{orders}),parts:partsFor(context)};};
 // The scout's version (design 6): each plan record keeps it with the parts it was given, so the scorecard can be split
 // by text later. The scout text has not changed since the parts machinery (step 1).
 const SCOUT_INSTRUCTIONS_VERSION='scout 2026-11-13';
 const scoutRecord=context=>({version:SCOUT_INSTRUCTIONS_VERSION,parts:scoutPartsFor(context)});
-module.exports={INSTRUCTIONS_VERSION,PROPOSED_VERSION,SCOUT_INSTRUCTIONS_VERSION,fingerprint,record,scoutRecord,REVIEW_CORE,SCOUT_CORE,REVIEW_PARTS,SCOUT_PARTS,PROPOSED_REVIEW_CORE,PROPOSED_REVIEW_PARTS,PROPOSED_SCOUT_CORE,PROPOSED_SCOUT_PARTS,SETS,setOf,factsOf,partsFor,scoutPartsFor,reviewText,scoutText,setReviewText,setScoutText,reviewBlocks,REVIEW_ALL,SCOUT_ALL};
+module.exports={ORDERS_VERSION,PROPOSED_ORDERS_VERSION,MORE_ORDERS_TEXT,MORE_ORDERS_PART,INSTRUCTIONS_VERSION,PROPOSED_VERSION,SCOUT_INSTRUCTIONS_VERSION,fingerprint,record,scoutRecord,REVIEW_CORE,SCOUT_CORE,REVIEW_PARTS,SCOUT_PARTS,PROPOSED_REVIEW_CORE,PROPOSED_REVIEW_PARTS,PROPOSED_SCOUT_CORE,PROPOSED_SCOUT_PARTS,SETS,setOf,factsOf,partsFor,scoutPartsFor,reviewText,scoutText,setReviewText,setScoutText,reviewBlocks,REVIEW_ALL,SCOUT_ALL};

@@ -11,7 +11,9 @@
 //    timestamps, a short summary, stale and conflict flags, the rows about held, triggered, ordered or pending symbols,
 //    and, for protective sections, every protection and execution state (KEEP); the full section stays readable.
 // 5. If the snapshot that is never shortened cannot fit, the review fails with that reason instead of calling the model.
-const MANDATORY=['environment','market','currency','baseCurrency','equity','cash','positions','orders','orderReconciliation','equityReliability','equityUncertainty',
+// ordersPerReview (M-6): the most orders this review may return, present only when above 1; the more-orders instruction
+// part reads it, so it is never shortened.
+const MANDATORY=['environment','market','currency','baseCurrency','equity','cash','positions','orders','orderReconciliation','equityReliability','equityUncertainty','ordersPerReview',
   'markets','risk','emergency','marketSession','executionEnabled','automaticExecutionEnabled','buyingPower','productRisk','quotes','universe','triggerEvidence','fx','tradingCosts','userGuidelines','objective'];
 const bytes=value=>Buffer.byteLength(JSON.stringify(value??null));
 const wire=context=>Buffer.byteLength(JSON.stringify([{role:'user',content:JSON.stringify(context)}]));
@@ -115,7 +117,7 @@ const TYPES={environment:'string',market:'string',currency:'string',baseCurrency
   agentDesk:'object',orderFollowUp:'object',pendingDecisions:'array',waits:'array',reviewWatches:'array',researchGaps:'array',
   sectorLeads:'object',discovery:'object',topStories:'array',similarEpisodes:'array',eventCalendar:'array',macro:'object|array',marketRegime:'object',portfolioExposure:'object',marketNarrative:'object',
   decisionScoreboard:'object',reviewInterval:'object',extendedSessions:'array',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
-  lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object'};
+  lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object',ordersPerReview:'number'};
 const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','paperVersion','extendedSessions'];
 const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps'];
 const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes','eventCalendar','macro','marketRegime','portfolioExposure','marketNarrative','decisionScoreboard','reviewInterval','performance',
