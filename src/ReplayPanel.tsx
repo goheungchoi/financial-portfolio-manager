@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
 import {Note} from './Note';
+import {MoneyField} from './MoneyField';
 // Replay saved reviews with a change, next to an unchanged baseline, and compare both with what prices did afterwards.
 // C1 (artifacts/reviews/2026-11-13-c1-replay/review.md): the change may be Claude Opus 5.5. A Claude replay is confirmed
 // first with its estimate and a spending cap; a row whose answer is not accepted or refused shows why, and the summary
@@ -39,7 +40,7 @@ export function ReplayPanel(){
     <div className="settings-grid"><label>From<input aria-label="Replay from" type="date" value={form.from} onChange={e=>setForm({...form,from:e.target.value})}/></label><label>To<input aria-label="Replay to" type="date" value={form.to} onChange={e=>setForm({...form,to:e.target.value})}/></label><label>Reviews<input aria-label="Replay reviews" type="number" min={1} max={12} value={form.limit} onChange={e=>setForm({...form,limit:Number(e.target.value)})}/></label></div>
     <label className="guidelines-editor">Change to test<textarea aria-label="Replay instructions" rows={3} maxLength={1500} placeholder="For example: Do not add to semiconductor stocks while the regime is risk-off." value={form.instructions} onChange={e=>setForm({...form,instructions:e.target.value})}/></label>
     <label>Run the change on<select aria-label="Replay model" value={form.model} onChange={e=>{setConfirm(null);setForm({...form,model:e.target.value});}}>{MODELS.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
-    {claude&&<div className="settings-grid"><label>Stop when this replay has spent (USD)<input aria-label="Replay cap (USD)" type="number" min={0.5} max={100} step={0.5} value={cap} onChange={e=>{setConfirm(null);setCap(Number(e.target.value));}}/></label></div>}
+    {claude&&<div className="settings-grid"><label>Stop when this replay has spent (USD)<MoneyField className="block" label="Replay cap (USD)" currency="USD" min={0.5} max={100} value={String(cap)} onChange={v=>{setConfirm(null);setCap(Number(v));}}/></label></div>}
     <div className="replay-options">{([['withoutNarrative','Without the market narrative'],['withoutEpisodes','Without similar episodes'],['withoutRegime','Without the regime gauge and sizing'],['proposedText','Built-in text: proposed']] as const).map(([k,l])=><label key={k} className="inline-check"><input type="checkbox" checked={form[k]} onChange={e=>setForm({...form,[k]:e.target.checked})}/>{l}</label>)}</div>
     <div className="actions"><button className="primary" disabled={busy} onClick={()=>void ask()}>{busy?'Replaying…':'Run replay'}</button></div>
     {confirm&&<div role="status" className="small-line notice" aria-label="Replay confirmation">

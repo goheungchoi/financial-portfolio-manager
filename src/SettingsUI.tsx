@@ -1,4 +1,6 @@
 import type {ReactNode} from 'react';
+import {MoneyField} from './MoneyField';
+import type {Currency} from './money';
 // Settings building blocks: a card of rows, each row a short title, an optional one-line hint and a control on the right.
 export function Card({id,title,hint,aside,label,children}:{id?:string;title:string;hint?:ReactNode;aside?:ReactNode;label?:string;children:ReactNode}){
   return <section className="settings-card" id={id} aria-label={label??title}><div className="card-head"><div><h2>{title}</h2>{hint&&<small>{hint}</small>}</div>{aside}</div><div className="setting-rows">{children}</div></section>;
@@ -11,14 +13,16 @@ export function Row({title,hint,info,children,block=false}:{title:ReactNode;hint
 export function Switch({label,checked,disabled,onChange}:{label:string;checked:boolean;disabled?:boolean;onChange(value:boolean):void}){
   return <input type="checkbox" role="switch" className="switch" aria-label={label} checked={checked} disabled={disabled} onChange={e=>onChange(e.target.checked)}/>;
 }
-export function NumberField({label,value,min,max,step,unit,disabled,onChange}:{label:string;value:number;min:number;max:number;step?:number;unit?:string;disabled?:boolean;onChange(value:number):void}){
+export function NumberField({label,value,min,max,step,unit,disabled,onChange,currency}:{label:string;value:number;min:number;max:number;step?:number;unit?:string;disabled?:boolean;onChange(value:number):void;currency?:Currency}){
+  // Item 8: an amount of money is the money field (grouping, decimals by currency, read-back), giving back the same number.
+  if(currency)return <MoneyField label={label} currency={currency} value={Number.isFinite(value)?String(value):''} min={min} max={max} unit={unit} disabled={disabled} onChange={v=>onChange(Number(v))}/>;
   // An out-of-range value says the allowed range right away instead of failing on save.
   const out=Number.isFinite(value)&&(value<min||value>max);
   return <span className="number-field-wrap"><span className={`number-field ${out?'invalid':''}`}><input type="number" aria-label={label} aria-invalid={out||undefined} min={min} max={max} step={step??1} disabled={disabled} value={value} onChange={e=>onChange(Number(e.target.value))}/>{unit&&<span className="unit">{unit}</span>}</span>{out&&<small className="field-error" role="alert">Allowed {min}–{max}{unit??''}</small>}</span>;
 }
 // A daily limit with a "No limit" switch; the number is hidden while unlimited.
-export function Limit({label,unlimited,value,min,max,step,unit,disabled,onUnlimited,onValue,offLabel='No limit'}:{label:string;unlimited:boolean;value:number;min:number;max:number;step?:number;unit?:string;disabled?:boolean;onUnlimited(value:boolean):void;onValue(value:number):void;offLabel?:string}){
-  return <span className="limit-control">{!unlimited&&<NumberField label={label} value={value} min={min} max={max} step={step} unit={unit} disabled={disabled} onChange={onValue}/>}<label className="mini-switch"><input type="checkbox" role="switch" className="switch small" aria-label={`Unlimited ${label}`} checked={unlimited} disabled={disabled} onChange={e=>onUnlimited(e.target.checked)}/>{offLabel}</label></span>;
+export function Limit({label,unlimited,value,min,max,step,unit,disabled,onUnlimited,onValue,offLabel='No limit',currency}:{label:string;unlimited:boolean;value:number;min:number;max:number;step?:number;unit?:string;disabled?:boolean;onUnlimited(value:boolean):void;onValue(value:number):void;offLabel?:string;currency?:Currency}){
+  return <span className="limit-control">{!unlimited&&<NumberField label={label} value={value} min={min} max={max} step={step} unit={unit} disabled={disabled} onChange={onValue} currency={currency}/>}<label className="mini-switch"><input type="checkbox" role="switch" className="switch small" aria-label={`Unlimited ${label}`} checked={unlimited} disabled={disabled} onChange={e=>onUnlimited(e.target.checked)}/>{offLabel}</label></span>;
 }
 export function Segmented<T extends string>({label,value,options,disabled,onChange}:{label:string;value:T;options:[T,string][];disabled?:boolean;onChange(value:T):void}){
   return <span className="segmented" role="radiogroup" aria-label={label}>{options.map(([key,text])=><button key={key} type="button" role="radio" aria-checked={value===key} disabled={disabled} className={value===key?'selected':''} onClick={()=>onChange(key)}>{text}</button>)}</span>;
