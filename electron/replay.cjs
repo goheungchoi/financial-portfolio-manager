@@ -28,7 +28,21 @@ function outcome(decision,day,closes,benchmark){
   const stock=c[i+HORIZON].close/c[i].close-1;const from=b.filter(r=>r.date<=c[i].date).at(-1),to=b.filter(r=>r.date<=c[i+HORIZON].date).at(-1);
   const market=from&&to?to.close/from.close-1:0;const sign=decision.action==='Buy'?1:-1;return {excessPct:Math.round(sign*(stock-market)*10000)/100,basis:`${HORIZON} trading days`};
 }
-const brief=d=>d?{action:d.action,symbol:d.symbol||null,quantity:d.quantity||0}:null;
+// M-7 (c): a decision with further orders is scored order by order, each with its own stock's prices, and its score is the
+// sum: a stock only one side ordered counts 0 for the other side (the same as a Hold), so the comparison is matched by
+// stock. Any order still waiting for its prices leaves the decision waiting. A decision without further orders scores as
+// outcome() does, unchanged.
+const tradeOrders=d=>d?[...(d.action==='Buy'||d.action==='Sell')&&d.symbol?[d]:[],...(Array.isArray(d.moreOrders)?d.moreOrders.filter(o=>(o.action==='Buy'||o.action==='Sell')&&o.symbol):[])]:[];
+const symbolsOf=d=>[...new Set(tradeOrders(d).map(o=>o.symbol))];
+function outcomeAll(decision,day,closesOf,benchmarkOf){
+  if(!Array.isArray(decision?.moreOrders))return outcome(decision,day,decision?.symbol?closesOf(decision.symbol):null,benchmarkOf(decision?.symbol??''));
+  const orders=tradeOrders(decision);if(!orders.length)return {excessPct:0,basis:'hold'};
+  const each=orders.map(o=>outcome(o,day,closesOf(o.symbol),benchmarkOf(o.symbol)));if(each.some(r=>r.excessPct==null))return {excessPct:null,basis:'waiting'};
+  return {excessPct:Math.round(each.reduce((n,r)=>n+r.excessPct,0)*100)/100,basis:`${HORIZON} trading days, ${orders.length} orders`};}
+// The decision in brief; with further orders, those too (so "differs" counts a difference in any order).
+const brief=d=>d?{action:d.action,symbol:d.symbol||null,quantity:d.quantity||0,...(Array.isArray(d.moreOrders)&&d.moreOrders.length?{more:d.moreOrders.map(o=>({action:o.action,symbol:o.symbol,quantity:o.quantity}))}:{})}:null;
+// The further orders a replay asks for: what the saved review asked for (its context's ordersPerReview), never more.
+const replayOrders=context=>Number.isInteger(context?.ordersPerReview)&&context.ordersPerReview>1?context.ordersPerReview:1;
 // Picks recent reviews with a saved context; logged contexts from before saving began are used when they parse, marked approximate.
 function candidates({reviews,store,events,from,to,limit}){
   const out=[];for(const r of reviews){const day=new Date(r.timestamp+9*3600000).toISOString().slice(0,10);if(from&&day<from||to&&day>to)continue;if(r.provider!=='openai')continue;
@@ -82,6 +96,7 @@ function claudeSummary(rows,{estimate=null,stopped=null,capMicro=null,claudeSide
 }
 // Each row records the text of each side (instruction rewrite design 6): the set's version and the parts its context was
 // given, and which context fields the replay filled, so a run is never read as a comparison of something it was not.
-function textOf(pick,variant){const RI=require('./review-instructions.cjs');const side=(context,set)=>({version:RI.setOf(set).version,parts:RI.partsFor(context)});
+// The version is the one the side's context carries (M-7 (c): a several-order context has the orders version).
+function textOf(pick,variant){const RI=require('./review-instructions.cjs');const side=(context,set)=>({version:RI.record(context,set).version,parts:RI.partsFor(context)});
   return {instructions:{baseline:side(pick.context),variant:side(applyVariant(pick.context,variant),variant.proposedText?'proposed':undefined)},...(pick.filled?{filled:pick.filled}:{})};}
-module.exports={ReplayStore,applyVariant,textOf,outcome,candidates,summarize,brief,LIMITS,HORIZON,EST,estimateMicro,claudeSummary,markdown,newId:()=>'R-'+randomUUID().slice(0,6)};
+module.exports={ReplayStore,applyVariant,textOf,outcome,outcomeAll,symbolsOf,replayOrders,candidates,summarize,brief,LIMITS,HORIZON,EST,estimateMicro,claudeSummary,markdown,newId:()=>'R-'+randomUUID().slice(0,6)};

@@ -31,7 +31,8 @@ test('finding 1: the execution boundary holds back the same decision; reductions
   const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');
   assert.ok(src.includes("require('./position-memory.cjs').enforce(result.decision,context.positionMemory??[]"),'the review applies it before execution');
   // M-6: the request also carries moreOrders when several orders are asked for; the snapshot is on every request still.
-  for(const s of ['options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};','validation:dryValidation};'])assert.ok(src.includes(s),`every request carries the snapshot: ${s}`);
+  // M-7 (c): the dry run carries moreOrders too when it asks for several orders.
+  for(const s of ['options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};','validation:dryValidation,...(dryOrders>1?{moreOrders:dryOrders-1}:{})};'])assert.ok(src.includes(s),`every request carries the snapshot: ${s}`);
 });
 
 // 2. One settlement movement is used once.

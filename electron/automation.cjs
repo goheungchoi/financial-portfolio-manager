@@ -379,6 +379,8 @@ class Automation {
       if(mode==='review'){
         // Shaped and logged as a live review is ("Review size"); the size, every request's bytes and the full research
         // transcript (detail reads, condensing, refusals) are kept with the record, also when the review fails.
+        // M-7 (c): n as a review computes it (ordersFor), with the dry run's own model; the context says it when above 1.
+        const dryOrders=this.ordersFor(override??this.agentModel('trading'));if(dryOrders>1)context.ordersPerReview=dryOrders;
         const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context));const dryValidation=validationOf(context);
         const size={...shapedDry.report,mandatoryBytes:shapedDry.mandatoryBytes,steps:shapedDry.steps,detailAvailable:shapedDry.context.detailAvailable??[]};
         this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
@@ -396,7 +398,7 @@ class Automation {
         // Every desk tool is a no-op except compute, which only reads prices.
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
         const model=override??this.agentModel('trading');const models=require('./ai-models.cjs');let calls=0;const callIds=[];
-        const request=async options=>{options={...options,...model,validation:dryValidation};
+        const request=async options=>{options={...options,...model,validation:dryValidation,...(dryOrders>1?{moreOrders:dryOrders-1}:{})};
           requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options)});
           const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
           const day=seoulDate();
@@ -1630,15 +1632,16 @@ class Automation {
     this.replaying=true;const id=R.newId();
     const decide=async(context,config=modelConfig,set)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();
       const callId=require('node:crypto').randomUUID();this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
-      try{const r=await this.provider.request('decision',{context,options:{...config,research:false,...(set?{instructionSet:set}:{})}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,r,'completed');const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);const cost=row?JSON.parse(row.payload).accountedMicro??null:null;return {...r.decision,_usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:cost}};}catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');throw error;}};
+      const n=R.replayOrders(context);// M-7 (c): what the saved review asked for, never more
+      try{const r=await this.provider.request('decision',{context,options:{...config,research:false,...(set?{instructionSet:set}:{}),...(n>1?{moreOrders:n-1}:{})}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,r,'completed');const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);const cost=row?JSON.parse(row.payload).accountedMicro??null:null;return {...r.decision,_usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:cost}};}catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');throw error;}};
     this.log(id,'Program','Replay',`Replaying ${picks.length} saved review${picks.length===1?'':'s'} with a change: ${[instructions&&'extra instructions',variant.withoutNarrative&&'without the narrative',variant.withoutEpisodes&&'without episodes',variant.withoutRegime&&'without the regime gauge and sizing',variant.model&&`on ${variant.model.openaiModel} (${variant.model.reasoningEffort} effort) instead of ${modelConfig.openaiModel} (${modelConfig.reasoningEffort})`,variant.proposedText&&'the proposed built-in text instead of the current one'].filter(Boolean).join(', ')}. No orders are placed.`);
     if(claude)return this.replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate,claudeSide});
     try{
       const closes=this.indexCloses?.()??{};const rows=[];
       for(const pick of picks){
         const set=variant.proposedText?'proposed':undefined;const baseline=await decide(pick.context);const changed=await decide(R.applyVariant(pick.context,variant),variant.model??modelConfig,set);
-        for(const d of [baseline,changed])if(d?.symbol)await this.warmSeries([d.symbol]);
-        const score=d=>R.outcome(d,pick.day,d?.symbol?this.series?.closes(d.symbol):null,/:/.test(d?.symbol??'')?closes.SPX:closes.KOSPI);
+        for(const d of [baseline,changed]){const symbols=R.symbolsOf(d);if(symbols.length)await this.warmSeries(symbols);}
+        const score=d=>R.outcomeAll(d,pick.day,s=>this.series?.closes(s),s=>/:/.test(s)?closes.SPX:closes.KOSPI);
         rows.push({reviewId:pick.review.id,day:pick.day,approximate:pick.approximate,...R.textOf(pick,variant),original:R.brief(pick.review.decision),baseline:{decision:R.brief(baseline),explanation:baseline?.explanation?.slice(0,1200)??null,verdicts:baseline?.planVerdicts??[],usage:baseline?._usage??null,outcome:score(baseline)},variant:{decision:R.brief(changed),explanation:changed?.explanation?.slice(0,1200)??null,verdicts:changed?.planVerdicts??[],usage:changed?._usage??null,outcome:score(changed)},changed:JSON.stringify(R.brief(baseline))!==JSON.stringify(R.brief(changed))});
       }
       const run=this.replays.saveRun({id,timestamp:Date.now(),variant,rows,summary:R.summarize(rows)});this.log(id,'System','Replay finished',JSON.stringify(run.summary));return run;
@@ -1653,7 +1656,8 @@ class Automation {
     const call=async(context,config,set)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();const callId=require('node:crypto').randomUUID();
       this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
       const t0=Date.now();const record=()=>{const r=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);return r?JSON.parse(r.payload):null;};
-      try{const r=await this.provider.request('decision',{context,options:{...config,research:false,...(set?{instructionSet:set}:{})}});settle(this.db,'ai_usage',d,callId,r,'completed');const rec=record();
+      const n=R.replayOrders(context);
+      try{const r=await this.provider.request('decision',{context,options:{...config,research:false,...(set?{instructionSet:set}:{}),...(n>1?{moreOrders:n-1}:{})}});settle(this.db,'ai_usage',d,callId,r,'completed');const rec=record();
         if(models.vendorOf(config.openaiModel)==='anthropic')this.noteAnswerForm(r,'replay');
         return {decision:r.decision,usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:rec?.accountedMicro??null,ms:Date.now()-t0,...(r.answerForm?{answerForm:r.answerForm}:{}),...(r.formFallback?{formFallback:true}:{}),...(r.textPartsDropped?.length?{textPartsDropped:r.textPartsDropped}:{})}};}
       catch(error){settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');const rec=record();const usage={model:config.openaiModel,effort:config.reasoningEffort,inputTokens:rec?.usage?.inputTokens??null,outputTokens:rec?.usage?.outputTokens??null,costMicro:rec?.accountedMicro??null,ms:Date.now()-t0,...(error?.formFallback?{formFallback:true}:{}),...(['enforced','text'].includes(error?.answerForm)?{answerForm:error.answerForm}:{})};
@@ -1667,14 +1671,14 @@ class Automation {
     try{
       const closes=this.indexCloses?.()??{};
       for(const [i,pick] of picks.entries()){
-        const vctx=R.applyVariant(pick.context,variant);const score=d=>R.outcome(d,pick.day,d?.symbol?this.series?.closes(d.symbol):null,/:/.test(d?.symbol??'')?closes.SPX:closes.KOSPI);
+        const vctx=R.applyVariant(pick.context,variant);const score=d=>R.outcomeAll(d,pick.day,s=>this.series?.closes(s),s=>/:/.test(s)?closes.SPX:closes.KOSPI);
         if(spentMicro+(R.estimateMicro(modelConfig.openaiModel,bytes(pick.context))??0)>capMicro){stopped={reason:'cap',left:picks.length-i};break;}
         let base;try{base=await call(pick.context,modelConfig);}catch(error){if(error?.message==='AI_BUDGET_EXHAUSTED'){stopped={reason:'limit',left:picks.length-i};break;}throw error;}
         spentMicro+=base.usage?.costMicro??0;
         let changed=null;
         if(spentMicro+(R.estimateMicro(vModel.openaiModel,bytes(vctx),{first:i===0})??0)>capMicro){stopped={reason:'cap',left:picks.length-i-1};changed=blockedSide('stopped');}
         else{try{changed=await call(vctx,vModel,variant.proposedText?'proposed':undefined);spentMicro+=changed.usage?.costMicro??0;}catch(error){if(error?.message!=='AI_BUDGET_EXHAUSTED')throw error;stopped={reason:'limit',left:picks.length-i-1};changed=blockedSide('limit');}}
-        for(const r of [base,changed])if(r?.decision?.symbol)await this.warmSeries([r.decision.symbol]);
+        for(const r of [base,changed]){const symbols=R.symbolsOf(r?.decision);if(symbols.length)await this.warmSeries(symbols);}
         const b=side(base,score),v=changed.failure&&!changed.usage?changed:side(changed,score);
         rows.push({reviewId:pick.review.id,day:pick.day,approximate:pick.approximate,...R.textOf(pick,variant),original:R.brief(pick.review.decision),baseline:b,variant:v,changed:Boolean(b.decision&&v.decision)&&JSON.stringify(b.decision)!==JSON.stringify(v.decision)});
         if(stopped)break;
