@@ -1,0 +1,98 @@
+{
+ "name": "P04 a Sell and a Buy of one stock in one answer: the further one is held back",
+ "account": {
+  "kr": {
+   "cash": 10000000,
+   "holdings": [
+    {
+     "symbol": "000660",
+     "quantity": 10,
+     "price": 200000
+    },
+    {
+     "symbol": "035420",
+     "quantity": 5,
+     "price": 180000
+    }
+   ]
+  },
+  "us": {
+   "cash": 5000
+  },
+  "prices": {
+   "005930": 70000,
+   "035720": 50000,
+   "000099": 100000,
+   "000660": 200000,
+   "035420": 180000,
+   "051910": 300000,
+   "068270": 150000
+  }
+ },
+ "config": {
+  "ordersPerReview": 2
+ },
+ "answers": [
+  {
+   "action": "Sell",
+   "symbol": "000660",
+   "quantity": 1,
+   "credit": "none",
+   "loanDate": "",
+   "plan": null,
+   "execution": null,
+   "reversal": null,
+   "explanation": "Planner scenario.",
+   "moreOrders": [
+    {
+     "action": "Buy",
+     "symbol": "000660",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 000660",
+      "invalidation": "Thesis for 000660 fails",
+      "stopPrice": 180000,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 000660 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    }
+   ]
+  }
+ ],
+ "expect": {
+  "sent": [
+   "Sell 000660"
+  ],
+  "withheld": [
+   {
+    "item": 1,
+    "kind": "duplicate"
+   }
+  ],
+  "reviewFailed": false
+ }
+}

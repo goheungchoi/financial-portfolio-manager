@@ -54,9 +54,10 @@
 //     deferred      null | ["Buy 035720", ...]: what a scheduled review would wait for now (none: null).
 const assert=require('node:assert/strict');const path=require('node:path');
 const {MockKis}=require('./mock-kis.cjs');const {appHarness}=require('./app-harness.cjs');
-const EXPECT=['requests','sent','first','orders','withheld','reviewFailed','followUps','pending','journalTitle','openOrders','counted','deferred'];
+const EXPECT=['requests','sent','first','orders','withheld','reviewFailed','followUps','pending','journalTitle','openOrders','counted','deferred','forms','maxItems'];
+const MODELS=['gpt','claude-opus-5-5'];
 const KEYS={top:['name','description','account','config','answers','broker','marketClosed','expect','steps'],account:['kr','us','prices'],market:['cash','settledCash','holdings','fx'],
-  config:['ordersPerReview','scope','severalOpenOrders','usFunding','lossAction','maxAutoOrdersPerDay'],broker:['op','call','fault'],expect:EXPECT,first:['action','symbol','withheldKind','notePrefix'],
+  config:['ordersPerReview','model','scope','severalOpenOrders','usFunding','lossAction','maxAutoOrdersPerDay'],broker:['op','call','fault'],expect:EXPECT,first:['action','symbol','withheldKind','notePrefix'],
   order:['item','class','code','notePrefix','sent'],withheld:['item','kind'],step:['review','fill','fills','userOrder','marketClosed','wait','check'],review:['answers','during','expect'],during:['before','event'],
   fill:['symbol','quantity','price'],userOrder:['symbol','side','quantity','price'],wait:['minutes'],check:['expect'],open:['symbol','side','status','quantity','filled'],counted:['symbol','side','quantity','fullQuantity']};
 const OPS=['prepare-order','place-order','revise-order','orders'],FAULTS=['lost','lost-unplaced','not-sent','session-closed'],EVENTS=['severalOpenOff','settingSaved','batchLimitPassed','lossBreach'],SCOPES={kr:'kis',us:'us',both:'both'};
@@ -70,6 +71,7 @@ function validate(s){strict(s,KEYS.top,'scenario');if(typeof s.name!=='string'||
   strict(s.config,KEYS.config,'config');if(!Number.isInteger(s.config.ordersPerReview)||s.config.ordersPerReview<1||s.config.ordersPerReview>22)throw new Error('config.ordersPerReview: 1 to 22');
   if('scope' in s.config&&!(s.config.scope in SCOPES))throw new Error('config.scope: one of kr, us, both');
   if('usFunding' in s.config&&!['unknown','separate'].includes(s.config.usFunding))throw new Error('config.usFunding: unknown or separate');
+  if('model' in s.config&&!MODELS.includes(s.config.model))throw new Error(`config.model: one of ${MODELS.join(', ')}`);
   for(const [i,b] of (s.broker??[]).entries()){strict(b,KEYS.broker,`broker[${i}]`);if(!OPS.includes(b.op))throw new Error(`broker[${i}].op: one of ${OPS.join(', ')}`);if(!Number.isInteger(b.call)||b.call<1)throw new Error(`broker[${i}].call: 1 or more`);
     if(!(FAULTS.includes(b.fault)||b.fault&&typeof b.fault==='object'&&(Object.keys(b.fault).join()==='reject'||Object.keys(b.fault).join()==='fail')))throw new Error(`broker[${i}].fault: one of ${FAULTS.join(', ')}, {reject}, {fail}`);}
   if(s.steps){if('answers' in s||'expect' in s)throw new Error('scenario: steps replace the top-level answers and expect');if(!Array.isArray(s.steps)||!s.steps.length)throw new Error('steps: at least one');
@@ -89,7 +91,8 @@ function setup(s){const {AiClient}=require('../../electron/ai-client.cjs');
   const byOp={};for(const b of s.broker??[])(byOp[b.op]??=[]).push(b);
   for(const [op,list] of Object.entries(byOp)){const last=Math.max(...list.map(b=>b.call));for(let c=1;c<=last;c++){const b=list.find(x=>x.call===c);m.fault(op,b?b.fault:null);}}
   if(s.marketClosed)m.sessionOpen.KR=false;
-  const h=appHarness({mock:m}).enable();const {ordersPerReview,severalOpenOrders=true,scope='kr',usFunding='unknown',...rest}=s.config;const a=h.automation({...rest,scope:SCOPES[scope]});
+  const h=appHarness({mock:m}).enable();const {ordersPerReview,model='gpt',severalOpenOrders=true,scope='kr',usFunding='unknown',...rest}=s.config;const a=h.automation({...rest,scope:SCOPES[scope]});
+  const claude=model==='claude-opus-5-5';
   // The funding regime: unknown (as the app runs today: automatic U.S. buys are blocked, INTEGRATED_MARGIN_AUTOMATION_
   // BLOCKED) or separate (a verified separate U.S. pool, where they are allowed).
   if(usFunding==='separate')h.ledger.verifiedRegime='separate';
@@ -98,11 +101,25 @@ function setup(s){const {AiClient}=require('../../electron/ai-client.cjs');
   if(severalOpenOrders===false){for(const e of [h.kr,h.us]){e.severalOpenFixed=false;e.severalOpenSetting=()=>a.config.severalOpenOrders===true;}a.config={...a.config,severalOpenOrders:false};}
   else for(const e of [h.kr,h.us]){e.severalOpenFixed=false;e.severalOpenSetting=()=>a.config.severalOpenOrders===true;}
   if(severalOpenOrders!==false)a.config={...a.config,severalOpenOrders:true};
-  // n as the app computes it, with ordersPerReview standing in for the model's ceiling (1 on every OpenAI model): the
-  // switch, and the stocks a review is shown (20 per market).
-  a.ordersFor=()=>a.severalOpenNow()?Math.min(ordersPerReview,a.universeLimit?.()??ordersPerReview):1;
+  a.config={...a.config,ordersPerReview};
   const run={s,m,h,a,followUps:[],bodies:[],answers:[],reviews:0,lastRequests:0};a.requestReview=(...x)=>run.followUps.push(x);
-  const client=new AiClient('sk-fixture-key-123',async(url,o)=>{run.bodies.push(JSON.parse(o.body));run.lastRequests++;const next=run.answers.shift();if(!next)throw new Error('SCENARIO_NO_MORE_ANSWERS');return responseOf(next);});
+  let client;
+  if(claude){
+    // Claude Opus 5.5 trades: the app's own n (the switch, the model's ceiling of 22, the stocks shown), the enforced
+    // form with the moreOrders text part, the size guard and the text form. The Claude gates (a completed dry run, the
+    // Anthropic key and consent) are passed here; they are tested in claude-trading and provider-b1.
+    const agentModel=a.agentModel.bind(a);a.agentModel=agent=>agent==='trading'?{...agentModel(agent),openaiModel:'claude-opus-5-5',reasoningEffort:'high'}:agentModel(agent);
+    a.claudeTradingRefusal=()=>null;a.missingKey=()=>null;a.config={...a.config,shareKisWithAnthropic:true};
+    const {AnthropicClient}=require('../../electron/anthropic-client.cjs');const {adapt}=require('../fixtures/claude-flat.cjs');
+    client=new AnthropicClient('sk-ant-api03-'+'k'.repeat(40),async(url,o)=>{const body=JSON.parse(o.body);run.bodies.push(body);run.lastRequests++;const next=run.answers.shift();if(!next)throw new Error('SCENARIO_NO_MORE_ANSWERS');
+      // The model's answer: the scenario's decision, in the form the request asked for (the enforced flat form, or text).
+      const reply={id:'msg_fixture',type:'message',role:'assistant',model:'claude-opus-5-5',content:[{type:'text',text:JSON.stringify(next)}],stop_reason:'end_turn',usage:{input_tokens:1000,output_tokens:400},input_transformations:[]};
+      return new Response(JSON.stringify(adapt(reply,body)),{status:200,headers:{'content-type':'application/json'}});});}
+  else{
+    // OpenAI: every model's ceiling is 1, so ordersPerReview stands in for it; the switch and the stocks a review is shown
+    // (20 per market) apply as in the app.
+    a.ordersFor=()=>a.severalOpenNow()?Math.min(ordersPerReview,a.universeLimit?.()??ordersPerReview):1;
+    client=new AiClient('sk-fixture-key-123',async(url,o)=>{run.bodies.push(JSON.parse(o.body));run.lastRequests++;const next=run.answers.shift();if(!next)throw new Error('SCENARIO_NO_MORE_ANSWERS');return responseOf(next);});}
   const provider=a.provider;a.provider={...provider,request:async(op,payload)=>op==='decision'?client.decide(payload.context,payload.options):provider.request(op,payload)};
   return run;}
 const reading=async run=>{run.h.refresh();for(const market of ['KR','US'])await run.h.reconcile(market);};
@@ -139,6 +156,12 @@ async function check(run,e,where){const {m,h,a}=run,at=k=>`${run.s.name}: ${wher
   if('counted' in e){const got=[...h.kr.pendingOrders(null,null),...h.us.pendingOrders(null,null)].map(o=>({symbol:o.symbol,side:o.side,quantity:o.quantity,fullQuantity:o.fullQuantity})).sort(bySymbol);
     const want=[...e.counted].sort(bySymbol);assert.deepEqual(got.map(o=>[o.symbol,o.side,o.quantity]),want.map(o=>[o.symbol,o.side,o.quantity]),at('counted'));
     want.forEach((w,i)=>{if('fullQuantity' in w)assert.equal(got[i].fullQuantity,w.fullQuantity,at(`counted[${w.symbol}].fullQuantity`));});}
+  // forms: the answer form of each of the latest review's requests: "enforced" (Claude's flat form), "text" (Claude's text
+  // form) or "schema" (OpenAI's strict schema). maxItems: the further orders the latest review's first request asked for
+  // (null when it asked for none).
+  const mine=run.bodies.slice(run.bodies.length-run.lastRequests);
+  if('forms' in e)assert.deepEqual(mine.map(b=>b.output_config?.format?'enforced':b.text?.format?'schema':'text'),e.forms,at('forms'));
+  if('maxItems' in e){const b=mine[0];const n=b?.text?.format?.schema?.properties?.moreOrders?.maxItems??(()=>{const t=JSON.stringify(b?.system??'');const m=/a list of at most (\d+) further orders/.exec(t);return m?Number(m[1]):null;})();assert.equal(n,e.maxItems,at('maxItems'));}
   if('deferred' in e){const d=a.deferForPendingOrder();assert.deepEqual(d?d.orders.map(o=>`${o.side} ${o.symbol}`).sort():null,e.deferred===null?null:[...e.deferred].sort(),at('deferred'));}}
 const latestOpen=(run,symbol)=>{const rows=run.m.book[marketOf(symbol)].filter(r=>r.symbol===symbol&&r.kind!=='cancel'&&r.remaining>0);const r=rows.at(-1);if(!r)throw new Error(`${run.s.name}: no open KIS order of ${symbol} to fill`);return r;};
 async function step(run,st,i){const {m}=run;

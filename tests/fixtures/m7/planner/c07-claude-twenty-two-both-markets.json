@@ -1,0 +1,870 @@
+{
+ "name": "C07 Claude, both markets, separate U.S. funding: 22 orders (11 Korean, 11 U.S.) in one answer, the model's ceiling: all are sent",
+ "account": {
+  "kr": {
+   "cash": 50000000,
+   "holdings": []
+  },
+  "us": {
+   "cash": 50000
+  },
+  "prices": {
+   "100010": 10000,
+   "100020": 11000,
+   "100030": 12000,
+   "100040": 13000,
+   "100050": 14000,
+   "100060": 15000,
+   "100070": 16000,
+   "100080": 17000,
+   "100090": 18000,
+   "100100": 19000,
+   "100110": 20000,
+   "NASD:AAPL": 50,
+   "NASD:MSFT": 60,
+   "NASD:NVDA": 70,
+   "NASD:AMZN": 80,
+   "NASD:GOOGL": 90,
+   "NASD:META": 100,
+   "NASD:TSLA": 110,
+   "NASD:AVGO": 120,
+   "NASD:COST": 130,
+   "NASD:NFLX": 140,
+   "NASD:AMD": 150
+  }
+ },
+ "config": {
+  "ordersPerReview": 22,
+  "model": "claude-opus-5-5",
+  "scope": "both",
+  "usFunding": "separate"
+ },
+ "answers": [
+  {
+   "action": "Buy",
+   "symbol": "100010",
+   "quantity": 1,
+   "credit": "none",
+   "loanDate": "",
+   "plan": {
+    "horizon": "swing",
+    "thesis": "Thesis for 100010",
+    "invalidation": "Thesis for 100010 fails",
+    "stopPrice": 9000,
+    "targetPrice": null,
+    "horizonDays": 60,
+    "confidence": "medium",
+    "portfolioImpact": {
+     "weightBeforePct": 0,
+     "weightAfterPct": 1,
+     "related": [],
+     "relatedBeforePct": 0,
+     "relatedAfterPct": 1,
+     "equityReliable": true,
+     "why": "A small position."
+    },
+    "evidence": [
+     {
+      "claim": "Thesis for 100010 is supported",
+      "source": "Q3 release",
+      "verified": true
+     }
+    ],
+    "valuation": null,
+    "uncertainty": null
+   },
+   "execution": null,
+   "reversal": null,
+   "explanation": "Planner scenario.",
+   "moreOrders": [
+    {
+     "action": "Buy",
+     "symbol": "100020",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100020",
+      "invalidation": "Thesis for 100020 fails",
+      "stopPrice": 9900,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100020 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100030",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100030",
+      "invalidation": "Thesis for 100030 fails",
+      "stopPrice": 10800,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100030 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100040",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100040",
+      "invalidation": "Thesis for 100040 fails",
+      "stopPrice": 11700,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100040 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100050",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100050",
+      "invalidation": "Thesis for 100050 fails",
+      "stopPrice": 12600,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100050 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100060",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100060",
+      "invalidation": "Thesis for 100060 fails",
+      "stopPrice": 13500,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100060 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100070",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100070",
+      "invalidation": "Thesis for 100070 fails",
+      "stopPrice": 14400,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100070 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100080",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100080",
+      "invalidation": "Thesis for 100080 fails",
+      "stopPrice": 15300,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100080 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100090",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100090",
+      "invalidation": "Thesis for 100090 fails",
+      "stopPrice": 16200,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100090 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100100",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100100",
+      "invalidation": "Thesis for 100100 fails",
+      "stopPrice": 17100,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100100 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "100110",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 100110",
+      "invalidation": "Thesis for 100110 fails",
+      "stopPrice": 18000,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 100110 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:AAPL",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:AAPL",
+      "invalidation": "Thesis for NASD:AAPL fails",
+      "stopPrice": 45,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:AAPL is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:MSFT",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:MSFT",
+      "invalidation": "Thesis for NASD:MSFT fails",
+      "stopPrice": 54,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:MSFT is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:NVDA",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:NVDA",
+      "invalidation": "Thesis for NASD:NVDA fails",
+      "stopPrice": 63,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:NVDA is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:AMZN",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:AMZN",
+      "invalidation": "Thesis for NASD:AMZN fails",
+      "stopPrice": 72,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:AMZN is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:GOOGL",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:GOOGL",
+      "invalidation": "Thesis for NASD:GOOGL fails",
+      "stopPrice": 81,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:GOOGL is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:META",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:META",
+      "invalidation": "Thesis for NASD:META fails",
+      "stopPrice": 90,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:META is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:TSLA",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:TSLA",
+      "invalidation": "Thesis for NASD:TSLA fails",
+      "stopPrice": 99,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:TSLA is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:AVGO",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:AVGO",
+      "invalidation": "Thesis for NASD:AVGO fails",
+      "stopPrice": 108,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:AVGO is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:COST",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:COST",
+      "invalidation": "Thesis for NASD:COST fails",
+      "stopPrice": 117,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:COST is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:NFLX",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:NFLX",
+      "invalidation": "Thesis for NASD:NFLX fails",
+      "stopPrice": 126,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:NFLX is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "NASD:AMD",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:AMD",
+      "invalidation": "Thesis for NASD:AMD fails",
+      "stopPrice": 135,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:AMD is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    }
+   ]
+  }
+ ],
+ "expect": {
+  "requests": 1,
+  "maxItems": 21,
+  "sent": [
+   "Buy 100010",
+   "Buy 100020",
+   "Buy 100030",
+   "Buy 100040",
+   "Buy 100050",
+   "Buy 100060",
+   "Buy 100070",
+   "Buy 100080",
+   "Buy 100090",
+   "Buy 100100",
+   "Buy 100110",
+   "Buy NASD:AAPL",
+   "Buy NASD:MSFT",
+   "Buy NASD:NVDA",
+   "Buy NASD:AMZN",
+   "Buy NASD:GOOGL",
+   "Buy NASD:META",
+   "Buy NASD:TSLA",
+   "Buy NASD:AVGO",
+   "Buy NASD:COST",
+   "Buy NASD:NFLX",
+   "Buy NASD:AMD"
+  ],
+  "withheld": [],
+  "reviewFailed": false,
+  "journalTitle": "22 orders"
+ }
+}

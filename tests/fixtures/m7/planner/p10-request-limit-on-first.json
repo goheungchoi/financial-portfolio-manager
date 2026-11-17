@@ -1,0 +1,167 @@
+{
+ "name": "P10 KIS's request limit stops the first send: that order is not sent, the others go, one follow-up review",
+ "account": {
+  "kr": {
+   "cash": 10000000,
+   "holdings": [
+    {
+     "symbol": "000660",
+     "quantity": 10,
+     "price": 200000
+    },
+    {
+     "symbol": "035420",
+     "quantity": 5,
+     "price": 180000
+    }
+   ]
+  },
+  "us": {
+   "cash": 5000
+  },
+  "prices": {
+   "005930": 70000,
+   "035720": 50000,
+   "000099": 100000,
+   "000660": 200000,
+   "035420": 180000,
+   "051910": 300000,
+   "068270": 150000
+  }
+ },
+ "config": {
+  "ordersPerReview": 3
+ },
+ "answers": [
+  {
+   "action": "Buy",
+   "symbol": "005930",
+   "quantity": 1,
+   "credit": "none",
+   "loanDate": "",
+   "plan": {
+    "horizon": "swing",
+    "thesis": "Thesis for 005930",
+    "invalidation": "Thesis for 005930 fails",
+    "stopPrice": 64000,
+    "targetPrice": null,
+    "horizonDays": 60,
+    "confidence": "medium",
+    "portfolioImpact": {
+     "weightBeforePct": 0,
+     "weightAfterPct": 1,
+     "related": [],
+     "relatedBeforePct": 0,
+     "relatedAfterPct": 1,
+     "equityReliable": true,
+     "why": "A small position."
+    },
+    "evidence": [
+     {
+      "claim": "Thesis for 005930 is supported",
+      "source": "Q3 release",
+      "verified": true
+     }
+    ],
+    "valuation": null,
+    "uncertainty": null
+   },
+   "execution": null,
+   "reversal": null,
+   "explanation": "Planner scenario.",
+   "moreOrders": [
+    {
+     "action": "Buy",
+     "symbol": "035720",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 035720",
+      "invalidation": "Thesis for 035720 fails",
+      "stopPrice": 45000,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 035720 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    },
+    {
+     "action": "Buy",
+     "symbol": "000099",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for 000099",
+      "invalidation": "Thesis for 000099 fails",
+      "stopPrice": 90000,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for 000099 is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    }
+   ]
+  }
+ ],
+ "broker": [
+  {
+   "op": "place-order",
+   "call": 1,
+   "fault": "not-sent"
+  }
+ ],
+ "expect": {
+  "sent": [
+   "Buy 035720",
+   "Buy 000099"
+  ],
+  "first": {
+   "action": "Buy",
+   "symbol": "005930"
+  },
+  "reviewFailed": false,
+  "followUps": 1
+ }
+}

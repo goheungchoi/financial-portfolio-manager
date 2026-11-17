@@ -1,0 +1,141 @@
+{
+ "name": "P29 your own buy of 005930 rests in KIS; the review asks for 005930 and for another stock: 005930 is refused for itself, the other is sent",
+ "account": {
+  "kr": {
+   "cash": 10000000,
+   "holdings": [
+    {
+     "symbol": "000660",
+     "quantity": 10,
+     "price": 200000
+    },
+    {
+     "symbol": "035420",
+     "quantity": 5,
+     "price": 180000
+    }
+   ]
+  },
+  "us": {
+   "cash": 5000
+  },
+  "prices": {
+   "005930": 70000,
+   "035720": 50000,
+   "000099": 100000,
+   "000660": 200000,
+   "035420": 180000
+  }
+ },
+ "config": {
+  "ordersPerReview": 2
+ },
+ "steps": [
+  {
+   "userOrder": {
+    "symbol": "005930",
+    "side": "Buy",
+    "quantity": 2,
+    "price": 69000
+   }
+  },
+  {
+   "review": {
+    "answers": [
+     {
+      "action": "Buy",
+      "symbol": "005930",
+      "quantity": 1,
+      "credit": "none",
+      "loanDate": "",
+      "plan": {
+       "horizon": "swing",
+       "thesis": "Thesis for 005930",
+       "invalidation": "Thesis for 005930 fails",
+       "stopPrice": 64000,
+       "targetPrice": null,
+       "horizonDays": 60,
+       "confidence": "medium",
+       "portfolioImpact": {
+        "weightBeforePct": 0,
+        "weightAfterPct": 1,
+        "related": [],
+        "relatedBeforePct": 0,
+        "relatedAfterPct": 1,
+        "equityReliable": true,
+        "why": "A small position."
+       },
+       "evidence": [
+        {
+         "claim": "Thesis for 005930 is supported",
+         "source": "Q3 release",
+         "verified": true
+        }
+       ],
+       "valuation": null,
+       "uncertainty": null
+      },
+      "execution": null,
+      "reversal": null,
+      "explanation": "Planner scenario.",
+      "moreOrders": [
+       {
+        "action": "Buy",
+        "symbol": "035720",
+        "quantity": 1,
+        "credit": "none",
+        "loanDate": "",
+        "plan": {
+         "horizon": "swing",
+         "thesis": "Thesis for 035720",
+         "invalidation": "Thesis for 035720 fails",
+         "stopPrice": 45000,
+         "targetPrice": null,
+         "horizonDays": 60,
+         "confidence": "medium",
+         "portfolioImpact": {
+          "weightBeforePct": 0,
+          "weightAfterPct": 1,
+          "related": [],
+          "relatedBeforePct": 0,
+          "relatedAfterPct": 1,
+          "equityReliable": true,
+          "why": "A small position."
+         },
+         "evidence": [
+          {
+           "claim": "Thesis for 035720 is supported",
+           "source": "Q3 release",
+           "verified": true
+          }
+         ],
+         "valuation": null,
+         "uncertainty": null
+        },
+        "execution": null,
+        "reversal": null
+       }
+      ]
+     }
+    ],
+    "expect": {
+     "sent": [
+      "Buy 035720"
+     ],
+     "first": {
+      "action": "Buy",
+      "symbol": "005930"
+     },
+     "orders": [
+      {
+       "item": 1,
+       "class": "order",
+       "sent": true
+      }
+     ],
+     "reviewFailed": false
+    }
+   }
+  }
+ ]
+}

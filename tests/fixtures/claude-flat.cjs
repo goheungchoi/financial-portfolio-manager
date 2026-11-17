@@ -20,8 +20,11 @@ function flat(d,schema){
     reversal_priorDecisionId:rv?.priorDecisionId??'',reversal_basis:rv?.basis??'none',reversal_whatChanged:rv?.whatChanged??'',reversal_priorRequirement:rv?.priorRequirement??'',reversal_newEvidence:rv?.newEvidence??[],reversal_afterCost:rv?.afterCost??''});
   if(keys.includes('scoutBrief'))out.scoutBrief=d.scoutBrief?typeof d.scoutBrief==='string'?d.scoutBrief:JSON.stringify(d.scoutBrief):'';
   if(keys.includes('planVerdicts'))out.planVerdicts=Array.isArray(d.planVerdicts)&&d.planVerdicts.length?JSON.stringify(d.planVerdicts):typeof d.planVerdicts==='string'?d.planVerdicts:'';
+  // M-4/M-7: the further orders are one text part: a list is written as its JSON text; a string is passed as written (a
+  // test's malformed text part); none is the empty string.
+  if(keys.includes('moreOrders'))out.moreOrders=Array.isArray(d.moreOrders)?(d.moreOrders.length?JSON.stringify(d.moreOrders):''):typeof d.moreOrders==='string'?d.moreOrders:'';
   // Unknown top-level keys of the nested answer pass through, so the rebuild refuses them as before.
-  const known=new Set([...CORE,'plan','complexity','strategyCheck','execution','reversal','scoutBrief','planVerdicts']);for(const [k,v] of Object.entries(d))if(!known.has(k))out[k]=v;
+  const known=new Set([...CORE,'plan','complexity','strategyCheck','execution','reversal','scoutBrief','planVerdicts',...(keys.includes('moreOrders')?['moreOrders']:[])]);for(const [k,v] of Object.entries(d))if(!known.has(k))out[k]=v;
   return out;
 }
 // The reply, with each text block that holds a nested decision object turned into the flat answer, when the request asked

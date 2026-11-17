@@ -1,0 +1,170 @@
+{
+ "name": "P36 three U.S. buys in one answer (separate funding), then all three fill in one reading: nothing is left open",
+ "account": {
+  "kr": {
+   "cash": 1000000,
+   "holdings": []
+  },
+  "us": {
+   "cash": 5000
+  },
+  "prices": {
+   "NASD:AAPL": 200,
+   "NASD:MSFT": 400,
+   "NYSE:KO": 60
+  }
+ },
+ "config": {
+  "ordersPerReview": 3,
+  "scope": "us",
+  "usFunding": "separate"
+ },
+ "steps": [
+  {
+   "review": {
+    "answers": [
+     {
+      "action": "Buy",
+      "symbol": "NASD:AAPL",
+      "quantity": 1,
+      "credit": "none",
+      "loanDate": "",
+      "plan": {
+       "horizon": "swing",
+       "thesis": "Thesis for NASD:AAPL",
+       "invalidation": "Thesis for NASD:AAPL fails",
+       "stopPrice": 180,
+       "targetPrice": null,
+       "horizonDays": 60,
+       "confidence": "medium",
+       "portfolioImpact": {
+        "weightBeforePct": 0,
+        "weightAfterPct": 1,
+        "related": [],
+        "relatedBeforePct": 0,
+        "relatedAfterPct": 1,
+        "equityReliable": true,
+        "why": "A small position."
+       },
+       "evidence": [
+        {
+         "claim": "Thesis for NASD:AAPL is supported",
+         "source": "Q3 release",
+         "verified": true
+        }
+       ],
+       "valuation": null,
+       "uncertainty": null
+      },
+      "execution": null,
+      "reversal": null,
+      "explanation": "Planner scenario.",
+      "moreOrders": [
+       {
+        "action": "Buy",
+        "symbol": "NASD:MSFT",
+        "quantity": 1,
+        "credit": "none",
+        "loanDate": "",
+        "plan": {
+         "horizon": "swing",
+         "thesis": "Thesis for NASD:MSFT",
+         "invalidation": "Thesis for NASD:MSFT fails",
+         "stopPrice": 360,
+         "targetPrice": null,
+         "horizonDays": 60,
+         "confidence": "medium",
+         "portfolioImpact": {
+          "weightBeforePct": 0,
+          "weightAfterPct": 1,
+          "related": [],
+          "relatedBeforePct": 0,
+          "relatedAfterPct": 1,
+          "equityReliable": true,
+          "why": "A small position."
+         },
+         "evidence": [
+          {
+           "claim": "Thesis for NASD:MSFT is supported",
+           "source": "Q3 release",
+           "verified": true
+          }
+         ],
+         "valuation": null,
+         "uncertainty": null
+        },
+        "execution": null,
+        "reversal": null
+       },
+       {
+        "action": "Buy",
+        "symbol": "NYSE:KO",
+        "quantity": 2,
+        "credit": "none",
+        "loanDate": "",
+        "plan": {
+         "horizon": "swing",
+         "thesis": "Thesis for NYSE:KO",
+         "invalidation": "Thesis for NYSE:KO fails",
+         "stopPrice": 54,
+         "targetPrice": null,
+         "horizonDays": 60,
+         "confidence": "medium",
+         "portfolioImpact": {
+          "weightBeforePct": 0,
+          "weightAfterPct": 1,
+          "related": [],
+          "relatedBeforePct": 0,
+          "relatedAfterPct": 1,
+          "equityReliable": true,
+          "why": "A small position."
+         },
+         "evidence": [
+          {
+           "claim": "Thesis for NYSE:KO is supported",
+           "source": "Q3 release",
+           "verified": true
+          }
+         ],
+         "valuation": null,
+         "uncertainty": null
+        },
+        "execution": null,
+        "reversal": null
+       }
+      ]
+     }
+    ],
+    "expect": {
+     "sent": [
+      "Buy NASD:AAPL",
+      "Buy NASD:MSFT",
+      "Buy NYSE:KO"
+     ],
+     "journalTitle": "3 orders"
+    }
+   }
+  },
+  {
+   "fills": [
+    {
+     "symbol": "NASD:AAPL"
+    },
+    {
+     "symbol": "NASD:MSFT"
+    },
+    {
+     "symbol": "NYSE:KO"
+    }
+   ]
+  },
+  {
+   "check": {
+    "expect": {
+     "openOrders": [],
+     "counted": []
+    }
+   }
+  }
+ ]
+}

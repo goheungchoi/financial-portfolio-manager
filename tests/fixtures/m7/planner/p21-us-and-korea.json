@@ -1,0 +1,107 @@
+{
+ "name": "P21 a Korean buy and a U.S. buy in one answer, the U.S. account funded separately: both are sent",
+ "account": {
+  "kr": {
+   "cash": 10000000,
+   "holdings": []
+  },
+  "us": {
+   "cash": 5000
+  },
+  "prices": {
+   "005930": 70000,
+   "NASD:AAPL": 200
+  }
+ },
+ "config": {
+  "ordersPerReview": 2,
+  "scope": "both",
+  "usFunding": "separate"
+ },
+ "answers": [
+  {
+   "action": "Buy",
+   "symbol": "005930",
+   "quantity": 1,
+   "credit": "none",
+   "loanDate": "",
+   "plan": {
+    "horizon": "swing",
+    "thesis": "Thesis for 005930",
+    "invalidation": "Thesis for 005930 fails",
+    "stopPrice": 64000,
+    "targetPrice": null,
+    "horizonDays": 60,
+    "confidence": "medium",
+    "portfolioImpact": {
+     "weightBeforePct": 0,
+     "weightAfterPct": 1,
+     "related": [],
+     "relatedBeforePct": 0,
+     "relatedAfterPct": 1,
+     "equityReliable": true,
+     "why": "A small position."
+    },
+    "evidence": [
+     {
+      "claim": "Thesis for 005930 is supported",
+      "source": "Q3 release",
+      "verified": true
+     }
+    ],
+    "valuation": null,
+    "uncertainty": null
+   },
+   "execution": null,
+   "reversal": null,
+   "explanation": "Planner scenario.",
+   "moreOrders": [
+    {
+     "action": "Buy",
+     "symbol": "NASD:AAPL",
+     "quantity": 1,
+     "credit": "none",
+     "loanDate": "",
+     "plan": {
+      "horizon": "swing",
+      "thesis": "Thesis for NASD:AAPL",
+      "invalidation": "Thesis for NASD:AAPL fails",
+      "stopPrice": 180,
+      "targetPrice": null,
+      "horizonDays": 60,
+      "confidence": "medium",
+      "portfolioImpact": {
+       "weightBeforePct": 0,
+       "weightAfterPct": 1,
+       "related": [],
+       "relatedBeforePct": 0,
+       "relatedAfterPct": 1,
+       "equityReliable": true,
+       "why": "A small position."
+      },
+      "evidence": [
+       {
+        "claim": "Thesis for NASD:AAPL is supported",
+        "source": "Q3 release",
+        "verified": true
+       }
+      ],
+      "valuation": null,
+      "uncertainty": null
+     },
+     "execution": null,
+     "reversal": null
+    }
+   ]
+  }
+ ],
+ "expect": {
+  "sent": [
+   "Buy 005930",
+   "Buy NASD:AAPL"
+  ],
+  "withheld": [],
+  "reviewFailed": false,
+  "journalTitle": "2 orders"
+ }
+}

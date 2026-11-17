@@ -1,0 +1,59 @@
+{
+ "name": "C08 Claude: Hold with an empty list is a complete answer: no trade, nothing sent",
+ "account": {
+  "kr": {
+   "cash": 10000000,
+   "holdings": [
+    {
+     "symbol": "000660",
+     "quantity": 10,
+     "price": 200000
+    },
+    {
+     "symbol": "035420",
+     "quantity": 5,
+     "price": 180000
+    }
+   ]
+  },
+  "us": {
+   "cash": 5000
+  },
+  "prices": {
+   "005930": 70000,
+   "035720": 50000,
+   "000099": 100000,
+   "000660": 200000,
+   "035420": 180000
+  }
+ },
+ "config": {
+  "ordersPerReview": 3,
+  "model": "claude-opus-5-5"
+ },
+ "answers": [
+  {
+   "action": "Hold",
+   "symbol": "",
+   "quantity": 0,
+   "credit": "none",
+   "loanDate": "",
+   "plan": null,
+   "execution": null,
+   "reversal": null,
+   "explanation": "Nothing to do.",
+   "moreOrders": []
+  }
+ ],
+ "expect": {
+  "requests": 1,
+  "sent": [],
+  "first": {
+   "action": "Hold"
+  },
+  "withheld": [],
+  "reviewFailed": false,
+  "followUps": 0,
+  "journalTitle": "No trade"
+ }
+}
