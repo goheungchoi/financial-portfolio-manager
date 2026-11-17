@@ -21,7 +21,7 @@ test('J2: the first three sentences, and whether there is more',async()=>{
 });
 test('J2: the facts row: order, plan, AI use; a fact not recorded is left out',async()=>{
   const J=await load();const usage={calls:3,micro:420000};
-  assert.deepEqual(J.decisionFacts({orderId:'o',decision:{plan:{thesis:'Trim into strength. Keep the core.'}}},usage),[{label:'Order',value:'Order submitted'},{label:'Plan',value:'Trim into strength.'},{label:'AI',value:'3 AI calls · $0.42'}]);
+  assert.deepEqual(J.decisionFacts({orderId:'o',decision:{plan:{thesis:'Trim into strength. Keep the core.'}}},usage),[{label:'Order',value:'Order sent'},{label:'Plan',value:'Trim into strength.'},{label:'AI',value:'3 AI calls · $0.42'}]);
   assert.deepEqual(J.decisionFacts({proposalId:'p',decision:{}},null),[{label:'Order',value:'Proposal created'}],'no plan and no usage: only the order');
   assert.deepEqual(J.decisionFacts({decision:{plan:{thesis:'  '}}},{calls:1,micro:0}),[{label:'Order',value:'No order'},{label:'AI',value:'1 AI call'}],'no cost recorded: calls only');
   assert.deepEqual(J.decisionFacts({decision:{}},{calls:2,micro:150}).at(-1),{label:'AI',value:'2 AI calls · < $0.01'},'a cost under a cent is not shown as $0.00');

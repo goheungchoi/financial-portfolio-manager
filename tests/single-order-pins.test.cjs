@@ -20,6 +20,9 @@ test('pin: a single-order review\'s record has today\'s fields: no moreOrders, n
   const m=new MockKis({kr:{cash:10000000},us:{cash:5000},prices:{'005930':70000}});const h=appHarness({mock:m}).enable();h.automation();
   h.decide({action:'Buy',symbol:'005930',quantity:10,plan:null});await h.a.review('User request').catch(()=>{});
   const r=JSON.parse(h.db.prepare('SELECT payload FROM reviews').get().payload);
-  assert.deepEqual(Object.keys(r).sort(),['account','alerts','assessed','contextEvidence','decision','emergency','executionNote','formulaUse','id','instructions','marketSession','model','orderId','proposalId','provider','research','scope','timestamp','trigger','triggerSymbols','usage','vendor']);
+  // The one change since the pin: orderOutcome (the engine's status and reason of the review's order, only when an order
+  // exists), added 2026-11-17 to fix the Journal's "Order submitted" for an order that was never sent (M-6 part 0,
+  // cleared by the planner). Nothing else.
+  assert.deepEqual(Object.keys(r).sort(),['account','alerts','assessed','contextEvidence','decision','emergency','executionNote','formulaUse','id','instructions','marketSession','model','orderId','orderOutcome','proposalId','provider','research','scope','timestamp','trigger','triggerSymbols','usage','vendor']);
   assert.deepEqual(Object.keys(r.decision).sort(),['action','explanation','plan','quantity','symbol']);
 });

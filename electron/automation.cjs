@@ -128,7 +128,16 @@ class Automation {
   historyVersion(){try{return `${(this.totalChanges??=this.db.prepare('SELECT total_changes() AS n')).get().n}|${this.revision??0}|${this.watchScope()}|${Math.floor(Date.now()/60000)}|${(this.dataVersion??=this.db.prepare('PRAGMA data_version')).get().data_version}`;}catch{return null;}}
   stateCached(name,fn){if(this.stateCacheOff)return fn();const key=this.historyVersion();if(key==null)return fn();const cache=this.stateCache??=new Map();const hit=cache.get(name);if(hit&&hit.key===key)return hit.value;
     const value=fn();cache.set(name,{key,value});return value;}
-  reviewHistory(limit=50,all=false){const key=all?null:this.accountTag()?.key;return (key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT ?").all(key,limit):this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT ?').all(limit)).map(row=>JSON.parse(row.payload));}
+  reviewHistory(limit=50,all=false){const key=all?null:this.accountTag()?.key;return (key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT ?").all(key,limit):this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT ?').all(limit)).map(row=>this.syncOrderOutcome(JSON.parse(row.payload)));}
+  // M-6 part 0 (F1): a review's orderOutcome is written when the review is recorded. An order unclear then (Uncertain,
+  // Submitting) that later leaves that state (you linked it, marked it not placed, or the order history resolved it)
+  // updates its review here, so the Journal stops saying "Unclear: check KIS". Read from the engines' own order records;
+  // runs whenever the reviews are read for the window (any order change is a database write, which renews that cache).
+  syncOrderOutcome(review){const o=review?.orderOutcome;if(!review?.orderId||!o||!['Uncertain','Submitting'].includes(o.status))return review;
+    let now=null;for(const engine of [this.live,this.usLive]){try{now=engine?.orders?.().find(x=>x.id===review.orderId)??null;}catch{now=null;}if(now)break;}
+    if(!now||now.status===o.status)return review;
+    const updated={...review,orderOutcome:{status:now.status??null,reason:now.reason??null}};
+    try{this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(updated),review.id);}catch{}return updated;}
   watchScope(){if(this.config.scope==='paper')return 'paper';try{return this.config.scope+':'+(this.live??this.usLive).identity();}catch{return this.config.scope+':disconnected';}}
   // The review clock: when this account and scope last had a review (run, skipped or failed) and which pre-open review
   // already ran, kept across restarts, so starting auto trading resumes the schedule instead of reviewing again.
@@ -783,7 +792,7 @@ class Automation {
       if(further){const sent=batchRows=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,costRevision,base:execution,decidedAt:recorded.timestamp,onProposal});
         const first=sent.find(r=>r.item===0);if(first)({proposal,order,executionNote}=first);}
       else if(result.decision.action!=='Hold')({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal}));
-      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{}),...(batchRows?{orders:furtherOrderRows(batchRows)}:{})};
+      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,...(order?{orderOutcome:{status:order.status??null,reason:order.reason??null}}:{}),usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{}),...(batchRows?{orders:furtherOrderRows(batchRows)}:{})};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
       this.lastFingerprint={...hash,scope:watchScope,completedAt:Date.now()};
       // M-5 (e): each further order kept for a closed market is its own pending decision, and closes its own (carried out).
@@ -800,7 +809,7 @@ class Automation {
       // M-5 (e): a batch that failed on an error the app does not know: its record keeps what became of each order (the
       // first order's proposal id was written when it was made; the further orders here).
       if(Array.isArray(error?.batch))try{const row=this.db.prepare('SELECT payload FROM reviews WHERE id=?').get(id);const first=error.batch.find(r=>r.item===0);
-        if(row)this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(row.payload),...(first?{executionNote:first.executionNote??null,orderId:first.order?.id??null}:{}),orders:furtherOrderRows(error.batch)}),id);}catch{}
+        if(row)this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(row.payload),...(first?{executionNote:first.executionNote??null,orderId:first.order?.id??null,...(first.order?{orderOutcome:{status:first.order.status??null,reason:first.order.reason??null}}:{})}:{}),orders:furtherOrderRows(error.batch)}),id);}catch{}
       // What research changed before the failure is reported apart from the failed result (1.5.48 audit, A5).
       if(Array.isArray(error?.applied)&&error.applied.length){const list=error.applied.slice(0,10).map(a=>`${a.tool}${a.id?` ${a.id}`:''} (${a.status})`).join('; ');this.lastErrorDetail+=` Changed during research before the failure, and kept: ${list}.`;if(!this.disposed)this.log(id,'System','Research changes kept after a failed review',list);}
       try{this.noteReviewOutcome(this.lastError,error);}catch{}

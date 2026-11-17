@@ -8,7 +8,7 @@ import {AccountScope,accountName,type HistoryScope} from './AccountScope';
 import {AgentDesk} from './AgentDesk';
 import {ReplayPanel} from './ReplayPanel';
 import type {DeskState} from './RuntimeSettings';
-import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts} from './journalTabs';
+import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill} from './journalTabs';
 type Review=RuntimeState['reviews'][number];
 const PROVIDER:Record<string,string>={local:'Local rules',openai:'OpenAI',external:'External agent'};
 const day=(t:number)=>new Date(t).toLocaleDateString('en-CA');
@@ -20,7 +20,7 @@ const money=(value:number|null,currency:string)=>value==null?'—':new Intl.Numb
 function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state:RuntimeState;onNavigate?(tab:string):void;onLessons():void}){
   const outcomes=(state.outcomes??[]).filter(o=>o.reviewId===review.id);
   const lessons=state.lessons.filter(l=>l.evidence?.reviewId===review.id);
-  const result=review.orderId?'Order submitted':review.proposalId?'Proposal created':'No order';
+  const result=orderPill(review as never);
   const [whole,setWhole]=useState(false);const [more,setMore]=useDraftState('journal:detailMore',false);
   const text=firstSentences(review.decision.explanation);const usage=state.tokenSaving?.recent?.find(r=>r.reviewId===review.id)??null;
   const facts=decisionFacts(review as never,usage);
