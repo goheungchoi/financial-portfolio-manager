@@ -775,7 +775,7 @@ class Automation {
       // M-5 (c): with further orders standing, the batch places the first and each further order (placeBatch); the first
       // order's fields below stay its own. A single order goes as before.
       const further=Array.isArray(result.decision.moreOrders)&&result.decision.moreOrders.length?result.decision.moreOrders:null;
-      if(further){const sent=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,base:execution,decidedAt:recorded.timestamp,onProposal});
+      if(further){const sent=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,costRevision,base:execution,decidedAt:recorded.timestamp,onProposal});
         const first=sent.find(r=>r.item===0);if(first)({proposal,order,executionNote}=first);}
       else if(result.decision.action!=='Hold')({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal}));
       const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{})};
@@ -974,16 +974,34 @@ class Automation {
   // ahead (bookFeed). An order not started within BATCH_LIMIT_MS of the decision is not sent, nor the ones after it. One
   // follow-up review is asked after the batch when an order had no book or the limit passed. Returns one row per order,
   // in the order given: {item (0 the first), symbol, action, quantity, proposal, order, executionNote}.
-  async placeBatch(orders,{id,context,watchScope,revision,base,decidedAt,onProposal}){
+  // M-5 (d): each order's outcome is classed (order-outcomes.cjs). A refusal of this order (class 'order') is that order
+  // only; a class 'stop' outcome, or one checked before each order (the account or saved settings changed, automatic
+  // trading stopped, the batch limit), leaves the rest not sent; the orders before stand. An error the app does not know
+  // stops the rest too, and after the batch the review fails with it (error.batch: every order's outcome).
+  async placeBatch(orders,{id,context,watchScope,revision,costRevision,base,decidedAt,onProposal}){
+    const O=require('./order-outcomes.cjs');
     const closing=o=>{try{return require('./credit-paths.cjs').effectOf({side:o.action,credit:o.credit}).opening===false;}catch{return false;}};
-    const seq=[...orders.filter(closing),...orders.filter(o=>!closing(o))],feed=this.bookFeed(seq.map(o=>o.symbol),{id}),done=new Map();let stopped=null;
+    const seq=[...orders.filter(closing),...orders.filter(o=>!closing(o))],feed=this.bookFeed(seq.map(o=>o.symbol),{id}),done=new Map();let stopped=null,failure=null;
+    const STOPS={STALE_DECISION:'the account or saved settings changed during the batch',AUTO_TRADING_STOPPED:'automatic trading was stopped',BATCH_LIMIT:'the batch limit (5 minutes from the decision) passed'};
+    // Automatic trading stopped during the batch: the app closed, or automation or automatic submission turned off since
+    // it started (a saved change also moves the revision, which staleReason reports first).
+    const started={enabled:this.config.enabled,autoSubmit:this.config.autoSubmit},turnedOff=()=>this.disposed||started.enabled&&!this.config.enabled||started.autoSubmit&&!this.config.autoSubmit;
     for(let k=0;k<seq.length;k++){const o=seq[k],item=o.item??0;
-      if(!stopped&&Date.now()-decidedAt>(this.batchLimitMs??BATCH_LIMIT_MS))stopped='the batch limit (5 minutes from the decision) passed';
-      if(stopped){const note=`Not sent: ${o.action} ${o.quantity} ${o.symbol}: ${stopped}.`;this.log(id,'System','Order not sent · batch',note);done.set(o,{proposal:null,order:null,executionNote:note});feed.missed.push(`${o.action} ${o.symbol} (batch limit)`);continue;}
+      if(!stopped){const changed=this.staleReason(watchScope,revision,costRevision);
+        if(changed)stopped={code:'STALE_DECISION',text:STOPS.STALE_DECISION};else if(turnedOff())stopped={code:'AUTO_TRADING_STOPPED',text:STOPS.AUTO_TRADING_STOPPED};
+        else if(Date.now()-decidedAt>(this.batchLimitMs??BATCH_LIMIT_MS))stopped={code:'BATCH_LIMIT',text:STOPS.BATCH_LIMIT};}
+      if(stopped){const note=`Not sent: ${o.action} ${o.quantity} ${o.symbol}: ${stopped.text}.`;this.log(id,'System','Order not sent · batch',note);done.set(o,{proposal:null,order:null,executionNote:note,outcome:{class:'stop',code:stopped.code}});feed.missed.push(`${o.action} ${o.symbol} (${stopped.code==='BATCH_LIMIT'?'batch limit':stopped.text})`);continue;}
       feed.ahead(k);feed.ahead(k+1);
-      done.set(o,await this.placeOrder(o,{id,context,watchScope,revision,base,onProposal:item===0?onProposal:null,price:args=>feed.price(k,args)}));}
+      try{const r=await this.placeOrder(o,{id,context,watchScope,revision,base,onProposal:item===0?onProposal:null,price:args=>feed.price(k,args)});
+        done.set(o,{...r,outcome:{class:'order',code:r.order?.reason??r.order?.status??(r.proposal?(r.proposal.reason?'BLOCKED':'PROPOSED'):'NOT_PROPOSED')}});}
+      catch(error){const code=O.codeOf(error),cls=O.classOf(code);
+        const note=`Not sent: ${o.action} ${o.quantity} ${o.symbol}: ${code??'an error the app does not know'}${cls==='order'?'':'; the orders after it in this review were not sent'}.`;
+        this.log(id,'System',cls==='order'?'Order not sent':'Order not sent · batch stopped',note);done.set(o,{proposal:error?.proposal??null,order:null,executionNote:note,outcome:{class:cls,code}});
+        if(cls!=='order'){stopped={code:code??'UNKNOWN',text:`an earlier order in this review failed (${code??'an error the app does not know'})`};feed.missed.push(`${o.action} ${o.symbol} (${code??'unknown error'})`);if(cls==='unknown')failure=error;}}}
     const missed=feed.missed;if(missed.length)this.requestReview('Orders not placed',`${missed.join('; ')}: not placed from this review; decide again.`,seq[0]?.symbol??null);
-    return orders.map(o=>({item:o.item??0,symbol:o.symbol,action:o.action,quantity:o.quantity,...done.get(o)}));
+    const rows=orders.map(o=>({item:o.item??0,symbol:o.symbol,action:o.action,quantity:o.quantity,...done.get(o)}));
+    if(failure)throw Object.assign(failure,{batch:rows});
+    return rows;
   }
   // Order books for a batch (M-5 (c)), each read once, one order ahead of its send: ahead(k) starts order k's read; price(k,
   // args) prices order k as placementPrice prices one order (same arguments and result). A read retries every 3 seconds
@@ -1058,7 +1076,7 @@ class Automation {
         const orderCap=this.config.maxAutoOrdersPerDay;const slot=autoEligible?this.guardrails.reserveSlot({cap:orderCap,source:'review',ref:id,closing:!opening}):null;
         if(autoEligible&&!slot){executionNote=`Guardrail: the daily limit of ${orderCap} automatic orders is reached. Proposal awaits manual approval.`;this.log(id,'System','Guardrail · order limit',executionNote);this.trip('order-limit',`Daily automatic order limit (${orderCap}) reached; later proposals need approval.`);}
         else if(autoEligible) {const statusOf=()=>{try{return context.environment==='local-paper'?null:execution.orders?.().find(r=>r.id===proposal.id)??null;}catch{return null;}};
-          try{order=context.environment!=='local-paper'?await execution.autoSubmit(proposal.id):this.paper.submit(proposal.id);}catch(error){this.settleAutoSlot(slot,statusOf());throw error;}
+          try{order=context.environment!=='local-paper'?await execution.autoSubmit(proposal.id):this.paper.submit(proposal.id);}catch(error){this.settleAutoSlot(slot,statusOf());throw error&&typeof error==='object'?Object.assign(error,{proposal}):error;}
           this.settleAutoSlot(slot,context.environment==='local-paper'?{status:'Filled'}:statusOf()??order);this.log(id,'Tool','Order submission',JSON.stringify(order));
           // M-1a: refused by KIS's request limit before it was sent: nothing is at KIS, trading stays on, and a review
           // decides again once KIS may be asked (on fresh prices and checks), not before.
