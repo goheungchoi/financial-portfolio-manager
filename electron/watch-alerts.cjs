@@ -28,7 +28,10 @@ class WatchAlerts {
   // sent (anchors move to the alert prices, cooldowns start, levels are fired) and returns the symbols whose level fired.
   // skipLevels: level events held while a size failure stands (electron/size-retry.cjs); their symbols are checked as if
   // they had no level.
-  check({quotes,held,baselines,watches,tolerance,wide,now=Date.now(),ownFired=false,skipLevels=new Set()}){
+  // notHeld (item 11, the setting "Price reviews for stocks you don't hold"): 'all' is today's rule; 'levels' keeps a
+  // stock not held to its entry-level crossing (no move alert, not even from an AI-set percent); 'none' starts nothing for
+  // a stock not held but still records each level's side, so a later switch fires only on a fresh crossing.
+  check({quotes,held,baselines,watches,tolerance,wide,now=Date.now(),ownFired=false,skipLevels=new Set(),notHeld='all'}){
     const holding=[],alerts=[],levels=new Map(),open=(w,isHeld)=>w?.price!=null&&!skipLevels.has(levelEvent(w))&&!(ownFired?this.fired.has(levelKey(w))||isHeld&&w.priceFired:w.priceFired);
     for(const q of quotes){const watch=watches.find(w=>w.symbol===q.symbol);
       if(held.has(q.symbol)){
@@ -37,8 +40,9 @@ class WatchAlerts {
         continue;}
       if(open(watch)){const key=levelKey(watch);
         const before=this.sides.get(key)??(watch.baseline>0?met(watch,watch.baseline):null),isMet=met(watch,q.price);this.sides.set(key,isMet);
-        if(before===false&&isMet){levels.set(q.symbol,key);alerts.push({kind:'entry-level',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp,...(watch.revision?{watchRevision:watch.revision}:{})});}
+        if(before===false&&isMet&&notHeld!=='none'){levels.set(q.symbol,key);alerts.push({kind:'entry-level',symbol:q.symbol,price:q.price,threshold:watch.price,direction:watch.direction,timestamp:q.timestamp,...(watch.revision?{watchRevision:watch.revision}:{})});}
         continue;}
+      if(notHeld!=='all')continue;
       if(!this.anchors.has(q.symbol))this.anchors.set(q.symbol,baselines.get(q.symbol)??q.price);
       const anchor=this.anchors.get(q.symbol),limit=watch?.percent??wide,change=(q.price/anchor-1)*100;
       if(Math.abs(change)>=limit&&now-(this.alertedAt.get(q.symbol)??-Infinity)>=COOLDOWN_MS)alerts.push({kind:'watchlist-move',symbol:q.symbol,price:q.price,baseline:anchor,changePct:change,threshold:limit,timestamp:q.timestamp});}
@@ -75,9 +79,9 @@ function parts(row){return symbolsOf(row).map(s=>{const m=marketOf(s.symbol),con
   return {key:[row.scope??'unrecorded',m,sessionOf(m,row.at),s.symbol,row.rules??'unrecorded'].join('|'),signature:{outcome:`${condition}:${s.old?.kind??'-'}:${s.new?.kind??'-'}`,reset:JSON.stringify([s.old?.baseline??null,s.new?.baseline??null,Math.sign(s.old?.changePct??s.new?.changePct??0)])},detail:{symbol:s.symbol,market:m,condition,held:s.held,old:s.old?.kind??null,new:s.new?.kind??null}};});}
 class AlertObservations {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS alert_observations(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
-  record(at,{current,proposed,held,scope=null,mode=null}){if(!current&&!proposed)return;const brief=t=>t?{kind:t.kind,symbols:t.kind==='watchlist'?t.alerts.map(a=>a.symbol):[t.symbol,...(t.alongside??[]).map(a=>a.symbol)],...(t.changePct!=null?{changePct:Math.round(t.changePct*100)/100}:{})}:null;
+  record(at,{current,proposed,held,scope=null,mode=null,notHeld=null}){if(!current&&!proposed)return;const brief=t=>t?{kind:t.kind,symbols:t.kind==='watchlist'?t.alerts.map(a=>a.symbol):[t.symbol,...(t.alongside??[]).map(a=>a.symbol)],...(t.changePct!=null?{changePct:Math.round(t.changePct*100)/100}:{})}:null;
     const per=new Map();for(const [side,t] of [['old',current],['new',proposed]])for(const a of items(t)){const x=per.get(a.symbol)??{symbol:a.symbol,held:held.has(a.symbol),old:null,new:null};x[side]=sideOf(a);per.set(a.symbol,x);}
-    this.db.prepare('INSERT INTO alert_observations(at,payload) VALUES(?,?)').run(at,JSON.stringify({current:brief(current),proposed:brief(proposed),currentHeld:current?held.has(current.symbol):null,scope,rules:RULES_VERSION,...(mode?{mode}:{}),symbols:[...per.values()]}));}
+    this.db.prepare('INSERT INTO alert_observations(at,payload) VALUES(?,?)').run(at,JSON.stringify({current:brief(current),proposed:brief(proposed),currentHeld:current?held.has(current.symbol):null,scope,rules:RULES_VERSION,...(mode?{mode}:{}),symbols:[...per.values()],...(notHeld?{notHeld}:{})}));}
   // Episodes since a time. assessed(symbol, from, to): the time of a completed review between two checks that assessed
   // the symbol (it was triggered by it, gave a verdict on it or held it), which ends the episode.
   episodes(since,{assessed=()=>null}={}){const rows=this.db.prepare('SELECT id,at,payload FROM alert_observations WHERE at>=? ORDER BY at').all(since).map(r=>({id:r.id,at:r.at,...JSON.parse(r.payload)}));
