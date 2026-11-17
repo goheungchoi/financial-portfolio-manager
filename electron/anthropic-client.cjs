@@ -385,7 +385,7 @@ class AnthropicClient {
       // review with this rule, never a retry (decisionWithRetry retries request failures only).
       const answer=onlyObject(output,{empty:'no decision and no tool request',invalid:'a decision that is not valid JSON'});
       let raw=answer,dropped=[];if(enforced){({decision:raw,dropped}=rebuildDecision(answer,flatSchema));}
-      const memory=C.validationMemory(context,options);const decision=C.validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
+      const memory=C.validationMemory(context,options);const decision=C.validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context,more:C.furtherOrders(options)});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {...base,decision,answerForm:enforced?'enforced':'text',...(dropped.length?{textPartsDropped:dropped}:{}),...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;

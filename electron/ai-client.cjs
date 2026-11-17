@@ -106,7 +106,9 @@ function normalizeReversal(r){if(!r||typeof r!=='object')return null;const s=(x,
   return {priorDecisionId:s(r.priorDecisionId,64),basis:['new-evidence','corrected-reasoning'].includes(r.basis)?r.basis:null,whatChanged:s(r.whatChanged,400),priorRequirement:s(r.priorRequirement,400),newEvidence:(Array.isArray(r.newEvidence)?r.newEvidence:[]).slice(0,5).map(e=>({claim:s(e?.claim,200),source:s(e?.source,160),date:s(e?.date,30)})),afterCost:s(r.afterCost,300)};}
 // memory: context.positionMemory; with it, an opening that reverses a recent filled exit needs its reversal explanation
 // (else withheld, kind reversal), and a reduction that reverses a recent entry is flagged when it has none, never withheld.
-function validateDecision(value,symbols,{requirePlan=false,memory=null,quotes=[],now=Date.now(),context=null}={}) {
+// more (M-4 part 2): the further orders this request asked for (furtherOrders(options)); 0 is today's single order, where
+// an answer carrying moreOrders is refused as an unexpected field, as before M-4.
+function validateDecision(value,symbols,{requirePlan=false,memory=null,quotes=[],now=Date.now(),context=null,more=0}={}) {
   // Position memory given for validation must be the full list (release review 2026-11-05, P1): a compressed reference or
   // anything else is an explicit failure, never read as "no earlier trade".
   if(memory!=null&&(!Array.isArray(memory)||memory.some(r=>!r||typeof r.symbol!=='string')))throw Object.assign(new Error('VALIDATION_STATE_INVALID'),{detail:'position memory for validation is not the full list'});
@@ -119,8 +121,17 @@ function validateDecision(value,symbols,{requirePlan=false,memory=null,quotes=[]
   // complexity (model routing, removed in 1.5.53; dropped from the answer form by the instruction rewrite): an answer that
   // still carries it, such as a stored one in the saved-review comparison, is accepted and the value is not kept.
   if(value&&typeof value==='object'&&!Array.isArray(value)&&'complexity' in value){const {complexity:_,...rest}=value;value=rest;}
-  // M-4 part 1: further orders are taken off the decision here; the first order is checked as today.
-  if(value&&typeof value==='object'&&!Array.isArray(value)&&'moreOrders' in value){const {moreOrders:_,...rest}=value;value=rest;}
+  // M-4: the further orders are taken off the decision and checked one by one after the first (furtherChecks).
+  let further=null;if(more>0&&value&&typeof value==='object'&&!Array.isArray(value)&&'moreOrders' in value){const {moreOrders:raw,...rest}=value;value=rest;further={raw};}
+  const first=value&&typeof value==='object'&&!Array.isArray(value)?{action:value.action,symbol:value.symbol}:null;
+  const opts={requirePlan,memory,quotes,now,context};const o=checkOrder(value,symbols,opts);
+  return {...o.decision,...(o.execution?{execution:o.execution}:{}),...(o.plan?{plan:o.plan}:{}),...(strategyCheck?.length?{strategyCheck}:{}),...(o.reversal?{reversal:o.reversal}:{}),...(o.reversalFlag?{reversalFlag:o.reversalFlag}:{}),...(verdicts?{planVerdicts:verdicts}:{}),...(brief?{scoutBrief:brief}:{}),
+    ...(further?furtherChecks(further.raw,first,symbols,opts,more):{})};
+}
+// One order's checks (M-4: the first order and every further order go through this same function, so they cannot drift):
+// its fields and limits (checkDecision, which throws INVALID_AI_RESPONSE), the trade plan for an opening, the reversal
+// rule against position memory, and the strategy axes. A failing check returns a Hold with `withheld`, as today.
+function checkOrder(value,symbols,{requirePlan=false,memory=null,quotes=[],now=Date.now(),context=null}={}){
   let plan=null;if(value&&typeof value==='object'&&'plan' in value){const {plan:raw,...rest}=value;value=rest;plan=normalizePlan(raw);}
   let reversal=null;if(value&&typeof value==='object'&&'reversal' in value){const {reversal:raw,...rest}=value;value=rest;reversal=normalizeReversal(raw);}
   // Execution bounds keep their shape here; the app checks them against the price and time when it places the order.
@@ -146,7 +157,30 @@ function validateDecision(value,symbols,{requirePlan=false,memory=null,quotes=[]
   const SA=require('./strategy-axes.cjs');const axes=plan&&decision.action!=='Hold'?SA.axesOf({...decision,plan},context):null;if(axes)plan={...plan,axes,strategy:SA.label(axes)};
   const denied=requirePlan&&context&&axes&&!decision.withheld?SA.gap({...decision,plan},context):null;
   if(denied)decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a ${decision.action==='Sell'?'short sale':'Buy'} of ${decision.quantity} ${decision.symbol}: ${denied}.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:denied,kind:'permission'}};
-  return {...decision,...(execution&&(decision.action==='Buy'||decision.action==='Sell')?{execution}:{}),...(plan?{plan}:{}),...(strategyCheck?.length?{strategyCheck}:{}),...(reversal&&decision.action!=='Hold'?{reversal}:{}),...(reversalFlag?{reversalFlag}:{}),...(verdicts?{planVerdicts:verdicts}:{}),...(brief?{scoutBrief:brief}:{})};
+  return {decision,execution:execution&&(decision.action==='Buy'||decision.action==='Sell')?execution:null,plan,reversal:reversal&&decision.action!=='Hold'?reversal:null,reversalFlag};
+}
+// M-4 part 2 (D2): the further orders, each checked alone by checkOrder; a failing one is held back with its reason and
+// the others stand (the user's decision 2). Never guessed, never repaired: a text that is not a JSON list (Claude) holds
+// back every further order; an item past the count asked for, or not a valid order, is held back. A stock appears once
+// across the first order and the further orders: a second appearance is held back as a duplicate (the first order counts
+// as written, even if it is itself held back). Returns moreOrders (the orders standing, in the first order's fields) and,
+// when any is held back, moreWithheld [{item, action, symbol, quantity, reason, kind}] (item: 1 for the first further order).
+function furtherChecks(raw,first,symbols,opts,more){
+  const standing=[],withheld=[];const hold=(item,o,reason,kind)=>withheld.push({item,action:typeof o?.action==='string'?o.action.slice(0,8):'',symbol:typeof o?.symbol==='string'?o.symbol.slice(0,24):'',quantity:Number.isSafeInteger(o?.quantity)?o.quantity:0,reason,kind});
+  if(!Array.isArray(raw)){hold(0,null,'the further orders were not a JSON list',raw&&typeof raw==='object'&&raw.unparsed?'unparsed':'shape');return {moreOrders:[],moreWithheld:withheld};}
+  const {sameStock}=require('./broker-open-orders.cjs');const seen=[];if(first&&['Buy','Sell'].includes(first.action)&&typeof first.symbol==='string')seen.push(first);
+  raw.forEach((item,i)=>{const n=i+1;
+    if(n>more)return hold(n,item,`more further orders than the ${more} asked for`,'count');
+    if(!item||typeof item!=='object'||Array.isArray(item))return hold(n,null,'a further order that is not an object','shape');
+    if(item.action!=='Buy'&&item.action!=='Sell')return hold(n,item,'a further order is a Buy or a Sell','invalid');
+    const dup=typeof item.symbol==='string'?seen.find(s=>s.symbol===item.symbol||sameStock(s.symbol,item.symbol)):null;
+    if(dup)return hold(n,item,`${item.symbol} already has a ${dup.action} in this review`,'duplicate');
+    if(typeof item.symbol==='string')seen.push({action:item.action,symbol:item.symbol});
+    let o;try{o=checkOrder({...item,explanation:''},symbols,opts);}catch(error){if(error?.message!=='INVALID_AI_RESPONSE')throw error;return hold(n,item,`not a valid order: ${error.detail?.rule??'invalid'}`,'invalid');}
+    if(o.decision.withheld)return hold(n,item,o.decision.withheld.reason,o.decision.withheld.kind??'plan');
+    const {explanation:_,...d}=o.decision;
+    standing.push({item:n,...d,...(o.execution?{execution:o.execution}:{}),...(o.plan?{plan:o.plan}:{}),...(o.reversal?{reversal:o.reversal}:{}),...(o.reversalFlag?{reversalFlag:o.reversalFlag}:{})});});
+  return {moreOrders:standing,...(withheld.length?{moreWithheld:withheld}:{})};
 }
 // The refused decision's trade fields for its error detail: no explanation, plan or other text.
 function decisionSummary(v){if(!v||typeof v!=='object')return null;const s=x=>typeof x==='string'?x.replace(/[^A-Za-z0-9:._-]/g,'').slice(0,24):typeof x;
@@ -295,10 +329,10 @@ class AiClient {
       // before any compression), never the shaped prompt, where position memory can be a reference (release review
       // 2026-11-05, P1). Without it, the prompt's memory is used only when it is the full list; anything else fails.
       let raw;try{raw=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:output.trim()?'a decision that is not valid JSON':'no decision and no tool request',status:body.status}});}
-      const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context});
+      const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context,more:furtherOrders(options)});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
       return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }
-module.exports={furtherOrders,trailOn,PLAN_TRAIL,normalizePlan,REFLECTION_INSTRUCTIONS,scoutTools,RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,kb,offeredToolNames,deskTools,fromAnthropic,fromOpenAI,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};
+module.exports={checkOrder,furtherOrders,trailOn,PLAN_TRAIL,normalizePlan,REFLECTION_INSTRUCTIONS,scoutTools,RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,kb,offeredToolNames,deskTools,fromAnthropic,fromOpenAI,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};

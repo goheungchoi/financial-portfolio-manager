@@ -83,6 +83,12 @@ function dryRunMeasurement(db,reviewId){
     return {requests,totals:{requests:requests.length,inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reservedUSD:Math.round(sum('reservedUSD')*1e6)/1e6,costUSD:Math.round(sum('costUSD')*1e6)/1e6}};}
   catch{return null;}
 }
+// An opening whose stop is not on the losing side of the current price (below for a long, above for a short; Stage 3):
+// {side, q, eff}, else null. Covers and repayments need no stop. One function for the first order and each further one.
+function stopSideGap(decision,context){
+  const eff=(()=>{try{return decision.action==='Hold'?null:require('./credit-paths.cjs').effectOf({side:decision.action,credit:decision.credit});}catch{return null;}})();
+  if(!eff?.opening||!decision.plan)return null;const q=context.quotes?.find(r=>r.symbol===decision.symbol);const side=require('./credit-paths.cjs').stopSide(eff.effect);
+  return q?.price>0&&!(side==='below'?decision.plan.stopPrice<q.price:decision.plan.stopPrice>q.price)?{side,q,eff}:null;}
 class Automation {
   constructor(db,paper,provider,log) {
     this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
@@ -416,6 +422,29 @@ class Automation {
       if(prev!==undefined&&prev!==key&&ORDER_EVENTS.includes(o.status)&&!(o.status==='Rejected'&&o.reason==='ORDER_NOT_SENT'))events.push(o);}
     return events;
   }
+  // M-4 part 2: a decision with further orders, after the first order's checks. Each further order still standing gets the
+  // checks the first got after the AI answered (position memory at the execution boundary, the stop's side), one by one;
+  // then D8: an order (the first or a further one) for a stock with an app order still open at the broker is held back,
+  // here at the decision so the record says so (the send-time guard stays). A single order keeps today's path.
+  // Returns the decision: the first order (held back if D8 applies), moreOrders standing, moreWithheld with each reason.
+  furtherAtDecision(id,{moreOrders,moreWithheld},result,context){
+    const PM=require('./position-memory.cjs'),{sameStock}=require('./broker-open-orders.cjs'),{trimExplanation}=require('./ai-client.cjs');
+    const open=this.pendingOrders(),openFor=symbol=>open.some(o=>sameStock(o.symbol,symbol)),OPEN='an order for this stock is still open';
+    const withheld=[...moreWithheld],standing=[];const hold=(o,reason,kind)=>withheld.push({item:o.item,action:o.action,symbol:o.symbol,quantity:o.quantity,reason,kind});
+    let {moreOrders:_m,moreWithheld:_w,...decision}=result.decision;
+    if(decision.action!=='Hold'&&openFor(decision.symbol)){const d=decision;const {execution:_e,reversal:_r,reversalFlag:_f,portfolioImpactCheck:_p,...kept}=d;
+      decision={...kept,action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${d.explanation} [The app held back a ${d.action} of ${d.quantity} ${d.symbol}: ${OPEN}.]`),withheld:{symbol:d.symbol,quantity:d.quantity,reason:OPEN,kind:'open-order'}};
+      this.log(id,'System','Order held back · order still open',`${d.action} ${d.quantity} ${d.symbol}: ${OPEN}.`);}
+    const boundary=result.provider==='openai'&&context.environment!=='local-paper';
+    for(const o of moreOrders){
+      if(boundary){const e=PM.enforce({...o,explanation:''},context.positionMemory??[],{price:context.quotes?.find(q=>q.symbol===o.symbol)?.price??null});if(e.withheld){hold(o,e.withheld.reason,'reversal');continue;}}
+      const gap=stopSideGap(o,context);if(gap){hold(o,`stop not ${gap.side} price`,'stop-side');continue;}
+      if(openFor(o.symbol)){hold(o,OPEN,'open-order');continue;}
+      standing.push(o);}
+    withheld.sort((a,b)=>a.item-b.item);
+    for(const w of withheld)this.log(id,'System','Further order held back',`${w.item?`Order ${w.item+1}: `:''}${[w.action,w.quantity||'',w.symbol].filter(Boolean).join(' ')}${w.symbol?': ':''}${w.reason}.`);
+    return {...decision,moreOrders:standing,...(withheld.length?{moreWithheld:withheld}:{})};
+  }
   // Orders waiting at the broker on their own trading day. One left from an earlier day has expired: KIS reports some
   // expired day orders without a cancel flag, so they would otherwise stay Accepted and hold reviews back.
   pendingOrders(now=Date.now()){const today={KR:seoulDate(now),US:require('./kis-overseas.cjs').localDate(new Date(now))};
@@ -712,6 +741,7 @@ class Automation {
       if(this.disposed)return;{const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
       decided=true;stage='Decision recording and execution';if(result.model)this.log(id,'System','Model used',result.model+' · '+this.agentModel('trading').reasoningEffort);
       this.log(id,'Agent','Decision',JSON.stringify(result.decision,null,2));
+      const furtherPart=Array.isArray(result.decision.moreOrders)?{moreOrders:result.decision.moreOrders,moreWithheld:result.decision.moreWithheld??[]}:null;
       // The execution boundary (release review 2026-11-05, P1): a model decision is checked once more against this review's
       // full position memory, whatever the prompt showed, so compression or a repair round can never remove the reversal rule.
       if(result.provider==='openai'&&context.environment!=='local-paper')result={...result,decision:require('./position-memory.cjs').enforce(result.decision,context.positionMemory??[],{price:context.quotes?.find(q=>q.symbol===result.decision.symbol)?.price??null})};
@@ -722,8 +752,11 @@ class Automation {
       if(result.decision.action==='Buy'&&result.decision.plan?.portfolioImpact)try{const check=require('./plan-gap.cjs').impactCheck(context,result.decision);if(check){result={...result,decision:{...result.decision,portfolioImpactCheck:check}};if(check.differencePts>3)this.log(id,'System','Portfolio impact differs',JSON.stringify(check));}}catch{}
       // An opening's stop is on the losing side: below the price for a long, above it for a short (Stage 3). Covers and
       // repayments reduce exposure and need no stop.
-      {const eff=(()=>{try{return result.decision.action==='Hold'?null:require('./credit-paths.cjs').effectOf({side:result.decision.action,credit:result.decision.credit});}catch{return null;}})();
-      if(eff?.opening&&result.decision.plan){const q=context.quotes?.find(r=>r.symbol===result.decision.symbol);const side=require('./credit-paths.cjs').stopSide(eff.effect);if(q?.price>0&&!(side==='below'?result.decision.plan.stopPrice<q.price:result.decision.plan.stopPrice>q.price)){const d=result.decision;const what=eff.effect==='OPEN_SHORT'?'short sale':'Buy';this.log(id,'System','Buy held back · trade plan',`${d.quantity} ${d.symbol}: stop ${d.plan.stopPrice} is not ${side} the price ${q.price}.`);result={...result,decision:{action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',plan:d.plan,explanation:require('./ai-client.cjs').trimExplanation(`${d.explanation} [The app held back a ${what} of ${d.quantity} ${d.symbol}: the stop price is not ${side} the current price.]`),withheld:{symbol:d.symbol,quantity:d.quantity,reason:`stop not ${side} price`}}};}}}
+      {const gap=stopSideGap(result.decision,context);
+      if(gap){const {side,q,eff}=gap;const d=result.decision;const what=eff.effect==='OPEN_SHORT'?'short sale':'Buy';this.log(id,'System','Buy held back · trade plan',`${d.quantity} ${d.symbol}: stop ${d.plan.stopPrice} is not ${side} the price ${q.price}.`);result={...result,decision:{action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',plan:d.plan,explanation:require('./ai-client.cjs').trimExplanation(`${d.explanation} [The app held back a ${what} of ${d.quantity} ${d.symbol}: the stop price is not ${side} the current price.]`),withheld:{symbol:d.symbol,quantity:d.quantity,reason:`stop not ${side} price`}}};}}
+      // M-4 part 2: the further orders, carried past the first order's checks above (which rebuild a held-back first order
+      // without them), get the same checks after them, one by one, and the open-order rule (D8).
+      if(furtherPart)result={...result,decision:this.furtherAtDecision(id,furtherPart,result,context)};
       // The brief rides on the decision; it is saved for the scout and never affects the trade.
       {const PG=require('./plan-gap.cjs');const missing=PG.missingVerdicts(context,result.decision);const issues=PG.verdictIssues(context,result.decision);if(missing.length||issues.length)this.log(id,'System','Plan verdicts incomplete',[missing.length?`No verdict on ${missing.join(', ')}.`:'',...issues].filter(Boolean).join(' '));}
       if(result.decision.scoutBrief){const {scoutBrief,...decision}=result.decision;result={...result,decision};if(context.scoutBrief){const value=this.briefScout(watchScope,scoutBrief,id);this.log(id,'Tool','Scout brief',JSON.stringify({brief:scoutBrief,result:value}));}}
