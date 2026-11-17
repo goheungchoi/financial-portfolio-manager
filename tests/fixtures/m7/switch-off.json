@@ -1,0 +1,80 @@
+{
+  "name": "several open orders off: one order per review, as today",
+  "account": {
+    "kr": {
+      "cash": 10000000,
+      "holdings": [
+        {
+          "symbol": "000660",
+          "quantity": 10,
+          "price": 200000
+        }
+      ]
+    },
+    "us": {
+      "cash": 5000
+    },
+    "prices": {
+      "005930": 70000,
+      "035720": 50000,
+      "000099": 100000,
+      "000660": 200000
+    }
+  },
+  "config": {
+    "ordersPerReview": 3,
+    "severalOpenOrders": false
+  },
+  "answers": [
+    {
+      "action": "Buy",
+      "symbol": "005930",
+      "quantity": 1,
+      "credit": "none",
+      "loanDate": "",
+      "plan": {
+        "horizon": "swing",
+        "thesis": "Memory pricing recovery",
+        "invalidation": "Memory pricing recovery fails",
+        "stopPrice": 64000,
+        "targetPrice": null,
+        "horizonDays": 60,
+        "confidence": "medium",
+        "portfolioImpact": {
+          "weightBeforePct": 0,
+          "weightAfterPct": 1,
+          "related": [],
+          "relatedBeforePct": 0,
+          "relatedAfterPct": 1,
+          "equityReliable": true,
+          "why": "A small position."
+        },
+        "evidence": [
+          {
+            "claim": "Q3 operating profit rose",
+            "source": "Q3 release",
+            "verified": true
+          }
+        ],
+        "valuation": null,
+        "uncertainty": null
+      },
+      "execution": null,
+      "reversal": null,
+      "explanation": "One buy."
+    }
+  ],
+  "expect": {
+    "requests": 1,
+    "sent": [
+      "Buy 005930"
+    ],
+    "first": {
+      "action": "Buy",
+      "symbol": "005930"
+    },
+    "orders": [],
+    "withheld": [],
+    "journalTitle": "005930 ×1"
+  }
+}
