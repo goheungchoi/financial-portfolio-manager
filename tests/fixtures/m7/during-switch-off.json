@@ -1,0 +1,172 @@
+{
+  "name": "you turn several open orders off before order 2: the rest are not sent",
+  "account": {
+    "kr": {
+      "cash": 10000000,
+      "holdings": [
+        {
+          "symbol": "000660",
+          "quantity": 10,
+          "price": 200000
+        }
+      ]
+    },
+    "us": {
+      "cash": 5000
+    },
+    "prices": {
+      "005930": 70000,
+      "035720": 50000,
+      "000099": 100000,
+      "000660": 200000
+    }
+  },
+  "config": {
+    "ordersPerReview": 3
+  },
+  "steps": [
+    {
+      "review": {
+        "answers": [
+          {
+            "action": "Buy",
+            "symbol": "005930",
+            "quantity": 1,
+            "credit": "none",
+            "loanDate": "",
+            "plan": {
+              "horizon": "swing",
+              "thesis": "Memory pricing",
+              "invalidation": "Memory pricing fails",
+              "stopPrice": 64000,
+              "targetPrice": null,
+              "horizonDays": 60,
+              "confidence": "medium",
+              "portfolioImpact": {
+                "weightBeforePct": 0,
+                "weightAfterPct": 1,
+                "related": [],
+                "relatedBeforePct": 0,
+                "relatedAfterPct": 1,
+                "equityReliable": true,
+                "why": "A small position."
+              },
+              "evidence": [
+                {
+                  "claim": "Q3 operating profit rose",
+                  "source": "Q3 release",
+                  "verified": true
+                }
+              ],
+              "valuation": null,
+              "uncertainty": null
+            },
+            "execution": null,
+            "reversal": null,
+            "explanation": "Buys.",
+            "moreOrders": [
+              {
+                "action": "Buy",
+                "symbol": "035720",
+                "quantity": 2,
+                "credit": "none",
+                "loanDate": "",
+                "plan": {
+                  "horizon": "swing",
+                  "thesis": "Advertising",
+                  "invalidation": "Advertising fails",
+                  "stopPrice": 45000,
+                  "targetPrice": null,
+                  "horizonDays": 60,
+                  "confidence": "medium",
+                  "portfolioImpact": {
+                    "weightBeforePct": 0,
+                    "weightAfterPct": 1,
+                    "related": [],
+                    "relatedBeforePct": 0,
+                    "relatedAfterPct": 1,
+                    "equityReliable": true,
+                    "why": "A small position."
+                  },
+                  "evidence": [
+                    {
+                      "claim": "Q3 operating profit rose",
+                      "source": "Q3 release",
+                      "verified": true
+                    }
+                  ],
+                  "valuation": null,
+                  "uncertainty": null
+                },
+                "execution": null,
+                "reversal": null
+              },
+              {
+                "action": "Buy",
+                "symbol": "000099",
+                "quantity": 1,
+                "credit": "none",
+                "loanDate": "",
+                "plan": {
+                  "horizon": "swing",
+                  "thesis": "Export margins",
+                  "invalidation": "Export margins fails",
+                  "stopPrice": 90000,
+                  "targetPrice": null,
+                  "horizonDays": 60,
+                  "confidence": "medium",
+                  "portfolioImpact": {
+                    "weightBeforePct": 0,
+                    "weightAfterPct": 1,
+                    "related": [],
+                    "relatedBeforePct": 0,
+                    "relatedAfterPct": 1,
+                    "equityReliable": true,
+                    "why": "A small position."
+                  },
+                  "evidence": [
+                    {
+                      "claim": "Q3 operating profit rose",
+                      "source": "Q3 release",
+                      "verified": true
+                    }
+                  ],
+                  "valuation": null,
+                  "uncertainty": null
+                },
+                "execution": null,
+                "reversal": null
+              }
+            ]
+          }
+        ],
+        "during": [
+          {
+            "before": 2,
+            "event": "severalOpenOff"
+          }
+        ],
+        "expect": {
+          "sent": [
+            "Buy 005930"
+          ],
+          "orders": [
+            {
+              "item": 1,
+              "class": "stop",
+              "code": "SEVERAL_OPEN_OFF",
+              "notePrefix": "Not sent: Buy 2 035720: several open orders was turned off during the batch."
+            },
+            {
+              "item": 2,
+              "class": "stop",
+              "code": "SEVERAL_OPEN_OFF"
+            }
+          ],
+          "reviewFailed": false,
+          "followUps": 1
+        }
+      }
+    }
+  ]
+}

@@ -1036,6 +1036,8 @@ class Automation {
     // it started (a saved change also moves the revision, which staleReason reports first).
     const started={enabled:this.config.enabled,autoSubmit:this.config.autoSubmit,several:this.severalOpenNow()},turnedOff=()=>this.disposed||started.enabled&&!this.config.enabled||started.autoSubmit&&!this.config.autoSubmit;
     for(let k=0;k<seq.length;k++){const o=seq[k],item=o.item??0;
+      // A test seam (M-7 scenarios: an event "before order k", 1-based in send order); nothing in the app sets it.
+      try{this.beforeBatchOrder?.(k+1,o);}catch{}
       if(!stopped){const changed=this.staleReason(watchScope,revision,costRevision);
         // M-6: several open orders turned off since the batch started: today's one-open-order rule applies at once.
         if(changed)stopped={code:'STALE_DECISION',text:STOPS.STALE_DECISION};else if(started.several&&!this.severalOpenNow())stopped={code:'SEVERAL_OPEN_OFF',text:STOPS.SEVERAL_OPEN_OFF};else if(turnedOff())stopped={code:'AUTO_TRADING_STOPPED',text:STOPS.AUTO_TRADING_STOPPED};
