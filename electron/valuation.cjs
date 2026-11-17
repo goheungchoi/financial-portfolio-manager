@@ -259,7 +259,10 @@ class InFlight {
   observe(account,input){return this.evidence.tx(()=>this.read(account,input));}
   // krwGroups (M-1.6c2): the funding recorder's groups whose KRW route KIS has shown (funding-transfers current
   // krwRouteGroups, as of its previous reading): a zero-report close of their buys needs no U.S. cash.
-  read(account,{us,orders=[],fx=null,krwGroups=null}){
+  // netting (same-reading netting, funding-transfers.cjs peekNet): KIS's reported buys moved by a net amount that is a
+  // settlement of settledKRW and a new report of newKRW: the reported fall below reads the settlement, the reported rise
+  // the new report (each its own ledger field), not the net.
+  read(account,{us,orders=[],fx=null,krwGroups=null,netting=null}){
     if(typeof account!=='string'||!account||!us)return {...InFlight.totals({open:[]}),notes:[]};
     const now=this.clock(),st=this.state(account),notes=[];
     // M-1.6c2: unallocated paired credit per side (R4; and C3 for sales), in cents, consumed as flagged pieces close.
@@ -307,7 +310,8 @@ class InFlight {
       if(typeof was==='number')was={filled:was,cents:Math.round(a.cents*Math.min(was,o.filled)/o.filled),basis:a.basis};
       if(was&&o.filled<was.filled)continue;st.seen[id]={filled:o.filled,...a};const delta=a.cents-(was?.cents??0);
       if(o.filled>(was?.filled??0)&&delta>0)fresh.push({id,side:o.side,usd:delta/100,basis:a.basis,at:now,placedAt:placedTime(o)});else if(delta||was&&was.basis!==a.basis)adjust(id,o.side,delta,a.basis);}
-    let movement=moved;const KEY={Buy:'buys',Sell:'sells'},delta=side=>reported[KEY[side]]-st.observed[KEY[side]];
+    const net=netting&&fx>0&&netting.settledKRW>0?{fall:netting.settledKRW/fx,rise:Math.max(0,Number(netting.newKRW)||0)/fx}:null;let phase=null;
+    let movement=moved;const KEY={Buy:'buys',Sell:'sells'},delta=side=>side==='Buy'&&net&&phase?(phase==='fall'?-net.fall:net.rise):reported[KEY[side]]-st.observed[KEY[side]];
     const settled=new Set(),live=side=>st.open.filter(f=>f.side===side&&!settled.has(f));
     // Fills cash or a reported total may settle: not one marked paid before it was seen, which only the age rule closes (S4b-2: the
     // reconciliation is gone; A1 once U6 is verified would too), since the earlier movement may have been its payment (design v1 A2).
@@ -326,7 +330,7 @@ class InFlight {
       return {allocated:out,left};};
     // Ledger evidence for this reading pair: U.S. cash, or the reported total of a side, each its whole movement in the
     // pair, so every allocation drawn from that movement (a fast-path remainder included) shares one amount.
-    const pairOf={readingA:`${st.readAt??''}@${st.lastAt??''}`,readingB:`${readAt??''}@${now}`},field=(cash,side)=>cash?'cash':side==='Buy'?'ustl_buy_amt_smtl':'ustl_sll_amt_smtl';
+    const pairOf={readingA:`${st.readAt??''}@${st.lastAt??''}`,readingB:`${readAt??''}@${now}`},field=(cash,side)=>cash?'cash':side==='Buy'?'ustl_buy_amt_smtl'+(net&&phase?':'+phase:''):'ustl_sll_amt_smtl';
     const source=(cash,side,extra={})=>ledger.aggregate({account,environment:us.environment??null,market:'US',...pairOf,side,field:field(cash,side),amountCents:Math.abs(cents(cash?moved:delta(side))),...extra});
     const record=(e,run=[],flagged=[],extra={})=>{const id=`e${st.seq=(st.seq??0)+1}`,open=live(e.side).map(f=>f.id);
       // A record about an earlier reading's movement (paid before seen) is a flag only, not evidence of this pair.
@@ -350,7 +354,7 @@ class InFlight {
     // M-1.6d (R5 seed 84): what KIS reported before this reading beyond the flagged buys in flight is buys it carries that
     // are not in flight (resolved by its report, A3). A fall within that may be theirs, so it gives no paired credit.
     const otherReported=Math.max(0,(st.observed?.buys??0)-live('Buy').filter(f=>REPORTED.includes(f.unresolved?.why)).reduce((n,f)=>n+(Number(f.usd)||0),0));
-    for(const side of ['Buy','Sell']){const d=delta(side);if(!(d<-0.005))continue;let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
+    phase='fall';for(const side of ['Buy','Sell']){const d=delta(side);if(!(d<-0.005))continue;let paid=0;if(side==='Buy'&&movement<-0.005){paid=Math.max(movement,d);movement-=paid;}
       let covered=InFlight.match(live(side).filter(f=>REPORTED.includes(f.unresolved?.why)),-d);
       // F-d3 (multi-order R5, the narrow rule): with r the reported fall the U.S. cash fall did not pay, a no-cash close
       // (A4) needs r paid in KRW: U.S. cash used up after the reading (USD first: KIS takes U.S. cash before KRW). When
@@ -497,7 +501,7 @@ class InFlight {
       if(!run.length&&channel==='reported'){const rest=live(side).filter(f=>!f.unresolved);if(rest.length){flag(rest,'reported total moved by an unmatched amount',{evidence:v.id});v.flagged=rest.map(f=>f.id);}}};
     // What KIS reports awaiting settlement: a rise is evidence for open fills of its side.
     // KRW evidence: converted at this reading's rate; the KRW amount and the rate are recorded with it.
-    for(const side of ['Buy','Sell']){const d=delta(side);if(d>0.005)allocate('reported',side,d,{krw:Math.round(d*fx),rate:fx});}
+    phase='rise';for(const side of ['Buy','Sell']){const d=delta(side);if(d>0.005)allocate('reported',side,d,{krw:Math.round(d*fx),rate:fx});}phase=null;
     // The cash movement, while only one side is open (buys and sales together net, so it cannot be divided). Every fill
     // still in flight counts, the new ones too (review of 2d297f9, P1: new buys and sales left out of this check let a
     // movement their net did not match be allocated to one side).

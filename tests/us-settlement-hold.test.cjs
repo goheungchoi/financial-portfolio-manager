@@ -21,10 +21,12 @@ function replay({hold}){const db=new DatabaseSync(':memory:');let t=D[0].at;cons
   t=D.at(-1).at+3*3600000;for(let i=0;i<2;i++){const raw=us(t,0,0),korea=kr(t,512640);const a=h?h.accept(raw):{balance:raw};fd.observe('a',{krCash:512640,usCash:a.balance.cash,fx:1322.6,orders:[]});t+=3*3600000;}
   return {out,row:perf.history('a')[0],flows:perf.flows('a')};}
 
-test('usDebit: negative U.S. cash while the amount awaiting settlement falls; a real overdraft or a rising amount is not it',()=>{
+// Same-reading netting: KIS's total moves by the net when the next trade date is reported in the debit's reading, so a
+// rising amount is the state too; a real overdraft (nothing awaiting settlement before) is still not.
+test('usDebit: negative U.S. cash while an amount awaited settlement (falling, or rising by the next report); a real overdraft is not it',()=>{
   assert.deepEqual(usDebit({cash:-543.69,unsettled:{buyKRW:0}},{unsettled:{buyKRW:723810}}),{cashUSD:-543.69,unsettledBeforeKRW:723810,unsettledNowKRW:0});
   assert.equal(usDebit({cash:-10,unsettled:{buyKRW:0}},{unsettled:{buyKRW:0}}),null,'nothing awaited settlement before');
-  assert.equal(usDebit({cash:-10,unsettled:{buyKRW:900}},{unsettled:{buyKRW:800}}),null,'the amount rose: not a settlement');
+  assert.deepEqual(usDebit({cash:-10,unsettled:{buyKRW:900}},{unsettled:{buyKRW:800}}),{cashUSD:-10,unsettledBeforeKRW:800,unsettledNowKRW:900},'the amount rose by the next report: still the settlement');
   assert.equal(usDebit({cash:0,unsettled:{buyKRW:0}},{unsettled:{buyKRW:723810}}),null,'cash not negative');
   assert.equal(usDebit({cash:-1,unsettled:{buyKRW:0}},null),null,'no earlier reading');
 });

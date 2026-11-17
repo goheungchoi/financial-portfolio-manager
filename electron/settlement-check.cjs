@@ -71,9 +71,12 @@ class BalanceHold {
 // "withdrawal" the user removed by hand. The state: U.S. cash below 0, while the last consistent reading reported a U.S.
 // buy amount awaiting settlement (ustl_buy_amt_smtl) and this one reports less. A real overdraft with nothing awaiting
 // settlement before is not this state and is used as is.
+// Same-reading netting (multi-order, m1/netting-design.md): when the next trade date is reported in that same reading,
+// KIS's total moves by the net and may rise, so any amount reported now holds it too (seed 511: the debit below zero, taken
+// as a USD payment, left a credit that lowered later buys).
 function usDebit(snapshot,previous){
   const cash=Number(snapshot?.cash),before=Number(previous?.unsettled?.buyKRW)||0,now=Number(snapshot?.unsettled?.buyKRW)||0;
-  return Number.isFinite(cash)&&cash<0&&before>0&&now<before?{cashUSD:cash,unsettledBeforeKRW:before,unsettledNowKRW:now}:null;
+  return Number.isFinite(cash)&&cash<0&&before>0?{cashUSD:cash,unsettledBeforeKRW:before,unsettledNowKRW:now}:null;
 }
 /**
  * Decides which U.S. reading the app uses, as BalanceHold does for Korean readings. accept(snapshot) returns {balance,

@@ -30,7 +30,9 @@ function e2e(readings,{limit=1}={}){const db=new DatabaseSync(':memory:');let t=
     const raw={accountKey:A+':US',environment:'live',timestamp:ts,cash:r.us.cash,...(r.us.pending?{pendingSaleProceeds:r.us.pending}:{}),fx:{usdKRW:r.fx,timestamp:ts},holdings:r.us.holdings,unsettled:{buyKRW:r.us.buyKRW??0,sellKRW:r.us.sellKRW??0},raw:{}};
     const h=hold.accept(raw);if(!h.held&&!h.provisional){ft.annotate(raw,r.fx);used=raw;}
     const korea={accountKey:A,environment:'live',timestamp:ts,cash:r.kr.settled,settledCash:r.kr.settled,holdings:r.kr.holdings??[]};
-    if(!h.held){f.observe(A,{us:used,orders:r.orders,fx:r.fx,krwGroups:rec.current(A).krwRouteGroups});if(!h.provisional){const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD,reportedOpenIds:require('../electron/valuation.cjs').reportedOpenIds(tr)});}}
+    // Same-reading netting: the tracker reads the split the recorder will make (as main.cjs passes it).
+    if(!h.held){const t0=f.current(A),netting=h.provisional?null:rec.peekNet(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(t0.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:t0.buysUSD,reportedOpenIds:require('../electron/valuation.cjs').reportedOpenIds(t0)});
+      f.observe(A,{us:used,orders:r.orders,fx:r.fx,krwGroups:rec.current(A).krwRouteGroups,netting});if(!h.provisional){const tr=f.current(A);rec.observeUS(A,{us:used,orders:r.orders,fx:r.fx,openOrderIds:new Set(tr.open.filter(p=>p.side==='Buy').map(p=>String(p.id))),openBuysUSD:tr.buysUSD,reportedOpenIds:require('../electron/valuation.cjs').reportedOpenIds(tr)});}}
     if(!lastKR||lastKR.settled!==r.kr.settled||r.krRead!==false){lastKR=r.kr;rec.observeKR(A,{korea,orders:[]});}
     const route=rec.current(A),tr=f.current(A);
     // The detector's Korean cash as main.cjs nets it: the KRW of K1 groups not yet seen leaving Korean cash (S3a-2), or

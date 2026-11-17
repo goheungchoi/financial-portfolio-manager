@@ -142,15 +142,14 @@ for(const side of ['Buy','Sell'])test(`R5 plain: ${N} daily-batch lifecycles of 
     assert.deepEqual(Object.keys(r.groups).filter(k=>!['booked','none'].includes(k)),[],`plain seed ${seed} ${side}: a group left open`);
     assert.ok(r.settledRight,`plain seed ${seed} ${side}: not right at the last settlement`);assert.equal(r.flowsOff,null,`plain seed ${seed} ${side}: ${r.flowsOff}`);}
   for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length} of ${N} (${Math.round(100*v.length/N)}%), seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);});
-// K1 step (C3): the morning where one trade date settles and the next is reported a reading before ('before') or after
-// it ('after'): no safety failure of any class, the attribution class included, no flow, nothing left. The 'same' morning
-// (one reading) is gate 2 (same-reading netting): measured until that step.
-test(`R5 plain-overlap: the 'before' and 'after' mornings of ${N} lifecycles of U.S. buys: no safety failure (attribution included), no flow; 'same' measured`,t=>{
-  const count={};for(let seed=1;seed<=N;seed++){const r=check(seed,'Buy','plain-overlap'),m=r.desc.overlap;
-    if(m==='same'){for(const c of new Set(r.safety.map(x=>x.cls.split(':')[0])))(count['same, safety '+c]??=[]).push(seed);if(r.flowsOff)(count['same, '+r.flowsOff]??=[]).push(seed);continue;}
+// The morning where one trade date settles and the next is reported a reading before ('before', the K1 step), in the same
+// reading ('same', same-reading netting) or after it ('after'): no safety failure of any class, the attribution class
+// included, no flow, every group closed, right at settlement and after age, nothing left (both activation gates).
+test(`R5 plain-overlap: the 'before', 'same' and 'after' mornings of ${N} lifecycles of U.S. buys: no safety failure (attribution included), no flow, every group closed, right at settlement`,()=>{
+  for(let seed=1;seed<=N;seed++){const r=check(seed,'Buy','plain-overlap'),m=r.desc.overlap;
     assert.deepEqual(r.safety,[],`plain-overlap '${m}' seed ${seed}: ${JSON.stringify(r.safety.slice(0,3))} ${JSON.stringify(r.desc)}`);
-    assert.equal(r.flowsOff,null,`plain-overlap '${m}' seed ${seed}: ${r.flowsOff}`);assert.ok(r.afterAge&&r.end,`plain-overlap '${m}' seed ${seed}: not right after age, or left in flight`);}
-  for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length}, seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);});
+    assert.equal(r.flowsOff,null,`plain-overlap '${m}' seed ${seed}: ${r.flowsOff}`);assert.ok(r.afterAge&&r.end,`plain-overlap '${m}' seed ${seed}: not right after age, or left in flight`);
+    assert.deepEqual(Object.keys(r.groups).filter(k=>!['booked','none'].includes(k)),[],`plain-overlap '${m}' seed ${seed}: a group left open`);assert.ok(r.settledRight,`plain-overlap '${m}' seed ${seed}: not right at the last settlement`);}});
 for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded random lifecycles`} of U.S. ${side==='Buy'?'buys':'sales'} filled together (1 to 30, parts, funding, withdrawals): every failure classed and counted; right after age; nothing left`,t=>{
   const seeds=one?[Number(one)]:Array.from({length:N},(_,i)=>i+1),count={},bump=(k,seed)=>{if(k.startsWith('BOUND'))k=k.replace(/[$]?[0-9][0-9.,]*/g,'#');const l=(count[k]??=[]);if(!l.includes(seed))l.push(seed);};
   for(const seed of seeds){const r=check(seed,side);if(one)t.diagnostic(JSON.stringify(r));
