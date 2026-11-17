@@ -37,10 +37,13 @@ class OutcomeLedger {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       for(const record of records) {
-        const review=reviews.find(r=>(r.orderId!=null&&r.orderId===record.orderId)||(r.proposalId!=null&&r.proposalId===record.proposalId));
+        // M-6 part 3: a further order of a review is matched too, and its outcome gets that order's own decision (its fields
+        // and plan), so position and learning memory see each fill's own rationale.
+        const ROE=require('./review-orders.cjs');const match=ROE.reviewOfOrder(reviews,{orderId:record.orderId,proposalId:record.proposalId});
+        const review=match?.review??null,further=match?.order?ROE.furtherEvidence(review,match.order):null;
         record.reviewId=review?.id??null;
-        record.decision=review?.decision??null;
-        record.reviewEvidence=review?.contextEvidence??null;
+        record.decision=further?further.decision:review?.decision??null;
+        record.reviewEvidence=further?further.evidence:review?.contextEvidence??null;
         record.evaluation=record.side==='Buy'?'Entry recorded; exit outcome pending':record.gainAfterFees==null?'Insufficient cost evidence':record.gainAfterFees<0?'Loss observed; cause unassessed':record.gainAfterFees>0?'Gain observed; cause unassessed':'Break-even after recorded costs';
         record.assessment=evaluate(record);
         const economic={...record};for(const key of ['timestamp','version','signature','firstObservedAt','updatedAt'])delete economic[key];

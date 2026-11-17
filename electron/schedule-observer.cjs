@@ -33,6 +33,8 @@ function reasons(base,state,{movePct,maxMinutes,closeWindowMin}=DEFAULTS){
 function decisionChanges(prev,next){
   if(!prev)return {material:[],text:[]};const material=[],text=[];const a=prev.decision??{},b=next.decision??{};
   const trade=d=>d.action==='Hold'?'Hold':`${d.action} ${d.symbol} ${d.quantity}`;if(trade(a)!==trade(b))material.push(`trade ${trade(a)} → ${trade(b)}`);
+  // M-6 part 3: the further orders are material too (absent on both sides at one order).
+  {const more=d=>(Array.isArray(d.moreOrders)?d.moreOrders:[]).map(o=>`${o.action} ${o.symbol} ${o.quantity}`).join(', ');if(more(a)!==more(b))material.push(`further orders ${more(a)||'none'} → ${more(b)||'none'}`);}
   if(b.action!=='Hold'&&a.action===b.action&&((a.plan?.stopPrice??null)!==(b.plan?.stopPrice??null)||(a.plan?.targetPrice??null)!==(b.plan?.targetPrice??null)))material.push('stop or target changed');
   const by=d=>Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v]));const va=by(a),vb=by(b);
   for(const s of Object.keys(vb)){const x=va[s],y=vb[s];if(!x)continue;

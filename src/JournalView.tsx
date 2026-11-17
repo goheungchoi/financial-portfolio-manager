@@ -8,25 +8,26 @@ import {AccountScope,accountName,type HistoryScope} from './AccountScope';
 import {AgentDesk} from './AgentDesk';
 import {ReplayPanel} from './ReplayPanel';
 import type {DeskState} from './RuntimeSettings';
-import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill} from './journalTabs';
+import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill,ordersOf,batchTitle,matchesAction} from './journalTabs';
 type Review=RuntimeState['reviews'][number];
 const PROVIDER:Record<string,string>={local:'Local rules',openai:'OpenAI',external:'External agent'};
 const day=(t:number)=>new Date(t).toLocaleDateString('en-CA');
 const clock=(t:number)=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 const withheldOf=(r:Review)=>(r.decision as {withheld?:{symbol:string}}).withheld;
-const title=(r:Review)=>withheldOf(r)?`Buy withheld: incomplete plan (${withheldOf(r)!.symbol})`:r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`;
+const title=(r:Review)=>batchTitle(r as never)??(withheldOf(r)?`Buy withheld: incomplete plan (${withheldOf(r)!.symbol})`:r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`);
 const money=(value:number|null,currency:string)=>value==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2,signDisplay:'exceptZero'}).format(value);
 // The selected decision with what came of it: the order, its outcome and any lesson drawn from it.
 function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state:RuntimeState;onNavigate?(tab:string):void;onLessons():void}){
   const outcomes=(state.outcomes??[]).filter(o=>o.reviewId===review.id);
   const lessons=state.lessons.filter(l=>l.evidence?.reviewId===review.id);
-  const result=orderPill(review as never);
+  const all=ordersOf(review as never);const result=all?`${all.length} orders`:orderPill(review as never);
   const [whole,setWhole]=useState(false);const [more,setMore]=useDraftState('journal:detailMore',false);
   const text=firstSentences(review.decision.explanation);const usage=state.tokenSaving?.recent?.find(r=>r.reviewId===review.id)??null;
   const facts=decisionFacts(review as never,usage);
   return <article className="journal-entry thread" aria-label="Decision detail" data-id={review.id}>
     <div className="thread-head"><div><h3><span className={'decision-tag '+review.decision.action.toLowerCase()}>{review.decision.action}</span> {title(review)}</h3><small>{day(review.timestamp)} {clock(review.timestamp)} · {review.emergency?'Emergency review':review.trigger}</small></div><span className={`outcome-pill tone-${review.decision.action.toLowerCase()}`}>{result}</span></div>
     <div className="bubble from-ai"><div className="bubble-head"><span className="who">{(review as {vendor?:string}).vendor==='anthropic'?'Claude':PROVIDER[review.provider]??review.provider}</span></div><p aria-label="Explanation">{whole||!text.more?review.decision.explanation:text.short}{text.more&&<> <button className="link-button" aria-expanded={whole} aria-label={whole?'Show less of the explanation':'Show the whole explanation'} onClick={()=>setWhole(v=>!v)}>{whole?'Less':'More'}</button></>}</p></div>
+    {all&&<div className="detail-block" aria-label="Orders of this review"><div className="thread-label">Orders</div>{all.map(o=><div key={o.item} className="meta-line"><b>{o.action} {o.symbol} ×{o.quantity}</b><span className="outcome-pill">{orderPill(o)}</span>{o.executionNote&&<small>{o.executionNote}</small>}</div>)}</div>}
     <div className="decision-facts" aria-label="Decision facts">{facts.map(f=><div key={f.label} className="decision-fact"><small>{f.label}</small><span>{f.value}</span></div>)}</div>
     <details className="inline-help decision-more" aria-label="More about this decision" open={more} onToggle={e=>setMore((e.currentTarget as HTMLDetailsElement).open)}><summary>More</summary>
     {review.executionNote&&<div className="meta-line"><b>Execution</b><span>{review.executionNote}</span></div>}
@@ -39,7 +40,7 @@ function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state
 export function JournalView({state,onNavigate,onDesk}:{state:RuntimeState;busy:boolean;onLesson(id:string,approved:boolean):void;onNavigate?(tab:string):void;onDesk?(desk:DeskState):void}) {
   const [saved,setView]=useDraftState('journal:view','Decisions');const view=journalTab(saved);const badges=journalBadges(state as never);const [filter,setFilter]=useDraftState('journal:filter','All');const [selected,setSelected]=useDraftState<string|null>('journal:selected',null);const [scope,setScope]=useDraftState<HistoryScope>('history:accounts','account');
   const all=scope==='all'||!state.account;const source=all?state.allReviews??state.reviews:state.reviews;
-  const reviews=source.filter(r=>filter==='All'||r.decision.action===filter);const current=reviews.find(r=>r.id===selected)??reviews[0]??null;
+  const reviews=source.filter(r=>matchesAction(r as never,filter));const current=reviews.find(r=>r.id===selected)??reviews[0]??null;
   const warn=Boolean(badges.unmonitored);
   return <div aria-label="Portfolio journal" className="journal-page">
     <div className="journal-tabs segmented" aria-label="Journal views">{JOURNAL_TABS.map(name=>{const count=name==='Orders and triggers'||name==='Lessons'?badges[name]:0;return <button key={name} aria-pressed={view===name} data-count={count>0?count:undefined} data-warn={name==='Orders and triggers'&&warn?'true':undefined} title={name==='Orders and triggers'&&warn?'Not monitored while auto trading is paused.':undefined} onClick={()=>setView(name)}>{name}</button>;})}</div>

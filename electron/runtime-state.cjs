@@ -5,7 +5,9 @@
 const HISTORY_KEYS=Object.freeze(['reviews','allReviews','outcomes','newsEvents']);
 // What Home shows for a decision (Dashboard.tsx) and what other screens read from the latest ones.
 const briefReview=r=>({id:r.id,timestamp:r.timestamp,trigger:r.trigger??null,provider:r.provider??null,...(r.vendor?{vendor:r.vendor}:{}),
-  decision:r.decision?{action:r.decision.action,symbol:r.decision.symbol,quantity:r.decision.quantity,explanation:r.decision.explanation,...(r.decision.withheld?{withheld:r.decision.withheld}:{})}:null});
+  decision:r.decision?{action:r.decision.action,symbol:r.decision.symbol,quantity:r.decision.quantity,explanation:r.decision.explanation,...(r.decision.withheld?{withheld:r.decision.withheld}:{})}:null,
+  // M-6 part 3: a review that placed several orders carries each in brief (only then, so a single order's brief is today's).
+  ...(Array.isArray(r.orders)?{orders:require('./review-orders.cjs').ordersOfReview(r).map(o=>({item:o.item,action:o.action,symbol:o.symbol,quantity:o.quantity,sent:Boolean(o.orderId)&&!['Rejected','Uncertain','Submitting'].includes(o.orderOutcome?.status)}))}:{})});
 // version: Automation.historyVersion(), the same key the history reads are cached under (L2b): the window fetches the
 // history again only when it differs. null (unknown) makes the window fetch every time, as before.
 function lightState(state,{version=null}={}){

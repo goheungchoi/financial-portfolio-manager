@@ -86,7 +86,9 @@ function dryRunMeasurement(db,reviewId){
 // M-5 (e): the review record's further orders (m5-plan.md section 6; M-6 shapes it): one row per further order sent from
 // a batch, in item order, with what became of it. The first order keeps today's proposalId, orderId and executionNote.
 function furtherOrderRows(rows){return rows.filter(r=>r.item>0).sort((a,b)=>a.item-b.item).map(r=>({item:r.item,symbol:r.symbol,action:r.action,quantity:r.quantity,
-  proposalId:r.proposal?.id??null,orderId:r.order?.id??null,executionNote:r.executionNote??null,outcome:r.outcome??null}));}
+  proposalId:r.proposal?.id??null,orderId:r.order?.id??null,executionNote:r.executionNote??null,outcome:r.outcome??null,
+  // M-6 part 3: the engine's status and reason of the order, as for the first (orderOutcome), synced when it leaves unclear.
+  ...(r.order?{orderOutcome:{status:r.order.status??null,reason:r.order.reason??null}}:{})}));}
 // An opening whose stop is not on the losing side of the current price (below for a long, above for a short; Stage 3):
 // {side, q, eff}, else null. Covers and repayments need no stop. One function for the first order and each further one.
 function stopSideGap(decision,context){
@@ -128,16 +130,20 @@ class Automation {
   historyVersion(){try{return `${(this.totalChanges??=this.db.prepare('SELECT total_changes() AS n')).get().n}|${this.revision??0}|${this.watchScope()}|${Math.floor(Date.now()/60000)}|${(this.dataVersion??=this.db.prepare('PRAGMA data_version')).get().data_version}`;}catch{return null;}}
   stateCached(name,fn){if(this.stateCacheOff)return fn();const key=this.historyVersion();if(key==null)return fn();const cache=this.stateCache??=new Map();const hit=cache.get(name);if(hit&&hit.key===key)return hit.value;
     const value=fn();cache.set(name,{key,value});return value;}
-  reviewHistory(limit=50,all=false){const key=all?null:this.accountTag()?.key;return (key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT ?").all(key,limit):this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT ?').all(limit)).map(row=>this.syncOrderOutcome(JSON.parse(row.payload)));}
+  reviewHistory(limit=50,all=false){const key=all?null:this.accountTag()?.key;return (key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT ?").all(key,limit):this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT ?').all(limit)).map(row=>{const r=this.syncOrderOutcome(JSON.parse(row.payload));return Array.isArray(r?.orders)?{...r,allOrders:require('./review-orders.cjs').ordersOfReview(r).map(({decision:_,...o})=>o)}:r;});}
   // M-6 part 0 (F1): a review's orderOutcome is written when the review is recorded. An order unclear then (Uncertain,
   // Submitting) that later leaves that state (you linked it, marked it not placed, or the order history resolved it)
   // updates its review here, so the Journal stops saying "Unclear: check KIS". Read from the engines' own order records;
   // runs whenever the reviews are read for the window (any order change is a database write, which renews that cache).
-  syncOrderOutcome(review){const o=review?.orderOutcome;if(!review?.orderId||!o||!['Uncertain','Submitting'].includes(o.status))return review;
-    let now=null;for(const engine of [this.live,this.usLive]){try{now=engine?.orders?.().find(x=>x.id===review.orderId)??null;}catch{now=null;}if(now)break;}
-    if(!now||now.status===o.status)return review;
-    const updated={...review,orderOutcome:{status:now.status??null,reason:now.reason??null}};
-    try{this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(updated),review.id);}catch{}return updated;}
+  // M-6 part 3: the same for each further order's row in orders. The window also gets allOrders, every order of the
+  // review (review-orders.cjs ordersOfReview), computed here and not stored.
+  syncOrderOutcome(review){if(!review||typeof review!=='object')return review;const UNCLEAR=['Uncertain','Submitting'];
+    const engineOrder=id=>{for(const engine of [this.live,this.usLive]){try{const o=engine?.orders?.().find(x=>x.id===id);if(o)return o;}catch{}}return null;};
+    const fresh=(id,o)=>{if(!id||!o||!UNCLEAR.includes(o.status))return null;const now=engineOrder(id);return now&&now.status!==o.status?{status:now.status??null,reason:now.reason??null}:null;};
+    let changed=false,updated=review;const first=fresh(review.orderId,review.orderOutcome);if(first){updated={...updated,orderOutcome:first};changed=true;}
+    if(Array.isArray(review.orders)){const rows=review.orders.map(row=>{const f=fresh(row?.orderId,row?.orderOutcome);if(!f)return row;changed=true;return {...row,orderOutcome:f};});if(changed)updated={...updated,orders:rows};}
+    if(changed)try{this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(updated),review.id);}catch{}
+    return updated;}
   watchScope(){if(this.config.scope==='paper')return 'paper';try{return this.config.scope+':'+(this.live??this.usLive).identity();}catch{return this.config.scope+':disconnected';}}
   // The review clock: when this account and scope last had a review (run, skipped or failed) and which pre-open review
   // already ran, kept across restarts, so starting auto trading resumes the schedule instead of reviewing again.
@@ -569,7 +575,9 @@ class Automation {
         if(context.agentDesk){const symbols=[...new Set([...Object.keys(context.positions??{}),...(context.universe??[]).map(r=>r.symbol)])];const list=this.assessments.context(watchScope,{context,symbols,events:this.newsEvents.list(300),movePct:this.config.eventTolerancePct??3});if(list.length)context.assessments=list;}}
       // The previous review on this account, so a reversal (Hold to Buy, waiting to acted) explains what changed.
       if(context.environment!=='local-paper'){const key=this.accountTag()?.key;const prev=key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT 1").get(key):null;
-        if(prev){const r=JSON.parse(prev.payload),d=r.decision??{};context.previousReview={at:new Date(r.timestamp).toISOString(),action:d.withheld?'Buy withheld (incomplete plan)':d.action,...(d.action!=='Hold'||d.withheld?{symbol:d.withheld?.symbol??d.symbol,quantity:d.withheld?.quantity??d.quantity}:{}),verdicts:Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict])),explanation:String(d.explanation??'').slice(0,400)};}}
+        if(prev){const r=JSON.parse(prev.payload),d=r.decision??{};context.previousReview={at:new Date(r.timestamp).toISOString(),action:d.withheld?'Buy withheld (incomplete plan)':d.action,...(d.action!=='Hold'||d.withheld?{symbol:d.withheld?.symbol??d.symbol,quantity:d.withheld?.quantity??d.quantity}:{}),verdicts:Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict])),explanation:String(d.explanation??'').slice(0,400),
+          // M-6 part 3: the previous review's further orders, and whether each was sent (only when it had them).
+          ...(Array.isArray(r.orders)&&r.orders.length?{moreOrders:r.orders.map(o=>({action:o.action,symbol:o.symbol,quantity:o.quantity,sent:Boolean(o.orderId)&&!['Rejected','Uncertain','Submitting'].includes(o.orderOutcome?.status)}))}:{})};}}
     return {context,emergency,usValue,execution,lessonIds};
   }
   // Repeated format failures (1.5.48 audit, A5): after the second in a row, automatic reviews wait 15 minutes, doubling
@@ -804,9 +812,9 @@ class Automation {
       const more=batchRows?batchRows.filter(r=>r.item>0).map(r=>({decision:further.find(o=>o.item===r.item)??r,orderId:r.order?.id??null,proposalId:r.proposal?.id??null})):[];
       try{this.pending.record(watchScope,{decision:result.decision,reviewId:id,proposalId:proposal?.id??null,orderId:order?.id??null,context,marketOpen:this.marketOpenIn(context),...(more.length?{more}:{})});}catch{}
       if(gateMode!=='off')try{const RG=require('./review-gate.cjs'),m=result.metrics??{};const prev=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)).find(r=>r.id!==id&&r.scope===this.config.scope&&r.decision);
-        this.reviewGate.complete(id,{completed:true,orderId:order?.id??null,proposalId:proposal?.id??null,research:{toolCalls:m.toolCalls??0,researchReads:m.researchReads??0,detailReads:m.detailReads??0,fetched:m.fetched??0,refreshed:m.refreshed??0,reused:m.reused??0},change:RG.decisionChange(prev?.decision,result.decision)});}catch{}
+        this.reviewGate.complete(id,{completed:true,orderId:order?.id??null,...(batchRows?{orders:batchRows.filter(r=>r.order?.id).length}:{}),proposalId:proposal?.id??null,research:{toolCalls:m.toolCalls??0,researchReads:m.researchReads??0,detailReads:m.detailReads??0,fetched:m.fetched??0,refreshed:m.refreshed??0,reused:m.reused??0},change:RG.decisionChange(prev?.decision,result.decision)});}catch{}
       // The baseline is also what focused routine reviews compare with, so it is kept while they are on, gate or no gate.
-      if(gateMode!=='off'||this.config.routineReviews==='focused')try{this.reviewGate.settle(watchScope,require('./review-gate.cjs').decisionState(context),{decision:{action:result.decision?.action,symbol:result.decision?.symbol,orderId:order?.id??proposal?.id??null},contextAt:startedAt,events:(gateMode!=='off'?gateEvents:this.newsEvents.list(300)).filter(e=>e.firstSeenAt<=startedAt)});}catch{}
+      if(gateMode!=='off'||this.config.routineReviews==='focused')try{this.reviewGate.settle(watchScope,require('./review-gate.cjs').decisionState(context),{decision:{action:result.decision?.action,symbol:result.decision?.symbol,orderId:order?.id??proposal?.id??null,...(batchRows?{placed:batchRows.filter(r=>r.item>0&&(r.order?.id||r.proposal?.id)).map(r=>({symbol:r.symbol,action:r.action}))}:{})},contextAt:startedAt,events:(gateMode!=='off'?gateEvents:this.newsEvents.list(300)).filter(e=>e.firstSeenAt<=startedAt)});}catch{}
       // D-3: the first completed review on Claude ends the wait; automatic reviews continue.
       if(this.vendorOf(this.agentModel('trading').openaiModel)==='anthropic'&&this.claudeFirstReview()?.state==='pending'){const fr=this.claudeFirstReview();this.setClaudeFirstReview({...fr,state:'done',doneAt:Date.now()});this.claudeFirstShown=false;this.log(randomUUID(),'System','First Claude review completed','Automatic reviews on Claude Opus 5.5 continue at your interval.');}
       this.noteReviewOutcome(null);this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;

@@ -54,7 +54,9 @@ class ScoutScorecard {
   }
   rows(scope,limit=40){return this.db.prepare('SELECT id,symbol,pickedAt,endedAt,payload FROM scout_picks WHERE scope=? ORDER BY pickedAt DESC LIMIT ?').all(scope,limit).map(r=>({id:r.id,symbol:r.symbol,pickedAt:r.pickedAt,endedAt:r.endedAt,...JSON.parse(r.payload)}));}
   // Whether a trading review recommended, proposed or bought the pick after it was made.
-  acted(symbol,since,reviews){const buys=reviews.filter(r=>r.decision?.symbol===symbol&&r.decision.action==='Buy'&&r.timestamp>=since);return buys.some(r=>r.orderId)?'bought':buys.some(r=>r.proposalId)?'proposed':buys.length?'recommended':'not yet';}
+  // M-6 part 3: a pick bought as a further order of a review counts as that review's order.
+  acted(symbol,since,reviews){const ROE=require('./review-orders.cjs');const buys=reviews.filter(r=>r.timestamp>=since).flatMap(r=>Array.isArray(r.orders)?ROE.ordersOfReview(r):r.decision?[{...r,action:r.decision.action,symbol:r.decision.symbol}]:[]).filter(o=>o.symbol===symbol&&o.action==='Buy');
+    return buys.some(r=>r.orderId)?'bought':buys.some(r=>r.proposalId)?'proposed':buys.length?'recommended':'not yet';}
   build(scope,feedback=new Map()){
     const reviews=this.prices.reviews?.()??[];const benches={KOSPI:this.prices.benchmark('KOSPI'),SPX:this.prices.benchmark('SPX')};const cache=new Map();
     const picks=this.rows(scope).map(pick=>{

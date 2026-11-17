@@ -3,11 +3,16 @@ const {seoulDate}=require('./kis-activity.cjs');
 const seoulHour=now=>Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',hourCycle:'h23'}).format(now));
 const money=(value,currency)=>currency==='USD'?(value<0?'-':'')+'$'+Math.abs(value).toFixed(2):(value<0?'-':'')+'₩'+Math.round(Math.abs(value)).toLocaleString('en-US');
 const signed=(value,currency)=>(value>0?'+':'')+money(value,currency);
+// The day's Buy, Sell and Hold counts. M-6 part 3: a review that placed several orders counts each order's action, not
+// its first decision's; a single-order review counts as before.
+function decisionCounts(reviews){const decisions={Buy:0,Sell:0,Hold:0};
+  for(const row of reviews){if(Array.isArray(row.orders)){for(const o of require('./review-orders.cjs').ordersOfReview(row))decisions[o.action]++;continue;}const action=row.decision?.action;if(Object.hasOwn(decisions,action))decisions[action]++;}
+  return decisions;}
 function buildDigest(a,now=Date.now()){
   // Reviews of the connected account only.
   const account=a.accountTag?.()?.key??null;const day=seoulDate(now),onDay=timestamp=>Number.isFinite(timestamp)&&seoulDate(timestamp)===day;
   const reviews=a.db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(row=>JSON.parse(row.payload)).filter(row=>onDay(row.timestamp)&&(!account||row.account?.key===account));
-  const decisions={Buy:0,Sell:0,Hold:0};for(const row of reviews){const action=row.decision?.action;if(Object.hasOwn(decisions,action))decisions[action]++;}
+  const decisions=decisionCounts(reviews);
   const markets=[];const add=(label,currency,loss)=>{if(loss&&Number.isFinite(loss.baseline)&&Number.isFinite(loss.equity)&&loss.baseline>0)markets.push({label,currency,baseline:loss.baseline,equity:loss.equity,change:loss.equity-loss.baseline,changePct:(loss.equity-loss.baseline)/loss.baseline*100});};
   if(a.config.scope==='paper')add('Paper','KRW',a.paper.getState().loss);
   if(['kis','both'].includes(a.config.scope))add('Korea','KRW',a.live?.getState().loss);
@@ -46,4 +51,4 @@ class DailyDigest {
     const digest=buildDigest(a,now);this.db.prepare('INSERT INTO daily_digests VALUES(?,?)').run(day,JSON.stringify(digest));a.notify?.('digest:'+day,digest.text);return digest;
   }
 }
-module.exports={DailyDigest,buildDigest,seoulHour};
+module.exports={DailyDigest,buildDigest,decisionCounts,seoulHour};

@@ -27,7 +27,9 @@ class Scoreboard {
   // Scores cover the connected account only; reviews saved before accounts were recorded are left out once one is connected.
   reviews(){if(!this.table('reviews'))return [];const key=this.account();const rows=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid').all().map(r=>JSON.parse(r.payload));return key?rows.filter(r=>r.account?.key===key):rows;}
   // Broker-account Buy/Sell recommendations; paper decisions use synthetic prices and are not scored.
-  candidates(){return this.reviews().filter(r=>['Buy','Sell'].includes(r.decision?.action)&&typeof r.decision.symbol==='string'&&r.contextEvidence?.environment&&r.contextEvidence.environment!=='local-paper');}
+  // M-6 part 3: each order of a review that placed several is scored as its own decision (id review#item for a further
+  // order, with that order's own fields and plan); a single-order review is scored as before.
+  candidates(){const ROE=require('./review-orders.cjs');return this.reviews().flatMap(r=>Array.isArray(r.orders)?ROE.ordersOfReview(r).map(o=>o.item===0?r:(f=>({...r,id:`${r.id}#${o.item}`,decision:f.decision,orderId:o.orderId,proposalId:o.proposalId,contextEvidence:f.evidence}))(ROE.furtherEvidence(r,o))):[r]).filter(r=>['Buy','Sell'].includes(r.decision?.action)&&typeof r.decision.symbol==='string'&&r.contextEvidence?.environment&&r.contextEvidence.environment!=='local-paper');}
   // Symbols whose horizons are not complete yet, least recently fetched first.
   pendingSymbols(limit=10,minAgeMs=6*3600000){
     const scored=this.decisions(),last=new Map(this.db.prepare('SELECT symbol,at FROM symbol_close_fetches').all().map(r=>[r.symbol,r.at]));const now=this.clock();
@@ -92,7 +94,7 @@ class Scoreboard {
   build(){
     const decisions=this.decisions(),reviews=this.reviews();
     const groups=[...new Set(decisions.map(d=>d.model??d.provider))].map(key=>({key,summary:this.summary(decisions,d=>(d.model??d.provider)===key)}));
-    return {horizons:HORIZONS,primary:PRIMARY,minSample:MIN_SAMPLE,generatedAt:this.clock(),counts:{reviews:reviews.length,holds:reviews.filter(r=>r.decision?.action==='Hold').length,paper:reviews.filter(r=>r.contextEvidence?.environment==='local-paper'&&r.decision?.action!=='Hold').length,scoredDecisions:decisions.length},
+    return {horizons:HORIZONS,primary:PRIMARY,minSample:MIN_SAMPLE,generatedAt:this.clock(),counts:{reviews:reviews.length,holds:reviews.filter(r=>r.decision?.action==='Hold'&&!(Array.isArray(r.orders)&&r.orders.length)).length,paper:reviews.filter(r=>r.contextEvidence?.environment==='local-paper'&&r.decision?.action!=='Hold').length,scoredDecisions:decisions.length},
       summary:this.summary(decisions),byConfidence:Object.fromEntries(['low','medium','high'].map(c=>[c,this.summary(decisions,d=>d.confidence===c)])),byAction:{Buy:this.summary(decisions,d=>d.action==='Buy'),Sell:this.summary(decisions,d=>d.action==='Sell')},withLessons:this.summary(decisions,d=>(d.lessonIds?.length??d.lessonTexts.length)>0),withoutLessons:this.summary(decisions,d=>(d.lessonIds?.length??d.lessonTexts.length)===0),groups,
       decisions:decisions.slice(-100).reverse(),lessons:this.lessonImpact(decisions),conflicts:this.conflicts(),realized:this.realized().slice(0,50)};
   }

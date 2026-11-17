@@ -153,7 +153,7 @@ const KEEP={
   scoutBrief:b=>({runAllowed:b.runAllowed,remainingRunsToday:b.remainingRunsToday,openBriefs:(b.openBriefs??[]).map(x=>({id:x.id,asOf:x.asOf}))}),
   scoutPlan:(s,focus,pick,n)=>({cashTargetPct:s.cashTargetPct,targets:(s.targets??[]).map(t=>({symbol:t.symbol,role:t.role,targetWeightPct:t.targetWeightPct,...(t.needsReassessment?{needsReassessment:t.needsReassessment}:{}),...(focus.has(t.symbol)&&t.thesis?{thesis:clipBytes(t.thesis,n)}:{})}))}),
   performance:p=>Object.fromEntries(Object.entries(p).filter(([k])=>k!=='history')),
-  previousReview:(r,focus,pick,n)=>({action:r.action,...(r.symbol?{symbol:r.symbol,quantity:r.quantity}:{}),verdicts:r.verdicts,explanation:clipBytes(r.explanation,n)}),
+  previousReview:(r,focus,pick,n)=>({action:r.action,...(r.symbol?{symbol:r.symbol,quantity:r.quantity}:{}),verdicts:r.verdicts,explanation:clipBytes(r.explanation,n),...(Array.isArray(r.moreOrders)?{moreOrders:r.moreOrders}:{})}),
   news:(n,focus)=>({important:n.filter(x=>x?.importance==='high'&&!about(x,focus))}),
   reviewedLessons:(l,focus,pick,n)=>({lessons:l.map(x=>clipBytes(x,n))}),lessonConflicts:c=>({conflicts:c}),reviewScope:s=>({kind:s.kind,changes:s.changes}),
   positionSizing:s=>Object.fromEntries(Object.entries(s).filter(([,v])=>v==null||typeof v!=='object')),
@@ -358,4 +358,4 @@ function sameInputs(failed,next,tolerancePct){
 // Compared exactly, beside the fingerprint (which allows a price tolerance and ignores trigger evidence): cash in every
 // market and what set this review off (a new agent trigger, news event or price watch is material).
 const cashOf=context=>({cash:context.cash??null,markets:(context.markets??[]).map(m=>[m.market,m.cash]),trigger:context.triggerEvidence??null});
-module.exports={SCHEMA,TYPES,PROTECTIVE,REFERENCE_ORDER,EXTRA_MANDATORY,UNREGISTERED_BYTES,classOf,focusSymbols,reference,sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};
+module.exports={KEEP,SCHEMA,TYPES,PROTECTIVE,REFERENCE_ORDER,EXTRA_MANDATORY,UNREGISTERED_BYTES,classOf,focusSymbols,reference,sizeFailure,sameInputs,cashOf,detailPart,chunks,combineTradingCosts,shape,report,bound,resultStore,wire,bytes,outBytes,MANDATORY,SUMMARIES,COMPRESS,PINNED,DETAIL_TOOL};

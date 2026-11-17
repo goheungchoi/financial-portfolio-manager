@@ -76,6 +76,7 @@ test('11 the daily automatic-order cap: one slot each; past it the order waits f
 });
 test('the record\'s orders list: one row per further order, in item order, with its proposal, order, note and outcome; a single order has none',async()=>{
   const {r}=await batch(o(1,'035720'));
-  assert.deepEqual(r.orders.map(x=>Object.keys(x).sort()),[['action','executionNote','item','orderId','outcome','proposalId','quantity','symbol'],['action','executionNote','item','orderId','outcome','proposalId','quantity','symbol']]);
+  // orderOutcome (M-6 part 3): the engine's status and reason of each order, as for the first.
+  assert.deepEqual(r.orders.map(x=>Object.keys(x).sort()),[['action','executionNote','item','orderId','orderOutcome','outcome','proposalId','quantity','symbol'],['action','executionNote','item','orderId','orderOutcome','outcome','proposalId','quantity','symbol']]);
   assert.ok(r.orders.every(x=>x.orderId&&x.proposalId));assert.ok(r.orderId,'the first keeps its own');
 });

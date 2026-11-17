@@ -58,8 +58,9 @@ function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},
     for(const s of new Set([...Object.keys(base.positions),...Object.keys(next.positions)]))if((base.positions[s]??0)!==(next.positions[s]??0))add('holdings',`${s}: ${base.positions[s]??0} → ${next.positions[s]??0} shares`,[s],['account:positions']);
     for(const [k,v] of Object.entries(base.orders))if(next.orders[k]!==v){const [s,side]=k.split('|');add('order',`${side} ${s}: ${v.split('|')[0]} → ${next.orders[k]?.split('|')[0]??'closed'}`,[s],['orders:'+s]);}
     // A new order counts unless it is the one the decision itself placed.
-    const placed=base.decision?.orderId?`${base.decision.symbol}|${base.decision.action}|`:null;
-    for(const k of Object.keys(next.orders))if(!(k in base.orders)&&!(placed&&k.startsWith(placed))){const [s,side]=k.split('|');add('order',`New ${side} order for ${s}: ${next.orders[k].split('|')[0]}`,[s],['orders:'+s]);}
+    // M-6 part 3: every order the review placed (decision.placed, one per order of a batch) is its own, not a change.
+    const placedKeys=[...(base.decision?.orderId?[`${base.decision.symbol}|${base.decision.action}|`]:[]),...(Array.isArray(base.decision?.placed)?base.decision.placed.map(p=>`${p.symbol}|${p.action}|`):[])];
+    for(const k of Object.keys(next.orders))if(!(k in base.orders)&&!placedKeys.some(p=>k.startsWith(p))){const [s,side]=k.split('|');add('order',`New ${side} order for ${s}: ${next.orders[k].split('|')[0]}`,[s],['orders:'+s]);}
     const before=cashKRW(base),after=cashKRW(next),equity=next.equity??base.equity;
     if(before!=null&&after!=null&&equity>0&&Math.abs(after-before)/equity*100>=opts.cashPctOfEquity)add('cash',`Cash moved ${Math.round((after-before)/equity*1000)/10}% of equity`,[],['account:cash']);
     // Affordability at the decision's price, so only a cash change moves it (price moves have their own reason).
@@ -124,6 +125,8 @@ function decisionChange(prev,next){if(!prev)return {changed:true,parts:['first d
   if(p.action!==n.action||(p.symbol||'')!==(n.symbol||''))parts.push('action');else if(p.action!=='Hold'&&p.quantity!==n.quantity)parts.push('size');
   if((p.plan?.invalidation??'')!==(n.plan?.invalidation??''))parts.push('invalidation');if(JSON.stringify([p.plan?.entry??null,p.plan?.expiresAt??p.plan?.horizon??null])!==JSON.stringify([n.plan?.entry??null,n.plan?.expiresAt??n.plan?.horizon??null]))parts.push('timing');
   const verdicts=d=>Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict]));const a=verdicts(p),b=verdicts(n);const moved=[...new Set([...Object.keys(a),...Object.keys(b)])].filter(s=>a[s]!==b[s]);if(moved.length)parts.push('verdicts: '+moved.join(', '));
+  // M-6 part 3: the further orders (stock, side and size) are part of the decision; absent on both sides at one order.
+  const more=d=>JSON.stringify((Array.isArray(d.moreOrders)?d.moreOrders:[]).map(o=>[o.action,o.symbol,o.quantity]));if(more(p)!==more(n))parts.push('further orders');
   return {changed:parts.length>0,parts};}
 // Baselines (one per account scope, kept across restarts) and a log of every check.
 class ReviewGate {
@@ -132,7 +135,7 @@ class ReviewGate {
   // After a successful decision only: a skipped or failed review leaves the baseline where it was.
   // contextAt: when the review read its context, so what happened while it ran is not taken as known.
   settle(scope,state,{at=Date.now(),contextAt=at,decision=null,events=[]}={}){
-    const value={...state,at,contextAt,decision:decision?{action:decision.action??null,symbol:decision.symbol??null,orderId:decision.orderId??null}:null,seen:[...new Set(events.map(newsKey))]};
+    const value={...state,at,contextAt,decision:decision?{action:decision.action??null,symbol:decision.symbol??null,orderId:decision.orderId??null,...(Array.isArray(decision.placed)&&decision.placed.length?{placed:decision.placed.map(p=>({symbol:p.symbol,action:p.action}))}:{})}:null,seen:[...new Set(events.map(newsKey))]};
     this.db.prepare('INSERT INTO review_gate VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify(value));return value;}
   log(at,entry){this.db.prepare('INSERT INTO review_gate_log(at,payload) VALUES(?,?)').run(at,JSON.stringify(entry));this.db.prepare('DELETE FROM review_gate_log WHERE at<?').run(at-30*86400000);}
   // What a review that ran produced: research reused or fetched, the order it placed, and how its decision changed.
@@ -154,7 +157,7 @@ class ReviewGate {
       gateSkips:scheduled.filter(r=>!r.gate?.needsReview).length,wouldAvoid:extra.length,estimatedUSD:Math.round(micro/1e4)/100,
       backstops:scheduled.filter(r=>kinds(r).has('backstop')).length,riskReasons:scheduled.filter(r=>kinds(r).has('risk')||kinds(r).has('protection')).length,
       degraded:scheduled.filter(r=>r.gate?.degraded?.length).length,
-      reviews:{ran:ran.length,completed:done.length,episodes:done.filter(r=>r.outcome.change?.changed).length,trades:done.filter(r=>r.outcome.orderId).length},
+      reviews:{ran:ran.length,completed:done.length,episodes:done.filter(r=>r.outcome.change?.changed).length,trades:done.reduce((n,r)=>n+(Number.isInteger(r.outcome.orders)?r.outcome.orders:r.outcome.orderId?1:0),0)},
       ai:{...calls,usd:Math.round(calls.micro/1e4)/100},research:{fetched:research('fetched'),refreshed:research('refreshed'),reused:research('reused'),researchReads:research('researchReads'),detailReads:research('detailReads')}};}
 }
 module.exports={BROAD_GAP_MS,ReviewGate,decisionState,compare,reviewScope,decisionChange,newsKey,GATE_DEFAULTS,BROAD_TRIGGERS};

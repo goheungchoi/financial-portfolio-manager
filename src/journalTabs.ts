@@ -29,9 +29,19 @@ export function orderPill(review:OrderRecord):string{
   if(o.status==='Rejected')return NOT_SENT.includes(o.reason??'')?'Not sent':'Rejected by KIS';
   if(o.status==='Uncertain'||o.status==='Submitting')return 'Unclear: check KIS';
   return 'Order sent';}
+// M-6 part 3: a review that placed several orders (allOrders, from electron/review-orders.cjs, given only then).
+export type ReviewOrder={item:number;action:string;symbol:string;quantity:number}&OrderRecord;
+export const ordersOf=(review:{allOrders?:ReviewOrder[]|null}):ReviewOrder[]|null=>Array.isArray(review.allOrders)&&review.allOrders.length?review.allOrders:null;
+// The title of a review with several orders: "{n} orders", with the first noted when it was held back or a Hold.
+export function batchTitle(review:{allOrders?:ReviewOrder[]|null;decision:{action:string}}):string|null{const all=ordersOf(review);if(!all)return null;
+  const n=all.length;return `${n} order${n===1?'':'s'}${review.decision.action==='Hold'?', first held back':''}`;}
+// Whether a review matches the Buy/Sell/Hold filter: any of its orders for a batch, its decision otherwise.
+export function matchesAction(review:{allOrders?:ReviewOrder[]|null;decision:{action:string}},action:string):boolean{
+  if(action==='All')return true;const all=ordersOf(review);return all?all.some(o=>o.action===action):review.decision.action===action;}
 // J2: up to three facts the decision already records. A fact that is not recorded is left out: no placeholder, no guess.
 export function decisionFacts(review:OrderRecord&{decision:{plan?:{thesis?:string}|null}},usage?:{calls:number;micro:number}|null):{label:string;value:string}[]{
-  const facts=[{label:'Order',value:orderPill(review)}];
+  const all=ordersOf(review as {allOrders?:ReviewOrder[]});
+  const facts=[{label:all?'Orders':'Order',value:all?`${all.filter(o=>orderPill(o)==='Order sent').length} of ${all.length} sent`:orderPill(review)}];
   const thesis=typeof review.decision.plan?.thesis==='string'?review.decision.plan.thesis.trim():'';if(thesis)facts.push({label:'Plan',value:firstSentences(thesis,1).short});
   if(usage&&Number.isFinite(usage.calls)&&usage.calls>0)facts.push({label:'AI',value:`${usage.calls} AI call${usage.calls>1?'s':''}${Number.isFinite(usage.micro)&&usage.micro>0?usage.micro<5000?' · < $0.01':` · $${(usage.micro/1e6).toFixed(2)}`:''}`});
   return facts;
