@@ -4,7 +4,8 @@ import {subscribeRuntime} from './runtimeFeed';
 import {setDraft} from './useDraftState';
 import {batchAction,batchCounts} from './journalTabs';
 // view: a tab inside the page to open (the Journal's Orders and triggers, for a purchase without its stop order).
-export type AttentionItem={id:string;tone:'action'|'warning'|'info';title:string;detail:string;tab:string;action:string;view?:string;dismissible?:boolean;run?:'review'};
+// draft: a form to fill before opening the tab (item 9: [Record it] fills Performance's deposit form).
+export type AttentionItem={id:string;tone:'action'|'warning'|'info';title:string;detail:string;tab:string;action:string;view?:string;dismissible?:boolean;run?:'review';draft?:{key:string;value:unknown}};
 export type Attention={items:AttentionItem[];counts:{approvals:Record<string,number>;lessons:number;news:number}};
 // Polls the main process for things that need the user, shared by the Overview panel and the nav badges.
 export function useAttention(){
@@ -25,7 +26,7 @@ export function AttentionPanel({attention,onNavigate}:{attention:Attention|null;
   const items=attention?.items??[];
   return <section className="attention-panel" aria-label="Needs your attention"><div className="section-head"><h2>Needs you</h2>{items.length>0&&<span className="count-pill">{items.length}</span>}</div>
     {!attention?<p className="muted">Checking…</p>:items.length===0?<p className="all-clear">All clear</p>:
-      <ul className="compact-rows attention-list">{items.map(item=><li key={item.id} className={`attention-item tone-${item.tone}`} title={item.detail||undefined}><span className="attention-icon" aria-hidden="true">{ICON[item.tone]}</span><span className="row-text">{item.title}</span><button className={item.tone==='action'?'primary':''} onClick={()=>{if(item.run==='review'){void window.portfolio?.reviewRuntime?.();return;}if(item.view&&item.tab==='Journal')setDraft('journal:view',item.view);onNavigate(item.tab);}}>{item.action}</button>{item.dismissible&&<button className="link-button attention-dismiss" aria-label={`Dismiss: ${item.title}`} onClick={()=>{void window.portfolio?.dismissAttention?.(item.id);}}>Dismiss</button>}</li>)}</ul>}
+      <ul className="compact-rows attention-list">{items.map(item=><li key={item.id} className={`attention-item tone-${item.tone}`} title={item.detail||undefined}><span className="attention-icon" aria-hidden="true">{ICON[item.tone]}</span><span className="row-text">{item.title}</span><button className={item.tone==='action'?'primary':''} onClick={()=>{if(item.run==='review'){void window.portfolio?.reviewRuntime?.();return;}if(item.view&&item.tab==='Journal')setDraft('journal:view',item.view);if(item.draft)setDraft(item.draft.key,item.draft.value);onNavigate(item.tab);}}>{item.action}</button>{item.dismissible&&<button className="link-button attention-dismiss" aria-label={`Dismiss: ${item.title}`} onClick={()=>{void window.portfolio?.dismissAttention?.(item.id);}}>Dismiss</button>}</li>)}</ul>}
   </section>;
 }
 const PROVIDER:Record<string,string>={openai:'OpenAI',local:'Local rules',external:'External agent'};

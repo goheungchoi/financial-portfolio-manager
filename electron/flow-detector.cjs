@@ -278,7 +278,7 @@ class FlowDetector {
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const p=row?JSON.parse(row.payload).pending??{}:{};
-    return Object.entries(p).map(([market,q])=>({market,currency:market==='US'?'USD':'KRW',amount:q.amount,since:new Date(q.since).toISOString(),...(q.usUnseen?{usBalanceUnseen:true}:{}),...(q.holdReason?{holdReason:q.holdReason}:{})}));
+    return Object.entries(p).map(([market,q])=>({market,currency:market==='US'?'USD':'KRW',amount:q.amount,since:new Date(q.since).toISOString(),...(q.usUnseen?{usBalanceUnseen:true}:{}),...(q.holdReason?{holdReason:q.holdReason}:{}),...(q.couldBeFill?{couldBeFill:true}:{})}));
   }
   resolve(account,state,now,prev,fx){
     const p=state.pending,out=[];const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};this.countReads(state,now,{KR:Number.isFinite(now.krCash),US:now.usCash!=null&&prev?.usCash!=null});
