@@ -350,7 +350,9 @@ class AnthropicClient {
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may
         // call them.
-        ...(options.research||hasToolHistory(input)?{tools:toTools(C.reviewTools(context)),tool_choice:options.research&&!options.final?{type:'auto'}:{type:'none'}}:{}),
+        // Item 12 step 2, 4.4: also when the review's first call had them (its context is the marked block, made only in a
+        // research review), so a correction after a one-call review keeps the cached prefix (tools come first in it).
+        ...(options.research||hasToolHistory(input)||Array.isArray(input[0]?.content)?{tools:toTools(C.reviewTools(context)),tool_choice:options.research&&!options.final?{type:'auto'}:{type:'none'}}:{}),
         // Thinking is always adaptive on Claude Opus 5.5; drop_block keeps a review going when condensing rewrote an older
         // tool result (a thinking block after the change is dropped instead of failing the request).
         thinking:{type:'adaptive',block_binding:{prefix_mismatch_behavior:'drop_block'}},

@@ -55,3 +55,20 @@ test('the expected cost on Claude Opus 5.5 (the measured shape: prefix 20,946, c
   assert.equal(second.micro,23429);assert.equal(secondBefore.micro,149189);
   assert.equal((oneBefore.micro+secondBefore.micro)-(one.micro+second.micro),99560,'−$0.100 on a two-call review');
 });
+// 4.4 (cleared, its own commit): a correction after a one-call research review has no tool calls in its conversation, but
+// the first call was sent with tools; it sends the same tools (tool_choice none), so the prefix it reads is the same.
+test('4.4: a correction after a one-call research review sends the first call\'s tools (none chosen); without research it sends none',async()=>{
+  const t=transport(reply(),reply());const c=new AnthropicClient(KEY,t);
+  await c.decide(CTX,{...CLAUDE,research:true});
+  // The conversation a correctable answer returns (anthropic-client.cjs: the input and the answer turn).
+  const answered=input=>[input,{type:'anthropic_turn',content:[thinking('f'),text(JSON.stringify(hold))]}];
+  const ask={role:'user',content:'The app held back one of your orders.'};
+  await c.decide(CTX,{...CLAUDE,research:false,final:true,continuation:[...answered(MARKED),ask]});
+  const [a,b]=t.sent;assert.ok(!b.messages.some(m=>Array.isArray(m.content)&&m.content.some(x=>x.type==='tool_use'||x.type==='tool_result')),'no tool calls in the conversation');
+  assert.equal(JSON.stringify(b.tools),JSON.stringify(a.tools),'the same tools, byte for byte');assert.equal(JSON.stringify(b.system),JSON.stringify(a.system),'the same system');
+  assert.equal(b.tool_choice.type,'none');assert.equal(JSON.stringify(b.messages[0]),JSON.stringify(MARKED));assert.ok(marks(b)<=4);
+  // A review without research: its correction sends no tools, as before.
+  const u=transport(reply(),reply());const d=new AnthropicClient(KEY,u);await d.decide(CTX,{...CLAUDE});assert.deepEqual(u.sent[0].messages,[{role:'user',content:JSON.stringify(CTX)}]);
+  await d.decide(CTX,{...CLAUDE,research:false,final:true,continuation:[...answered({role:'user',content:JSON.stringify(CTX)}),ask]});
+  assert.ok(!('tools' in u.sent[1])&&!('tool_choice' in u.sent[1]),'no tools without research');
+});
