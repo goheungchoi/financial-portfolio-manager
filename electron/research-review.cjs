@@ -9,6 +9,44 @@ function refusal(args,symbols){
 // requests than its allowance (the instructions say four) runs the first four and answers each of the rest as not run,
 // so the model can ask again; a batch over HARD_MAX_CALLS is refused as malformed (1.5.48 audit, A5).
 const ROUNDS=4,MAX_CALLS=4,HARD_MAX_CALLS=12;
+// M-4 part 3 (m4-plan.md section 4): the correction round for a decision with further orders. One request names every
+// held-back order that can be corrected (correctionTargets) with its reason, and asks for those orders only. Each target
+// is accepted alone when the answer has a standing order for its stock (checked as any order: validateDecision there,
+// furtherAtDecision after); otherwise it stays held back, marked correctionTried. Orders that stood are never re-asked
+// and stay as they were; an answer's order for any other stock is not taken. Still one extra request.
+async function correctSeveral(result,targets,{request,fitRequest,log,add,finish}){
+  const d=result.decision,{sameStock}=require('./broker-open-orders.cjs');
+  const name=t=>`${t.action?t.action+' ':''}${t.quantity} ${t.symbol}`;
+  log('System','Plan correction requested',targets.map(t=>`${name(t)}: ${t.reason}`).join('; '));
+  const ask={role:'user',content:`The app held back ${targets.length===1?'one of your orders':`${targets.length} of your orders`}:\n${targets.map((t,i)=>`${i+1}. ${name(t)}: ${t.reason}.`).join('\n')}\n`+
+    'Return your decision again with only these orders, corrected from your own analysis: the first in the decision and the rest in moreOrders. '+
+    'For an incomplete plan, fill every plan field (thesis, invalidation, stopPrice on the losing side of the current price, horizonDays, confidence, portfolioImpact, evidence with sources, and valuation and uncertainty where they apply); mark a fact verified only if you read it in its source. '+
+    'For a reversal, fill reversal from your own analysis: priorDecisionId, basis, whatChanged, priorRequirement, newEvidence with sources and dates when the basis is new evidence, and afterCost when you would buy back above the exit price; correcting the earlier reasoning is a valid basis; do not invent a changed fact. '+
+    'Leave out any order you cannot justify; if none, return Hold. The orders that were not held back stand as you gave them: do not repeat them. Do not change a trade only to satisfy the format.'};
+  let again=null;
+  try{const items=await fitRequest([...result.continuation,ask]);again=await request({research:false,final:true,continuation:items});add(again);}
+  catch(error){log('System','Plan correction failed',/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED');}
+  const a=again?.decision??null,same=(x,t)=>typeof x?.symbol==='string'&&(x.symbol===t.symbol||sameStock(x.symbol,t.symbol));
+  const offered=a?[...(a.action!=='Hold'?[a]:[]),...(Array.isArray(a.moreOrders)?a.moreOrders:[])]:[];
+  const held=a?[...(a.withheld?[a.withheld]:[]),...(a.moreWithheld??[])]:[];
+  const ORDER=['action','symbol','quantity','credit','loanDate','execution','plan','reversal','reversalFlag'],fields=o=>Object.fromEntries(ORDER.filter(k=>k in o).map(k=>[k,o[k]]));
+  let first=d;const more=[...d.moreOrders],accepted=new Set();
+  for(const t of targets){const m=offered.find(o=>same(o,t));
+    if(!m){log('System','Plan correction not accepted',`${name(t)}: ${held.find(w=>same(w,t))?.reason??(a?'not returned':'no decision')}`);continue;}
+    accepted.add(t);log('System','Plan correction accepted',`${m.action} ${m.symbol} ${m.quantity}`);
+    if(t.item===0){const {withheld:_w,plan:_p,execution:_e,reversal:_r,reversalFlag:_f,...rest}=d;first={...rest,...fields(m),explanation:a.explanation,planCorrected:{missing:t.reason}};}
+    else more.push({item:t.item,...fields(m),planCorrected:{missing:t.reason}});}
+  // An order in the answer for a stock that was not a target is not taken, and the Journal says so (nothing the AI
+  // proposed disappears without a trace).
+  for(const o of offered)if(!targets.some(t=>same(o,t)))log('System','Correction order not taken',`${o.action} ${o.quantity} ${o.symbol}: not asked for; not taken.`);
+  more.sort((x,y)=>(x.item??0)-(y.item??0));
+  const tried=new Set(targets.filter(t=>!accepted.has(t)));
+  if(first===d&&d.withheld&&targets.some(t=>t.item===0&&tried.has(t)))first={...d,withheld:{...d.withheld,correctionTried:true}};
+  const target=w=>targets.find(t=>t.item!==0&&t.item===w.item);
+  const withheld=(d.moreWithheld??[]).filter(w=>!(target(w)&&accepted.has(target(w)))).map(w=>target(w)?{...w,correctionTried:true}:w);
+  const {moreOrders:_m,moreWithheld:_x,...out}=first;
+  return finish({...out,moreOrders:more,...(withheld.length?{moreWithheld:withheld}:{})});
+}
 const protocolError=(rule,extra={})=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule,...extra}});
 // Before every model call the complete request is measured as it will be sent. Older results are condensed or become
 // references first; if the latest round is still too large, its results are bounded again to the space left (whole
@@ -57,6 +95,10 @@ async function researchReview({context,evidence,request,log,setWatch,setInterval
     if(round>0)continuation=await fitRequest(continuation,{keepFrom,compact,log,store});
     const result=await request({research:Boolean(evidence),final:round===ROUNDS-1,continuation});add(result.usage);drops(result);
     if(!result.toolCalls){
+      // M-4 part 3: with further orders, one request lists every held-back order that can be corrected (the first and
+      // the further ones, each with its reason); each corrected order is accepted or not on its own, by stock.
+      if(Array.isArray(result.decision?.moreOrders)&&Array.isArray(result.continuation)){const targets=require('./ai-client.cjs').correctionTargets(result.decision);
+        if(targets.length)return await correctSeveral(result,targets,{request,fitRequest:items=>fitRequest(items,{keepFrom:items.length,compact,log,store}),log,add:r=>{add(r.usage);drops(r);},finish:decision=>{const {continuation:_,...kept}=result;return {...kept,usage,metrics:done(),decision};}});}
       // A Buy held back because its plan is incomplete gets one request naming the missing field; the safeguard stays.
       // The answer is accepted only if it is a complete plan; otherwise the Buy stays withheld and says so.
       if(result.decision?.withheld&&Array.isArray(result.continuation)){

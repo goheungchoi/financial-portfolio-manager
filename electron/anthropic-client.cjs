@@ -387,7 +387,7 @@ class AnthropicClient {
       let raw=answer,dropped=[];if(enforced){({decision:raw,dropped}=rebuildDecision(answer,flatSchema));}
       const memory=C.validationMemory(context,options);const decision=C.validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context,more:C.furtherOrders(options)});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
-      return {...base,decision,answerForm:enforced?'enforced':'text',...(dropped.length?{textPartsDropped:dropped}:{}),...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
+      return {...base,decision,answerForm:enforced?'enforced':'text',...(dropped.length?{textPartsDropped:dropped}:{}),...(C.correctable(decision)?{continuation:[...input,{type:'anthropic_turn',content:blocks}]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;safe.responseChars=call.responseChars;if(error.detail)safe.detail=error.detail;
       // B2: a failure keeps its stop reason and the measured request sizes for the dry run's measurement.
       if(typeof error.stopReason==='string')safe.stopReason=error.stopReason;else if(call.stopReason)safe.stopReason=call.stopReason;if(call.sizes)safe.requestSizes=call.sizes;if(error.providerError)safe.providerError=error.providerError;safe.answerForm=form==='text'?'text':'enforced';throw safe;}

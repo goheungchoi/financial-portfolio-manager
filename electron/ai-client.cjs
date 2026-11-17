@@ -159,6 +159,13 @@ function checkOrder(value,symbols,{requirePlan=false,memory=null,quotes=[],now=D
   if(denied)decision={action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:trimExplanation(`${decision.explanation} [The app held back a ${decision.action==='Sell'?'short sale':'Buy'} of ${decision.quantity} ${decision.symbol}: ${denied}.]`),withheld:{symbol:decision.symbol,quantity:decision.quantity,reason:denied,kind:'permission'}};
   return {decision,execution:execution&&(decision.action==='Buy'||decision.action==='Sell')?execution:null,plan,reversal:reversal&&decision.action!=='Hold'?reversal:null,reversalFlag};
 }
+// The held-back orders one correction request may fix (research-review.cjs): the first order held back for its plan or
+// its reversal (never for permission, as today), and further orders held back for the same two reasons (M-4 part 3).
+// The rest (invalid, duplicate, past the count, unparsed) are never re-asked.
+const CORRECTABLE=['plan','reversal'];
+function correctionTargets(decision){if(!decision)return [];const w=decision.withheld;
+  return [...(w&&w.kind!=='permission'?[{item:0,action:w.action??null,symbol:w.symbol,quantity:w.quantity,reason:w.reason,kind:w.kind??'plan'}]:[]),...(decision.moreWithheld??[]).filter(x=>CORRECTABLE.includes(x.kind))];}
+const correctable=decision=>correctionTargets(decision).length>0;
 // M-4 part 2 (D2): the further orders, each checked alone by checkOrder; a failing one is held back with its reason and
 // the others stand (the user's decision 2). Never guessed, never repaired: a text that is not a JSON list (Claude) holds
 // back every further order; an item past the count asked for, or not a valid order, is held back. A stock appears once
@@ -331,8 +338,8 @@ class AiClient {
       let raw;try{raw=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:output.trim()?'a decision that is not valid JSON':'no decision and no tool request',status:body.status}});}
       const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context,more:furtherOrders(options)});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
-      return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(decision.withheld&&decision.withheld.kind!=='permission'?{continuation:[...input,...body.output]}:{})};
+      return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(correctable(decision)?{continuation:[...input,...body.output]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }
-module.exports={checkOrder,furtherOrders,trailOn,PLAN_TRAIL,normalizePlan,REFLECTION_INSTRUCTIONS,scoutTools,RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,kb,offeredToolNames,deskTools,fromAnthropic,fromOpenAI,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};
+module.exports={correctable,correctionTargets,checkOrder,furtherOrders,trailOn,PLAN_TRAIL,normalizePlan,REFLECTION_INSTRUCTIONS,scoutTools,RESPONSE_CHAR_LIMIT,DECISION_OUTPUT_CHAR_LIMIT,kb,offeredToolNames,deskTools,fromAnthropic,fromOpenAI,AiClient,validationMemory,validateDecision,trimExplanation,decisionSchema,scoutTools,scoutOverheadBytes,reviewTools,instructions,INSTRUCTIONS_VERSION,REVIEW_INSTRUCTIONS};
