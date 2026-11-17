@@ -214,6 +214,8 @@ label.setting-row{cursor:pointer}
 /* F3: a row holding a money field is aligned to the top, so its inputs line up and the read-back hangs below. */
 .settings-grid:has(.money-field-wrap),.trade-fields:has(.money-field-wrap){align-items:start}
 .control-pair:has(.money-field-wrap){align-items:flex-start}
+/* The tax ledger's rows of several inputs wrap inside their card instead of running past its edge. */
+.control-pair.fits{flex-wrap:wrap}
 /* Item 9: the deposit amount's quick buttons, under its read-back. */
 .money-quick{display:flex;gap:6px;flex-wrap:wrap}
 .money-quick button{font-size:12px;padding:4px 10px}

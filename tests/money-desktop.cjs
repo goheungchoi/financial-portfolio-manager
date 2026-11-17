@@ -87,7 +87,10 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   await navigate('KIS trading');await openSection('Caps');const L='Maximum order (KRW)';await until(`Boolean(${q(L)})`,'the live cap field');
   await type(L,'1000000');await tick();f=await field(L);assert.equal(f.line,'₩1,000,000 · 100만 원');await level(L,'Daily turnover (KRW)');await level(L,'Maximum company allocation (%)');await capture('money-live-caps');
   await navigate('Fees & taxes');await openSection('Opening lots');const T='Opening lot KRW cost';await until(`Boolean(${q(T)})`,'the opening lot cost field');
-  await type(T,'12345678');await tick();f=await field(T);assert.equal(f.line,'₩12,345,678 · 1,234만 5,678원');await level(T,'Opening lot shares');await capture('money-tax-ledger');
+  await type(T,'12345678');await tick();f=await field(T);assert.equal(f.line,'₩12,345,678 · 1,234만 5,678원');await level(T,'Opening lot shares');
+  // The opening lots row (its checkbox and "Add" included) stays inside its card.
+  const inside=await run(`(()=>{const row=${q('Opening lot stock')}.closest('.control-pair'),card=row.closest('section').getBoundingClientRect();const right=Math.max(...Array.from(row.children).map(c=>c.getBoundingClientRect().right));return {right,card:card.right};})()`);
+  assert.ok(inside.right<=inside.card,`the opening lots row ends at ${inside.right}, past its card at ${inside.card}`);await capture('money-tax-ledger');
   const P='Acquisition cost per share (KRW)';await run(`${q(P)}.scrollIntoView({block:'center'})`);await type(P,'70000');await tick();f=await field(P);assert.equal(f.line,'₩70,000 · 7만 원');await level(P,'Acquisition cost stock');await capture('money-fees');
   console.log('Money desktop passed: deposits typed, pasted, refused, recorded both ways, the 10x note, dollars, and the paper cap saved as 3000000.');clearTimeout(timer);app.exit(0);
 }catch(error){console.error(error);clearTimeout(timer);app.exit(1);}});});
