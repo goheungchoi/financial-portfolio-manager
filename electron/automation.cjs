@@ -948,8 +948,9 @@ class Automation {
   // The enforced decision form's two console lines (enforced-form review E1, E3): the fallback to text and a JSON-text part
   // that was not accepted, each named without any of its content.
   noteAnswerForm(r,source='review'){try{const id=require('node:crypto').randomUUID();
-    if(r?.formFallback===true)this.log(id+':form','System','Claude refused the enforced form; sent as text',`The ${source} request was refused as too large for Anthropic's answer-format check and was sent once more as text. Requests stay in the text form for the rest of the day.`);
-    const parts=Array.isArray(r?.textPartsDropped)?r.textPartsDropped.filter(k=>['strategyCheck','scoutBrief','planVerdicts'].includes(k)):[];
+    if(r?.formTooLarge===true)this.log(id+':form','System','Claude form over the size limit; sent as text',`The ${source} request's enforced form counted more than Anthropic's limit allows, so it was not sent in that form; it was sent as text.`);
+    else if(r?.formFallback===true)this.log(id+':form','System','Claude refused the enforced form; sent as text',`The ${source} request was refused as too large for Anthropic's answer-format check and was sent once more as text. Requests stay in the text form for the rest of the day.`);
+    const parts=Array.isArray(r?.textPartsDropped)?r.textPartsDropped.filter(k=>['strategyCheck','scoutBrief','planVerdicts','moreOrders'].includes(k)):[];
     if(parts.length)this.log(id+':text','System','Claude answer: text part not accepted',`${parts.join(', ')} ${parts.length===1?'was':'were'} not valid JSON of the expected kind and ${parts.length===1?'was':'were'} dropped; the decision stands.`);}catch{}}
   async decisionWithRetry(context,options,pauseMs=3000){
     try{const r=await this.provider.request('decision',{context,options});this.noteAnswerForm(r);return r;}

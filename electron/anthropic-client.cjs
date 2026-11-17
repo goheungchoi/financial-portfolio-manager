@@ -157,7 +157,9 @@ const objectOf=n=>n?.anyOf?.find(b=>b?.type==='object')??(n?.type==='object'?n:n
 const plainType=n=>{if(Array.isArray(n.type)){const {type,...rest}=n;return {...rest,type:type.find(t=>t!=='null')};}if(n.anyOf){const b=n.anyOf.find(x=>x.type!=='null');const {anyOf,...rest}=n;return {...rest,...b};}return n;};
 function flatten(schema){const props={};
   for(const [k,v] of Object.entries(schema.properties)){
-    if(TEXT_PARTS.includes(k)){props[k]={type:'string'};continue;}
+    // M-4: the further orders reach orders, but are JSON text too (the grammar cannot hold a list of orders); the app checks
+    // each one as it checks the first (D2).
+    if(TEXT_PARTS.includes(k)||k==='moreOrders'){props[k]={type:'string'};continue;}
     const o=objectOf(v);if(!o){props[k]=plainType(v);continue;}
     const walk=(node,prefix)=>{for(const [ck,cv] of Object.entries(node.properties)){const key=`${prefix}_${ck}`;const co=objectOf(cv);
       if(co&&cv.type!=='array'){walk(co,key);continue;}
@@ -166,7 +168,10 @@ function flatten(schema){const props={};
   return toAnthropicSchema({type:'object',properties:props,required:Object.keys(props),additionalProperties:false});}
 const FLAT=new Map();
 // trail (trailing stops T2): the plan's trailPct and trailAtrMultiple, only while Engine settings allow trailing stops.
-function flatDecisionSchema(brief,targets,trail=false){const key=`${Boolean(brief)}/${Boolean(targets)}${trail?'/trail':''}`;if(!FLAT.has(key))FLAT.set(key,flatten(C.decisionSchema(Boolean(brief),Boolean(targets),Boolean(trail))));return FLAT.get(key);}
+function flatDecisionSchema(brief,targets,trail=false,more=0){const key=`${Boolean(brief)}/${Boolean(targets)}${trail?'/trail':''}${more>0?'/more':''}`;if(!FLAT.has(key))FLAT.set(key,flatten(C.decisionSchema(Boolean(brief),Boolean(targets),Boolean(trail),more>0?more:0)));return FLAT.get(key);}
+// The size guard (tests/claude-enforced.test.cjs LIMIT): a form counting more is never sent (M-4, D2): the request goes
+// in the text form instead.
+const GRAMMAR_LIMIT=54;
 // The count Anthropic's grammar limit follows (the probe's rule): properties + unions + arrays.
 function grammarCount(x){let n=0;const w=o=>{if(!o||typeof o!=='object')return;if(o.anyOf||Array.isArray(o.type))n++;if(o.type==='array'){n++;w(o.items);}if(o.properties)for(const v of Object.values(o.properties)){n++;w(v);}for(const b of o.anyOf??[])w(b);};w(x);return n;}
 // The format text for the enforced form (format only; review E9 adds the sentence on the instructions' null).
@@ -177,6 +182,10 @@ const FORMAT_TEXT=(()=>{const shapes=decisionShape(C.decisionSchema(true,true)).
   'No portfolio comparison: plan_portfolioImpact_why is empty. No valuation: plan_valuation_method is empty. No execution instruction: execution_bound 0, execution_cancelAfter empty and execution_cancelIf empty. No reversal: reversal_basis none.',
   'Where the instructions say null, write the marker named here.',
   ...TEXT_PARTS.map(k=>`${k} is JSON written as text in that string, matching this JSON Schema, or an empty string when there is nothing: ${JSON.stringify(shapes[k])}`)].join('\n');})();
+// M-4: the format text with further orders: today's text, and one sentence for moreOrders (its JSON Schema, with the count).
+// Without further orders it is FORMAT_TEXT itself.
+function formatText(more=0){if(!(more>0))return FORMAT_TEXT;const shape=decisionShape(C.decisionSchema(true,true,false,more)).properties.moreOrders;
+  return FORMAT_TEXT+'\n'+`moreOrders is JSON written as text in that string: a list of at most ${more} further orders, each a Buy or a Sell of another stock, matching this JSON Schema, or an empty string when there are none: ${JSON.stringify(shape)}`;}
 // Exactly 0 is "none"; a negative number is passed on, so the validators refuse or drop it as they do today.
 const zeroNone=v=>v===0?null:v;
 // A JSON-text part: the whole string is one JSON value of the expected kind; "" is none. No searching, no repair.
@@ -203,6 +212,9 @@ function rebuildDecision(flat,schema){
   d.reversal=f.reversal_basis==='none'?null:{priorDecisionId:f.reversal_priorDecisionId,basis:f.reversal_basis,whatChanged:f.reversal_whatChanged,priorRequirement:f.reversal_priorRequirement,newEvidence:f.reversal_newEvidence,afterCost:f.reversal_afterCost};
   if('scoutBrief' in schema.properties){const r=part('scoutBrief','object');if(r.value)d.scoutBrief=r.value;}
   if('planVerdicts' in schema.properties)d.planVerdicts=part('planVerdicts','array').value??[];
+  // M-4 (D2): the further orders as written; a text that is not a JSON list is kept as unparsed, so every further order is
+  // held back with that reason (never repaired); empty is none.
+  if('moreOrders' in schema.properties){const r=part('moreOrders','array');d.moreOrders=r.bad?{unparsed:true}:r.value??[];}
   return {decision:d,dropped};
 }
 // The grammar refusal that sends a request once more in the 1.5.56 text form (review E3).
@@ -220,7 +232,10 @@ class AnthropicClient {
   constructor(key,transport=fetch,{timeoutMs=TIMEOUT_MS,clock=Date.now}={}){if(typeof key!=='string'||!/^[A-Za-z0-9_\-]{10,512}$/.test(key))throw new Error('INVALID_PROVIDER_FILE');this.#key=key;this.transport=transport;this.timeoutMs={...TIMEOUT_MS,...timeoutMs};this.clock=clock;}
   // The enforced form first; on a grammar refusal the same request once more in the text form, inside the same call
   // (one call record; the refusal costs nothing), remembered for the rest of the KST day. Any other error as before.
-  async withFallback(kind,run){const day=seoulDay(this.clock());if(this.#textDay[kind]===day)return run('text');
+  // tooLarge (M-4, D2): the enforced form for this request counts over the guard: it is not sent; the text form is, this
+  // once (not remembered for the day: the next request may be within the guard).
+  async withFallback(kind,run,{tooLarge=false}={}){const day=seoulDay(this.clock());if(this.#textDay[kind]===day)return run('text');
+    if(tooLarge)return {...await run('text'),formFallback:true,formTooLarge:true};
     try{return await run('enforced');}catch(error){if(!grammarRefused(error))throw error;this.#textDay[kind]=day;
       try{return {...await run('text'),formFallback:true};}catch(retry){if(retry&&typeof retry==='object')retry.formFallback=true;throw retry;}}}
   textFormToday(kind){return this.#textDay[kind]===seoulDay(this.clock());}
@@ -303,7 +318,8 @@ class AnthropicClient {
     };
     return new S({...LOCKED,apiKey:this.#key,maxRetries:0,timeout,fetch:fetchFn});
   }
-  async decide(context,options={}){return this.withFallback('decide',form=>this.decideAs(context,options,form));}
+  async decide(context,options={}){const more=C.furtherOrders(options);const tooLarge=grammarCount(flatDecisionSchema(Boolean(context.scoutBrief),Boolean(context.scoutPlan?.targets?.length),C.trailOn(context),more))>GRAMMAR_LIMIT;
+    return this.withFallback('decide',form=>this.decideAs(context,options,form),{tooLarge});}
   async decideAs(context,options={},form='enforced') {
     const RI=require('./review-instructions.cjs');
     const selected=M.settings(options);if(M.vendorOf(selected.model)!=='anthropic')throw new Error('INVALID_MODEL_SETTINGS');
@@ -323,9 +339,9 @@ class AnthropicClient {
       // follow, so a part change (a setting) still reads the tools and the core from the cache; with no part text the system
       // is the two blocks it was. options.instructionSet is 'proposed' only in the replay.
       const textBlocks=RI.reviewBlocks(RI.partsFor(context),options.instructionSet);
-      const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const trail=C.trailOn(context);const enforced=form!=='text';const flatSchema=enforced?flatDecisionSchema(brief,targets,trail):null;
+      const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const trail=C.trailOn(context);const enforced=form!=='text';const more=C.furtherOrders(options);const flatSchema=enforced?flatDecisionSchema(brief,targets,trail,more):null;
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:{type:'ephemeral'}}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?FORMAT_TEXT:shapeText(decisionShape(C.decisionSchema(brief,targets,trail))),cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:{type:'ephemeral'}}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?formatText(more):shapeText(decisionShape(C.decisionSchema(brief,targets,trail,more))),cache_control:{type:'ephemeral'}}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may
@@ -380,4 +396,4 @@ class AnthropicClient {
   // every client it holds before the message leaves the worker. The key itself never leaves this object.
   redact(text){return String(text??'').split(this.#key).join('[redacted]');}
 }
-module.exports={AnthropicClient,TEXT_PARTS,flatDecisionSchema,grammarCount,FORMAT_TEXT,rebuildDecision,textPart,grammarRefused,onlyObject,shapeText,decisionShape,SHAPE_SENTENCE,PLAIN_TEXT,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};
+module.exports={AnthropicClient,TEXT_PARTS,flatDecisionSchema,grammarCount,GRAMMAR_LIMIT,formatText,FORMAT_TEXT,rebuildDecision,textPart,grammarRefused,onlyObject,shapeText,decisionShape,SHAPE_SENTENCE,PLAIN_TEXT,toAnthropicSchema,toTools,toMessages,mapError,errorDetail,refusalRecord,cleanText,ENDPOINT,HEADER_ALLOWED,LOCKED,BETA,TIMEOUT_MS,MAX_TOKENS,UNSUPPORTED};

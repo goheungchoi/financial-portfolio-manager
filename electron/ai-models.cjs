@@ -35,6 +35,14 @@ function reservation(config,context={},options={}){const input=options.continuat
 // B3: Claude's output cap per agent (thinking counts toward it): the decision and the scout 32,000; condensing 16,000 (it
 // hit 4,096 on GPT-6 Luna with no reasoning); the narrative and reflection 8,000. OpenAI keeps its own (settings()).
 const CLAUDE_OUTPUT=Object.freeze({decide:32000,scout:32000,compact:16000,narrative:8000,reflect:8000});
+// M-4 (multi-order, m4-plan.md; the user's D1 "As many as fit"): the most orders one review may return for a model: 1 plus
+// the further orders that fit its output cap after the longest stored answer of any kind and a 20% reserve, at about
+// 1,000 tokens a further order (the longest stored order, 2,931 bytes, at about 3 bytes a token). Measured from the
+// stored reviews on 2026-11-17 (m4-plan.md); recalibrated from the first dry runs' counts (M-7). A model with no stored
+// trade answer is 1. Correction rounds answer under the same cap and rewrite at most these orders, so they fit too.
+const WORST_ANSWER=Object.freeze({'claude-opus-5-5':4353,'gpt-6-sol':7380}),FURTHER_ORDER_TOKENS=1000,ANSWER_RESERVE=0.2;
+function orderCeiling(config,kind='decide'){const selected=settings(config),worst=WORST_ANSWER[selected.model];if(!Number.isFinite(worst))return 1;const cap=outputCap(config,kind);
+  return 1+Math.max(0,Math.floor((cap-worst-ANSWER_RESERVE*cap)/FURTHER_ORDER_TOKENS));}
 function outputCap(config,kind='decide'){const selected=settings(config);return MODELS[selected.model].vendor==='anthropic'?(CLAUDE_OUTPUT[kind]??selected.maxOutput):selected.maxOutput;}
 // The reservation for a request of a given size (B2: the card's "can reserve up to", from the byte limits).
 // A model priced by prompt length is reserved at its long rates when the bytes could pass the threshold (bytes ≥ tokens).
@@ -68,4 +76,4 @@ function costDetails(model,usage){
 }
 function usageEstimate(model,usage){return costDetails(model,usage)?.micro??null;}
 function budgetExceeded(config,usage,reserve,reflection=false){const calls=reflection?'reflectionCallsPerDay':'maxCallsPerDay',usd=reflection?'reflectionUSDPerDay':'maxUSDPerDay',prefix=reflection?'reflectionUnlimited':'unlimited';return (!config[prefix+'Calls']&&usage.calls>=config[calls])||(!config[prefix+'Budget']&&usage.reservedMicro+reserve>config[usd]*1e6);}
-module.exports={CLAUDE_TRADING_MODEL,ratesFor,reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
+module.exports={orderCeiling,WORST_ANSWER,FURTHER_ORDER_TOKENS,ANSWER_RESERVE,CLAUDE_TRADING_MODEL,ratesFor,reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
