@@ -20,10 +20,16 @@ export function firstSentences(text:string,n=3):{short:string;more:boolean}{
 // necessarily sent: one refused before it left the app (KIS's request limit, an expired check, its session closed, an
 // unconfirmed credit path) is recorded with an id. Until 2026-11-17 the pill said "Order submitted" for every order with
 // an id. orderOutcome is the engine's status and reason, recorded from that date; an older record falls back on its note.
-type OrderRecord={proposalId?:string|null;orderId?:string|null;executionNote?:string|null;orderOutcome?:{status?:string|null;reason?:string|null}|null};
+// outcome: a further order's recorded result (electron/automation.cjs placeBatch): PROPOSED when it waits for your approval,
+// NOT_PROPOSED when the engine made no proposal, otherwise the code that stopped it before an order existed (a refusal,
+// a stop, BLOCKED).
+type OrderRecord={proposalId?:string|null;orderId?:string|null;executionNote?:string|null;orderOutcome?:{status?:string|null;reason?:string|null}|null;outcome?:{class?:string|null;code?:string|null}|null};
 const NOT_SENT=['ORDER_NOT_SENT','SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'];
 export function orderPill(review:OrderRecord):string{
-  if(!review.orderId)return review.proposalId?'Proposal created':'No order';
+  // No order: the recorded outcome decides (F3: a proposal refused for capacity read "Proposal created"); the first order
+  // and older records have none, and the note's start ("Not sent: ...") is the fallback.
+  if(!review.orderId){const code=review.outcome?.code;if(code)return code==='PROPOSED'?'Proposal created':code==='NOT_PROPOSED'?'No order':'Not sent';
+    if(/^Not sent/.test(review.executionNote??''))return 'Not sent';return review.proposalId?'Proposal created':'No order';}
   const o=review.orderOutcome;
   if(!o)return /^Not sent/.test(review.executionNote??'')?'Not sent':'Order sent';
   if(o.status==='Rejected')return NOT_SENT.includes(o.reason??'')?'Not sent':'Rejected by KIS';
@@ -36,6 +42,13 @@ export const ordersOf=(review:{allOrders?:ReviewOrder[]|null}):ReviewOrder[]|nul
 // back (decision.withheld); a Hold the AI chose as its first is not held back (the planner's F1, scenario p06).
 export function batchTitle(review:{allOrders?:ReviewOrder[]|null;decision:{action:string;withheld?:unknown}}):string|null{const all=ordersOf(review);if(!all)return null;
   const n=all.length;return `${n} order${n===1?'':'s'}${review.decision.withheld?', first held back':''}`;}
+// F4: what a review with several orders did, counted by action ("2 buys, 1 sale"), with "first held back" as in
+// batchTitle; and the one action they share, or "Mixed". A single action tag would name only the first order.
+const WORDS:Record<string,[string,string]>={Buy:['buy','buys'],Sell:['sale','sales']};
+export function batchCounts(review:{allOrders?:ReviewOrder[]|null;decision:{action:string;withheld?:unknown}}):string|null{const all=ordersOf(review);if(!all)return null;
+  const n=new Map<string,number>();for(const o of all)n.set(o.action,(n.get(o.action)??0)+1);
+  return [...n].map(([a,k])=>{const [one,many]=WORDS[a]??[a.toLowerCase(),a.toLowerCase()+'s'];return `${k} ${k===1?one:many}`;}).join(', ')+(review.decision.withheld?', first held back':'');}
+export function batchAction(review:{allOrders?:ReviewOrder[]|null}):string|null{const all=ordersOf(review);if(!all)return null;return new Set(all.map(o=>o.action)).size===1?all[0].action:'Mixed';}
 // Whether a review matches the Buy/Sell/Hold filter: any of its orders for a batch, its decision otherwise.
 export function matchesAction(review:{allOrders?:ReviewOrder[]|null;decision:{action:string}},action:string):boolean{
   if(action==='All')return true;const all=ordersOf(review);return all?all.some(o=>o.action===action):review.decision.action===action;}

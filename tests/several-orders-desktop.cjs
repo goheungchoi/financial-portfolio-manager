@@ -1,7 +1,7 @@
 // M-7 (d) (multi-order, m7-plan.md section 1): the desktop hook. Worked scenarios (tests/fixtures/m7) run as injected
 // reviews on the mock KIS (tests/helpers/scenario.cjs); their review records are written into this run's own data folder
-// before the app starts, and the real window shows them: the Journal (titles, the Orders block with each order's pill),
-// Home (the decision feed's "+N more") and Engine settings (the two rows and the switch's confirmation, cancelled).
+// before the app starts, and the real window shows them: the Journal (titles by counts, the Orders block with each order's
+// pill), Home (the decision feed's counts) and Engine settings (the two rows and the switch's confirmation, cancelled).
 // Made-up accounts and stocks only; nothing reaches a real service; the user's data folder is never used.
 const {app,BrowserWindow}=require('electron');const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('Isolated UI data directory required');
@@ -28,22 +28,25 @@ async function seed(){const {runScenario}=require('./helpers/scenario.cjs');cons
     // The Journal: each seeded review's title, then the latest one's Orders block (newest first in the list).
     await navigate('Journal');await until(`document.querySelectorAll('.run-item').length>=${SCENARIOS.length}`,'the seeded reviews in the Journal');
     const titles=await run(`Array.from(document.querySelectorAll('.run-item')).map(b=>b.innerText)`);
-    assert.ok(titles.some(t=>/3 orders/.test(t)),'a batch reads "3 orders": '+JSON.stringify(titles));
+    assert.ok(titles.some(t=>/^2 buys, 1 sale\n/.test(t)),'a mixed batch reads by counts: '+JSON.stringify(titles));assert.ok(titles.some(t=>/^3 buys\n/.test(t)),'an all-buy batch: '+JSON.stringify(titles));
+    assert.ok(!titles.some(t=>/Buy · \d+ orders/.test(t)),'no first-order action on a batch: '+JSON.stringify(titles));
     const select=async id=>{await run(`document.querySelector('.run-item[data-id=${JSON.stringify(id)}]').click()`);await until(`document.querySelector('[aria-label="Decision detail"]')?.dataset.id===${JSON.stringify(id)}`,'the detail of '+id);};
     await select('m7-TEMPLATE');let orders=await text('[aria-label="Orders of this review"]');
     assert.match(orders,/Buy 005930 ×1/);assert.match(orders,/Buy 035720 ×2/);assert.match(orders,/Sell 000660 ×1/);assert.equal((orders.match(/Order sent/g)??[]).length,3,'the first order and both further ones sent: '+JSON.stringify(orders));
-    assert.match(await text('[aria-label="Decision facts"]'),/2 of 2 sent|3 of 3 sent/);await capture('journal-three-orders');
-    await select('m7-order-class');orders=await text('[aria-label="Orders of this review"]');assert.match(orders,/Not sent: Buy 2 035720: INSUFFICIENT_CAPACITY/);assert.match(orders,/Buy 000099 ×1\nOrder sent/,'the order after the refused one is sent: '+JSON.stringify(orders));
+    assert.match(await text('[aria-label="Decision facts"]'),/2 of 2 sent|3 of 3 sent/);assert.equal(await run(`Boolean(document.querySelector('[aria-label="Decision detail"] h3 .decision-tag'))`),false,'no single-action tag beside a batch title');
+    assert.match(await text('[aria-label="Decision detail"] h3'),/2 buys, 1 sale/);await capture('journal-three-orders');
+    await select('m7-order-class');orders=await text('[aria-label="Orders of this review"]');assert.match(orders,/Buy 035720 ×2\nNot sent\nNot sent: Buy 2 035720: INSUFFICIENT_CAPACITY/,'the refused order reads Not sent: '+JSON.stringify(orders));assert.doesNotMatch(orders,/Proposal created/);assert.match(orders,/Buy 990060 ×1\nOrder sent/,'the order after the refused one is sent: '+JSON.stringify(orders));
     await select('m7-unclear');orders=await text('[aria-label="Orders of this review"]');assert.match(orders,/Unclear: check KIS/,'the lost reply reads unclear: '+orders);await capture('journal-unclear');
     // Home: the decision feed notes the further orders.
-    await navigate('Home');await until(`/more/.test(document.querySelector('.decision-feed')?.innerText??'')`,'the feed note');assert.match(await text('.decision-feed'),/\+2 more/);await capture('home-feed');
+    await navigate('Home');await until(`/3 buys/.test(document.querySelector('.decision-feed')?.innerText??'')`,'the feed counts');const feed=await text('.decision-feed');assert.match(feed,/Buy\n3 buys/);assert.doesNotMatch(feed,/more/);await capture('home-feed');
     // Engine settings: the switch (off), "Orders per review" needing it, and the confirmation (cancelled: nothing changes).
     await navigate('Engine settings');await until(`Array.from(document.querySelectorAll('[role=switch],input[type=checkbox]')).some(e=>(e.getAttribute('aria-label')??'')==='Several open orders')`,'the switch');
     const card=await run(`document.querySelector('#eng-execution')?.innerText??document.body.innerText`);
     assert.match(card,/Several open orders/);assert.match(card,/One open order at a time\. Off by default\./);assert.match(card,/Orders per review/);assert.match(card,/Needs several open orders turned on\./);
     await run(`Array.from(document.querySelectorAll('[role=switch],input[type=checkbox]')).find(e=>e.getAttribute('aria-label')==='Several open orders').click()`);
     await until(`Boolean(document.querySelector('[role=dialog][aria-label="Turn on several open orders?"]'))`,'the confirmation');
-    assert.match(await text('[role=dialog][aria-label="Turn on several open orders?"]'),/You can turn it off again at any time\./);await capture('settings-confirmation');
+    assert.match(await text('[role=dialog][aria-label="Turn on several open orders?"]'),/You can turn it off again at any time\./);
+    await run(`document.querySelector('[role=dialog][aria-label="Turn on several open orders?"]').scrollIntoView({block:'center'})`);await capture('settings-confirmation');
     await run(`Array.from(document.querySelectorAll('[role=dialog][aria-label="Turn on several open orders?"] button')).find(b=>b.textContent==='Cancel').click()`);
     await until(`!document.querySelector('[role=dialog][aria-label="Turn on several open orders?"]')`,'the confirmation closed');
     const saved=await run('window.portfolio.getRuntime()');assert.equal(saved.config.severalOpenOrders,false,'cancelled: still off');assert.equal(saved.config.ordersPerReview,1);

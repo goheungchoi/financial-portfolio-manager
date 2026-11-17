@@ -9,7 +9,7 @@ const trade=a=>a==='Buy'||a==='Sell';
 function ordersOfReview(r){if(!r||typeof r!=='object')return [];const d=r.decision??{},out=[];
   if(trade(d.action))out.push({item:0,action:d.action,symbol:d.symbol,quantity:d.quantity,proposalId:r.proposalId??null,orderId:r.orderId??null,executionNote:r.executionNote??null,orderOutcome:r.orderOutcome??null,decision:d});
   const own=new Map((Array.isArray(d.moreOrders)?d.moreOrders:[]).map(o=>[o.item,o]));
-  for(const o of Array.isArray(r.orders)?r.orders:[])if(o&&trade(o.action))out.push({item:o.item,action:o.action,symbol:o.symbol,quantity:o.quantity,proposalId:o.proposalId??null,orderId:o.orderId??null,executionNote:o.executionNote??null,orderOutcome:o.orderOutcome??null,decision:{...(own.get(o.item)??{}),action:o.action,symbol:o.symbol,quantity:o.quantity}});
+  for(const o of Array.isArray(r.orders)?r.orders:[])if(o&&trade(o.action))out.push({item:o.item,action:o.action,symbol:o.symbol,quantity:o.quantity,proposalId:o.proposalId??null,orderId:o.orderId??null,executionNote:o.executionNote??null,orderOutcome:o.orderOutcome??null,outcome:o.outcome??null,decision:{...(own.get(o.item)??{}),action:o.action,symbol:o.symbol,quantity:o.quantity}});
   return out;}
 // The order of a review that a broker order or proposal id belongs to, or null.
 function orderOfReview(r,{orderId=null,proposalId=null}={}){return ordersOfReview(r).find(o=>orderId&&o.orderId===orderId||proposalId&&o.proposalId===proposalId)??null;}

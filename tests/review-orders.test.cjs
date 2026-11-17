@@ -63,3 +63,14 @@ test('the previous review\'s shortened form keeps its further orders',()=>{
   const rc=require('../electron/review-context.cjs');const fn=rc.KEEP.previousReview;assert.equal(typeof fn,'function');
   assert.deepEqual(fn({action:'Buy',symbol:'A',quantity:1,verdicts:{},explanation:'x',moreOrders:[{action:'Sell',symbol:'B',quantity:1,sent:true}]},null,null,100).moreOrders,[{action:'Sell',symbol:'B',quantity:1,sent:true}]);
 });
+// F4 (planner): a review with several orders is named by its counts, not by its first order's action.
+test('F4: a batch reads by counts ("2 buys, 1 sale"), its tag is the shared action or Mixed; a single order is unchanged',async()=>{
+  const J=await import(require('node:url').pathToFileURL(path.join(__dirname,'../src/journalTabs.ts')).href);
+  const o=(item,action)=>({item,action,symbol:'S'+item,quantity:1});
+  const mixed={allOrders:[o(0,'Buy'),o(1,'Buy'),o(2,'Sell')],decision:{action:'Buy'}};
+  assert.equal(J.batchCounts(mixed),'2 buys, 1 sale');assert.equal(J.batchAction(mixed),'Mixed');
+  assert.equal(J.batchCounts({allOrders:[o(0,'Buy'),o(1,'Buy'),o(2,'Buy')],decision:{action:'Buy'}}),'3 buys');assert.equal(J.batchAction({allOrders:[o(0,'Sell'),o(1,'Sell')]}),'Sell');
+  assert.equal(J.batchCounts({allOrders:[o(1,'Sell')],decision:{action:'Hold',withheld:{symbol:'X'}}}),'1 sale, first held back');
+  assert.equal(J.batchCounts({allOrders:[o(0,'Buy')],decision:{action:'Buy'}}),'1 buy');
+  assert.equal(J.batchCounts({decision:{action:'Buy'}}),null);assert.equal(J.batchAction({allOrders:[]}),null,'a single order: no batch name or tag');
+});

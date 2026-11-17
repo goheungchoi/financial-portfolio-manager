@@ -39,3 +39,23 @@ test('F1: an order unclear when recorded and later linked by you: the review\'s 
   // An order whose outcome is settled is never rewritten.
   const before=h.db.prepare('SELECT total_changes() AS n').get().n;a.reviewHistory();assert.equal(h.db.prepare('SELECT total_changes() AS n').get().n,before);
 });
+// F3 (planner, after the M-7 (d) desktop run): a further order with no order id reads its recorded outcome. A proposal
+// refused for capacity (proposal saved, no order) read "Proposal created" beside "Not sent: ... INSUFFICIENT_CAPACITY".
+test('F3: a further order without an order id: PROPOSED reads "Proposal created", NOT_PROPOSED "No order", any other recorded code "Not sent"; the note is the fallback',async()=>{const J=await load();
+  const row=(code,extra={})=>J.orderPill({proposalId:'p',orderId:null,outcome:code?{class:'order',code}:null,...extra});
+  assert.equal(row('PROPOSED'),'Proposal created','waiting for your approval');
+  for(const code of ['INSUFFICIENT_CAPACITY','APPROVAL_REQUIRED','BLOCKED','RATE_LIMITED'])assert.equal(row(code),'Not sent',code);
+  assert.equal(J.orderPill({proposalId:null,orderId:null,executionNote:'Not proposed: …',outcome:{class:'order',code:'NOT_PROPOSED'}}),'No order','the engine made no proposal');
+  assert.equal(J.orderPill({proposalId:null,orderId:null,executionNote:'Not sent: Buy 1 005930: the batch limit.',outcome:{class:'stop',code:'BATCH_LIMIT'}}),'Not sent','a stopped order');
+  // The first order and older records have no outcome: the note's start, then the proposal.
+  assert.equal(row(null,{executionNote:'Not sent: Buy 2 035720: INSUFFICIENT_CAPACITY.'}),'Not sent');assert.equal(row(null),'Proposal created');assert.equal(J.orderPill({}),'No order');
+  // An order id: the order's own status, as before (the outcome does not override it).
+  assert.equal(J.orderPill({orderId:'o',orderOutcome:{status:'Accepted'},outcome:{class:'order',code:'Accepted'}}),'Order sent');
+});
+test('F3 on the order-class scenario: the refused order reads "Not sent", the one after it "Order sent"',async()=>{const J=await load();const fs=require('node:fs');
+  const {runScenario}=require('./helpers/scenario.cjs');const run=await runScenario(JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/m7/order-class.json'),'utf8')));
+  const r=JSON.parse(run.h.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);
+  const rows=require('../electron/review-orders.cjs').ordersOfReview(r);
+  assert.deepEqual(rows.map(o=>[o.item,o.symbol,J.orderPill(o)]),[[0,'005930','Order sent'],[1,'035720','Not sent'],[2,'000099','Order sent']]);
+  assert.deepEqual(rows[1].outcome,{class:'order',code:'INSUFFICIENT_CAPACITY'},'the window gets the recorded outcome');
+});

@@ -8,13 +8,15 @@ import {AccountScope,accountName,type HistoryScope} from './AccountScope';
 import {AgentDesk} from './AgentDesk';
 import {ReplayPanel} from './ReplayPanel';
 import type {DeskState} from './RuntimeSettings';
-import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill,ordersOf,batchTitle,matchesAction} from './journalTabs';
+import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill,ordersOf,batchCounts,batchAction,matchesAction} from './journalTabs';
 type Review=RuntimeState['reviews'][number];
 const PROVIDER:Record<string,string>={local:'Local rules',openai:'OpenAI',external:'External agent'};
 const day=(t:number)=>new Date(t).toLocaleDateString('en-CA');
 const clock=(t:number)=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 const withheldOf=(r:Review)=>(r.decision as {withheld?:{symbol:string}}).withheld;
-const title=(r:Review)=>batchTitle(r as never)??(withheldOf(r)?`Buy withheld: incomplete plan (${withheldOf(r)!.symbol})`:r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`);
+// The tone of a review's dot and tag: its action, or for several orders the action they share (none when mixed).
+const tone=(r:Review)=>(batchAction(r as never)??r.decision.action).toLowerCase();
+const title=(r:Review)=>batchCounts(r as never)??(withheldOf(r)?`Buy withheld: incomplete plan (${withheldOf(r)!.symbol})`:r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`);
 const money=(value:number|null,currency:string)=>value==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2,signDisplay:'exceptZero'}).format(value);
 // The selected decision with what came of it: the order, its outcome and any lesson drawn from it.
 function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state:RuntimeState;onNavigate?(tab:string):void;onLessons():void}){
@@ -25,7 +27,7 @@ function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state
   const text=firstSentences(review.decision.explanation);const usage=state.tokenSaving?.recent?.find(r=>r.reviewId===review.id)??null;
   const facts=decisionFacts(review as never,usage);
   return <article className="journal-entry thread" aria-label="Decision detail" data-id={review.id}>
-    <div className="thread-head"><div><h3><span className={'decision-tag '+review.decision.action.toLowerCase()}>{review.decision.action}</span> {title(review)}</h3><small>{day(review.timestamp)} {clock(review.timestamp)} · {review.emergency?'Emergency review':review.trigger}</small></div><span className={`outcome-pill tone-${review.decision.action.toLowerCase()}`}>{result}</span></div>
+    <div className="thread-head"><div><h3>{!all&&<><span className={'decision-tag '+review.decision.action.toLowerCase()}>{review.decision.action}</span> </>}{title(review)}</h3><small>{day(review.timestamp)} {clock(review.timestamp)} · {review.emergency?'Emergency review':review.trigger}</small></div><span className={`outcome-pill tone-${review.decision.action.toLowerCase()}`}>{result}</span></div>
     <div className="bubble from-ai"><div className="bubble-head"><span className="who">{(review as {vendor?:string}).vendor==='anthropic'?'Claude':PROVIDER[review.provider]??review.provider}</span></div><p aria-label="Explanation">{whole||!text.more?review.decision.explanation:text.short}{text.more&&<> <button className="link-button" aria-expanded={whole} aria-label={whole?'Show less of the explanation':'Show the whole explanation'} onClick={()=>setWhole(v=>!v)}>{whole?'Less':'More'}</button></>}</p></div>
     {all&&<div className="detail-block" aria-label="Orders of this review"><div className="thread-label">Orders</div>{all.map(o=><div key={o.item} className="meta-line"><b>{o.action} {o.symbol} ×{o.quantity}</b><span className="outcome-pill">{orderPill(o)}</span>{o.executionNote&&<small>{o.executionNote}</small>}</div>)}</div>}
     <div className="decision-facts" aria-label="Decision facts">{facts.map(f=><div key={f.label} className="decision-fact"><small>{f.label}</small><span>{f.value}</span></div>)}</div>
@@ -47,7 +49,7 @@ export function JournalView({state,onNavigate,onDesk}:{state:RuntimeState;busy:b
     {view==='Decisions'&&(!source.length&&!(state.allReviews??[]).length?<section className="empty">No decisions yet<br/><small>Run a review from Home.</small></section>:
       <section className="ai-console journal-decisions" aria-label="Decisions"><div className="console-layout">
         <nav className="run-list" aria-label="Decision list"><select aria-label="Decision action" value={filter} onChange={e=>setFilter(e.target.value)}>{['All','Buy','Sell','Hold'].map(v=><option key={v}>{v}</option>)}</select><AccountScope account={state.account} scope={scope} onChange={setScope}/>
-          {reviews.map(r=><button key={r.id} data-id={r.id} aria-current={r.id===current?.id?'true':undefined} className={`run-item tone-${r.decision.action.toLowerCase()}`} onClick={()=>setSelected(r.id)}><span className={`run-dot tone-${r.decision.action.toLowerCase()}`} aria-hidden="true"/><span className="run-main"><b>{r.decision.action} · {title(r)}</b><small>{r.emergency?'Emergency review':r.trigger}{all&&state.account?` · ${accountName(r.account?.label)}`:''}</small></span><span className="run-side"><time>{clock(r.timestamp)}</time><small>{day(r.timestamp)===day(Date.now())?'today':day(r.timestamp).slice(5)}</small></span></button>)}
+          {reviews.map(r=><button key={r.id} data-id={r.id} aria-current={r.id===current?.id?'true':undefined} className={`run-item tone-${tone(r)}`} onClick={()=>setSelected(r.id)}><span className={`run-dot tone-${tone(r)}`} aria-hidden="true"/><span className="run-main"><b>{ordersOf(r as never)?title(r):`${r.decision.action} · ${title(r)}`}</b><small>{r.emergency?'Emergency review':r.trigger}{all&&state.account?` · ${accountName(r.account?.label)}`:''}</small></span><span className="run-side"><time>{clock(r.timestamp)}</time><small>{day(r.timestamp)===day(Date.now())?'today':day(r.timestamp).slice(5)}</small></span></button>)}
           {!reviews.length&&<p className="muted">{!all&&!source.length?`No decisions on ${state.account?.label} yet. Choose All accounts to see earlier ones.`:'No decisions match.'}</p>}</nav>
         {current&&<DecisionDetail review={current} state={state} onNavigate={onNavigate} onLessons={()=>setView('Lessons')}/>}
       </div></section>)}
