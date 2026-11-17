@@ -76,13 +76,22 @@ test('the stop\'s side on a further order alone; a first order held back for its
   assert.deepEqual(d.moreWithheld.map(w=>[w.item,w.kind,w.reason]),[[1,'stop-side','stop not below price'],[3,'invalid','r']]);
 });
 test('the execution boundary: position memory is checked again on each further order, as on the first',()=>{
-  const {Automation}=require('../electron/automation.cjs');const a=Object.create(Automation.prototype);const lines=[];a.log=(...x)=>lines.push(x);a.pendingOrders=()=>[];
+  const {Automation}=require('../electron/automation.cjs');const a=Object.create(Automation.prototype);const lines=[];a.log=(...x)=>lines.push(x);a.pendingOrders=()=>[];a.scopedOrders=()=>[];
   const out=(id,side,effect,at,price)=>({id:'broker:'+id,orderId:id,reviewId:id,source:'broker',accountKey:ACCOUNT,symbol:'990060',side,effect,status:'Filled',quantity:1,requested:1,averagePrice:price,timestamp:at,decision:{action:side,explanation:'x',plan:null},reviewEvidence:{quote:{symbol:'990060',price}}});
   const positionMemory=PM.build([out('R1','Buy','OPEN_LONG',Date.now()-8*DAY,106000),out('R3','Sell','CLOSE_LONG',Date.now()-DAY,86300)],{accounts:[ACCOUNT],positions:{},reviewAt:new Map(),reviewsSince:()=>1,now:Date.now()});
   const context={environment:'kis-combined',positionMemory,quotes:[]};const decision={...kr('005930'),explanation:'x',moreOrders:[{...kr('990060'),item:1},{...kr('000660'),item:2}],moreWithheld:[]};
   const d=a.furtherAtDecision('r',{moreOrders:decision.moreOrders,moreWithheld:[]},{provider:'openai',decision},context);
   assert.deepEqual(d.moreOrders.map(o=>o.symbol),['000660']);assert.equal(d.moreWithheld[0].kind,'reversal');
   assert.equal(a.furtherAtDecision('r',{moreOrders:decision.moreOrders,moreWithheld:[]},{provider:'openai',decision},{...context,environment:'local-paper'}).moreOrders.length,2,'not on the paper engine, as for the first');
+});
+test('F2: D8 counts an unclear order as open (Submitting, Uncertain, Cancellation uncertain), for the first and a further order',()=>{
+  const {Automation}=require('../electron/automation.cjs');
+  for(const status of ['Uncertain','Submitting','Cancellation uncertain']){const a=Object.create(Automation.prototype);a.log=()=>{};a.pendingOrders=()=>[];a.config={scope:'kis'};
+    a.scopedOrders=()=>[{symbol:'005930',side:'Buy',status},{symbol:'990060',side:'Buy',status:'Filled'}];
+    const decision={...kr('005930'),explanation:'x',moreOrders:[{...kr('000660'),item:1},{...kr('005930'),item:2},{...kr('990060'),item:3}],moreWithheld:[]};
+    const d=a.furtherAtDecision('r',{moreOrders:decision.moreOrders,moreWithheld:[]},{provider:'external',decision},{environment:'kis'});
+    assert.equal(d.withheld?.kind,'open-order',`${status}: the first`);assert.deepEqual(d.moreWithheld.map(w=>[w.item,w.kind]),[[2,'open-order']],`${status}: the further one of that stock only`);
+    assert.deepEqual(d.moreOrders.map(o=>o.symbol),['000660','990060'],'a filled order is not open');}
 });
 test('a single order keeps today\'s path: no D8 at the decision, no further-order fields',async()=>{
   const h=harness([{symbol:'005930',side:'Sell',status:'Accepted',market:'KR'}]);

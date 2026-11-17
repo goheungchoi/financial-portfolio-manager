@@ -451,7 +451,10 @@ class Automation {
   // Returns the decision: the first order (held back if D8 applies), moreOrders standing, moreWithheld with each reason.
   furtherAtDecision(id,{moreOrders,moreWithheld},result,context){
     const PM=require('./position-memory.cjs'),{sameStock}=require('./broker-open-orders.cjs'),{trimExplanation}=require('./ai-client.cjs');
-    const open=this.pendingOrders(),openFor=symbol=>open.some(o=>sameStock(o.symbol,symbol)),OPEN='an order for this stock is still open';
+    // Open: waiting at the broker on its own day (pendingOrders), or unclear (sent with a lost reply, being sent, a
+    // cancellation not confirmed), whatever its day: rule U's set (F2, the planner's p31).
+    const UNCLEAR=['Submitting','Uncertain','Cancellation uncertain'];
+    const open=[...this.pendingOrders(),...this.scopedOrders().filter(o=>UNCLEAR.includes(o.status))],openFor=symbol=>open.some(o=>sameStock(o.symbol,symbol)),OPEN='an order for this stock is still open';
     const withheld=[...moreWithheld],standing=[];const hold=(o,reason,kind)=>withheld.push({item:o.item,action:o.action,symbol:o.symbol,quantity:o.quantity,reason,kind});
     let {moreOrders:_m,moreWithheld:_w,...decision}=result.decision;
     if(decision.action!=='Hold'&&openFor(decision.symbol)){const d=decision;const {execution:_e,reversal:_r,reversalFlag:_f,portfolioImpactCheck:_p,...kept}=d;
