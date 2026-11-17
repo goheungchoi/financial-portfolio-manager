@@ -970,7 +970,10 @@ class Automation {
         if(context.environment==='kis-combined')execution=/^\d{6}$/.test(d.symbol)?this.live:this.usLive;
         if(context.environment==='local-paper'&&context.paperVersion!==this.paper.account().version)throw new Error('STALE_DECISION');
         const selected=context.environment==='kis-combined'?context.markets.find(row=>row.market===execution.market):context;
-        const lossBreached=context.environment==='kis-combined'?(context.emergency.activeMarkets??[]).includes(execution.market):Boolean(context.emergency.active);
+        // The breach is read live, as the late, unavailable and uncertain checks below are (M-5 (b)): a reading that arrived
+        // during the review (or, with several orders, after an earlier one's fill) counts. Before, it was the value taken
+        // when the review started (context.emergency).
+        const lossNow=this.emergencyState(),lossBreached=context.environment==='kis-combined'?(lossNow.activeMarkets??[]).includes(execution.market):Boolean(lossNow.active);
         // Whether the limit is reached depends on unresolved valuation (live-engine.cjs lossOf): new buys are restricted
         // as a breach would restrict them, without claiming a loss; a short cover is not new exposure.
         const opening=(()=>{try{return require('./credit-paths.cjs').effectOf({side:d.action,credit:d.credit}).opening;}catch{return d.action==='Buy';}})();
