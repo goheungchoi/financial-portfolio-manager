@@ -46,7 +46,8 @@ test('settle keeps the stop reason, request sizes and dropped thinking on the ca
 test('the reservation figures: the first request from the latest review size, up to four at the byte limits; blocked below the limit',()=>{
   const {a,db}=world();db.exec("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, payload TEXT NOT NULL)");
   const limits=open=>({maxUSDPerDay:open,unlimitedBudget:false});
-  let r=a.claudeReservation('claude-opus-5-5',limits(1));assert.equal(r.firstRequestUSD,1.2);assert.equal(r.firstRequestBasis,'the first-request size limit');assert.equal(r.upToUSD,5.81);assert.equal(r.requestsUpTo,4);assert.equal(r.blocked,true,'$1.00 is below one request');
+  // Item 12 step 1: Claude's first-request limit is 80,000 bytes (was 70,000): $1.25 (was $1.20), and up to $5.86 (was $5.81).
+  let r=a.claudeReservation('claude-opus-5-5',limits(1));assert.equal(r.firstRequestUSD,1.25);assert.equal(r.firstRequestBasis,'the first-request size limit');assert.equal(r.upToUSD,5.86);assert.equal(r.requestsUpTo,4);assert.equal(r.blocked,true,'$1.00 is below one request');
   db.prepare('INSERT INTO events(id,payload) VALUES(?,?)').run('e1',JSON.stringify({title:'Review size',body:JSON.stringify({wireBytes:59277})}));
   r=a.claudeReservation('claude-opus-5-5',limits(1));assert.equal(r.firstRequestUSD,1.15);assert.match(r.firstRequestBasis,/59,277 bytes/);
   assert.equal(a.claudeReservation('claude-opus-5-5',limits(1.2)).blocked,false);assert.equal(a.claudeReservation('claude-opus-5-5',{maxUSDPerDay:1,unlimitedBudget:true}).blocked,false);

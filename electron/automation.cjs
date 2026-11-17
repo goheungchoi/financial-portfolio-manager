@@ -381,7 +381,9 @@ class Automation {
         // transcript (detail reads, condensing, refusals) are kept with the record, also when the review fails.
         // M-7 (c): n as a review computes it (ordersFor), with the dry run's own model; the context says it when above 1.
         const dryOrders=this.ordersFor(override??this.agentModel('trading'));if(dryOrders>1)context.ordersPerReview=dryOrders;
-        const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context));const dryValidation=validationOf(context);
+        // Item 12 step 1: shaped with the dry run's own model's limit and kept sections, as a review would be.
+        const dryModel=override??this.agentModel('trading'),dryM=require('./ai-models.cjs');
+        const shapedDry=require('./review-context.cjs').shape(require('./token-saver.cjs').compact(context),{limit:dryM.reviewByteLimit({},dryModel),keep:dryM.contextKeep(dryModel)});const dryValidation=validationOf(context);
         const size={...shapedDry.report,mandatoryBytes:shapedDry.mandatoryBytes,steps:shapedDry.steps,detailAvailable:shapedDry.context.detailAvailable??[]};
         this.log(id,'System','Review size',JSON.stringify({dryRun:true,...size}));
         const providerContext=shapedDry.context;const transcript=[],requests=[];
@@ -399,8 +401,8 @@ class Automation {
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
         const model=override??this.agentModel('trading');const models=require('./ai-models.cjs');let calls=0;const callIds=[];
         const request=async options=>{options={...options,...model,validation:dryValidation,...(dryOrders>1?{moreOrders:dryOrders-1}:{})};
-          requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options)});
-          const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options)});
+          requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options,model)});
+          const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options,model)});
           const day=seoulDate();
           const callId=randomUUID();callIds.push(callId);this.reserveCall(model,reserve,callId,day,JSON.stringify({reviewId:id,model:model.openaiModel,reasoningEffort:model.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'dry-run'}));
           calls++;try{const r=await this.decisionWithRetry(providerContext,options);require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,r,'completed');return r;}
@@ -759,14 +761,16 @@ class Automation {
         // M-6: n for this review, once; the context says it only when it is above 1 (the more-orders instruction part).
         const reviewOrders=this.ordersFor({openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort});if(reviewOrders>1)context.ordersPerReview=reviewOrders;
         let providerContext=saver.compact(context);
-        const shaped=require('./review-context.cjs').shape(providerContext);providerContext=shaped.context;const detail=shaped.detail;
+        // Item 12 step 1: the trading model's first-request limit and the sections it keeps whole (on Claude, 80,000 and
+        // performance; on OpenAI, 70,000 and none, as before).
+        const shaped=require('./review-context.cjs').shape(providerContext,{limit:require('./ai-models.cjs').reviewByteLimit({},selected),keep:require('./ai-models.cjs').contextKeep(selected)});providerContext=shaped.context;const detail=shaped.detail;
         this.log(id,'System','Review size',JSON.stringify({...shaped.report,mandatoryBytes:shaped.mandatoryBytes,steps:shaped.steps}));
         if(!shaped.fits){const failure=require('./review-context.cjs').sizeFailure(shaped,{stage:'first request'});this.saveSizeFailure(id,failure,{report:{...shaped.report,mandatoryBytes:shaped.mandatoryBytes},steps:shaped.steps,input:providerContext});throw failure;}
         this.replays.saveContext(id,providerContext);firstRequest=providerContext;
         const research=()=>require('./research-review.cjs').researchReview({context,detail,watched:watchedIn(this.discovery,context),evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:this.researchFor({watchScope,trigger,emergency:emergency.active,gate,gateMode,id})}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config,{heldMoves:this.heldMoves(context)});},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.watches.set(watchScope,args,context);},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');},formulaUse):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||this.config.provider!=='openai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
           {const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
           const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};const n=reviewOrders;options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};
-          const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options)});
+          const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options,modelConfig)});
           const day=seoulDate();
           const callId=randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now()};
           this.reserveCall(modelConfig,reserve,callId,day,JSON.stringify(record));
@@ -908,8 +912,8 @@ class Automation {
   completedClaudeDryRunCached(){return this.stateCached?this.stateCached('claudeDryRun',()=>{try{return this.completedClaudeDryRun();}catch{return null;}}):null;}
   claudeReservation(model,limits){const M=require('./ai-models.cjs');const cfg={openaiModel:model,reasoningEffort:'medium'};
     let bytes=null;try{const row=this.db.prepare("SELECT payload FROM events WHERE json_extract(payload,'$.title')='Review size' ORDER BY seq DESC LIMIT 1").get();const w=row?JSON.parse(JSON.parse(row.payload).body??'{}').wireBytes:null;if(Number.isInteger(w)&&w>0)bytes=w;}catch{}
-    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({}),M.reviewByteLimit({})));// Haiku compacting H-1: the condensing figure is the compacting model's when it is a Claude model (Haiku or Opus).
-    const comp=(()=>{try{const c=this.agentModel('compacting');return M.vendorOf(c.openaiModel)==='anthropic'?c:cfg;}catch{return cfg;}})();const compactUpTo=M.reservationAt(comp,400000,'compact');const upTo=M.reservationAt(cfg,M.reviewByteLimit({}))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]}));
+    const first=M.reservationAt(cfg,Math.min(bytes??M.reviewByteLimit({},cfg),M.reviewByteLimit({},cfg)));// Haiku compacting H-1: the condensing figure is the compacting model's when it is a Claude model (Haiku or Opus).
+    const comp=(()=>{try{const c=this.agentModel('compacting');return M.vendorOf(c.openaiModel)==='anthropic'?c:cfg;}catch{return cfg;}})();const compactUpTo=M.reservationAt(comp,400000,'compact');const upTo=M.reservationAt(cfg,M.reviewByteLimit({},cfg))+3*M.reservationAt(cfg,M.reviewByteLimit({continuation:[]},cfg));
     const usd=m=>Math.round(m/1e4)/100;return {firstRequestUSD:usd(first),firstRequestBasis:bytes?`the latest review's first request, ${bytes.toLocaleString('en-US')} bytes`:'the first-request size limit',upToUSD:usd(upTo),requestsUpTo:4,compactUpToUSD:usd(compactUpTo),
       blocked:!limits.unlimitedBudget&&limits.maxUSDPerDay*1e6<first,limitUSD:limits.unlimitedBudget?null:limits.maxUSDPerDay};}
   // The card's figures and the gate are cached with stateCached: its key (historyVersion) holds the database's total
@@ -1630,7 +1634,7 @@ class Automation {
     if(this.replaying)throw new Error('REPLAY_BUSY');const blocked=this.narrativeAvailable();if(blocked)throw new Error('REPLAY_UNAVAILABLE');
     const {R,models,modelConfig,variant,instructions,picks,claude,claudeSide,capMicro,estimate}=this.replayPlan(options);
     this.replaying=true;const id=R.newId();
-    const decide=async(context,config=modelConfig,set)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();
+    const decide=async(context,config=modelConfig,set)=>{const reserve=models.reservation(config,context,{maxBytes:models.reviewByteLimit({},config)});const d=seoulDate();
       const callId=require('node:crypto').randomUUID();this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
       const n=R.replayOrders(context);// M-7 (c): what the saved review asked for, never more
       try{const r=await this.provider.request('decision',{context,options:{...config,research:false,...(set?{instructionSet:set}:{}),...(n>1?{moreOrders:n-1}:{})}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,r,'completed');const row=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);const cost=row?JSON.parse(row.payload).accountedMicro??null:null;return {...r.decision,_usage:{model:config.openaiModel,effort:config.reasoningEffort,inputTokens:r.usage?.inputTokens??null,outputTokens:r.usage?.outputTokens??null,costMicro:cost}};}catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',d,callId,error,'failed-or-uncertain');throw error;}};
@@ -1653,7 +1657,7 @@ class Automation {
   // measured spending so far plus that request's estimate; the Anthropic limit is checked by reserveCall as for any call.
   async replayClaude({id,R,models,modelConfig,variant,picks,capMicro,estimate,claudeSide='variant'}){const vModel=variant.model??modelConfig;
     const {settle}=require('./ai-accounting.cjs');const bytes=c=>Buffer.byteLength(JSON.stringify(c));let spentMicro=0,stopped=null;const rows=[];
-    const call=async(context,config,set)=>{const reserve=models.reservation(config,context,{});const d=seoulDate();const callId=require('node:crypto').randomUUID();
+    const call=async(context,config,set)=>{const reserve=models.reservation(config,context,{maxBytes:models.reviewByteLimit({},config)});const d=seoulDate();const callId=require('node:crypto').randomUUID();
       this.reserveCall(config,reserve,callId,d,JSON.stringify({reviewId:id,model:config.openaiModel,reasoningEffort:config.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now(),kind:'replay'}));
       const t0=Date.now();const record=()=>{const r=this.db.prepare('SELECT payload FROM ai_calls WHERE id=?').get(callId);return r?JSON.parse(r.payload):null;};
       const n=R.replayOrders(context);

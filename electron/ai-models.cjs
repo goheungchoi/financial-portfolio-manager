@@ -29,8 +29,18 @@ function assertTradingModel(model){if(vendorOf(model)!=='anthropic')return;if(!c
 // Claude: efforts low, medium or high (no "none": thinking is adaptive) and 16,000 output tokens, thinking included.
 function settings(config={}){const model=config.openaiModel??'gpt-6-luna',effort=config.reasoningEffort??'none';if(!Object.hasOwn(MODELS,model))throw new Error('INVALID_MODEL_SETTINGS');const vendor=MODELS[model].vendor;if(!EFFORTS[vendor].includes(effort)||model==='gpt-6-astra'&&effort==='none')throw new Error('INVALID_MODEL_SETTINGS');return {model,effort,maxOutput:vendor==='anthropic'?32000:effort==='none'?4096:8192};}
 // Request size limits for a portfolio review: the first request, and follow-up rounds that carry research results.
-// The budget reservation and the AI client both use this, so they always agree.
-const reviewByteLimit=options=>options?.continuation?140000:70000;
+// The budget reservation and the AI client both use this, so they always agree. model (a name or {openaiModel}): the
+// trading model. Item 12 step 1 (artifacts/reviews/2026-11-17-review-cost/step1-note.md): on Claude the first request may
+// be 80,000 bytes, so the performance section is never shortened (CONTEXT_KEEP) while the rest is trimmed as at 70,000 or
+// less (measured on 27 reviews: at most about 69.2 KB with performance whole). OpenAI models: 70,000, as before. The
+// follow-up limit is 140,000 for every model.
+const modelName=model=>typeof model==='string'?model:model?.openaiModel;
+const onClaude=model=>{try{return vendorOf(modelName(model))==='anthropic';}catch{return false;}};
+const reviewByteLimit=(options,model)=>options?.continuation?140000:onClaude(model)?80000:70000;
+// The review-context sections never shortened in a first request, by model: on Claude, performance (the AI read it back
+// in 19 of 27 reviews when it was shortened).
+const CLAUDE_CONTEXT_KEEP=Object.freeze(['performance']);
+const contextKeep=model=>onClaude(model)?CLAUDE_CONTEXT_KEEP:[];
 function reservation(config,context={},options={}){const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>(options.maxBytes??70000))throw new Error('CONTEXT_TOO_LARGE');return reservationAt(config,bytes,options.kind);}
 // B3: Claude's output cap per agent (thinking counts toward it): the decision and the scout 32,000; condensing 16,000 (it
 // hit 4,096 on GPT-6 Luna with no reasoning); the narrative and reflection 8,000. OpenAI keeps its own (settings()).
@@ -76,4 +86,4 @@ function costDetails(model,usage){
 }
 function usageEstimate(model,usage){return costDetails(model,usage)?.micro??null;}
 function budgetExceeded(config,usage,reserve,reflection=false){const calls=reflection?'reflectionCallsPerDay':'maxCallsPerDay',usd=reflection?'reflectionUSDPerDay':'maxUSDPerDay',prefix=reflection?'reflectionUnlimited':'unlimited';return (!config[prefix+'Calls']&&usage.calls>=config[calls])||(!config[prefix+'Budget']&&usage.reservedMicro+reserve>config[usd]*1e6);}
-module.exports={orderCeiling,WORST_ANSWER,FURTHER_ORDER_TOKENS,ANSWER_RESERVE,CLAUDE_TRADING_MODEL,ratesFor,reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
+module.exports={contextKeep,CLAUDE_CONTEXT_KEEP,orderCeiling,WORST_ANSWER,FURTHER_ORDER_TOKENS,ANSWER_RESERVE,CLAUDE_TRADING_MODEL,ratesFor,reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};

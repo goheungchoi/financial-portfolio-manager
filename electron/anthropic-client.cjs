@@ -324,7 +324,7 @@ class AnthropicClient {
     const RI=require('./review-instructions.cjs');
     const selected=M.settings(options);if(M.vendorOf(selected.model)!=='anthropic')throw new Error('INVALID_MODEL_SETTINGS');
     let reportedUsage=null,returnedModel=selected.model;const call={responseChars:null,sizes:null};
-    const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=M.reviewByteLimit(options);
+    const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=M.reviewByteLimit(options,options?.openaiModel??'claude-opus-5-5');
     if(inputBytes>limitBytes){const e=new Error(options.continuation?'CONTINUATION_OVER_BUDGET':'CONTEXT_OVER_BUDGET');e.detail={limit:'app bytes',stage:options.continuation?'research continuation (request check)':'first request (request check)',wireBytes:inputBytes,limitBytes,largest:options.continuation?options.continuation.map((it,i)=>[`item ${i} ${it.type??it.role}`,Buffer.byteLength(JSON.stringify(it))]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,b])=>`${k}:${b}`):require('./review-context.cjs').report(context,limitBytes).largest};throw e;}
     try {
       const messages=toMessages(input);

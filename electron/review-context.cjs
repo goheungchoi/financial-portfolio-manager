@@ -176,13 +176,15 @@ function reference(key,value,focus,{short=false}={}){const pick=rows=>!short?row
 }
 // limit: the app's byte limit for the first request; target leaves room below it (with the follow-up limit of twice the
 // first, the request stays well inside every research round).
-function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),target=0.92}={}){
-  let out=context;const detail={},steps=[];const focus=focusSymbols(context);
+// keep: sections never shortened (no summary, compress or reference step), by model (ai-models.cjs contextKeep: on
+// Claude, performance). Empty (every model but Claude): today's shaping, step for step.
+function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),target=0.92,keep=[]}={}){
+  let out=context;const detail={},steps=[];const focus=focusSymbols(context);const kept=k=>keep.includes(String(k).split('.')[0]);
   // The contract: unregistered sections and values of an unexpected type are reported; a large unregistered section is a
   // reference from the start, so it cannot grow the request unchecked.
   const unregistered=Object.keys(context).filter(k=>k!=='detailAvailable'&&!classOf(k)),issues=Object.entries(context).filter(([k,v])=>v!=null&&TYPES[k]&&!TYPES[k].split('|').includes(typeOf(v))).map(([k,v])=>`${k}: ${typeOf(v)}, not ${TYPES[k]}`);
   for(const key of unregistered)if(bytes(context[key])>UNREGISTERED_BYTES){detail[key]=context[key];out={...out,[key]:reference(key,context[key],focus)};steps.push({section:key,kind:'unregistered',bytesSaved:bytes(context[key])-bytes(out[key])});}
-  for(const [path,fn] of Object.entries(SUMMARIES)){const value=getPath(out,path);if(value==null)continue;const next=fn(value);if(bytes(next)<bytes(value)){detail[path]=value;out=setPath(out,path,next);steps.push({section:path,kind:'summary',bytesSaved:bytes(value)-bytes(next)});}}
+  for(const [path,fn] of Object.entries(SUMMARIES)){if(kept(path))continue;const value=getPath(out,path);if(value==null)continue;const next=fn(value);if(bytes(next)<bytes(value)){detail[path]=value;out=setPath(out,path,next);steps.push({section:path,kind:'summary',bytesSaved:bytes(value)-bytes(next)});}}
   // Background sections, then trading-cost rows, then the tighter step, then references; the size is measured before
   // every section and shaping stops as soon as the request, with its list of readable sections, is within the target.
   const measured=()=>wire(Object.keys(detail).length?{...out,detailAvailable:Object.keys(detail)}:out);
@@ -191,7 +193,7 @@ function shape(context,{limit=require('./ai-models.cjs').reviewByteLimit({}),tar
   const before={},order=[...unregistered.filter(k=>!(k in detail)),...REFERENCE_ORDER];
   const REFERENCES=order.map(key=>[key,value=>{before[key]=value;return reference(key,value,focus);}]),BRIEF=order.map(key=>[key,value=>reference(key,before[key]??value,focus,{short:true})]);
   for(const [list,kind] of [[COMPRESS,'compressed'],[COST_ROWS,'compacted'],[TIGHT,'tightened'],[REFERENCES,'referenced'],[BRIEF,'referenced in brief']])for(const [key,fn] of list){if(measured()<=limit*target)break;
-    if(kind!=='compacted'&&classOf(key)==='mandatory'||out[key]==null)continue;const value=out[key],next=fn(value);
+    if(kind!=='compacted'&&classOf(key)==='mandatory'||out[key]==null||kept(key))continue;const value=out[key],next=fn(value);
     if(bytes(next)<bytes(value)){detail[key]??=getPath(context,key);out={...out,[key]:next};steps.push({section:key,kind,bytesSaved:bytes(value)-bytes(next)});}}
   const available=Object.keys(detail);if(available.length)out={...out,detailAvailable:available};
   const mandatory=Object.fromEntries(Object.keys(out).filter(k=>classOf(k)==='mandatory').map(k=>[k,out[k]]));

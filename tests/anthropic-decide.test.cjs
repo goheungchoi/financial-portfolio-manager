@@ -148,8 +148,10 @@ test('item lists never cross vendors: OpenAI items refused here, Claude turns re
   await assert.rejects(client(transport(claudeReply())).decide(CTX,{openaiModel:'gpt-6-sol',reasoningEffort:'low'}),/INVALID_MODEL_SETTINGS/,'the Claude client refuses a GPT model');
   await assert.rejects(client(transport(claudeReply())).decide(CTX,{...OPTS,continuation:[{role:'user',content:'x'},{type:'unknown'}]}),e=>/cannot send/.test(e.detail.rule));
 });
-test('size limits before sending, as on OpenAI',async()=>{
-  const t=transport(claudeReply());await assert.rejects(client(t).decide({...CTX,big:'x'.repeat(80000)},OPTS),e=>e.message==='CONTEXT_OVER_BUDGET'&&e.detail.limitBytes===70000);assert.equal(t.sent.length,0);
+test('size limits before sending, as on OpenAI (the first request on Claude: 80,000 bytes, item 12 step 1)',async()=>{
+  const t=transport(claudeReply());await assert.rejects(client(t).decide({...CTX,big:'x'.repeat(90000)},OPTS),e=>e.message==='CONTEXT_OVER_BUDGET'&&e.detail.limitBytes===80000);assert.equal(t.sent.length,0);
+  // 75,000 bytes: over OpenAI's 70,000, within Claude's 80,000: sent.
+  await client(t).decide({...CTX,big:'x'.repeat(75000)},OPTS).catch(()=>{});assert.equal(t.sent.length,1);t.sent.length=0;
   await assert.rejects(client(t).decide(CTX,{...OPTS,continuation:[{role:'user',content:'x'.repeat(150000)}]}),e=>e.message==='CONTINUATION_OVER_BUDGET');assert.equal(t.sent.length,0);
   assert.throws(()=>new A.AnthropicClient('bad key'),/INVALID_PROVIDER_FILE/);
 });
