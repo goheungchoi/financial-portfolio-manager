@@ -11,7 +11,7 @@ const fn=name=>{const i=engine.indexOf(`\nfunction ${name}(`);assert.ok(i>=0,nam
 const TABS={
   'Trading':fn('TradingTab')+fn('ExtendedSessions')+fn('StartWithWindows')+src('src/Guardrails.tsx'),
   'Agents':fn('AgentsTab')+fn('AgentModelRows'),
-  'Schedule and triggers':fn('ScheduleTab')+src('src/TokenSaving.tsx'),
+  'Schedule and triggers':fn('ScheduleTab')+fn('NotHeldRow')+src('src/TokenSaving.tsx'),
   'Alerts':fn('AlertsTab'),
 };
 // Every control and labelled block of the one-page screen (EngineSettings, TokenSaving and Guardrails at 410d5b6), by
@@ -30,8 +30,11 @@ const CONTROLS=[
 
   ['Agents','Reflection calls per day','reflectionCallsPerDay'],['Agents','Daily reflection budget (USD)','reflectionUSDPerDay'],['Agents','Recent API calls',null],
   ['Schedule and triggers','Auto review interval','autoReviewInterval'],['Schedule and triggers','Review interval','intervalMinutes'],
-  ['Schedule and triggers','Reviews while markets are closed','closedMarketReviews'],['Schedule and triggers','Price move trigger','eventTolerancePct'],
-  ['Schedule and triggers','Watchlist alerts','watchlistAlerts'],['Schedule and triggers','Watchlist move trigger','watchlistMovePct'],['Schedule and triggers','Watchlist alert trial','alertTrial'],
+  ['Schedule and triggers','Reviews while markets are closed','closedMarketReviews'],['Schedule and triggers','Holdings price move trigger','eventTolerancePct'],
+  // 2026-11-10 (artifacts/reviews/2026-11-17-price-review-rows): the five price-review rows became two; labels changed,
+  // keys did not. "Stocks you don't hold" and Observe write their keys through src/price-review-rows.ts (its own test).
+  ['Schedule and triggers','Stocks you don’t hold',null],['Schedule and triggers','Observe watchlist alerts',null],
+  ['Schedule and triggers','Wider move for stocks you don’t hold','watchlistMovePct'],['Schedule and triggers','Watchlist alert trial','alertTrial'],
   ['Schedule and triggers','Scheduled scout runs','scoutEnabled'],['Schedule and triggers','Reviews can request a scout run','scoutAiRequests'],['Schedule and triggers','Minutes after the Korean open','scoutAfterOpenMinutes'],
   ['Schedule and triggers','Skip unchanged reviews','skipUnchanged'],['Schedule and triggers','Review gate','reviewGate'],['Schedule and triggers','Research suppression','researchSuppression'],
   ['Schedule and triggers','Routine review scope','routineReviews'],['Schedule and triggers','Maximum skip minutes','maxSkipMinutes'],
