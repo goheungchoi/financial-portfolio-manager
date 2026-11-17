@@ -347,13 +347,9 @@ class FundingTransfers {
     // S3a (G1): the Korean fall lies between the previous Korean reading and this one; a U.S. leg booked here keeps the
     // window of the U.S. settlement reading that moved the U.S. figure (the row's window, from readUS).
     const prevKR=Number.isFinite(prev?.at)?prev.at:null;
-    for(const r of this.rows(account).filter(x=>x.state==='awaiting-krw'||x.state==='awaiting-reversal').sort((a,b)=>a.settledAt-b.settledAt)){
-      const expired=B.agedOut('KR',{fillAt:r.settledAt,now,n:1}).aged;const need=r.state==='awaiting-krw'?r.shortfallUSD*(r.fx??0):r.reportedKRW-(r.paidUSD*(r.fx??0));
-      // K1 step: KIS took less USD than a split group's U.S. part with U.S. cash used up, and exchanges that shortfall with
-      // the KRW part in one Korean fall: the fall paying both pays the KRW part (booked at the report) and the rest is the
-      // shortfall's exchange.
-      const partner=r.state==='awaiting-krw'&&r.splitOf?this.rows(account).find(x=>x.key===r.splitOf&&x.state==='awaiting-kr'):null,pk=partner?krPartKRW(partner):0,joint=Boolean(partner)&&left>0&&need>0&&Math.abs(left-need-pk)<=BAND*(need+pk);
-      if(left>0&&need>0&&(joint||Math.abs(left-need)<=BAND*need)){const X=won(joint?left-pk:left);left=0;if(joint)this.put(account,partner.key,{...partner,state:'booked',krPaidAt:now,via:'krw'});
+    // One awaiting exchange paid by X of KIS's Korean fall: an awaiting-krw shortfall's pair, or an awaiting-reversal
+    // group's reversal legs.
+    const pay=(r,X)=>{
         if(r.state==='awaiting-krw'){this.book(account,r.key,'out',{market:'KR',amount:-X,day,at:now,after:prevKR,note:'Transfer between markets: KRW exchanged at settlement for the part of a U.S. buy U.S. cash did not cover.'});
           this.book(account,r.key,'in',{market:'US',amount:r.shortfallUSD,day,at:now,by:r.settledAt,after:r.window?.US,note:'Transfer between markets: into the U.S. account, the exchange paying part of a U.S. buy.'});
           // M-1.6c2: a deferred group's shortfall leaves the U.S. basis now (the settled group covers its pieces), not at
@@ -368,7 +364,27 @@ class FundingTransfers {
           this.book(account,r.key,'reversal-in',{market:'KR',amount:back,day,at:now,after:prevKR,note:'Transfer between markets reversed in part: KRW not taken for this U.S. buy.'});
           // The detector saw the deduction end (+reported KRW) at the U.S. reading and the exchange (-X) here: the
           // reversal's KRW (reported - X) is what it must leave out.
-          this.put(account,r.key,{...r,state:'booked',exchangedKRW:X,exchangedAt:now,via:'reversal'});m.explainedKR+=back;}}
+          this.put(account,r.key,{...r,state:'booked',exchangedKRW:X,exchangedAt:now,via:'reversal'});m.explainedKR+=back;}};
+    // M-3.3 (multi-order, m3-3-design.md, cleared): one Korean fall paying several exchanges KIS made between two Korean
+    // readings. When no single awaiting row fits it (nor a split group's two parts, nor a set of K1 groups' Korean
+    // payments, which keep their match), the first set by firstSet (fewest, then earliest; at most 8) whose needs total it
+    // within the band is paid, each row its share of KIS's fall, the last taking the remainder so the legs total it.
+    // A fall paying an exchange together with a K1 group's Korean payment stays unmatched (a stated limit).
+    {const needOf=r=>r.state==='awaiting-krw'?r.shortfallUSD*(r.fx??0):r.reportedKRW-(r.paidUSD*(r.fx??0));
+      const waiting=this.rows(account).filter(x=>x.state==='awaiting-krw'||x.state==='awaiting-reversal').sort((a,b)=>a.settledAt-b.settledAt);
+      const single=waiting.some(r=>{const need=needOf(r);if(!(need>0))return false;if(Math.abs(left-need)<=BAND*need)return true;const p=r.state==='awaiting-krw'&&r.splitOf?this.rows(account).find(x=>x.key===r.splitOf&&x.state==='awaiting-kr'):null;return Boolean(p)&&Math.abs(left-need-krPartKRW(p))<=BAND*(need+krPartKRW(p));});
+      const due0=r=>B.agedOut('US',{fillAt:Number.isFinite(r.filledAt)?r.filledAt:r.reportedAt,now,n:1}).aged,k1=this.rows(account).filter(x=>(x.state==='awaiting-kr'||x.state==='krw')&&due0(x));
+      const set=left>0&&waiting.length>1&&!single&&!firstSet(k1,left,r=>krPartKRW(r))?firstSet(waiting.filter(r=>needOf(r)>0),left,needOf):null;
+      if(set&&set.length>1){const fall=won(left),total=set.reduce((n,r)=>n+needOf(r),0);let given=0;left=0;
+        set.forEach((r,k)=>{const X=k===set.length-1?fall-given:won(fall*needOf(r)/total);given+=X;pay(r,X);});}}
+    for(const r of this.rows(account).filter(x=>x.state==='awaiting-krw'||x.state==='awaiting-reversal').sort((a,b)=>a.settledAt-b.settledAt)){
+      const expired=B.agedOut('KR',{fillAt:r.settledAt,now,n:1}).aged;const need=r.state==='awaiting-krw'?r.shortfallUSD*(r.fx??0):r.reportedKRW-(r.paidUSD*(r.fx??0));
+      // K1 step: KIS took less USD than a split group's U.S. part with U.S. cash used up, and exchanges that shortfall with
+      // the KRW part in one Korean fall: the fall paying both pays the KRW part (booked at the report) and the rest is the
+      // shortfall's exchange.
+      const partner=r.state==='awaiting-krw'&&r.splitOf?this.rows(account).find(x=>x.key===r.splitOf&&x.state==='awaiting-kr'):null,pk=partner?krPartKRW(partner):0,joint=Boolean(partner)&&left>0&&need>0&&Math.abs(left-need-pk)<=BAND*(need+pk);
+      if(left>0&&need>0&&(joint||Math.abs(left-need)<=BAND*need)){const X=won(joint?left-pk:left);left=0;if(joint)this.put(account,partner.key,{...partner,state:'booked',krPaidAt:now,via:'krw'});
+        pay(r,X);}
       else if(expired)this.unmatched(account,r,'no Korean exchange within one Korean business day of the U.S. settlement',now);}
     // S3a-2: the Korean payment of K1 groups (all KRW): a fall in D+2 cash (what the exchanges above did not take) within
     // the band of a group's KRW, or of the first set of groups that totals it, pays them. Guard: only once one U.S.

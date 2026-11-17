@@ -115,6 +115,9 @@ function check(seed,side,profile='mix'){const {desc,steps}=generate(seed,side,pr
   const last=run.out.at(-1),lastLow=last.value.KR.low+last.value.US.low*FX;out.afterAge=Math.abs(lastLow-steps.at(-1).truth.combined)<=2;
   const st=JSON.parse(run.db.prepare('SELECT payload FROM inflight_settlement').get().payload),ss=st[A]??st;out.end=(ss.open??[]).length===0&&['Buy','Sell'].every(k=>InFlight.creditCents(ss,k)===0);
   for(const r of run.rec.rows(A).filter(r=>(r.orders??[]).length))out.groups[r.state]=(out.groups[r.state]??0)+1;
+  // M-3.3's stated limit (an exchange paid together with a K1 group's Korean payment in one fall stays unmatched), counted
+  // with every other exchange no Korean fall matched.
+  out.exchangeUnmatched=run.rec.rows(A).filter(r=>r.state==='unmatched'&&/Korean exchange/.test(r.reason??'')).length;
   const flows=run.flows().filter(f=>f.detected);out.krFlows=flows.filter(f=>f.market==='KR').length;
   const total=c2(flows.filter(f=>f.market==='US').reduce((n,f)=>n+f.amount,0)),one=!desc.W||flows.length===1;
   if(Math.abs(total+desc.W)>0.02||!one||out.krFlows)out.flowsOff=out.krFlows?'a detected Korean flow':desc.wAt==='same'?'withdrawal in a settlement reading: right in total, or off by the batch band (main model)':!desc.W?'a detected U.S. flow with no withdrawal':'a withdrawal (early or between) not exactly one flow';
@@ -165,7 +168,7 @@ for(const side of ['Buy','Sell'])test(`R5: ${one?`seed ${one}`:`${N} seeded rand
     if(!r.desc.independent){assert.ok(r.afterAge,`seed ${seed} ${side}: not right after age ${JSON.stringify(r.desc)}`);assert.ok(r.end,`seed ${seed} ${side}: something left in flight or credited ${JSON.stringify(r.desc)}`);}
     else bump('independent split (safety only)',seed);
     for(const [k,v] of Object.entries(r.groups))if(!['booked','none'].includes(k))bump('group ends '+k,seed);
-    if(r.flowsOff)bump('flows: '+r.flowsOff,seed);}
+    if(r.flowsOff)bump('flows: '+r.flowsOff,seed);if(r.exchangeUnmatched)bump('exchange unmatched (no Korean fall matched it; the M-3.3 limit among the causes)',seed);}
   // Sales: no class at all.
   if(side==='Sell')assert.deepEqual(Object.keys(count).filter(k=>!k.startsWith('independent')),[],JSON.stringify(count));
   for(const [k,v] of Object.entries(count))t.diagnostic(`${k}: ${v.length} of ${seeds.length} (${Math.round(100*v.length/seeds.length)}%), seeds ${v.slice(0,12).join(', ')}${v.length>12?', ...':''}`);});}
