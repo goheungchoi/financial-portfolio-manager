@@ -53,5 +53,14 @@ function enforce(decision,memory,{price=null,now=Date.now()}={}){if(!decision||d
   const rev=reversalOf(decision,memory,{now});if(!rev?.required)return decision;const gap=reversalGap(decision.reversal??null,rev,{price});if(!gap)return decision;
   const what=rev.prior.effect==='CLOSE_SHORT'?'cover':'sale',reason=`it reverses the filled ${what} of ${String(rev.prior.filledAt??'').slice(0,10)} (review ${rev.prior.decisionId??'unavailable'}): ${gap}`;
   const text=`${decision.explanation} [The app held back a ${decision.action==='Sell'?'short sale':'Buy'} of ${decision.quantity} ${decision.symbol}: ${reason}.]`;
-  return {action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',...(decision.plan?{plan:decision.plan}:{}),explanation:text.length>1500?text.slice(0,1499)+'…':text,withheld:{symbol:decision.symbol,quantity:decision.quantity,reason,kind:'reversal',atBoundary:true}};}
-module.exports={build,view,reversalOf,reversalGap,enforce,REVERSAL_DAYS};
+  return {action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',...(decision.plan?{plan:decision.plan}:{}),explanation:text.length>1500?text.slice(0,1499)+'…':text,withheld:{symbol:decision.symbol,quantity:decision.quantity,reason,kind:'reversal',atBoundary:true},...keptBeside(decision)};}
+// What a decision carries beside its order, kept when the app holds the order back after the AI answered (here and the
+// stop's side in automation.cjs): the plan verdicts, the strategy check, the scout brief and any further orders. Until
+// 2026-11-17 the rebuilt Hold dropped them: the brief was never saved and verdicts the AI gave were logged as missing.
+// The order's own fields (execution, reversal, the reversal flag, the impact check) go with the order.
+// Every decision key is named in one list or the other (tests/held-back-kept.test.cjs fails on a key in neither), so a
+// field added later is a choice, never kept on a Hold by default.
+const ORDER_FIELDS=new Set(['action','symbol','quantity','credit','loanDate','explanation','plan','withheld','execution','reversal','reversalFlag','portfolioImpactCheck']);
+const KEPT_FIELDS=new Set(['planVerdicts','strategyCheck','scoutBrief','moreOrders','moreWithheld','planCorrected']);
+const keptBeside=decision=>Object.fromEntries(Object.entries(decision).filter(([k])=>!ORDER_FIELDS.has(k)));
+module.exports={build,view,reversalOf,reversalGap,enforce,keptBeside,ORDER_FIELDS,KEPT_FIELDS,REVERSAL_DAYS};
