@@ -42,6 +42,13 @@ test('the read-back line',()=>{
   assert.equal(M.problemText('numbers',M.refusedPart('12s')),'Couldn’t read “s”: numbers only');
   assert.equal(M.farBeyond('30000001',3000000),true);assert.equal(M.farBeyond('30000000',3000000),false,'exactly 10× is not beyond');assert.equal(M.farBeyond('5',null),false);assert.equal(M.farBeyond('5',0),false);
 });
+test('item 9 quick buttons: each press adds (empty is 0), in whole cents for dollars; past 15 digits refused',()=>{
+  assert.deepEqual(M.addAmount('',1000000,'KRW'),{ok:true,plain:'1000000'});assert.deepEqual(M.addAmount('3000000',1000000,'KRW'),{ok:true,plain:'4000000'});
+  assert.deepEqual(M.addAmount('1234.5',100,'USD'),{ok:true,plain:'1334.50'});assert.deepEqual(M.addAmount('0.1',1000,'USD'),{ok:true,plain:'1000.10'},'no float drift');assert.deepEqual(M.addAmount('1234',100,'USD'),{ok:true,plain:'1334'});
+  assert.deepEqual(M.addAmount('9'.repeat(15),100000,'KRW'),{ok:false,problem:'large'});assert.deepEqual(M.addAmount('99999999999999.99',1,'USD'),{ok:true,plain:'100000000000000.99'});
+  assert.deepEqual(M.QUICK.KRW.map(a=>M.quickLabel(a,'KRW')),['+10만','+100만','+1,000만']);assert.deepEqual(M.QUICK.USD.map(a=>M.quickLabel(a,'USD')),['+$100','+$1,000','+$10,000']);
+  assert.equal(M.quickName(100000,'KRW'),'Add ₩100,000');assert.equal(M.quickName(1000,'USD'),'Add $1,000.00');
+});
 test('the caret stays where the user types: insert, delete and replace at the start, middle and end',()=>{
   // Type "9" between 3 and 000000 of "3,000,000" (caret after "5"): raw "39,000,000" -> shown "39,000,000", caret after "9".
   const edit=(raw,caret)=>{const p=M.parseTyped(raw,'KRW');const shown=M.group(p.plain);return [shown,M.caretAt(shown,M.significantBefore(raw,caret))];};

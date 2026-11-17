@@ -6,9 +6,9 @@
 import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import * as M from './money';
 type Props={label:string;currency:M.Currency;value:string;onChange(plain:string):void;placeholder?:string;disabled?:boolean;
-  min?:number;max?:number;unit?:string;commitOnBlur?:boolean;accountValue?:number|null;className?:string};
+  min?:number;max?:number;unit?:string;commitOnBlur?:boolean;accountValue?:number|null;className?:string;quick?:boolean};
 type Step={text:string;caret:number};
-export function MoneyField({label,currency,value,onChange,placeholder,disabled,min,max,unit,commitOnBlur=false,accountValue,className}:Props){
+export function MoneyField({label,currency,value,onChange,placeholder,disabled,min,max,unit,commitOnBlur=false,accountValue,className,quick=false}:Props){
   const id=useId();const ref=useRef<HTMLInputElement>(null);
   const [shown,setShown]=useState(()=>{const p=M.parseTyped(String(value??''),currency);return p.ok?M.group(p.plain):String(value??'');});
   const [problem,setProblem]=useState<string|null>(null);
@@ -55,5 +55,8 @@ export function MoneyField({label,currency,value,onChange,placeholder,disabled,m
       onCompositionStart={()=>{composing.current=here();}} onCompositionEnd={composeEnd} onBlur={()=>{if(commitOnBlur&&!problem)onChange(plain);}}/>
     {unit&&<span className="unit">{unit}</span>}</span>
     <small id={id} className={`money-readback ${problem?'field-error':''}`} aria-live="polite">{problem?line:line.split(' · ').map(part=>part.replace(/ /g,'\u00a0')).join(' · ')}</small>
-    {out&&<small className="field-error" role="alert">Allowed {min}–{max}{unit?` ${unit}`:''}</small>}</span>;
+    {out&&<small className="field-error" role="alert">Allowed {min}–{max}{unit?` ${unit}`:''}</small>}
+    {/* Item 9 quick buttons (deposits and withdrawals only): each press adds, as one undo step; focus stays on the button. */}
+    {quick&&<span className="money-quick" role="group" aria-label={`${label}: quick amounts`}>{M.QUICK[currency].map(add=><button key={add} type="button" className="mini" disabled={disabled} aria-label={M.quickName(add,currency)}
+      onClick={()=>{const r=M.addAmount(plain,add,currency);if(!r.ok){refuse(String(add),r.problem);return;}show(r.plain,M.significantBefore(M.group(r.plain),M.group(r.plain).length));}}>{M.quickLabel(add,currency)}</button>)}</span>}</span>;
 }

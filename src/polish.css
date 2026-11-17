@@ -214,6 +214,9 @@ label.setting-row{cursor:pointer}
 /* F3: a row holding a money field is aligned to the top, so its inputs line up and the read-back hangs below. */
 .settings-grid:has(.money-field-wrap),.trade-fields:has(.money-field-wrap){align-items:start}
 .control-pair:has(.money-field-wrap){align-items:flex-start}
+/* Item 9: the deposit amount's quick buttons, under its read-back. */
+.money-quick{display:flex;gap:6px;flex-wrap:wrap}
+.money-quick button{font-size:12px;padding:4px 10px}
 .field-error{color:var(--danger,#e5484d);font-size:12px}
 .number-field .unit{padding:0 10px 0 2px;font-size:12px;color:var(--muted)}
 .number-field:has(input:disabled){opacity:.5}

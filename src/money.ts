@@ -59,6 +59,16 @@ export const refusedPart=(raw:string)=>raw.replace(/[0-9.,\s]/g,'')||raw;
 // What the line says when an edit or a paste is refused.
 export function problemText(problem:Problem,text:string):string{
   return problem==='whole'?'Whole won only':problem==='decimals'?'Two decimals at most':problem==='large'?'Too large':`Couldn’t read “${text.length>24?text.slice(0,24)+'…':text}”: numbers only`;}
+// Item 9 (the user: "Add quick buttons please"): a quick button's sum, the amount (empty is 0) plus `add` whole units of
+// its currency, in whole cents (BigInt) so dollars never drift; past 15 digits it is refused, never cut.
+export function addAmount(plain:string,add:number,c:Currency):Parsed{
+  const [int='0',frac='']=(plain||'0').split('.');const cents=BigInt(int||'0')*100n+BigInt((frac+'00').slice(0,2))+BigInt(Math.round(add*100));
+  const whole=(cents/100n).toString(),rest=(cents%100n).toString().padStart(2,'0');if(whole.length>MAX_DIGITS)return bad('large');
+  return {ok:true,plain:c==='USD'&&(frac!==''||rest!=='00')?`${whole}.${rest}`:whole};}
+// The quick buttons' amounts, and what each says: "+10만", "+$1,000".
+export const QUICK:Record<Currency,number[]>={KRW:[100000,1000000,10000000],USD:[100,1000,10000]};
+export const quickLabel=(add:number,c:Currency)=>c==='USD'?`+$${groupInt(String(add))}`:`+${groupInt(String(add/10000))}만`;
+export const quickName=(add:number,c:Currency)=>c==='USD'?`Add $${groupInt(String(add))}.00`:`Add ₩${groupInt(String(add))}`;
 // The soft note on a deposit or withdrawal far beyond its account (never blocking).
 export const FAR_NOTE='over 10× this account — check the amount';
 export const farBeyond=(plain:string,accountValue:number|null|undefined)=>Number.isFinite(accountValue)&&(accountValue as number)>0&&Number(plain)>10*(accountValue as number);
