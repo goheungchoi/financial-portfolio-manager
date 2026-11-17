@@ -8,7 +8,7 @@ test('every code the order path can produce is in one class: a new code forces a
   const codes=new Set();for(const f of files){const s=fs.readFileSync(path.join(__dirname,'..','electron',f+'.cjs'),'utf8');for(const m of s.matchAll(/(?:new (?:Error|KisError)|fail)\(\s*'([A-Z][A-Z0-9_]{2,})'/g))codes.add(m[1]);}
   // Codes returned as values or thrown from a variable: notSendable and lossRestriction (live-engine), the worker's
   // expired ticket, and the batch's own checks.
-  for(const c of ['DISABLED_OR_EXPIRED','ACCOUNT_CHANGED','LIMIT_CHANGED','DAILY_LOSS_RESTRICTED','TICKET_EXPIRED','STALE_DECISION','AUTO_TRADING_STOPPED','BATCH_LIMIT'])codes.add(c);
+  for(const c of ['DISABLED_OR_EXPIRED','ACCOUNT_CHANGED','LIMIT_CHANGED','DAILY_LOSS_RESTRICTED','TICKET_EXPIRED','STALE_DECISION','AUTO_TRADING_STOPPED','SEVERAL_OPEN_OFF','BATCH_LIMIT'])codes.add(c);
   assert.ok(codes.size>60,`${codes.size} codes collected`);
   assert.deepEqual([...codes].filter(c=>O.classOf(c)==='unknown'),[],'name each in ORDER or STOP (electron/order-outcomes.cjs)');
   assert.deepEqual([...O.ORDER].filter(c=>O.STOP.has(c)),[],'never both');

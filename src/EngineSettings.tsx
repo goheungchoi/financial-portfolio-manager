@@ -38,6 +38,34 @@ export function EngineSettings(props:Props){
   </div>;
 }
 
+// M-6 (artifacts/reviews/2026-11-16-multi-order/m6-plan.md sections 1-2; the user's "A switch in settings"): several open
+// orders, off by default, turned on only through its confirmation and off at once; and "Orders per review", which needs
+// it. The ceiling is the trading model's (state.orderLimits, from ai-models.cjs orderCeiling); a saved number above it is
+// kept and the ceiling used.
+export const SEVERAL_OPEN_CONFIRM={title:'Turn on several open orders?',
+  body:'Orders can be open for different stocks at the same time. This applies even at one order per review: an open order no longer blocks every other order. KIS\'s handling of several open orders has not yet been seen on your live account. You can turn it off again at any time.',
+  more:['An unclear order blocks only its own stock and counts in full until it is resolved.','Funding and the deposit and withdrawal checks count every open order.','"Orders per review" is a separate setting, 1 unless you change it.']};
+export function ordersHint({on,ceiling,model,saved}:{on:boolean;ceiling:number;model:string;saved:number}):string{
+  if(!on)return 'Needs several open orders turned on.';
+  if(ceiling<=1)return `${model} answers one order per review.`;
+  return `Most orders one review may place. Up to ${ceiling} with ${model}.${saved>ceiling?` Using ${ceiling} with ${model}.`:''}`;}
+function SeveralOrders({state,config,busy,edit}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;edit:Edit}){
+  const [asking,setAsking]=useState(false);const lim=state.orderLimits;const model=MODEL_NAMES[lim?.model??'']??lim?.model??'The trading model';
+  const on=config.severalOpenOrders===true,ceiling=Math.max(1,lim?.ceiling??1),saved=Number.isInteger(config.ordersPerReview)?config.ordersPerReview:1;
+  return <>
+    <Row title="Several open orders" hint={on?'Orders can be open for different stocks at the same time.':'One open order at a time. Off by default.'}><Switch label="Several open orders" disabled={busy||asking} checked={on} onChange={v=>v?setAsking(true):edit('severalOpenOrders',false)}/></Row>
+    {asking&&<div className="notice" role="dialog" aria-label={SEVERAL_OPEN_CONFIRM.title}>
+      <p><b>{SEVERAL_OPEN_CONFIRM.title}</b></p><p>{SEVERAL_OPEN_CONFIRM.body}</p>
+      <details className="inline-help"><summary>More</summary><ul>{SEVERAL_OPEN_CONFIRM.more.map(t=><li key={t}>{t}</li>)}</ul></details>
+      <div className="actions"><button className="primary" disabled={busy} onClick={()=>{edit('severalOpenOrders',true);setAsking(false);}}>Turn on</button><button disabled={busy} onClick={()=>setAsking(false)}>Cancel</button></div>
+    </div>}
+    <Row title="Orders per review" hint={ordersHint({on,ceiling,model,saved})}><NumberField label="Orders per review" min={1} max={Math.max(ceiling,saved)} value={saved} disabled={busy||!on||ceiling<=1} onChange={v=>edit('ordersPerReview',v)}/></Row>
+    {on&&ceiling>1&&<details className="inline-help"><summary>More</summary><ul>
+      <li>Closing orders (sales, repayments, covers) go first, then the others in the AI's order.</li>
+      <li>Every order passes every check a single order passes; one that fails is skipped and the others go.</li>
+      <li>An order not started within five minutes of the decision is not sent.</li></ul></details>}
+  </>;
+}
 function TradingTab({state,config,busy,edit,onNavigate}:Props){
   return <>
     <Card id="eng-guidelines" title="Agent guidelines" label="Guidelines" hint="Your goals in plain language. The AI reads them on every review.">
@@ -58,6 +86,7 @@ function TradingTab({state,config,busy,edit,onNavigate}:Props){
     <Guardrails id="eng-guardrails" state={state} config={config} busy={busy} edit={edit}/>
     <Card id="eng-execution" title="Order execution" hint="How KIS orders are placed and kept until they fill.">
       <Row title="Follow the best price" hint={config.orderTracking?'Orders go in at the best bid (sell) or ask (buy) and move with it every 3 seconds until filled, within any bound the AI set. Orders you change in KIS are left to you.':'Orders stay at the price they were placed at.'}><Switch label="Follow the best price" disabled={busy} checked={config.orderTracking} onChange={v=>edit('orderTracking',v)}/></Row>
+      <SeveralOrders state={state} config={config} busy={busy} edit={edit}/>
     </Card>
     <Card id="eng-conditional" title="Conditional orders" label="Conditional order settings" hint="Stop-loss, take-profit and entry orders the AI arms with conditions. They fire only while auto trading is on and the market is open, and still pass every risk check.">
       <Row title="Let the AI set conditional orders" hint="Off by default."><Switch label="Let the AI set conditional orders" disabled={busy} checked={config.conditionalOrders} onChange={v=>edit('conditionalOrders',v)}/></Row>

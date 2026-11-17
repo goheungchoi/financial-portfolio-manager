@@ -8,10 +8,11 @@ class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
     this.market=options.market??'KR';this.day=this.market==='US'?require('./kis-overseas.cjs').localDate:seoulDate;this.validSymbol=symbol=>this.market==='US'?/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(symbol):/^\d{6}$/.test(symbol);this.validPrice=price=>Number.isFinite(price)&&price>=1&&(this.market==='US'?Math.abs(price*100-Math.round(price*100))<1e-7:Number.isSafeInteger(price));
     this.db=db;this.broker=broker;this.getConnection=getConnection;this.enabled=false;this.autoEnabled=false;this.busy=false;
-    // M-1 (several orders open at once, artifacts/reviews/2026-11-16-multi-order): off unless the constructor is given
-    // severalOpen:true. It is not a saved setting, so no configuration file can turn it on; the app passes nothing (off)
-    // and only tests and the desktop harness set it. Off: today's one-open-order rule, byte for byte (tests/several-open).
-    this.severalOpen=options.severalOpen===true;
+    // M-1 (several orders open at once, artifacts/reviews/2026-11-16-multi-order): off unless turned on. Tests and the
+    // desktop harness pass severalOpen:true to the constructor; the app (M-6, the user's "A switch in settings") gives
+    // severalOpenSetting, a function of the saved setting (default off), read at every use so a change applies to the next
+    // order. Off: today's one-open-order rule, byte for byte (tests/several-open).
+    this.severalOpenFixed=options.severalOpen===true;this.severalOpenSetting=null;
     db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_orders(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,day TEXT NOT NULL,seenAt INTEGER NOT NULL,payload TEXT NOT NULL);');
     // A revision whose reply was lost to a restart stays unconfirmed, its higher price still committed, until history shows it.
     try{for(const r of db.prepare('SELECT payload FROM live_intents').all()){const o=JSON.parse(r.payload);if(o.pendingRevision&&String(o.accountKey??'').endsWith(':US')===(this.market==='US')){const {pendingRevision:p,...rest}=o;this.writeOrder({...rest,trackingStopped:{at:Date.now(),reason:'restart during a revision'},unconfirmed:{from:p.from,cancel:p.cancel,...(p.cancel?{}:{price:p.price})}});}}}catch{}
@@ -91,6 +92,9 @@ class LiveEngine {
       if(policy.margin.enabled||policy.short.enabled||held){const CP=require('./credit-paths.cjs');risk.credit={liveAccountOnly:true,environment:value.balance.environment,effective:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,(({executable,automatic,reason,label})=>({executable,automatic,...(reason?{reason}:{}),...(label?{label}:{})}))(CP.pathStatus(k,{approved:this.creditApproved?.()===true}))])),margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,maxLoanPctOfEquity:policy.margin.maxLoanPctOfEquity,annualInterestPct:policy.margin.interestPct},short:{allowed:policy.short.enabled,automatic:policy.short.auto,maxGrossPctOfEquity:policy.short.maxGrossPctOfEquity,stopLossPct:policy.short.stopLossPct,annualFeePct:policy.short.feePct},...(held?{loans:held.margin.loans,estimatedCollateralPct:held.margin.estimatedCollateralPct,shorts:held.short.positions}:{})};if(held)risk.warnings.push(...held.warnings);}}
     return risk.products.length||risk.warnings.length||risk.leveragedEtps.allowed||risk.credit?{productRisk:risk}:{};
   }
+  get severalOpen(){if(this.severalOpenFixed)return true;try{return this.severalOpenSetting?.()===true;}catch{return false;}}
+  // Whether several open orders are allowed now (M-6: the review asks for several orders only then).
+  allowsSeveralOpen(){return this.severalOpen;}
   propose(command) {
     // Optional credit: {kind:'margin-buy'|'margin-sell'|'short'|'cover', loanDate} for Korean margin and short orders (live accounts).
     const credit=command?.credit??null;if(command&&'credit' in command){const {credit:_,...rest}=command;command=rest;}
