@@ -29,6 +29,8 @@ function appHarness({mock,severalOpen=true,db=new DatabaseSync(':memory:'),clock
   h.build=()=>{const kr=new LiveEngine(db,mock.broker('KR'),()=>({status:'connected',snapshot:h.state.kr}),{severalOpen});
     const us=new LiveEngine(db,mock.broker('US'),()=>({snapshot:h.state.kr&&h.state.us?.accountKey===h.state.kr.accountKey+':US'?h.state.us:null}),{market:'US',severalOpen});
     for(const e of [kr,us]){e.costs=h.costs;e.exposure=h.exposure;e.funding=h.ledger;}
+    // The Korean stocks the app watches beyond those held (main.cjs: the watchlist and candidates), so their quotes come.
+    kr.extraSymbols=async()=>Object.keys(mock.prices).filter(s=>/^[0-9]{6}$/.test(s));
     us.buyingPower=b=>usBuyingPower({usdCash:b?.cash??0,broker:b?.brokerBuyingPower??null,krwCash:h.state.kr?(Number.isFinite(h.state.kr.settledCash)?h.state.kr.settledCash:h.state.kr.cash):null,usdKRW:b?.fx?.usdKRW??h.rate()});
     h.kr=kr;h.us=us;return h;};
   refresh();h.build();
@@ -55,5 +57,18 @@ function appHarness({mock,severalOpen=true,db=new DatabaseSync(':memory:'),clock
   // Readings a test makes back to back are at least 2 ms apart from what follows them (a fill counted in the same
   // millisecond as the reading before would read as counted then; the app's readings are seconds apart).
   h.reading=()=>{const s=refresh();for(const name of READING_ORDER)steps[name](s);const t=Date.now();while(Date.now()<t+2){}return h;};
+  // M-3.5: the automation over these engines, as main.cjs attaches them (automation.live / usLive), with a stub provider
+  // whose decision the test writes (an injected review: no provider call), the order book from the mock's prices, and
+  // the U.S. refresh from the mock. h.decide(d) sets the next decision.
+  h.automation=(config={})=>{const {Automation}=require('../../electron/automation.cjs');const {PaperEngine}=require('../../electron/paper-engine.cjs');h.logs=[];
+    h.decision={action:'Hold',symbol:'',quantity:0,explanation:'Injected review: hold.'};h.decide=d=>{h.decision={explanation:'Injected review.',...d};return h;};
+    const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:70000,name:'A'}],()=>[]),{request:async op=>op==='decision'?{provider:'openai',decision:h.decision}:{}},(...x)=>h.logs.push(x));
+    a.live=h.kr;a.usLive=h.us;a.refreshUS=async()=>mock.request('US','context',{});a.fx=()=>({usdKRW:h.rate(),source:'mock'});a.providerStatus.aiConnected=true;a.wait=async()=>{};
+    a.orderBook=async s=>mock.prices[s]>0?{status:'available',retrievedAt:Date.now(),data:{bid:mock.prices[s],ask:mock.prices[s],quoteAt:Date.now()}}:{status:'unavailable',reason:'NO_TWO_SIDED_BOOK'};
+    a.marketQuotes=()=>Object.entries(mock.prices).filter(([s])=>!s.includes(':')).map(([symbol,price])=>({symbol,price,timestamp:Date.now(),retrievedAt:Date.now()}));
+    a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,autoSubmit:true,conditionalOrders:true,conditionalAutoSubmit:true,...config});h.a=a;return a;};
+  // A conditional order armed as a review's set_conditional_order stores it (desk.setOrder), and fired.
+  h.arm=(args)=>h.a.desk.setOrder(h.a.watchScope(),{action:'add',id:'',limitPrice:null,combine:'all',expiresInHours:24,reason:'Injected.',...args},{config:h.a.config,universe:Object.keys(mock.prices)});
+  h.fire=async id=>{const o=h.a.desk.orders(h.a.watchScope()).find(x=>x.id===id)??h.a.desk.orders(h.a.watchScope())[0];await h.a.fireConditional(o);return h.a.desk.recentOrders(h.a.watchScope()).find(x=>x.id===o.id)??h.a.desk.orders(h.a.watchScope()).find(x=>x.id===o.id);};
   return h;}
 module.exports={appHarness,READING_ORDER};

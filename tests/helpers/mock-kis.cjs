@@ -52,7 +52,8 @@ class MockKis {
     return {source:'kis',environment:this.environment,timestamp:iso(t),raw:{dnca_tot_amt:a.cash,prvs_rcdl_excc_amt:a.settledCash},cash:a.cash,settledCash:a.settledCash,reportedTotal:a.settledCash+holdings.reduce((n,h)=>n+h.marketValue,0),holdings,accountKey:this.accountKey};}
   quote(market,symbol){const t=this.clock(),price=this.priceOf(market,symbol);
     return market==='US'?{symbol,price,retrievedAt:t,currency:'USD',venue:'regular',timeBasis:'broker snapshot; exchange timestamp unavailable'}:{symbol,price,retrievedAt:t,previousClose:price,changePct:0,volume:1000};}
-  context(market,payload){const balance=this.balance(market),symbols=(payload.symbols?.length?payload.symbols:balance.holdings.map(h=>h.symbol)).filter(s=>{try{this.priceOf(market,s);return true;}catch{return false;}});
+  // As kis-worker.cjs: the configured symbols, else the holdings, plus the extra ones the app watches (Korea), at most 20.
+  context(market,payload){const balance=this.balance(market),symbols=[...new Set([...(payload.symbols?.length?payload.symbols:balance.holdings.map(h=>h.symbol)),...(market==='KR'?payload.extra??[]:[])])].slice(0,20).filter(s=>{try{this.priceOf(market,s);return true;}catch{return false;}});
     const quotes=symbols.map(s=>this.quote(market,s));
     // The U.S. session as the client reads it (usSession), opened or closed by the test.
     return market==='US'?{balance,quotes,warnings:[],marketSession:{...require('../../electron/kis-overseas.cjs').usSession(new Date(this.clock())),open:this.sessionOpen.US,status:this.sessionOpen.US?'open':'closed'}}:{balance,quotes,marketSession:{open:this.sessionOpen.KR,status:this.sessionOpen.KR?'open':'closed'}};}
