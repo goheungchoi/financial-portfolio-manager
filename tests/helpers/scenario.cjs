@@ -98,7 +98,9 @@ function setup(s){const {AiClient}=require('../../electron/ai-client.cjs');
   if(severalOpenOrders===false){for(const e of [h.kr,h.us]){e.severalOpenFixed=false;e.severalOpenSetting=()=>a.config.severalOpenOrders===true;}a.config={...a.config,severalOpenOrders:false};}
   else for(const e of [h.kr,h.us]){e.severalOpenFixed=false;e.severalOpenSetting=()=>a.config.severalOpenOrders===true;}
   if(severalOpenOrders!==false)a.config={...a.config,severalOpenOrders:true};
-  a.ordersFor=()=>a.severalOpenNow()?ordersPerReview:1;
+  // n as the app computes it, with ordersPerReview standing in for the model's ceiling (1 on every OpenAI model): the
+  // switch, and the stocks a review is shown (20 per market).
+  a.ordersFor=()=>a.severalOpenNow()?Math.min(ordersPerReview,a.universeLimit?.()??ordersPerReview):1;
   const run={s,m,h,a,followUps:[],bodies:[],answers:[],reviews:0,lastRequests:0};a.requestReview=(...x)=>run.followUps.push(x);
   const client=new AiClient('sk-fixture-key-123',async(url,o)=>{run.bodies.push(JSON.parse(o.body));run.lastRequests++;const next=run.answers.shift();if(!next)throw new Error('SCENARIO_NO_MORE_ANSWERS');return responseOf(next);});
   const provider=a.provider;a.provider={...provider,request:async(op,payload)=>op==='decision'?client.decide(payload.context,payload.options):provider.request(op,payload)};

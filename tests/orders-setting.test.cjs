@@ -15,7 +15,8 @@ test('n: 1 with the switch off whatever the setting; with it on, the setting wit
   const a=bare();let kr=false,us=false;a.live={allowsSeveralOpen:()=>kr};a.usLive={allowsSeveralOpen:()=>us};a.config={...a.config,scope:'kis',ordersPerReview:10};
   const opus={openaiModel:'claude-opus-5-5',reasoningEffort:'high'},sol={openaiModel:'gpt-6-sol',reasoningEffort:'medium'};
   assert.equal(a.ordersFor(opus),1,'switch off');kr=true;assert.equal(a.ordersFor(opus),10,'on: the setting');
-  a.config={...a.config,ordersPerReview:22};assert.equal(a.ordersFor(opus),22);a.config={...a.config,ordersPerReview:30};assert.equal(a.ordersFor(opus),22,'the ceiling limits it');
+  // One market: at most the 20 stocks a review is shown (the model's 22 is checked in combined scope below).
+  a.config={...a.config,ordersPerReview:22};assert.equal(a.ordersFor(opus),20);a.config={...a.config,ordersPerReview:30};assert.equal(a.ordersFor(opus),20,'the stocks shown limit it');
   assert.equal(a.ordersFor(sol),1,'GPT-6 Sol answers one');assert.equal(a.ordersFor({openaiModel:'gpt-6-luna',reasoningEffort:'none'}),1);
   a.config={...a.config,scope:'both',ordersPerReview:5};assert.equal(a.ordersFor(opus),1,'combined: the U.S. engine off');us=true;assert.equal(a.ordersFor(opus),5);
   a.config={...a.config,scope:'us'};kr=false;assert.equal(a.ordersFor(opus),5,'U.S. scope reads the U.S. engine');
@@ -43,5 +44,18 @@ test('the screen: the switch opens its confirmation (with the planner\'s sentenc
   assert.match(src,/onClick=\{\(\)=>\{edit\('severalOpenOrders',true\);setAsking\(false\);\}\}>Turn on</,'only "Turn on" sets it');
   assert.match(src,/body:'Orders can be open for different stocks at the same time\. This applies even at one order per review: an open order no longer blocks every other order\. KIS\\'s handling of several open orders has not yet been seen on your live account\. You can turn it off again at any time\.'/);
   assert.match(src,/disabled=\{busy\|\|!on\|\|ceiling<=1\}/,'"Orders per review" disabled with the switch off or a ceiling of 1');
-  assert.match(src,/if\(!on\)return 'Needs several open orders turned on\.';/);assert.match(src,/answers one order per review\./);assert.match(src,/ Using \$\{ceiling\} with \$\{model\}\./);
+  assert.match(src,/if\(!on\)return 'Needs several open orders turned on\.';/);assert.match(src,/answers one order per review\./);assert.match(src,/return `Up to \$\{ceiling\} with \$\{model\}\.\$\{saved>ceiling\?` Using \$\{ceiling\}\.`:''\}`;/);
+  // The More line, per scope (the planner's wording).
+  assert.match(src,/at most 20 Korean and 20 U\.S\. stocks, your holdings included\./);assert.match(src,/:scope==='us'\?'A review can trade the stocks it is shown: at most 20 U\.S\. stocks, your holdings included\.'/);
+  assert.match(src,/:'A review can trade the stocks it is shown: at most 20 Korean stocks, your holdings included\.';\}/);assert.match(src,/<li>\{universeLine\(lim\?\.scope\)\}<\/li>/);
+});
+test('a review can trade only the stocks it is shown: n is at most 20 in one market, and the screen shows that number',()=>{
+  const a=bare();a.live={allowsSeveralOpen:()=>true};a.usLive={allowsSeveralOpen:()=>true};const opus={openaiModel:'claude-opus-5-5',reasoningEffort:'high'};
+  for(const [scope,want] of [['kis',20],['us',20],['both',22]]){a.config={...a.config,scope,ordersPerReview:22};assert.equal(a.ordersFor(opus),want,scope);}
+  a.config={...a.config,scope:'both',ordersPerReview:30};assert.equal(a.ordersFor(opus),22,'combined: the model\'s ceiling limits it');
+  a.config={...a.config,scope:'kis',ordersPerReview:5};assert.equal(a.ordersFor(opus),5,'below the limit: the setting');
+  // The screen's ceiling: the smaller of the model's and the scope's.
+  a.agentModel=()=>opus;a.config={...a.config,scope:'kis'};assert.deepEqual(a.orderLimits(),{ceiling:20,model:'claude-opus-5-5',several:true,scope:'kis'});
+  a.config={...a.config,scope:'us'};assert.equal(a.orderLimits().ceiling,20);a.config={...a.config,scope:'both'};assert.equal(a.orderLimits().ceiling,22);
+  a.agentModel=()=>({openaiModel:'gpt-6-sol',reasoningEffort:'medium'});assert.equal(a.orderLimits().ceiling,1);
 });

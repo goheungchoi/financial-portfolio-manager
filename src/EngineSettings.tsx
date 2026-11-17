@@ -45,10 +45,17 @@ export function EngineSettings(props:Props){
 export const SEVERAL_OPEN_CONFIRM={title:'Turn on several open orders?',
   body:'Orders can be open for different stocks at the same time. This applies even at one order per review: an open order no longer blocks every other order. KIS\'s handling of several open orders has not yet been seen on your live account. You can turn it off again at any time.',
   more:['An unclear order blocks only its own stock and counts in full until it is resolved.','Funding and the deposit and withdrawal checks count every open order.','"Orders per review" is a separate setting, 1 unless you change it.']};
+// ceiling: the smaller of the model's ceiling and the stocks a review is shown (state.orderLimits, automation.cjs
+// universeLimit: 20 per market, holdings included; both markets 40). The planner's wording, 2026-11-17.
 export function ordersHint({on,ceiling,model,saved}:{on:boolean;ceiling:number;model:string;saved:number}):string{
   if(!on)return 'Needs several open orders turned on.';
   if(ceiling<=1)return `${model} answers one order per review.`;
-  return `Most orders one review may place. Up to ${ceiling} with ${model}.${saved>ceiling?` Using ${ceiling} with ${model}.`:''}`;}
+  return `Up to ${ceiling} with ${model}.${saved>ceiling?` Using ${ceiling}.`:''}`;}
+// The More line on what a review can trade, for the account's scope.
+export function universeLine(scope?:string):string{
+  return scope==='both'?'A review can trade the stocks it is shown: at most 20 Korean and 20 U.S. stocks, your holdings included.'
+    :scope==='us'?'A review can trade the stocks it is shown: at most 20 U.S. stocks, your holdings included.'
+    :'A review can trade the stocks it is shown: at most 20 Korean stocks, your holdings included.';}
 function SeveralOrders({state,config,busy,edit}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;edit:Edit}){
   const [asking,setAsking]=useState(false);const lim=state.orderLimits;const model=MODEL_NAMES[lim?.model??'']??lim?.model??'The trading model';
   const on=config.severalOpenOrders===true,ceiling=Math.max(1,lim?.ceiling??1),saved=Number.isInteger(config.ordersPerReview)?config.ordersPerReview:1;
@@ -63,7 +70,8 @@ function SeveralOrders({state,config,busy,edit}:{state:RuntimeState;config:Runti
     {on&&ceiling>1&&<details className="inline-help"><summary>More</summary><ul>
       <li>Closing orders (sales, repayments, covers) go first, then the others in the AI's order.</li>
       <li>Every order passes every check a single order passes; one that fails is skipped and the others go.</li>
-      <li>An order not started within five minutes of the decision is not sent.</li></ul></details>}
+      <li>An order not started within five minutes of the decision is not sent.</li>
+      <li>{universeLine(lim?.scope)}</li></ul></details>}
   </>;
 }
 function TradingTab({state,config,busy,edit,onNavigate}:Props){
