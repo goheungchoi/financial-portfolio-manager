@@ -1,7 +1,7 @@
 const {randomUUID}=require('node:crypto');
 // Order statuses that start a review when an order changes into them, statuses of an order still waiting at the broker,
 // and how long routine reviews may wait for a pending order.
-const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
+const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,BATCH_LIMIT_MS=5*60000,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
 // creditProtectionApproved: the user approved Stage 3 (audit 2026-11-04); until then no credit close is automatic.
 const DEFAULTS={alertTrial:'off',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithOpenAI:false,shareKisWithAnthropic:false,anthropicCallsPerDay:10,anthropicUSDPerDay:1,anthropicUnlimitedCalls:false,anthropicUnlimitedBudget:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,orderUpdateReviews:false,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS,...require('./scout-timing.cjs').TIMING_DEFAULTS};
 // Settings that no longer exist: accepted from a saved profile or the window and ignored. sessionKrxSingle switched on
@@ -771,8 +771,13 @@ class Automation {
         const openAt=(m,t)=>{const o=nextOpen(m,t,closed);return o!=null&&o<=t+60000;};const sessionAfter=(m,t)=>{let s=t;for(let i=0;i<48&&openAt(m,s);i++)s+=1800000;return nextOpen(m,s,closed);};
         this.waits.record(watchScope,result.decision,{reviewId:id,context,research:this.researchSeen?.get(id)??[],nextOpen:(m,t)=>nextOpen(m,t,closed),sessionAfter});}catch{}
       if(this.config.scope!=='paper')try{const cost=this.db.prepare('SELECT payload FROM ai_calls').all().map(r=>JSON.parse(r.payload)).filter(c=>c.reviewId===id&&!c.kind).reduce((a,c)=>a+(c.accountedMicro??c.estimatedMicro??0),0)/1e6;this.scheduleObserver.recordReview(recorded,cost);}catch{}
-      let proposal=null,order=null,executionNote=null;
-      if(result.decision.action!=='Hold')({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal:proposal=>this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...recorded,proposalId:proposal.id}),id)}));
+      let proposal=null,order=null,executionNote=null;const onProposal=proposal=>this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...recorded,proposalId:proposal.id}),id);
+      // M-5 (c): with further orders standing, the batch places the first and each further order (placeBatch); the first
+      // order's fields below stay its own. A single order goes as before.
+      const further=Array.isArray(result.decision.moreOrders)&&result.decision.moreOrders.length?result.decision.moreOrders:null;
+      if(further){const sent=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,base:execution,decidedAt:recorded.timestamp,onProposal});
+        const first=sent.find(r=>r.item===0);if(first)({proposal,order,executionNote}=first);}
+      else if(result.decision.action!=='Hold')({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal}));
       const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{})};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
       this.lastFingerprint={...hash,scope:watchScope,completedAt:Date.now()};
@@ -964,7 +969,37 @@ class Automation {
   // The placement of one order (M-5 (a)): the first order's chain from review(), lifted as it was. base: the engine
   // assembleReviewContext chose (combined scope picks by the symbol, as before); onProposal: called when a proposal is made
   // (the review records its id). Returns {proposal, order, executionNote}; throws as the chain did.
-  async placeOrder(d,{id,context,watchScope,revision,base,onProposal}){
+  // M-5 (c), several orders from one review (m5-plan.md section 3): closing orders first (sales, repayments, covers), in
+  // the AI's order among themselves, then openings in the AI's order; each through placeOrder, its book read one order
+  // ahead (bookFeed). An order not started within BATCH_LIMIT_MS of the decision is not sent, nor the ones after it. One
+  // follow-up review is asked after the batch when an order had no book or the limit passed. Returns one row per order,
+  // in the order given: {item (0 the first), symbol, action, quantity, proposal, order, executionNote}.
+  async placeBatch(orders,{id,context,watchScope,revision,base,decidedAt,onProposal}){
+    const closing=o=>{try{return require('./credit-paths.cjs').effectOf({side:o.action,credit:o.credit}).opening===false;}catch{return false;}};
+    const seq=[...orders.filter(closing),...orders.filter(o=>!closing(o))],feed=this.bookFeed(seq.map(o=>o.symbol),{id}),done=new Map();let stopped=null;
+    for(let k=0;k<seq.length;k++){const o=seq[k],item=o.item??0;
+      if(!stopped&&Date.now()-decidedAt>(this.batchLimitMs??BATCH_LIMIT_MS))stopped='the batch limit (5 minutes from the decision) passed';
+      if(stopped){const note=`Not sent: ${o.action} ${o.quantity} ${o.symbol}: ${stopped}.`;this.log(id,'System','Order not sent · batch',note);done.set(o,{proposal:null,order:null,executionNote:note});feed.missed.push(`${o.action} ${o.symbol} (batch limit)`);continue;}
+      feed.ahead(k);feed.ahead(k+1);
+      done.set(o,await this.placeOrder(o,{id,context,watchScope,revision,base,onProposal:item===0?onProposal:null,price:args=>feed.price(k,args)}));}
+    const missed=feed.missed;if(missed.length)this.requestReview('Orders not placed',`${missed.join('; ')}: not placed from this review; decide again.`,seq[0]?.symbol??null);
+    return orders.map(o=>({item:o.item??0,symbol:o.symbol,action:o.action,quantity:o.quantity,...done.get(o)}));
+  }
+  // Order books for a batch (M-5 (c)), each read once, one order ahead of its send: ahead(k) starts order k's read; price(k,
+  // args) prices order k as placementPrice prices one order (same arguments and result). A read retries every 3 seconds
+  // for up to a minute from its own request; a book no longer usable when its order is priced (older than the usable age,
+  // order-pricing MAX_BOOK_AGE_MS) is read again. An order with no book is listed in missed (one follow-up review).
+  bookFeed(symbols,{id}){const P=require('./order-pricing.cjs'),reads=new Map(),missed=[];
+    const read=k=>{const p=(async()=>{let why=null;for(let attempt=0;;attempt++){let reply=null;try{reply=await this.orderBook?.(symbols[k]);}catch(error){reply={status:'unavailable',reason:error.message};}
+      if(P.usableBook(reply))return {reply};if(!why)why=reply?.reason??(reply?.status==='available'?'stale or one-sided book':'no order book');
+      if(attempt>=20)return {reply:null,why};await this.wait(3000);}})();reads.set(k,p);return p;};
+    return {missed,ahead:k=>{if(k<symbols.length&&!reads.has(k))read(k);},
+      price:async(k,{symbol,side,bound=null,still=()=>true})=>{const market=/:/.test(symbol)?'US':'KR';let r=await (reads.get(k)??read(k)),book=r.reply?P.usableBook(r.reply):null;
+        if(r.reply&&!book){r=await read(k);book=r.reply?P.usableBook(r.reply):null;}
+        if(!book||!still()){if(!book){missed.push(`${side} ${symbol} (no order book: ${r.why??'unusable'})`);this.log(id,'System','Order waits for the order book',`${side} ${symbol}: ${r.why??'unusable'}; no usable book within a minute.`);}return null;}
+        const t=P.target({side,book,bound,market});this.log(id,'System','Order priced',`${side} ${symbol} at ${t.price}: ${side==='Sell'?'best bid':'best ask'} ${t.best}${t.atBound?`, held at your bound ${bound}`:''} (book read ${new Date(book.retrievedAt).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST).`);return {...t,book};}};
+  }
+  async placeOrder(d,{id,context,watchScope,revision,base,onProposal,price=null}){
         let execution=base;
         let proposal=null,order=null,executionNote=null,pendingAlready=null,placement=null,bounds=null,checked=null,stopNow=null,lotIssue=null;
         if(context.environment==='kis-combined')execution=/^\d{6}$/.test(d.symbol)?this.live:this.usLive;
@@ -1002,7 +1037,7 @@ class Automation {
         // price is read (that can take a minute), immediately before the order is proposed and submitted.
         else if(context.environment!=='local-paper'&&(checked=this.executionBounds(d,context.quotes.find(row=>row.symbol===d.symbol)?.price,id)).invalid.length){executionNote=`Execution withheld: ${d.action} ${d.symbol} came with restrictions the app cannot honour (${checked.invalid.join('; ')}). No order was placed; the next review decides again.`;}
         else if(context.environment!=='local-paper'&&(bounds=checked.bounds,stopNow=this.restrictionStop(bounds,Date.now(),{quotes:context.quotes,strict:true}))){executionNote=`Execution withheld: ${d.action} ${d.symbol}: ${stopNow}. No order was placed.`;this.log(id,'System','Execution withheld · restriction',executionNote);}
-        else if(context.environment!=='local-paper'&&!(placement=await this.placementPrice({symbol:d.symbol,side:d.action,bound:bounds?.bound??null,id,still:()=>!this.disposed&&revision===this.revision&&watchScope===this.watchScope()&&!this.restrictionStop(bounds,Date.now(),{quotes:context.quotes,strict:true})}))){stopNow=this.restrictionStop(bounds,Date.now(),{quotes:context.quotes,strict:true});executionNote=stopNow?`Execution withheld: ${d.action} ${d.symbol}: ${stopNow} while the order book was awaited. No order was placed.`:`No usable order book for ${d.symbol} for a minute; no order was placed. A review decides again.`;if(stopNow)this.log(id,'System','Execution withheld · restriction',executionNote);}
+        else if(context.environment!=='local-paper'&&!(placement=await (price??(args=>this.placementPrice(args)))({symbol:d.symbol,side:d.action,bound:bounds?.bound??null,id,still:()=>!this.disposed&&revision===this.revision&&watchScope===this.watchScope()&&!this.restrictionStop(bounds,Date.now(),{quotes:context.quotes,strict:true})}))){stopNow=this.restrictionStop(bounds,Date.now(),{quotes:context.quotes,strict:true});executionNote=stopNow?`Execution withheld: ${d.action} ${d.symbol}: ${stopNow} while the order book was awaited. No order was placed.`:`No usable order book for ${d.symbol} for a minute; no order was placed. A review decides again.`;if(stopNow)this.log(id,'System','Execution withheld · restriction',executionNote);}
         else if(context.environment!=='local-paper'&&(stopNow=this.restrictionStop(bounds,Date.now(),{quotes:context.quotes,strict:true}))){executionNote=`Execution withheld: ${d.action} ${d.symbol}: ${stopNow} while the order was priced. No order was placed.`;this.log(id,'System','Execution withheld · restriction',executionNote);}
         else if(pendingAlready=this.pending.repeats(watchScope,d,this.marketOpenIn(context))){executionNote=`${d.action} ${d.symbol} has been pending since ${new Date(pendingAlready.createdAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST${pendingAlready.proposalId?` (proposal ${pendingAlready.proposalId})`:''}; it is reassessed when its market opens. No new proposal was made.`;this.log(id,'System','Pending decision kept',executionNote);}
         // A closing order larger than what is free in its lot is not proposed (credit-paths.cjs, Stage 3): recorded with the
