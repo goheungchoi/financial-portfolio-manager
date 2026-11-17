@@ -7,7 +7,7 @@ import {portfolioProfit} from './portfolio-profit.mjs';
 const firstWhy=s=>String(s).replace(/^\d{4}-\d{2}-\d{2}: /,'').split('; ')[0].replace(/\.$/,'');
 const TAG_SETTLEMENT='Includes days with U.S. buys awaiting settlement evidence or with accounting corrections.';
 const TAG_FLOWS='It is left out of the returns, so a deposit or withdrawal may be counted as gain or loss.';
-const TAG_UNRESOLVED='Money changes awaiting you are left out; confirm or remove them on the Performance page.';
+const TAG_UNRESOLVED='Money changes awaiting you count as deposits or withdrawals; confirm or remove them on the Performance page.';
 
 /**
  * The account value box's note for a period (HomeTrend), in order of what matters: no return at all; a return that is an
@@ -20,7 +20,7 @@ export function periodNote(period,summary){
   // A deposit or withdrawal record that could not be read (review of the 1.5.52 fixes): the money gain may count it.
   if(summary?.unreadableFlows)return {text:'Return estimate: a deposit or withdrawal record could not be read.',why:TAG_FLOWS,missing:false};
   if(period?.settlementAffected)return {text:'Return estimate: settlement not verified.',why:TAG_SETTLEMENT,missing:false};
-  if(summary?.provisional?.unresolved?.length)return {text:'Provisional: money changes awaiting you are left out.',why:'Confirm or remove them on the Performance page.',missing:false};
+  if(summary?.provisional?.unresolved?.length)return {text:'Provisional: money changes awaiting you count as deposits or withdrawals.',why:'Confirm or remove them on the Performance page.',missing:false};
   return null;
 }
 

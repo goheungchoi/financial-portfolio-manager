@@ -40,7 +40,7 @@ test('no single return: no figure and no benchmark (S4a: a return range went wit
 });
 test('"Not verified" for settlement-affected days; "Provisional" (the account value box\'s word) when an unconfirmed detected deposit is left out',()=>{
   const a=homeResult({summary:summary({},{settlementAffected:{pending:['2026-11-03']}})});assert.equal(a.total.tag.text,'Not verified');assert.match(a.total.tag.why,/awaiting settlement evidence/);
-  const u=homeResult({summary:summary({provisional:{unresolved:[{day:'2026-11-09',market:'KR',currency:'KRW',amount:3000000}]}})});assert.equal(u.total.tag.text,'Provisional');assert.match(u.total.tag.why,/Money changes awaiting you are left out/);
+  const u=homeResult({summary:summary({provisional:{unresolved:[{day:'2026-11-02',market:'KR',currency:'KRW',amount:3000000}]}})});assert.equal(u.total.tag.text,'Provisional');assert.match(u.total.tag.why,/Money changes awaiting you count as deposits or withdrawals/,'item 9, answer (A)');
   assert.equal(u.total.gain,20000,'the headline figure is the summary\'s, which leaves the deposit out');
 });
 test('Today: a provisional range, a correction, and an unavailable day',()=>{
@@ -68,7 +68,7 @@ test('periodNote: the account value box\'s note, word for word as HomeTrend had 
   assert.deepEqual(periodNote({unavailable:['2026-10-29: exchange rate missing; x','2026-10-30: y','2026-10-31: z','2026-11-01: w']},{provisional:{unresolved:[{}]}}),
     {text:'Investment return unavailable: exchange rate missing (4 days affected).',why:'2026-10-29: exchange rate missing; x · 2026-10-30: y · 2026-10-31: z',missing:true});
   assert.deepEqual(periodNote({settlementAffected:{pending:[]}},{provisional:{unresolved:[{}]}}),{text:'Return estimate: settlement not verified.',why:'Includes days with U.S. buys awaiting settlement evidence or with accounting corrections.',missing:false});
-  assert.deepEqual(periodNote({},{provisional:{unresolved:[{}]}}),{text:'Provisional: money changes awaiting you are left out.',why:'Confirm or remove them on the Performance page.',missing:false});
+  assert.deepEqual(periodNote({},{provisional:{unresolved:[{}]}}),{text:'Provisional: money changes awaiting you count as deposits or withdrawals.',why:'Confirm or remove them on the Performance page.',missing:false});
   assert.equal(periodNote({},{}),null);assert.equal(periodNote(undefined,{}),null);
 });
 test('Today says "Unavailable" only for a recorded reason, as the box does; otherwise "—"',()=>{

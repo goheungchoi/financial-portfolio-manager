@@ -118,6 +118,6 @@ test('a provisional summary may carry range changes only, with no unresolved cha
   const row=(day,low,narrowed)=>db.prepare('INSERT INTO nav_history VALUES(?,?,?)').run('a',day,JSON.stringify({day,at:Date.parse(day+'T05:00:00Z'),USD:{equity:low,cash:low},KRW:{equity:1,cash:1},equityKRW:1,fx:{usdKRW:1300},valuation:{ranges:{USD:{narrowed}}}}));
   row('2026-11-02',500,0);row('2026-11-03',510,40);
   const s=perf.summary('a','USD',null);assert.ok(s.provisional,'provisional');assert.ok(Array.isArray(s.provisional.rangeChanges)&&s.provisional.rangeChanges.length===1);
-  assert.equal(s.provisional.unresolved,undefined);assert.equal(s.provisional.included,undefined,'no included scenario: the page must not read it');
-  const page=require('node:fs').readFileSync(require('node:path').join(__dirname,'../src/AccountPerformance.tsx'),'utf8');assert.ok(page.includes('provisional?.unresolved?.length>0&&')&&page.includes('pv.included?.find'),'the page guards on unresolved changes');
+  assert.equal(s.provisional.unresolved,undefined);assert.equal(s.provisional.excluded,undefined,'no excluded scenario: the page must not read it');
+  const page=require('node:fs').readFileSync(require('node:path').join(__dirname,'../src/AccountPerformance.tsx'),'utf8');assert.ok(page.includes('provisional?.unresolved?.length>0&&')&&page.includes('pv.excluded?.find'),'the page guards on unresolved changes');
 });

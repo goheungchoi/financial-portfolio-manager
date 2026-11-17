@@ -45,6 +45,6 @@ test('the detected-flow Journal line says the main figures leave it out until it
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},(id,kind,title,body)=>lines.push({title,body}));
   a.noteDetectedFlow({id:'f',market:'KR',currency:'KRW',amount:3250000,day:'2026-11-02'});a.noteDetectedFlow({id:'g',market:'US',currency:'USD',amount:-120.5,day:'2026-11-02'});
   assert.deepEqual(lines.map(l=>l.title),['Deposit detected','Withdrawal detected']);
-  assert.equal(lines[0].body,'Deposit detected: Korean cash rose by ₩5,000,000 with no matching trade on 2026-11-16. Until you confirm it, it is left out of the main return figures, which show as provisional; confirm or remove it under Performance → Deposits & withdrawals.');
+  assert.equal(lines[0].body,'Deposit detected: Korean cash rose by ₩3,250,000 with no matching trade on 2026-11-02. Until you confirm or remove it, it counts as a deposit; if it was income, Performance shows the returns both ways. Confirm or remove it under Performance → Deposits & withdrawals.');
   assert.doesNotMatch(lines[1].body,/treat it as/);db.close();
 });

@@ -7,6 +7,10 @@ if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('Isolated UI data directory
 app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
 const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/cash-check-desktop');fs.mkdirSync(output,{recursive:true});
 const A='cash-check-fixture',CASH=10000000,HELD=3000000,since=Date.now()-5*60000;
+// Item 9 section 4 (A): the account was worth 5 million won on the two days before; today's ₩10,000,000 holds the held
+// ₩3,000,000 and the detected ₩2,000,000, which count as deposits, so the headline return reads about 0%, not +100%.
+const seedDay=offset=>new Date(Date.now()+9*3600000-offset*86400000).toISOString().slice(0,10);
+process.env.PORTFOLIO_PERFORMANCE_SEED=JSON.stringify({account:A,history:[2,1].map(offset=>({day:seedDay(offset),at:0,KRW:{equity:5000000,cash:5000000},USD:null,fx:null,equityKRW:5000000})),reviews:[]});
 const domestic={accountKey:A,environment:'mock',source:'kis',cash:CASH,reportedTotal:CASH,holdings:[]};
 // The held change, as the detector saves it: the last reading had today's cash (so no new change), and the rise is held.
 {const {DatabaseSync}=require('node:sqlite');const {BASIS}=require('../electron/flow-detector.cjs');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
@@ -21,10 +25,11 @@ require('../electron/kis-service.cjs').KisService.prototype.request=async functi
   if(operation==='import')return this.workerScript==='provider-worker.cjs'?{aiConnected:false,dartConnected:false,pushConnected:false}:{...domestic,timestamp:new Date().toISOString()};
   if(operation==='refresh')return {...domestic,timestamp:new Date().toISOString()};
   if(operation==='live-context')return {balance:{...domestic,timestamp:new Date().toISOString()},quotes:[],marketSession:{open:false,status:'closed'}};
-  if(operation==='us-context')throw new Error('FEATURE_UNAVAILABLE');
+  // An empty U.S. account, so the daily value is recorded (it waits for a U.S. balance that could hold KRW for U.S. buys).
+  if(operation==='us-context')return {balance:{accountKey:A+':US',environment:'mock',source:'kis-us',currency:'USD',cash:0,reportedTotal:0,holdings:[],timestamp:new Date().toISOString()},quotes:[],warnings:[],marketSession:{open:false,status:'closed'}};
   if(operation==='orders'||operation==='us-orders')return {orders:[]};if(operation==='quotes')return [];if(operation==='news')return [];
   throw new Error('FEATURE_UNAVAILABLE');};
-const timer=setTimeout(()=>{console.error('Cash-check desktop timed out');app.exit(1);},120000);
+const timer=setTimeout(()=>{console.error('Cash-check desktop timed out');app.exit(1);},170000);
 app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundThrottling(false);win.hide();win.webContents.once('did-finish-load',async()=>{try{
   const run=code=>win.webContents.executeJavaScript(code).catch(error=>{throw new Error(`${error.message} (in: ${code.slice(0,200)})`);});
   const until=async(code,what,ms=20000)=>{const t=Date.now();while(Date.now()-t<ms){if(await run(code))return;await new Promise(r=>setTimeout(r,200));}throw new Error('Timed out waiting for '+what);};
@@ -40,6 +45,20 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   await run(`document.querySelector('.attention-item[data-id="cash-check-KR"]').scrollIntoView({block:'center'})`);await capture('home-cash-check');
   await run(`Array.from(document.querySelectorAll('.attention-item')).find(li=>li.textContent.includes(${JSON.stringify(want)})).querySelector('button').click()`);
   await until(`document.querySelector('h1')?.textContent==='Performance'`,'Performance');await until(`document.querySelector('[aria-label="Flow amount"]')?.value==='3,000,000'`,'the form filled');
+  // Section 4 (A): the headline counts both as deposits (about 0%), and the notice gives the income figure. First the
+  // app records today's value (₩10,000,000); the page is opened again to read it.
+  await until(`window.portfolio.getPerformance().then(r=>r.state.summaries.COMBINED?.end===${JSON.stringify(seedDay(0))})`,"today's value recorded",100000);
+  await run(`document.querySelector('.brand').click()`);await until(`document.querySelector('h1')?.textContent==='Home'`,'Home');
+  await run(`Array.from(document.querySelectorAll('.nav')).find(b=>b.dataset.tab==='Performance').click()`);await until(`document.querySelector('h1')?.textContent==='Performance'`,'Performance again');
+  await until(`/Provisional performance/.test(document.body.innerText)`,'the provisional notice');
+  const notice=await run(`Array.from(document.querySelectorAll('[role=status]')).map(n=>n.innerText).find(t=>/Provisional performance/.test(t))`);
+  assert.match(notice,/2 money changes awaiting you count as deposits or withdrawals/);assert.match(notice,/\(checking\)/);assert.match(notice,/If they were income or no money moved: return \+100\.00%/);
+  const allRow=await run(`Array.from(document.querySelectorAll('tr')).map(r=>r.innerText).find(t=>/^All\\b/.test(t))`);assert.match(allRow??'',/0\.00%/,'the headline: about 0%, not +100%: '+allRow);
+  await run(`window.scrollTo(0,0)`);await capture('performance-headline');
+  // Home's result: the same headline, tagged Provisional with the new words.
+  await run(`document.querySelector('.brand').click()`);await until(`document.querySelector('h1')?.textContent==='Home'`,'Home');await until(`/Provisional/.test(document.body.innerText)`,'the Home result tag');
+  const home=await run('document.body.innerText');assert.doesNotMatch(home,/\+100\.00%/,'Home does not show the deposits as a return');await run(`window.scrollTo(0,0)`);await capture('home-headline');
+  await run(`Array.from(document.querySelectorAll('.nav')).find(b=>b.dataset.tab==='Performance').click()`);await until(`document.querySelector('[aria-label="Flow amount"]')?.value==='3,000,000'`,'back on the filled form');
   assert.equal(await run(`document.querySelector('[aria-label="Flow type"]').value`),'deposit');assert.equal(await run(`document.querySelector('[aria-label="Flow account"]').value`),'KR');
   await run(`document.querySelector('[aria-label="Flow amount"]').scrollIntoView({block:'center'})`);await capture('performance-record-it');
   await run(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Record deposit').click()`);

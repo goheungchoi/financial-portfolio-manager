@@ -119,17 +119,22 @@ class PerformanceHistory {
   // awaiting you). Settlements and fees are explained from trades by the flow detector and are not recorded as flows.
   movements(account){return this.flows(account).map(f=>({...f,category:f.detected?'unresolved':f.transfer?'transfer':'external'}));}
   // series: 'KRW' (Korea account), 'USD' (U.S. account) or 'COMBINED' (KRW, U.S. flows converted at that day's rate).
-  // unresolved: 'exclude' (the headline: a detected change awaiting you is not taken as a deposit or withdrawal, a
-  // provisional scenario, not proof that none happened) or 'include' (the other scenario).
+  // unresolved: 'include' (the headline since item 9, the user's answer (A), 2026-11-17: a detected change awaiting you,
+  // and a cash change the flow detector holds (held, set by main; those an open order, a U.S. buy or a settlement may
+  // explain are left out), count as deposits or withdrawals) or 'exclude' (the other scenario: they were income or no
+  // money moved; the headline from 2026-11-04 (14f8b3d) until item 9, and still what the review context reads).
   // adjustments: versioned valuation corrections (electron/valuation-corrections.cjs), each {day, market, amount} in
   // its market's currency; the recorded values are never changed, the series is computed with them.
   // corrections (stage 3.1, electron/performance-corrections.cjs, set by main): each recorded day's accounting correction
   // in U.S. dollars (the settlement ledger's cash-free changes of the low basis). It is not investment P/L: P/L and the
   // daily return leave it out.
-  series(account,kind,{unresolved='exclude',adjustments=this.adjustments?.(account)??[]}={}){
+  series(account,kind,{unresolved='include',adjustments=this.adjustments?.(account)??[]}={}){
     // Transfers between the Korean and U.S. accounts move money within the account: they count in each market's series
     // and not in the combined one.
-    const history=this.history(account),flows=this.flows(account).filter(f=>unresolved==='include'||!f.detected);let previous=null,index=1,lastFx=null;const points=[];
+    const history=this.history(account),flows=[...this.flows(account).filter(f=>unresolved==='include'||!f.detected),
+      // Held parts that count, each on the Seoul day of its `by` (where its detected flow will fall), so the headline does
+      // not move when the change is recorded or confirmed.
+      ...(unresolved==='include'?this.heldCounted(account):[])];let previous=null,index=1,lastFx=null;const points=[];
     // Settlement simplification S2b: a day's return is its P/L over a base that leaves out the corrections still open in
     // the previous day's value (openUSD, from the settlement ledger: a pre-tracking buy opened as a correction lowers the
     // recorded value until it closes), in U.S. dollars, converted at the previous day's rate in the combined series. A base
@@ -188,10 +193,15 @@ class PerformanceHistory {
     if(Math.abs(previous?.openUSD??0)>=0.005||Math.abs(netUSD)>=0.005)for(const p of points)if(p.settlement?.includes('corrected'))p.correctionOpen=true;
     return points;
   }
+  // The held parts that count in the headline, as flows (item 9 section 4).
+  heldCounted(account){let held=[];try{held=this.held?.(account)??[];}catch{held=[];}
+    return held.filter(p=>p.counted&&Number.isFinite(p.amount)&&Number.isFinite(p.by)).map(p=>({day:seoulDate(p.by),market:p.market,currency:p.market==='US'?'USD':'KRW',amount:p.amount,held:true}));}
   // Period returns, money gain after flows and the matching benchmark change, all from the same start and end days.
-  // With unresolved movements in the history the summary is provisional: the headline leaves them out, and
-  // provisional.included gives the period results with them counted (scenarios, not a guaranteed range).
-  summary(account,kind,benchmark,{unresolved='exclude',adjustments}={}){
+  // With money changes awaiting you (detected flows not confirmed, held changes) the summary is provisional: the headline
+  // counts them as deposits or withdrawals (item 9, answer (A)), and provisional.excluded gives the period results if
+  // they were income or no money moved (scenarios, not a guaranteed range). Held changes something else may explain are
+  // listed, not counted.
+  summary(account,kind,benchmark,{unresolved='include',adjustments}={}){
     const points=this.series(account,kind,{unresolved,...(adjustments?{adjustments}:{})});if(points.length<1)return {kind,points,periods:[],start:null,end:null,benchmark};
     const end=points.at(-1),closes=benchmark?this.closes(benchmark):[];const closeOn=day=>closes.filter(c=>c.day<=day).at(-1)??null;
     const periods=PERIODS.map(([label,days])=>{
@@ -204,10 +214,12 @@ class PerformanceHistory {
         ...(affected(inside)?{settlementAffected:affected(inside)}:{}),...(corrections?{corrections}:{}),...(unavailable.length?{unavailable}:{}),benchmark:from&&to&&from.day!==to.day?to.close/from.close-1:null};
     });
     const analytics=Object.fromEntries(periods.map(p=>[p.label,analyze(points,p.start)]));
-    const open=unresolved==='exclude'?this.movements(account).filter(f=>f.category==='unresolved'&&f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind)):[];
+    const mine=f=>f.day>=points[0].day&&(kind==='COMBINED'||f.currency===kind);let held=[];if(unresolved==='include')try{held=this.held?.(account)??[];}catch{held=[];}
+    const open=unresolved==='include'?[...this.movements(account).filter(f=>f.category==='unresolved'&&mine(f)).map(f=>({day:f.day,market:f.market,currency:f.currency,amount:f.amount})),
+      ...held.map(p=>({day:seoulDate(p.by),market:p.market,currency:p.market==='US'?'USD':'KRW',amount:p.amount,held:true,counted:Boolean(p.counted),...(p.reason?{reason:p.reason}:{})})).filter(mine)]:[];
     const ranged=points.filter(p=>p.pnlRange).map(p=>({day:p.day,pnl:p.pnl,low:p.pnlRange.low,high:p.pnlRange.high}));
-    const provisional=open.length||ranged.length?{...(open.length?{unresolved:open.map(f=>({day:f.day,market:f.market,currency:f.currency,amount:f.amount})),scenario:'headline leaves these out; included counts them as deposits or withdrawals',
-      included:this.summary(account,kind,benchmark,{unresolved:'include',...(adjustments?{adjustments}:{})}).periods.map(({label,twr,gain})=>({label,twr,gain}))}:{}),...(ranged.length?{rangeChanges:ranged}:{})}:null;
+    const provisional=open.length||ranged.length?{...(open.length?{unresolved:open,scenario:'headline counts these as deposits or withdrawals (those not counted are named only); excluded gives the results if they were income or no money moved',
+      excluded:this.summary(account,kind,benchmark,{unresolved:'exclude',...(adjustments?{adjustments}:{})}).periods.map(({label,twr,gain})=>({label,twr,gain}))}:{}),...(ranged.length?{rangeChanges:ranged}:{})}:null;
     const unreadable=this.unreadableFlows(account);
     return {kind,benchmark,start:points[0].day,end:end.day,points:points.map(({positions,...p})=>p),periods,analytics,...(provisional?{provisional}:{}),...(unreadable?{unreadableFlows:unreadable}:{})};
   }

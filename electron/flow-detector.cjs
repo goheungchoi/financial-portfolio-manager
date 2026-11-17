@@ -275,6 +275,17 @@ class FlowDetector {
     if(q.usUnseen)return 'the U.S. balance was not compared';if(now.provisionalKRW>0||now.unsettledKRW>0||state.settled.length||now.krwUnpaid>0)return 'U.S. buys are settling';
     if(m==='US'&&!(fx>0))return 'no exchange rate';const o=m==='KR'?'US':'KR';if(state.pending[o])return `the ${label(o)} account changed too`;
     if(!now.readAt)return 'waiting';if((o==='KR'||now.usEver)&&(q.otherReads??0)<OTHER_READS)return 'waiting';return null;}
+  // Item 9 section 4 (A; design-note §4a): each held part, for the headline series (PerformanceHistory.held). It counts
+  // as a deposit or withdrawal on the Seoul day of its `by` (where its detected flow will fall) unless something else may
+  // explain it: an open order's fill (couldBeFill), a U.S. buy filled with it (funding), or U.S. buys of unknown funding
+  // settling (provisionalKRW, in the direction a settlement moves cash). Those are named only (counted: false).
+  // A part a recorded flow already carries (its pendingIds, as flowsSince's `done`) is never counted again.
+  heldParts(account){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)return [];const w=JSON.parse(row.payload),out=[];
+    const done=new Set(this.performance.flows(account).flatMap(f=>f.pendingIds??[]));
+    for(const [m,q] of Object.entries(w.pending??{})){if(!q)continue;const settling=(w.provisionalKRW??0)>0&&(m==='KR'?q.amount<0:q.amount>0);
+      const reason=q.couldBeFill?'an open order may explain it':q.funding?'a U.S. buy filled with it':settling?'U.S. buys are settling':null;
+      for(const x of (Array.isArray(q.parts)&&q.parts.length?q.parts:[{amount:q.amount,by:q.since}]))if(!(x.id&&done.has(x.id)))out.push({market:m,amount:x.amount,by:x.by,since:q.since,counted:!reason,...(reason?{reason}:{})});}
+    return out;}
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const p=row?JSON.parse(row.payload).pending??{}:{};

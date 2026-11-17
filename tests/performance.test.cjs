@@ -101,13 +101,15 @@ test('history keeps both bounds; a day whose valuation range changed has a provi
   now=at('2026-11-03');h.record('a',state(1130000,1130000));now+=60000;h.record('a',state(1140000,1140000));
   const p=h.series('a','COMBINED');assert.equal(p[1].pnl,140000);assert.deepEqual(p[1].pnlRange,{low:10000,high:140000},'at least the ₩10,000 market move');
 });
-test('an unresolved detected change is left out of the headline return; the summary is provisional and shows it counted',()=>{
+// Item 9, the user's answer (A), 2026-11-17: the headline now counts an unresolved detected change as a deposit; the
+// provisional scenario (excluded) is the figure if it was income. (Before: left out, with the counted figure as scenario.)
+test('an unresolved detected change counts as a deposit in the headline; the summary is provisional and shows it as income',()=>{
   let now=at('2026-10-29');const h=new PerformanceHistory(new DatabaseSync(':memory:'),()=>now);const row=v=>({totals:{KRW:v,USD:0,equityKRW:v},cash:{KRW:v,USD:0},rows:[],fx:{usdKRW:1335}});
   h.record('a',row(1000000));now=at('2026-10-31');h.record('a',row(1130000));
   h.addFlow('a',{day:'2026-10-31',market:'US',amount:94.38,note:'U.S. cash rose with no matching trade',detected:true});h.addFlow('a',{day:'2026-10-31',market:'KR',amount:50000,note:'deposit'});
   assert.deepEqual(h.movements('a').map(m=>m.category).sort(),['external','unresolved']);
-  const s=h.summary('a','COMBINED');const all=s.periods.find(p=>p.label==='All');assert.equal(all.gain,80000,'the ₩50,000 deposit is not gain; the unresolved +$94.38 is not taken as a deposit');
+  const s=h.summary('a','COMBINED');const all=s.periods.find(p=>p.label==='All');assert.ok(Math.abs(all.gain-(80000-94.38*1335))<1,'the ₩50,000 deposit is not gain, and the unresolved +$94.38 counts as a deposit');
   assert.ok(s.provisional);assert.deepEqual(s.provisional.unresolved,[{day:'2026-10-31',market:'US',currency:'USD',amount:94.38}]);
-  const inc=s.provisional.included.find(p=>p.label==='All');assert.ok(Math.abs(inc.gain-(80000-94.38*1335))<1,'the other scenario: counted as a deposit');
+  const exc=s.provisional.excluded.find(p=>p.label==='All');assert.equal(exc.gain,80000,'the other scenario: income, not a deposit');
   h.confirmFlow('a',h.movements('a').find(m=>m.category==='unresolved').id);assert.equal(h.summary('a','COMBINED').provisional,undefined,'confirmed: no longer provisional');
 });
