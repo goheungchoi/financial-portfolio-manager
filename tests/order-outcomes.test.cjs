@@ -36,8 +36,11 @@ test('a STOP outcome on order 2 (every code of the class): order 1 stands, order
     assert.equal(reviews.length,1,code);assert.match(reviews[0][1],new RegExp(`Buy 035720 \\(${code}\\); Buy 990060`),code);}
 });
 test('an error the app does not know on order 2: order 1 stands, order 3 is not sent, and the review fails with every outcome',async()=>{
-  const {sent,a,error}=await three({prepare:{fail:'SOMETHING_NEW'}});assert.deepEqual(sent,['005930']);
+  const {sent,a,h}=await three({prepare:{fail:'SOMETHING_NEW'}});assert.deepEqual(sent,['005930']);
   assert.equal(a.lastError,'REVIEW_FAILED');
+  // The failed review's record keeps every order's outcome (M-5 (e)).
+  const r=JSON.parse(h.db.prepare('SELECT payload FROM reviews').get().payload);assert.ok(r.orderId,'the first order\'s');
+  assert.deepEqual(r.orders.map(x=>[x.item,x.symbol,x.outcome.class,x.outcome.code]),[[1,'035720','unknown','SOMETHING_NEW'],[2,'990060','stop','SOMETHING_NEW']]);
   const {a:b}=await three({prepare:{fail:'BROKER_UNAVAILABLE'}});assert.notEqual(b.lastError,'REVIEW_FAILED','a known stop does not fail the review');
 });
 test('order 2 unclear (rule U): orders 3.. still sent; order 2 counts in full in the open-order sums',async()=>{

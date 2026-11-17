@@ -18,20 +18,26 @@ class PendingDecisions {
   repeats(scope,decision,marketOpen){if(!trade(decision)||marketOpen(marketOf(decision.symbol)))return null;return this.active(scope).find(p=>p.symbol===decision.symbol&&p.action===decision.action)??null;}
   // After a successful decision. marketOpen(market): whether that market's session was open for it. orderId: the order
   // it placed, if any.
-  record(scope,{decision,reviewId=null,proposalId=null,orderId=null,context={},marketOpen=()=>true}){const now=this.clock(),closed=[];
+  // more (M-5 (e)): a batch's further orders, [{decision, orderId, proposalId}], each closing and keeping its own pending
+  // row exactly as the first does (one row per symbol and action). The first order's row is returned, as before; with no
+  // further orders every step is today's.
+  record(scope,{decision,reviewId=null,proposalId=null,orderId=null,context={},marketOpen=()=>true,more=[]}){const now=this.clock(),closed=[];
     const verdict=s=>(decision?.planVerdicts??[]).find(v=>v.symbol===s)?.verdict,held=s=>context.positions?.[s]?.quantity??0;
+    const all=[{decision,orderId,proposalId},...more];
     for(const p of this.active(scope)){const close=(status,why)=>{closed.push(p.id);this.save({...p,status,closedAt:now,closedBy:why,closedReviewId:reviewId});};
-      if(marketOpen(marketOf(p.symbol))){close(orderId&&decision.symbol===p.symbol&&decision.action===p.action?'carried-out':'reassessed','decided again with its market open');continue;}
-      if(trade(decision)&&decision.symbol===p.symbol&&decision.action!==p.action){close('revised',`${decision.action} decided instead`);continue;}
+      if(marketOpen(marketOf(p.symbol))){close(all.some(o=>o.orderId&&o.decision?.symbol===p.symbol&&o.decision?.action===p.action)?'carried-out':'reassessed','decided again with its market open');continue;}
+      const other=all.find(o=>trade(o.decision)&&o.decision.symbol===p.symbol&&o.decision.action!==p.action);
+      if(other){close('revised',`${other.decision.action} decided instead`);continue;}
       if(verdict(p.symbol)==='passed'){close('cancelled','passed on in a later review');continue;}
       if(p.action==='Sell'&&context.positions&&held(p.symbol)<1)close('cancelled','no shares held any more');}
-    if(!trade(decision)||orderId||marketOpen(marketOf(decision.symbol)))return null;
-    const prev=this.active(scope).find(p=>p.symbol===decision.symbol&&p.action===decision.action&&!closed.includes(p.id));
-    const quote=(context.quotes??[]).find(q=>q.symbol===decision.symbol);
-    return this.save({id:prev?.id??'PD-'+randomUUID().slice(0,8),scope,symbol:decision.symbol,status:'pending',action:decision.action,quantity:decision.quantity,
-      rationale:String(decision.explanation??'').slice(0,400),invalidation:String(decision.plan?.invalidation??'').slice(0,240),
-      evidence:{price:quote?.price??null,heldQuantity:held(decision.symbol)},proposalId:prev?.proposalId??proposalId,
-      createdAt:prev?.createdAt??now,expiresAt:prev?.expiresAt??now+3*DAY,reviewId:prev?.reviewId??reviewId,lastReviewId:reviewId,reviews:(prev?.reviews??0)+1});}
+    const keep=({decision,orderId,proposalId})=>{if(!trade(decision)||orderId||marketOpen(marketOf(decision.symbol)))return null;
+      const prev=this.active(scope).find(p=>p.symbol===decision.symbol&&p.action===decision.action&&!closed.includes(p.id));
+      const quote=(context.quotes??[]).find(q=>q.symbol===decision.symbol);
+      return this.save({id:prev?.id??'PD-'+randomUUID().slice(0,8),scope,symbol:decision.symbol,status:'pending',action:decision.action,quantity:decision.quantity,
+        rationale:String(decision.explanation??'').slice(0,400),invalidation:String(decision.plan?.invalidation??'').slice(0,240),
+        evidence:{price:quote?.price??null,heldQuantity:held(decision.symbol)},proposalId:prev?.proposalId??proposalId,
+        createdAt:prev?.createdAt??now,expiresAt:prev?.expiresAt??now+3*DAY,reviewId:prev?.reviewId??reviewId,lastReviewId:reviewId,reviews:(prev?.reviews??0)+1});};
+    const first=keep(all[0]);for(const o of more)keep(o);return first;}
   // What the trading review sees.
   context(scope){return this.active(scope).map(p=>({symbol:p.symbol,action:p.action,quantity:p.quantity,market:marketOf(p.symbol),since:new Date(p.createdAt).toISOString(),reviews:p.reviews,rationale:p.rationale,...(p.invalidation?{invalidation:p.invalidation}:{}),priceThen:p.evidence.price,...(p.proposalId?{proposalId:p.proposalId}:{})}));}
 }

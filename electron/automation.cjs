@@ -83,6 +83,10 @@ function dryRunMeasurement(db,reviewId){
     return {requests,totals:{requests:requests.length,inputTokens:sum('inputTokens'),outputTokens:sum('outputTokens'),cacheReadTokens:sum('cacheReadTokens'),cacheWriteTokens:sum('cacheWriteTokens'),reservedUSD:Math.round(sum('reservedUSD')*1e6)/1e6,costUSD:Math.round(sum('costUSD')*1e6)/1e6}};}
   catch{return null;}
 }
+// M-5 (e): the review record's further orders (m5-plan.md section 6; M-6 shapes it): one row per further order sent from
+// a batch, in item order, with what became of it. The first order keeps today's proposalId, orderId and executionNote.
+function furtherOrderRows(rows){return rows.filter(r=>r.item>0).sort((a,b)=>a.item-b.item).map(r=>({item:r.item,symbol:r.symbol,action:r.action,quantity:r.quantity,
+  proposalId:r.proposal?.id??null,orderId:r.order?.id??null,executionNote:r.executionNote??null,outcome:r.outcome??null}));}
 // An opening whose stop is not on the losing side of the current price (below for a long, above for a short; Stage 3):
 // {side, q, eff}, else null. Covers and repayments need no stop. One function for the first order and each further one.
 function stopSideGap(decision,context){
@@ -775,13 +779,16 @@ class Automation {
       // M-5 (c): with further orders standing, the batch places the first and each further order (placeBatch); the first
       // order's fields below stay its own. A single order goes as before.
       const further=Array.isArray(result.decision.moreOrders)&&result.decision.moreOrders.length?result.decision.moreOrders:null;
-      if(further){const sent=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,costRevision,base:execution,decidedAt:recorded.timestamp,onProposal});
+      let batchRows=null;
+      if(further){const sent=batchRows=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,costRevision,base:execution,decidedAt:recorded.timestamp,onProposal});
         const first=sent.find(r=>r.item===0);if(first)({proposal,order,executionNote}=first);}
       else if(result.decision.action!=='Hold')({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal}));
-      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{})};
+      const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{}),...(batchRows?{orders:furtherOrderRows(batchRows)}:{})};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
       this.lastFingerprint={...hash,scope:watchScope,completedAt:Date.now()};
-      try{this.pending.record(watchScope,{decision:result.decision,reviewId:id,proposalId:proposal?.id??null,orderId:order?.id??null,context,marketOpen:this.marketOpenIn(context)});}catch{}
+      // M-5 (e): each further order kept for a closed market is its own pending decision, and closes its own (carried out).
+      const more=batchRows?batchRows.filter(r=>r.item>0).map(r=>({decision:further.find(o=>o.item===r.item)??r,orderId:r.order?.id??null,proposalId:r.proposal?.id??null})):[];
+      try{this.pending.record(watchScope,{decision:result.decision,reviewId:id,proposalId:proposal?.id??null,orderId:order?.id??null,context,marketOpen:this.marketOpenIn(context),...(more.length?{more}:{})});}catch{}
       if(gateMode!=='off')try{const RG=require('./review-gate.cjs'),m=result.metrics??{};const prev=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)).find(r=>r.id!==id&&r.scope===this.config.scope&&r.decision);
         this.reviewGate.complete(id,{completed:true,orderId:order?.id??null,proposalId:proposal?.id??null,research:{toolCalls:m.toolCalls??0,researchReads:m.researchReads??0,detailReads:m.detailReads??0,fetched:m.fetched??0,refreshed:m.refreshed??0,reused:m.reused??0},change:RG.decisionChange(prev?.decision,result.decision)});}catch{}
       // The baseline is also what focused routine reviews compare with, so it is kept while they are on, gate or no gate.
@@ -790,6 +797,10 @@ class Automation {
       if(this.vendorOf(this.agentModel('trading').openaiModel)==='anthropic'&&this.claudeFirstReview()?.state==='pending'){const fr=this.claudeFirstReview();this.setClaudeFirstReview({...fr,state:'done',doneAt:Date.now()});this.claudeFirstShown=false;this.log(randomUUID(),'System','First Claude review completed','Automatic reviews on Claude Opus 5.5 continue at your interval.');}
       this.noteReviewOutcome(null);this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
     }catch(error){this.lastRun=Date.now();this.lastErrorAt=this.lastRun;this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+require('./ai-errors.cjs').sizeDetail(error);
+      // M-5 (e): a batch that failed on an error the app does not know: its record keeps what became of each order (the
+      // first order's proposal id was written when it was made; the further orders here).
+      if(Array.isArray(error?.batch))try{const row=this.db.prepare('SELECT payload FROM reviews WHERE id=?').get(id);const first=error.batch.find(r=>r.item===0);
+        if(row)this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify({...JSON.parse(row.payload),...(first?{executionNote:first.executionNote??null,orderId:first.order?.id??null}:{}),orders:furtherOrderRows(error.batch)}),id);}catch{}
       // What research changed before the failure is reported apart from the failed result (1.5.48 audit, A5).
       if(Array.isArray(error?.applied)&&error.applied.length){const list=error.applied.slice(0,10).map(a=>`${a.tool}${a.id?` ${a.id}`:''} (${a.status})`).join('; ');this.lastErrorDetail+=` Changed during research before the failure, and kept: ${list}.`;if(!this.disposed)this.log(id,'System','Research changes kept after a failed review',list);}
       try{this.noteReviewOutcome(this.lastError,error);}catch{}
