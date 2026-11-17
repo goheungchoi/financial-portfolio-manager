@@ -32,7 +32,12 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
     for(let attempt=0;attempt<3;attempt++){try{fs.writeFileSync(path.join(output,name+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());return;}catch(error){if(attempt===2)throw error;await new Promise(r=>setTimeout(r,250));}}};
   await run('window.portfolio.importKis()');await run('window.portfolio.refreshPortfolio()');
   const seenAt=new Date(since).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit'});const want=`Korean cash up ₩3,000,000, seen ${seenAt} · checking; not a return yet`;
-  await until(`Array.from(document.querySelectorAll('.attention-item')).some(li=>li.textContent.includes(${JSON.stringify(want)}))`,'the Home line');await capture('home-cash-check');
+  await until(`Array.from(document.querySelectorAll('.attention-item')).some(li=>li.textContent.includes(${JSON.stringify(want)}))`,'the Home line');
+  // The cash line wraps (up to two lines) instead of clipping; the other rows keep one line.
+  const shape=await run(`(()=>{const rt=document.querySelector('.attention-item[data-id="cash-check-KR"] .row-text'),other=Array.from(document.querySelectorAll('.attention-item:not([data-id^="cash-check-"]) .row-text'))[0];
+    return {clipped:rt.scrollHeight>rt.clientHeight+1||rt.scrollWidth>rt.clientWidth+1,space:getComputedStyle(rt).whiteSpace,other:other?getComputedStyle(other).whiteSpace:null};})()`);
+  assert.deepEqual(shape,{clipped:false,space:'normal',other:'nowrap'},'the cash line reads whole; other rows unchanged');
+  await run(`document.querySelector('.attention-item[data-id="cash-check-KR"]').scrollIntoView({block:'center'})`);await capture('home-cash-check');
   await run(`Array.from(document.querySelectorAll('.attention-item')).find(li=>li.textContent.includes(${JSON.stringify(want)})).querySelector('button').click()`);
   await until(`document.querySelector('h1')?.textContent==='Performance'`,'Performance');await until(`document.querySelector('[aria-label="Flow amount"]')?.value==='3,000,000'`,'the form filled');
   assert.equal(await run(`document.querySelector('[aria-label="Flow type"]').value`),'deposit');assert.equal(await run(`document.querySelector('[aria-label="Flow account"]').value`),'KR');
