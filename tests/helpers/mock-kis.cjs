@@ -96,9 +96,12 @@ class MockKis {
   // Fills qty shares of the order (any number of its chain) on its live link, at its price or the one given.
   fill(market,id,qty=null,price=null){const r=this.tail(market,id);const q=qty??r.remaining;if(q<1||q>r.remaining)throw new Error('mock: bad fill');
     const p=price??r.orderPrice;r.filled+=q;r.remaining-=q;r.amount+=q*p;const a=this.accounts[market];let h=a.holdings.find(x=>x.symbol===r.symbol);
-    if(r.side==='Buy'){if(!h){h={symbol:r.symbol,name:r.name,quantity:0,cost:p,price:p};a.holdings.push(h);}h.cost=(h.cost*h.quantity+p*q)/(h.quantity+q);h.quantity+=q;if(market==='US')a.cash-=q*p;else a.settledCash-=q*p;}
-    else{h.quantity-=q;if(market==='US')a.cash+=q*p;else a.settledCash+=q*p;}
+    // Korea: the D+2 cash KIS projects moves at the fill. U.S.: cash moves at settlement (settle), as KIS's does.
+    if(r.side==='Buy'){if(!h){h={symbol:r.symbol,name:r.name,quantity:0,cost:p,price:p};a.holdings.push(h);}h.cost=(h.cost*h.quantity+p*q)/(h.quantity+q);h.quantity+=q;if(market==='US')r.unsettled=(r.unsettled??0)-q*p;else a.settledCash-=q*p;}
+    else{h.quantity-=q;if(market==='US')r.unsettled=(r.unsettled??0)+q*p;else a.settledCash+=q*p;}
     return r;}
+  // U.S. settlement of an order's fills not yet settled (any number of its chain; all orders when none is given): cash moves.
+  settle(market,id=null){for(const r of id==null?this.book[market]:[this.tail(market,id)]){if(r.unsettled){this.accounts[market].cash=Math.round((this.accounts[market].cash+r.unsettled)*100)/100;r.unsettled=0;}}return this;}
   reject(market,id){const r=this.tail(market,id);r.rejected=r.remaining;r.remaining=0;return r;}
   // An order you place yourself in KIS (D3): in history and in the open orders, never the app's.
   userOrder(market,{symbol,side,quantity,orderPrice}){return this.newRow(market,{symbol,side,quantity,orderPrice,by:'user'});}

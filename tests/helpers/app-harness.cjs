@@ -52,6 +52,8 @@ function appHarness({mock,severalOpen=true,db=new DatabaseSync(':memory:'),clock
       const c=splitContext(s.us,t,route,fx),kr=(Number.isFinite(s.kr.settledCash)?s.kr.settledCash:s.kr.cash)-(route.krwUnpaidKRW??route.krwKRW);
       for(const flow of h.fd.observe('acct',{usExplained:range=>h.inFlight.explained('acct',range),krCash:kr,provisionalKRW:route.provisionalKRW,provisionalOutsideKRW:Math.max(0,route.provisionalKRW-(c?.reportedInFlightUSD??0)*fx),unsettledKRW:f.unsettledKRW,
         usCash:s.us.cash+(s.us.pendingSaleProceeds??0)-Math.max(0,(t.buysUSD??0)-coveredInFlight(t,route,fx))+(t.sellsUSD??0)-(route.usUSD??0),funding:route.explained,fx,orders:[...h.kr.orders(),...h.us.orders()]}))if(flow.detected)h.flows.push(flow);}};
-  h.reading=()=>{const s=refresh();for(const name of READING_ORDER)steps[name](s);return h;};
+  // Readings a test makes back to back are at least 2 ms apart from what follows them (a fill counted in the same
+  // millisecond as the reading before would read as counted then; the app's readings are seconds apart).
+  h.reading=()=>{const s=refresh();for(const name of READING_ORDER)steps[name](s);const t=Date.now();while(Date.now()<t+2){}return h;};
   return h;}
 module.exports={appHarness,READING_ORDER};

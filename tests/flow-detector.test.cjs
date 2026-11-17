@@ -192,11 +192,12 @@ test('review P2: a settlement at the first U.S. reading leaves no evidence that 
   read('2026-10-21T11:00:00+09:00',{krCash:3600000,usCash:300});const found=read('2026-10-21T14:00:00+09:00',{krCash:3600000,usCash:300});
   assert.deepEqual(found.map(f=>[f.market,f.amount,f.detected]),[['KR',-1400000,true]],'the withdrawal is recorded');assert.ok(!notes.includes('Settlement matched'));
   assert.equal(perf.flows('acct').length,1);
-  // An open U.S. order at that reading still means it cannot be judged: nothing is held until it closes.
+  // M-3.2: an open U.S. order no longer stops the comparison: the Korean rise is held at once (a U.S. buy cannot explain a
+  // Korean rise), marked as seen before the U.S. balance, and stays held when the order closes.
   const t=settling();const open={id:'o',market:'US',symbol:'NASD:NVDA',side:'Buy',quantity:1,filled:0,status:'Accepted',createdAt:at('2026-10-21T09:59:00+09:00')};
   t.read('2026-10-21T10:00:00+09:00',{krCash:1000000,usCash:null});assert.deepEqual(t.read('2026-10-21T10:01:00+09:00',{krCash:1500000,usCash:0,orders:[open]}),[]);
-  assert.deepEqual(t.d.pending('acct'),[],'not compared while the order is open');
-  t.read('2026-10-28T10:05:00+09:00',{krCash:1500000,usCash:0,orders:[{...open,status:'Canceled'}]});assert.deepEqual(t.d.pending('acct').map(p=>[p.market,p.amount]),[['KR',500000]],'compared once it closes');
+  assert.deepEqual(t.d.pending('acct').map(p=>[p.market,p.amount,p.usBalanceUnseen]),[['KR',500000,true]],'held while the order is open');
+  t.read('2026-10-21T10:05:00+09:00',{krCash:1500000,usCash:0,orders:[{...open,status:'Canceled'}]});assert.deepEqual(t.d.pending('acct').map(p=>[p.market,p.amount]),[['KR',500000]],'still held once it closes');
 });
 test('an order cancelled or rejected after partial fills records when it was seen with its fills',async()=>{
   const {LiveEngine}=require('../electron/live-engine.cjs');const db=new DatabaseSync(':memory:');const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};

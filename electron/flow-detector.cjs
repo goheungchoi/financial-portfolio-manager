@@ -1,7 +1,8 @@
 // Deposits and withdrawals the user did not record, detected from cash changes that reconciled trades do not explain.
 // Between two balance observations, each market's cash change minus the cash effect of orders placed and filled in
-// between is unexplained. Detection waits while any order is open, so a fill not yet reconciled is never mistaken for
-// a flow. KIS reports the Korean and U.S. balances separately, so the two sides of one movement can arrive in
+// between is unexplained. M-3.2 (multi-order, m3-2-design.md): every reading is compared, orders open or not; a change an
+// open order's fill not yet counted could explain (its direction, within that order's unfilled amount) is held and never
+// recorded while such an order is open, so a fill not yet reconciled is never mistaken for a flow. KIS reports the Korean and U.S. balances separately, so the two sides of one movement can arrive in
 // different readings: an unexplained change is first held as provisional (later changes in the same market add to
 // it), and it is resolved by evidence, not by timing:
 // - balances that return to where they were leave nothing to record;
@@ -47,9 +48,15 @@ function cashEffect(order){
 // order placed before a reading and filled hours later is still counted once, when its fill appears.
 const orderKey=o=>o.id??`${o.market??'KR'}|${o.side}|${o.symbol}|${o.createdAt}`;
 const fillsOf=orders=>Object.fromEntries(orders.map(o=>[orderKey(o),Math.round(cashEffect(o)*100)/100]).filter(([,effect])=>effect!==0));
+// M-3.2: what fills of open orders the app has not counted yet could move a market's cash by: buys a fall up to their
+// unfilled shares at the highest price they may carry (limit, confirmed revision, or one sent but not confirmed), with
+// 1% for fees; sales a rise up to their unfilled shares at that price. Your own orders in KIS are not the app's records.
+const FILL_FEE=1.01;
+function fillEnvelope(orders,market){let fall=0,rise=0;for(const o of orders){if(!OPEN.includes(o.status)||(o.market??'KR')!==market)continue;
+    const rem=Math.max(0,(Number(o.quantity)||0)-(Number(o.filled)||0)),px=Math.max(Number(o.limitPrice)||0,Number(o.currentPrice)||0,Number(o.pendingRevision?.price)||0,Number(o.unconfirmed?.price)||0);
+    if(o.side==='Buy')fall+=rem*px*FILL_FEE;else rise+=rem*px;}return {fall,rise};}
 // Unexplained cash change per market since the previous observation, or null when it cannot be judged now.
 function unexplained(prev,now,orders){
-  if(orders.some(o=>OPEN.includes(o.status)))return null;
   // An order missing from the previous reading's fills had none then, unless it was already seen filled before it.
   // Readings saved before fills were kept fall back to the orders placed in between.
   const change=o=>{const effect=cashEffect(o);if(!prev.fills)return o.createdAt>prev.at&&o.createdAt<=now.at?effect:0;
@@ -95,6 +102,10 @@ function piecesOf(m,q,fx){const parts=q.parts?.length?q.parts:[{amount:q.amount,
   const merged=[];for(const x of parts){const last=merged[merged.length-1];if(last&&(!big(m,x.amount,fx)||!big(m,last.amount,fx)))merged[merged.length-1]={amount:last.amount+x.amount,parts:[...last.parts,x]};else merged.push({amount:x.amount,parts:[x]});}
   if(merged.length>1&&!big(m,merged[0].amount,fx)){const [a,b]=merged.splice(0,2);merged.unshift({amount:a.amount+b.amount,parts:[...a.parts,...b.parts]});}
   const out=merged.map(g=>({amount:round(m,g.amount),...spanOf(g.parts),pendingIds:idsOf(g.parts)}));out[out.length-1].amount=round(m,q.amount-out.slice(0,-1).reduce((n,x)=>n+x.amount,0));return out;}
+// M-3.2: each held change, at every reading: marked couldBeFill while open orders of its market could explain it (its
+// direction, and within their envelope); the time the mark clears is kept, and the 2-hour hold runs from it.
+function markFills(state,orders,at){for(const m of ['KR','US']){const q=state.pending[m];if(!q)continue;const env=fillEnvelope(orders,m),room=q.amount<0?env.fall:env.rise;
+    const could=room>0&&Math.abs(q.amount)<=room;if(q.couldBeFill&&!could)q.fillClearedAt=at;if(could)q.couldBeFill=true;else delete q.couldBeFill;}}
 const label=market=>market==='US'?'U.S.':'Korean';
 const money=(market,amount)=>market==='US'?`$${Math.abs(amount).toFixed(2)}`:`₩${Math.abs(Math.round(amount)).toLocaleString('en-US')}`;
 class FlowDetector {
@@ -120,7 +131,11 @@ class FlowDetector {
     // from before its first change to the last reading.
     for(const [m,q] of Object.entries(state.pending))if(q&&!Array.isArray(q.parts))state.pending[m]={...q,parts:[{id:randomUUID(),amount:q.amount,after:q.after??null,by:prev?.at??q.since}]};
     // A later change in a held market: added to it as a part of its own, in the window since the previous reading.
-    const add=(held,m,amount)=>{held.amount=round(m,held.amount+amount);held.parts=[...held.parts,{id:randomUUID(),amount:round(m,amount),after:prev.at??null,by:now.at}];};
+    // M-3.2: a change with no cash move in its market is only a fill being counted that the held change already holds (KIS
+    // showed it first): it joins the last part, so the held change stays one flow with that part's window.
+    const add=(held,m,amount)=>{held.amount=round(m,held.amount+amount);const cashMoved=m==='US'?now.usCash!==prev.usCash:now.krCash!==prev.krCash,last=held.parts[held.parts.length-1];
+      if(!cashMoved&&last){held.parts=[...held.parts.slice(0,-1),{...last,amount:round(m,last.amount+amount)}];return;}
+      held.parts=[...held.parts,{id:randomUUID(),amount:round(m,amount),after:prev.at??null,by:now.at}];};
     const save=()=>this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...now,...state}));
     // A Korean reading of another basis (for example before KRW committed to unsettled U.S. buys was netted out): start
     // again, dropping changes held on the old basis. A U.S. reading of another basis starts the U.S. comparison here,
@@ -134,8 +149,8 @@ class FlowDetector {
     // moved to the U.S. account before its balance was seen: the change is held like any other, marked so the user
     // investigates it rather than taking it for a withdrawal.
     const usStart=prev.usCash==null&&now.usCash!=null;
-    // Any open order, U.S. ones included, still means the reading cannot be judged.
-    const compare=()=>usStart?(orders.some(o=>OPEN.includes(o.status))?null:unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US'))):unexplained(prev,{...now,usAdjust,usPretracking},orders);
+    // M-3.2: compared with orders open too; a change a fill not yet counted could explain is held (markFills).
+    const compare=()=>usStart?unexplained(prev,{...now,usCash:null},orders.filter(o=>(o.market??'KR')!=='US')):unexplained(prev,{...now,usAdjust,usPretracking},orders);
     // When the amount of unknown funding changes (a U.S. buy or its settlement), either market's cash may move by money
     // whose source is not known: the two readings are not compared, and the next comparison starts here.
     // So does any change in the unsettled total while some funding is unknown: which part settled cannot be told.
@@ -148,7 +163,6 @@ class FlowDetector {
     // whose funding is unknown, which moves the Korean basis by the confirmed KRW) and a reading without a rate are, as
     // before, not compared.
     if((!(fx>0)||!(pf>now.provisionalKRW&&(prev.unsettledKRW??0)>now.unsettledKRW))&&(pf!==now.provisionalKRW||pf>0&&(prev.unsettledKRW??0)!==now.unsettledKRW)){
-      if(orders.some(o=>OPEN.includes(o.status)))return [];
       const paidOff=pf-now.provisionalKRW;
       if(pf>0&&(prev.unsettledKRW??0)>now.unsettledKRW&&paidOff>0){const seen=compare();
         // A change that returns a held change to its earlier balance is that reversal (for example dollars from an
@@ -157,7 +171,7 @@ class FlowDetector {
         // At the first U.S. reading the U.S. side of the payment was not seen, so it cannot be measured: no evidence is kept.
         const usFall=usStart?Infinity:seen&&seen.US<0?(fx>0?-seen.US*fx:Infinity):0,outstanding=seen?Math.round(paidOff-Math.max(0,-seen.KR)-usFall):0;
         if(outstanding>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:outstanding});}
-      const found=this.resolve(account,state,now,prev,fx);save();return found;}
+      markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;}
     const u=compare();if(!u)return [];
     // P2: the provisional KRW that settled in this reading (p) explains falls up to it, USD first (KIS takes U.S. cash before
     // KRW): those parts leave the comparison, and the rest of p is kept as settlement evidence for a later fall. A rise is
@@ -190,7 +204,7 @@ class FlowDetector {
       const mark=usStart&&market==='KR'?{usUnseen:true}:{};
       if(held){Object.assign(held,{funding:held.funding||u.usTraded,...mark});add(held,market,amount);}
       else state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{id:randomUUID(),amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark};}
-    const found=this.resolve(account,state,now,prev,fx);save();return found;
+    markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;
   }
   // Money moved since the day's baseline for the loss checks: the recorded flows (PerformanceHistory.flowsSince) and,
   // at once, the changes still held here (independent accounting review of 162d7c9, P1: a deposit held for two hours
@@ -230,7 +244,7 @@ class FlowDetector {
       this.performance.explainHeld(account,mine.id,{pendingIds:idsOf(q.parts??[]),at:now.at});
       note('Recorded flow matched',`${label(m)} cash ${q.amount>0?'rose':'fell'} by ${money(m,q.amount)}, matching the ${mine.amount>0?'deposit':'withdrawal'} you recorded for ${mine.day}; it is not recorded again.`);delete p[m];}
     // Offsetting at the exchange rate: money moving between the markets.
-    if(p.KR&&p.US&&fx>0&&!big('KR',p.KR.amount+p.US.amount*fx,fx)){
+    if(p.KR&&p.US&&!p.KR.couldBeFill&&!p.US.couldBeFill&&fx>0&&!big('KR',p.KR.amount+p.US.amount*fx,fx)){
       const kr=p.KR.amount,us=p.US.amount,day=seoulDate(Math.max(p.KR.since,p.US.since)),funding=p.KR.funding||p.US.funding;
       const settling=now.unsettledKRW>0||(prev.unsettledKRW??0)>0||state.settled.length>0;
       const window=spanOf([...p.KR.parts,...p.US.parts]);
@@ -246,7 +260,9 @@ class FlowDetector {
       const s=state.settled.find(e=>!e.usedKR&&!e.usedUS&&!(m==='US'&&e.krOnly)&&near(Math.abs(krw),e.krw,THRESHOLD_KRW));if(!s)continue;state.settled=state.settled.filter(e=>e!==s);
       note('Settlement matched',`${label(m)} cash fell by ${money(m,q.amount)}, matching the ₩${s.krw.toLocaleString('en-US')} still to be paid for U.S. buys that settled; not a withdrawal.`);delete p[m];}
     // Nothing explains it after the hold: a detected flow for the user to confirm or remove.
-    for(const m of ['KR','US']){const q=p[m];if(!q)continue;const age=now.at-q.since,krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;
+    // M-3.2: a change an open order's fill not yet counted could explain waits for that order; once none can, its hold runs
+    // from then (fillClearedAt), not from when it began.
+    for(const m of ['KR','US']){const q=p[m];if(!q||q.couldBeFill)continue;const age=now.at-Math.max(q.since,q.fillClearedAt??-Infinity),krw=m==='US'?(fx>0?q.amount*fx:null):q.amount;
       const couldSettle=now.provisionalKRW>0&&(m==='KR'?q.amount<0:q.amount>0)&&(krw==null||Math.abs(krw)<=now.provisionalKRW*1.05+THRESHOLD_KRW);
       if(age<HOLD_MS||couldSettle&&age<MAX_HOLD_MS)continue;
       const unseen=q.usUnseen?' The U.S. balance could not be compared first, so a move to or from the U.S. account cannot be ruled out.':'';
