@@ -514,9 +514,8 @@ app.whenReady().then(async () => {
     return phone.portfolioFigures({portfolio:portfolioState(),daily,intraday:account?intraday.day(account):[],previousClose:symbol=>kisQuotes.get(symbol)?.previousClose??null,amounts:automation.config.phoneAmounts});};
   const phoneReady=()=>automation.config.mobileAlerts&&automation.config.phoneSnapshots;
   // The review that proposed an order (broker order ids are proposal ids; paper orders carry proposalId).
-  const reviewFor=order=>{for(const row of store.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 300').all()){const r=JSON.parse(row.payload);if(r.orderId===order.id||r.proposalId===order.id||order.proposalId&&r.proposalId===order.proposalId)return r;
-    // M-6 part 3: an order a review placed as a further order.
-    if(Array.isArray(r.orders)&&require('./review-orders.cjs').orderOfReview(r,{orderId:order.id,proposalId:order.proposalId??order.id}))return r;}return null;};
+  // (electron/review-orders.cjs reviewForOrder: a further order's fill gets that order's own decision and plan.)
+  const reviewFor=order=>require('./review-orders.cjs').reviewForOrder(store.db,order);
   notifier.onFill=order=>{if(!phoneReady())return false;
     return notifier.post(phone.tradeSnapshot({order,review:reviewFor(order),figures:figures(),regime:automation.regimeState()?.regime??null,conditional:automation.desk.orders(automation.watchScope()).length,name:master.get(order.symbol)?.name||order.symbol}));};
   ipcMain.handle('phone:test',event=>{authorize(event);if(!automation.config.mobileAlerts)return {ok:false,error:'PHONE_ALERTS_OFF'};if(!automation.providerStatus.pushConnected)return {ok:false,error:'NO_WEBHOOK'};notifier.post(phone.testSnapshot({figures:figures()}));return {ok:true};});

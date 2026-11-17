@@ -38,9 +38,13 @@ test('row 32: at the daily automatic order cap, a fired entry waits for your app
   const b=await h.fire(entry(h).id);assert.equal(b.status,'proposed');assert.match(b.outcome,/daily automatic order limit/);
   const s=await h.fire(stop(h).id);assert.equal(s.status,'submitted','a closing order is admitted at the cap');
 });
-test('row 35: each fill is its own order event; reviews after an order update are off by default; routine reviews still wait while another order rests',async()=>{
+// M-6 part 4 (the user's "Wait 30 min for new orders"): with several open orders on, a scheduled review waits only for
+// the resting orders the latest review placed. Until M-6 it waited for any resting order (the M-3 finding this replaces).
+test('row 35: each fill is its own order event; reviews after an order update are off by default; routine reviews wait only for the latest review\'s resting orders',async()=>{
   const h=rig(true);assert.notEqual(h.a.config.orderUpdateReviews,true,'off unless you turn it on');
   const a=await h.send('KR','005930','Buy',10,70000),b=await h.send('KR','035420','Buy',1,200000);h.a.orderEvents();
   h.mock.fill('KR',a.brokerOrderId);await h.reconcile('KR');assert.deepEqual(h.a.orderEvents().map(o=>[o.symbol,o.status]),[['005930','Filled']],'the fill, of that order only');
-  h.a.lastRun=Date.now();const d=h.a.deferForPendingOrder();assert.deepEqual(d?.orders.map(o=>o.symbol),['035420'],'a scheduled review waits for the other resting order');
+  h.a.lastRun=Date.now();assert.equal(h.a.deferForPendingOrder(),null,'an order the latest review did not place does not hold the review back');
+  h.db.prepare('INSERT INTO reviews VALUES(?,?)').run('latest',JSON.stringify({id:'latest',timestamp:Date.now(),account:h.a.accountTag(),decision:{action:'Buy',symbol:'035420',quantity:1},orderId:b.id}));
+  assert.deepEqual(h.a.deferForPendingOrder()?.orders.map(o=>o.symbol),['035420'],'the latest review\'s resting order: the scheduled review waits for it');
 });

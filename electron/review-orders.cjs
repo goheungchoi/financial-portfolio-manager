@@ -26,4 +26,11 @@ function reviewOfOrder(reviews,{orderId=null,proposalId=null}={}){
 // review's evidence without the first order's quote, which is another stock's.
 function furtherEvidence(review,order){return {decision:{...order.decision,explanation:review.decision?.explanation??''},
   evidence:{...(review.contextEvidence??{}),quote:review.contextEvidence?.quote?.symbol===order.symbol?review.contextEvidence.quote:null}};}
-module.exports={ordersOfReview,orderOfReview,placedAny,reviewOfOrder,furtherEvidence};
+// The review behind a broker or paper order, for the phone's trade snapshot (main.cjs onFill): the 300 latest reviews,
+// matched as before (broker order ids are proposal ids; paper orders carry proposalId). M-6 part 3: an order a review
+// placed as a further order gets that review with the order's own decision, so the snapshot shows its own plan.
+function reviewForOrder(db,order){for(const row of db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 300').all()){const r=JSON.parse(row.payload);
+    if(r.orderId===order.id||r.proposalId===order.id||order.proposalId&&r.proposalId===order.proposalId)return r;
+    if(Array.isArray(r.orders)){const o=orderOfReview(r,{orderId:order.id,proposalId:order.proposalId??order.id});if(o&&o.item>0)return {...r,decision:furtherEvidence(r,o).decision};}}
+  return null;}
+module.exports={ordersOfReview,orderOfReview,placedAny,reviewOfOrder,furtherEvidence,reviewForOrder};

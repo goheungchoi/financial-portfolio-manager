@@ -1,7 +1,7 @@
 const {randomUUID}=require('node:crypto');
 // Order statuses that start a review when an order changes into them, statuses of an order still waiting at the broker,
 // and how long routine reviews may wait for a pending order.
-const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,BATCH_LIMIT_MS=5*60000,ORDERS_PER_REVIEW_MAX=22,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
+const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,BATCH_LIMIT_MS=5*60000,ORDERS_PER_REVIEW_MAX=22,NEW_ORDER_WAIT_MS=30*60000,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
 // creditProtectionApproved: the user approved Stage 3 (audit 2026-11-04); until then no credit close is automatic.
 const DEFAULTS={alertTrial:'off',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithOpenAI:false,shareKisWithAnthropic:false,anthropicCallsPerDay:10,anthropicUSDPerDay:1,anthropicUnlimitedCalls:false,anthropicUnlimitedBudget:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,orderUpdateReviews:false,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,ordersPerReview:1,severalOpenOrders:false,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS,...require('./scout-timing.cjs').TIMING_DEFAULTS};
 // Settings that no longer exist: accepted from a saved profile or the window and ignored. sessionKrxSingle switched on
@@ -478,9 +478,17 @@ class Automation {
   // does a review once a market opens or closes or ORDER_BACKSTOP_MS after the last one.
   deferForPendingOrder(now=Date.now()){
     const orders=this.pendingOrders(now);if(!orders.length)return null;
+    // M-6 part 4 (the user's "Wait 30 min for new orders"): with several open orders on, a scheduled review waits only
+    // for the orders the latest review placed, and for at most NEW_ORDER_WAIT_MS after it; older resting orders (an
+    // earlier review's, a conditional order's) no longer hold reviews back. With it off, today's rule, unchanged.
+    if(this.severalOpenNow()){const ids=this.latestReviewOrderIds();const mine=orders.filter(o=>ids.has(o.id));
+      if(!mine.length||now-this.lastRun>=NEW_ORDER_WAIT_MS||this.reviewSessionKey&&this.sessionKey(now)!==this.reviewSessionKey)return null;
+      return {orders:mine,until:this.lastRun+NEW_ORDER_WAIT_MS};}
     if(now-this.lastRun>=ORDER_BACKSTOP_MS||this.reviewSessionKey&&this.sessionKey(now)!==this.reviewSessionKey)return null;
     return {orders,until:this.lastRun+ORDER_BACKSTOP_MS};
   }
+  // The broker orders the latest review of this account placed (its first and further orders).
+  latestReviewOrderIds(){try{const [r]=this.reviewHistory(1);return new Set(require('./review-orders.cjs').ordersOfReview(r).map(o=>o.orderId).filter(Boolean));}catch{return new Set();}}
   // Live state for the schedule observer (electron/schedule-observer.cjs), from data the app already holds: regular
   // sessions, streamed and refreshed quotes, the engines' holdings and orders, the regime, cached top stories and the scout
   // plan. Makes no broker or AI calls.
