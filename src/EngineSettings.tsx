@@ -240,7 +240,7 @@ function ExtendedSessions({config,busy,edit,live}:{config:RuntimeConfig;busy:boo
 }
 // Start with Windows (restart part 1, step 3): applies at once (it is Windows' setting, not a saved engine setting) and
 // shows Windows' real state, read each time. The hint says the limit on the row itself.
-type LoginItemState={available:boolean;on:boolean;reason?:string;error?:string};
+type LoginItemState={available:boolean;on:boolean;reason?:string;error?:string;note?:string};
 // "Stocks you don't hold": one choice over the saved keys notHeldPriceReviews and watchlistAlerts (src/price-review-rows.ts;
 // artifacts/reviews/2026-11-17-price-review-rows). The wider-move percent, Observe and the trial sit as the mapping says.
 function NotHeldRow({state,config,busy,edit}:{state:RuntimeState;config:RuntimeConfig;busy:boolean;edit:Edit}){
@@ -266,6 +266,6 @@ function StartWithWindows(){
   const [state,setState]=useState<LoginItemState|null>(null);const [busy,setBusy]=useState(false);
   useEffect(()=>{let alive=true;void window.portfolio?.getLoginItem?.().then(v=>{if(alive&&v)setState(v);}).catch(()=>{});return()=>{alive=false;};},[]);
   const change=async(on:boolean)=>{setBusy(true);try{const v=await window.portfolio?.setLoginItem?.(on);if(v)setState(v);}catch{}finally{setBusy(false);}};
-  const hint=state&&!state.available?(state.reason??'Not available.'):'Opens the app when you sign in to Windows. After a restart at night it opens only once you sign in. It starts paused.';
+  const hint=state&&!state.available?(state.reason??'Not available.'):state?.note??'Opens the app when you sign in to Windows. After a restart at night it opens only once you sign in. It starts paused.';
   return <Row title="Start with Windows" hint={state?.error?`${hint} ${state.error}`:hint}><Switch label="Start with Windows" disabled={busy||!state?.available} checked={Boolean(state?.on)} onChange={v=>void change(v)}/></Row>;
 }
