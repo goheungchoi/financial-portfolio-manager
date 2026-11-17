@@ -12,7 +12,7 @@ export function useAttention(){
   return attention;
 }
 // M-6 part 3: a decision that placed several orders (its brief's orders, given only then): "+2 more" after the first
-// order's symbol, or "2 orders" when the first was held back.
+// order's symbol, or "2 orders" when there is no first order (held back, or a Hold the AI chose).
 export function batchNote(r:{orders?:{item:number}[];decision:{action:string}}):string|null{const n=Array.isArray(r.orders)?r.orders.length:0;if(!n)return null;
   const first=r.orders!.some(o=>o.item===0);return first?(n>1?`+${n-1} more`:null):`${n} order${n===1?'':'s'}`;}
 const ago=(t:number)=>{const s=Math.max(0,Math.round((Date.now()-t)/1000));return s<60?'just now':s<3600?`${Math.round(s/60)} min ago`:s<86400?`${Math.round(s/3600)} h ago`:new Date(t).toLocaleDateString();};

@@ -32,9 +32,10 @@ export function orderPill(review:OrderRecord):string{
 // M-6 part 3: a review that placed several orders (allOrders, from electron/review-orders.cjs, given only then).
 export type ReviewOrder={item:number;action:string;symbol:string;quantity:number}&OrderRecord;
 export const ordersOf=(review:{allOrders?:ReviewOrder[]|null}):ReviewOrder[]|null=>Array.isArray(review.allOrders)&&review.allOrders.length?review.allOrders:null;
-// The title of a review with several orders: "{n} orders", with the first noted when it was held back or a Hold.
-export function batchTitle(review:{allOrders?:ReviewOrder[]|null;decision:{action:string}}):string|null{const all=ordersOf(review);if(!all)return null;
-  const n=all.length;return `${n} order${n===1?'':'s'}${review.decision.action==='Hold'?', first held back':''}`;}
+// The title of a review with several orders: "{n} orders", with "first held back" only when the app held the first order
+// back (decision.withheld); a Hold the AI chose as its first is not held back (the planner's F1, scenario p06).
+export function batchTitle(review:{allOrders?:ReviewOrder[]|null;decision:{action:string;withheld?:unknown}}):string|null{const all=ordersOf(review);if(!all)return null;
+  const n=all.length;return `${n} order${n===1?'':'s'}${review.decision.withheld?', first held back':''}`;}
 // Whether a review matches the Buy/Sell/Hold filter: any of its orders for a batch, its decision otherwise.
 export function matchesAction(review:{allOrders?:ReviewOrder[]|null;decision:{action:string}},action:string):boolean{
   if(action==='All')return true;const all=ordersOf(review);return all?all.some(o=>o.action===action):review.decision.action===action;}

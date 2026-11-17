@@ -31,7 +31,9 @@ test('Home and runtime state: a single order\'s brief is today\'s; a batch\'s ca
 test('the Journal: a batch\'s title, filter and Orders fact; a single order reads as today',async()=>{
   const J=await import(require('node:url').pathToFileURL(path.join(__dirname,'../src/journalTabs.ts')).href);
   const allOrders=ROE.ordersOfReview(batch({action:'Hold',symbol:'',quantity:0})).map(({decision:_,...o})=>o);const r={allOrders,decision:{action:'Hold',plan:null}};
-  assert.equal(J.batchTitle(r),'2 orders, first held back');assert.equal(J.batchTitle({decision:{action:'Buy'}}),null);
+  // The batch fixture's first is a plain Hold (the AI's own): no "held back" (F1, scenario p06); with withheld it is.
+  assert.equal(J.batchTitle(r),'2 orders');assert.equal(J.batchTitle({...r,decision:{action:'Hold',withheld:{symbol:'005930',quantity:1,reason:'no trade plan'}}}),'2 orders, first held back');
+  assert.equal(J.batchTitle({allOrders:allOrders.slice(0,1),decision:{action:'Hold'}}),'1 order');assert.equal(J.batchTitle({decision:{action:'Buy'}}),null);
   assert.equal(J.matchesAction(r,'Buy'),true);assert.equal(J.matchesAction(r,'Sell'),true);assert.equal(J.matchesAction(r,'Hold'),false,'a review that placed orders is not a Hold');
   assert.equal(J.matchesAction({decision:{action:'Hold'}},'Hold'),true,'today');
   assert.deepEqual(J.decisionFacts(r)[0],{label:'Orders',value:'1 of 2 sent'});assert.equal(J.orderPill(allOrders[1]),'No order');
