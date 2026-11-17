@@ -39,7 +39,7 @@ test('request shape: system cached with the format text, Claude tools, auto then
   assert.equal(headers.get('anthropic-beta'),'thinking-binding-controls-2026-08-01','the only beta');
   for(const k of ['fallbacks','temperature','top_p','top_k','store','prompt_cache_key','max_output_tokens','reasoning','instructions','text','input','parallel_tool_calls','betas','cache_control'])assert.ok(!(k in body),k);
   assert.ok(!('budget_tokens' in body.thinking));assert.ok(!['any','tool'].includes(body.tool_choice.type),'never forced tool choice');
-  assert.deepEqual(body.messages,[{role:'user',content:JSON.stringify(FULL)}]);
+  assert.deepEqual(body.messages,[{role:'user',content:[{type:'text',text:JSON.stringify(FULL),cache_control:{type:'ephemeral'}}]}],'item 12 step 2: a research review sends the context as one marked text block');
   assert.ok(!init(t).body.includes(KEY),'the key is not in the body');
   // The final round keeps the same tools (cached prefix) and allows none; a review without research sends no tools.
   const f=transport(claudeReply());await client(f).decide(FULL,{...OPTS,research:true,final:true});assert.deepEqual(f.sent[0].body.tool_choice,{type:'none'});assert.deepEqual(f.sent[0].body.tools,body.tools);
@@ -83,7 +83,7 @@ test('a tool round returns the calls and a continuation that replays the turn by
   // The loop appends the results (in call order); the next request rebuilds the messages.
   const next=[...r.continuation,...['toolu_1','toolu_2','toolu_3'].map((id,i)=>({type:'function_call_output',call_id:id,output:JSON.stringify({n:i})}))];
   await c.decide(FULL,{...OPTS,research:true,continuation:next});const m=t.sent[1].body.messages;
-  assert.equal(m.length,3);assert.deepEqual(m[0],{role:'user',content:JSON.stringify(FULL)});assert.deepEqual(m[1],{role:'assistant',content:blocks});
+  assert.equal(m.length,3);assert.deepEqual(m[0],{role:'user',content:[{type:'text',text:JSON.stringify(FULL),cache_control:{type:'ephemeral'}}]},'the marked context block, byte for byte');assert.deepEqual(m[1],{role:'assistant',content:blocks});
   assert.equal(JSON.stringify(m[1].content),JSON.stringify(blocks),'assistant blocks byte-identical');
   assert.deepEqual(m[2],{role:'user',content:['toolu_1','toolu_2','toolu_3'].map((id,i)=>({type:'tool_result',tool_use_id:id,content:JSON.stringify({n:i})}))});
   assert.deepEqual(t.sent[1].body.cache_control,{type:'ephemeral'},'a research round caches the conversation so far');

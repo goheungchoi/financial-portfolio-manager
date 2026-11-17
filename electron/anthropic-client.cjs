@@ -324,7 +324,11 @@ class AnthropicClient {
     const RI=require('./review-instructions.cjs');
     const selected=M.settings(options);if(M.vendorOf(selected.model)!=='anthropic')throw new Error('INVALID_MODEL_SETTINGS');
     let reportedUsage=null,returnedModel=selected.model;const call={responseChars:null,sizes:null};
-    const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=M.reviewByteLimit(options,options?.openaiModel??'claude-opus-5-5');
+    // Item 12 step 2 (a): in a research review (tools offered) the context is one text block with a cache mark, so a
+    // second call reads it instead of paying for it again. It is built here once and travels in the continuation, so
+    // every later call of the review sends it byte for byte, mark included (the prefix and the thinking binding never
+    // change). Without research no second call is made, and the context stays the plain string it was.
+    const input=options.continuation??[{role:'user',content:options.research?[{type:'text',text:JSON.stringify(context),cache_control:{type:'ephemeral'}}]:JSON.stringify(context)}];const inputBytes=Buffer.byteLength(JSON.stringify(input)),limitBytes=M.reviewByteLimit(options,options?.openaiModel??'claude-opus-5-5');
     if(inputBytes>limitBytes){const e=new Error(options.continuation?'CONTINUATION_OVER_BUDGET':'CONTEXT_OVER_BUDGET');e.detail={limit:'app bytes',stage:options.continuation?'research continuation (request check)':'first request (request check)',wireBytes:inputBytes,limitBytes,largest:options.continuation?options.continuation.map((it,i)=>[`item ${i} ${it.type??it.role}`,Buffer.byteLength(JSON.stringify(it))]).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,b])=>`${k}:${b}`):require('./review-context.cjs').report(context,limitBytes).largest};throw e;}
     try {
       const messages=toMessages(input);

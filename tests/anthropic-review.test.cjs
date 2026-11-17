@@ -40,7 +40,7 @@ test('A4: condensing mid-review rewrites older results only; the turns stay byte
   const last=t.sent.at(-1);
   for(const body of t.sent)assert.ok(Buffer.byteLength(JSON.stringify(body.messages))<=140000+20000,'each request within the budget plus the turn blocks');
   const assistants=last.messages.filter(m=>m.role==='assistant');assert.deepEqual(assistants.map(m=>m.content),turns,'every turn byte-identical after condensing');
-  const results=last.messages.filter(m=>m.role==='user'&&Array.isArray(m.content)).flatMap(m=>m.content);
+  const results=last.messages.filter(m=>m.role==='user'&&Array.isArray(m.content)).flatMap(m=>m.content).filter(b=>b.type==='tool_result');
   assert.equal(results.length,12);assert.ok(results.some(b=>/"reference":true|"compacted":true/.test(b.content)),'an older result was condensed');
   assert.ok(results.slice(-4).every(b=>!/"reference":true/.test(b.content)),'the latest round is kept in full');
   assert.deepEqual(last.thinking,{type:'adaptive',block_binding:{prefix_mismatch_behavior:'drop_block'}});
