@@ -55,7 +55,8 @@ test('reviews: a cover is not blocked by the loss limit and arms no Sell stop; u
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {DatabaseSync}=require('node:sqlite');
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/automation.cjs'),'utf8');
   assert.match(src,/if\(opening&&lossBreached&&this\.config\.lossAction!=='review'\)/,'the loss block tests an opening, not action Buy');
-  assert.match(src,/result\.decision\.action==='Buy'&&\(result\.decision\.credit\?\?'none'\)==='none'&&result\.decision\.plan&&context\.env/,'only a cash long entry arms a plan stop');
+  // M-5 (a): the placement chain is placeOrder(d, ...), d being the order (the first order's decision as before).
+  assert.match(src,/if\(d\.action==='Buy'&&\(d\.credit\?\?'none'\)==='none'&&d\.plan&&context\.env/,'only a cash long entry arms a plan stop');
   const db=new DatabaseSync(':memory:');const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:1,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
   const armed=[];a.desk.setOrder=(...x)=>{armed.push(x);return {status:'armed'};};a.config.conditionalOrders=true;
   a.followPlan('kis:a',{action:'Buy',symbol:'005930',quantity:1,credit:'none',plan:{thesis:'t',invalidation:'i',stopPrice:90,horizonDays:5,confidence:'low'}},'R');assert.equal(armed.at(-1)[1].side,'Sell');
