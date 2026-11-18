@@ -75,3 +75,30 @@ test('position memory: the sold stock\'s row\'s last exit names the stop',()=>{
   const {ledger,put}=fixture();seed(put);put('live_intents',{...SALE,id:'buy1',side:'Buy',fillPrice:58700,createdAt:Date.parse('2026-10-14T01:52:00Z'),resultCosts:{gross:176100,fees:27}});ledger.sync();
   const rows=PM.build(ledger.list(),{accounts:[ledger.list()[0].accountKey],positions:{},now:Date.parse('2026-11-12T00:00:00Z')});const row=rows.find(r=>r.symbol==='990050');
   assert.equal(row.lastMaterial,'exit');assert.equal(row.lastExit.madeBy,'stop-loss order');assert.match(row.lastExit.rationale,/^Sold by its stop-loss order C-a1b2c3/);});
+
+// Step 3: the assessment and the lesson evidence. A stop-loss sale is a protective exit with a reason; the change is not
+// material, so no lesson (retired or pending) is reflected on again (no paid call).
+const {evaluate}=require('../electron/outcome-evaluation.cjs');const L=require('../electron/learning-memory.cjs');const {ReflectionQueue}=require('../electron/reflection.cjs');
+const base={source:'broker',side:'Sell',effect:'CLOSE_LONG',status:'Filled',quantity:3,averagePrice:64600,fees:411,netCash:193389,gainAfterFees:17262,gainAfterEstimatedTax:17262,costBasis:'broker',currency:'KRW'};
+test('assessment: a stop-loss sale has no "No linked decision" gap and is protective; a take-profit is not protective; no trigger as before',()=>{
+  const s=evaluate({...base,trigger:{kind:'conditional',purpose:'stop_loss'}});assert.ok(!s.gaps.includes('No linked decision'));assert.equal(s.madeBy,'stop_loss');assert.equal(s.protective,true);
+  const t=evaluate({...base,trigger:{kind:'conditional',purpose:'take_profit'}});assert.equal(t.madeBy,'take_profit');assert.equal('protective' in t,false);
+  const n=evaluate(base);assert.ok(n.gaps.includes('No linked decision'));assert.equal('madeBy' in n,false);assert.equal('protective' in n,false);
+  const b=evaluate({...base,side:'Buy',effect:'OPEN_LONG',trigger:{kind:'conditional',purpose:'stop_loss'}});assert.equal('protective' in b,false,'only a sale is a protective exit');});
+function lessons(){const f=fixture();f.db.exec('CREATE TABLE lessons(id TEXT PRIMARY KEY,text TEXT,approved INTEGER)');put0(f);f.ledger.sync();const memory=new L.LearningMemory(f.db);memory.sync();const q=new ReflectionQueue(f.db,memory);q.sync();return {...f,memory,q,id:'outcome:broker:7b3e19c4'};}
+// Before the change: the sale with its entry, no conditional orders yet (as records made before it look).
+function put0(f){f.put('live_intents',SALE);f.put('live_intents',{...SALE,id:'buy1',side:'Buy',fillPrice:58700,createdAt:Date.parse('2026-10-14T01:52:00Z'),resultCosts:{gross:176100,fees:27}});}
+for(const retire of [true,false])test(`a ${retire?'retired':'pending'} lesson gains the trigger in its evidence, keeps its status and signature, and no reflection is queued`,()=>{
+  const {db,put,ledger,memory,q,id}=lessons();const before=memory.lifecycle(id);assert.ok(before,'the lesson exists');const jobs=q.jobs().map(j=>j.id).sort().join();
+  if(retire)memory.review(id,{expectedSignature:before.signature,action:'retire'});const status=memory.lifecycle(id).status;
+  seed(put);ledger.sync();memory.sync();q.sync();
+  const e=memory.describe(id);assert.equal(e.trigger.orderId,'C-a1b2c3');assert.equal(e.assessment.protective,true);assert.equal(e.armingDecision.explanation,'Keep 990050; raise the stop to trail the gain.');
+  assert.equal(e.episode.exit.madeBy,'stop-loss order');assert.match(e.episode.exit.rationale,/^Sold by its stop-loss order C-a1b2c3/);
+  const after=memory.lifecycle(id);assert.equal(after.status,status);assert.equal(after.signature,before.signature,'not a material change');
+  assert.equal(q.jobs().map(j=>j.id).sort().join(),jobs,'no new reflection job');assert.ok(!q.jobs().some(j=>j.status==='queued'&&j.signature!==before.signature));
+  // A job queued before the user retired the lesson stays in the table; the picker (reflection.cjs:23) never runs a retired lesson's job.
+});
+test('replay of the fixture\'s shape: what the reflection would be given names the stop, never "unavailable"',()=>{
+  const {put,ledger,memory,id}=lessons();seed(put);ledger.sync();memory.sync();const e=memory.describe(id);const text=JSON.stringify(e);
+  assert.match(text,/stop-loss order C-a1b2c3/);assert.match(text,/trailing ₩7,184 \(2 × ATR\) below a high of ₩71,800/);assert.doesNotMatch(JSON.stringify(e.episode.exit),/unavailable/);
+  assert.ok(!e.assessment.gaps.includes('No linked decision'));assert.equal(e.episode.entries.length,1,'the 10-14 entry');});
