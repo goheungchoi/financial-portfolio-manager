@@ -39,3 +39,10 @@ test('screen: opens with the cache, refreshes by itself when stale, keeps rows, 
   assert.ok(src.includes('if(value&&range.start<=range.end)void load(range,true);'),'a date change reads as automatic: the same skips');
   assert.ok(src.includes('onClick={()=>void load()}'),'only Refresh is a manual read');assert.equal((src.match(/void load\(/g)??[]).length,3,'opening (automatic), a date change (automatic), Refresh (manual)');
   assert.match(fs.readFileSync(path.join(__dirname,'../src/main.tsx'),'utf8'),/loadCached=\{kind=>window\.portfolio\?\.getActivityCached\(kind\)/);});
+
+// 1.5.69 pre-release check, desktop case 9: a report with no environment (a stubbed reply) made the period line throw
+// and blanked the page once Activity loaded by itself. The line now shows without it.
+test('the period line does not throw for a report without environment or read time',()=>{
+  const src=fs.readFileSync(path.join(__dirname,'../src/ActivityReport.tsx'),'utf8');
+  assert.doesNotMatch(src,/data\.environment\.toUpperCase\(\)/);assert.ok(src.includes("KIS{data.environment?` ${String(data.environment).toUpperCase()}`:''}"));
+  assert.ok(src.includes("{data.retrievedAt?` · Updated ${time(data.retrievedAt)} KST`:''}"));});
