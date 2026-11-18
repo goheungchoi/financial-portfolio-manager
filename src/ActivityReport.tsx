@@ -62,7 +62,7 @@ export function ActivityReport({mode,connected,loadReport,loadCached}:{mode:'ord
       if(request!==sequence.current)return;
       if(result.ok&&result.data)setData(result.data);
       else if(result.error==='SKIPPED'){const why=SKIPPED[(result as {skipped?:string}).skipped??'']??'the account is busy';if(shown.current)keep(why);else setNote(`Not loaded yet: ${why}. Use Refresh in a moment.`);}
-      else{const text=errors[result.error??'']??'The report request failed. Retry or reconnect.';if(shown.current)keep(text.replace(/\.$/,'').replace(/^./,c=>c.toLowerCase()));else setError(text);}
+      else{const text=errors[result.error??'']??'The report request failed. Retry or reconnect.';if(shown.current)keep(text.replace(/\.$/,'').replace(/^[A-Z](?=[a-z])/,c=>c.toLowerCase()));else setError(text);}
     }catch{if(request===sequence.current){if(shown.current)keep('the request failed');else setError('The report request failed. Retry or reconnect.');}}
     finally{if(request===sequence.current)setBusy(false);}
   }

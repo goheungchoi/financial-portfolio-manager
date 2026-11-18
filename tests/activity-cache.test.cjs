@@ -53,3 +53,8 @@ test('the screen tolerates a report or Today reply with missing rows, records, c
   assert.ok(src.includes('const records=Array.isArray(data?.records)?data.records:[];const days=dailyRealized(records);'));assert.doesNotMatch(src,/data\.records\?\.map/);
   assert.ok(src.includes('if(!today?.counts)return null;const c=today.counts;const latest=Array.isArray(today.latest)?today.latest:[];'));assert.doesNotMatch(src,/today\.latest\.(length|map)/);
   assert.match(src,/\{data\.summary\?\.returnPct==null\?'Unavailable':/,'the one method call on a summary field is guarded');});
+// 1.5.69 suite screenshot: "Not refreshed: kIS rate limit reached" — only a capital followed by a lowercase letter is lowered.
+test('the not-refreshed line keeps KIS in capitals',()=>{
+  const src=fs.readFileSync(path.join(__dirname,'../src/ActivityReport.tsx'),'utf8');assert.ok(src.includes(".replace(/^[A-Z](?=[a-z])/,c=>c.toLowerCase())"));
+  const lower=t=>t.replace(/\.$/,'').replace(/^[A-Z](?=[a-z])/,c=>c.toLowerCase());
+  assert.equal(lower('KIS rate limit reached. Wait before retrying.'),'KIS rate limit reached. Wait before retrying');assert.equal(lower('The report request failed.'),'the report request failed');});
