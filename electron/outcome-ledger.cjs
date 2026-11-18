@@ -1,5 +1,25 @@
 const {createHash}=require('node:crypto');
 const {evaluate}=require('./outcome-evaluation.cjs');
+const clip=(t,n)=>{const s=String(t??'').trim().replace(/\s+/g,' ');return s.length>n?s.slice(0,n-1)+'…':s;};
+const num=v=>Number.isFinite(Number(v))&&v!==null&&v!==''?Number(v):null;
+const CHAIN_MAX=5;
+// The conditional order that placed an outcome's order (matched by its order, else its proposal), or null. Only
+// replaces links are followed (oldest last, at most CHAIN_MAX): nothing is inferred across an expired order or by
+// symbol and time, so a plan stop that expired is not named.
+function triggerOf(conditionals,record,reviews){
+  const id=v=>v==null?null:String(v);
+  const c=conditionals.find(o=>record.orderId!=null&&id(o.orderId)===id(record.orderId))??conditionals.find(o=>record.proposalId!=null&&id(o.proposalId)===id(record.proposalId));if(!c)return null;
+  const byId=new Map(conditionals.map(o=>[o.id,o]));const chain=[];let at=c;
+  while(at?.replaces&&chain.length<CHAIN_MAX){const prev=byId.get(at.replaces);if(!prev||chain.includes(prev.id)||prev.id===c.id)break;chain.push(prev.id);at=prev;}
+  const oldest=chain.length?byId.get(chain.at(-1)):c;const t=c.trail??null;
+  const level=num(t?.level)??num(c.conditions?.[0]?.value);
+  const trigger={kind:'conditional',orderId:c.id,purpose:c.purpose??null,reason:clip(c.reason,300)||null,level,levelKind:t?'trailing':'fixed',
+    ...(t?{trail:{kind:t.kind??null,...(t.kind==='atr'?{atrMultiple:num(t.atrMultiple),atr:num(t.atr),distance:num(t.distance)}:{pct:num(t.pct)}),high:num(t.high),highAt:num(t.highAt),floor:num(t.floor)}}:{}),
+    armedAt:num(c.createdAt),armedByReviewId:c.reviewId??null,firedAt:num(c.firingAt)??num(c.closedAt),
+    ...(chain.length?{replaces:chain,chainStartsAt:oldest.id,firstArmedByReviewId:oldest.reviewId??null}:{})};
+  const arming=c.reviewId?reviews.find(r=>r.id===c.reviewId)?.decision??null:null;
+  const armingDecision=arming?{explanation:clip(arming.explanation,500)||null,...(arming.plan?{plan:arming.plan}:{})}:null;
+  return {trigger,armingDecision};}
 // Derived, durable evidence. Cumulative broker reports replace a row; they are never summed.
 class OutcomeLedger {
   constructor(db) {
@@ -11,7 +31,7 @@ class OutcomeLedger {
     return this.db.prepare(`SELECT payload FROM ${table}`).all().map(row=>JSON.parse(row.payload));
   }
   sync() {
-    const reviews=this.rows('reviews');
+    const reviews=this.rows('reviews');const conditionals=this.rows('conditional_orders');
     const paperOrders=this.rows('paper_orders');
     const fills=this.rows('paper_fills');
     const save=this.db.prepare('INSERT INTO trade_outcomes VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload WHERE trade_outcomes.payload<>excluded.payload');
@@ -44,6 +64,11 @@ class OutcomeLedger {
         record.reviewId=review?.id??null;
         record.decision=further?further.decision:review?.decision??null;
         record.reviewEvidence=further?further.evidence:review?.contextEvidence??null;
+        // A sale or purchase no review placed may have been made by a conditional order (stop, take profit; 2026-11-18,
+        // artifacts/reviews/2026-11-18-stop-exit-record): its record names that order, and armingDecision is the decision
+        // of the review that armed it, kept apart from decision (nothing decided this order at the time it was made).
+        // Added only on a match, so an outcome with none is unchanged (same signature, no new version).
+        if(!review){const t=triggerOf(conditionals,record,reviews);if(t){record.trigger=t.trigger;if(t.armingDecision)record.armingDecision=t.armingDecision;}}
         record.evaluation=record.side==='Buy'?'Entry recorded; exit outcome pending':record.gainAfterFees==null?'Insufficient cost evidence':record.gainAfterFees<0?'Loss observed; cause unassessed':record.gainAfterFees>0?'Gain observed; cause unassessed':'Break-even after recorded costs';
         record.assessment=evaluate(record);
         const economic={...record};for(const key of ['timestamp','version','signature','firstObservedAt','updatedAt'])delete economic[key];
