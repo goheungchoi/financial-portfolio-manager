@@ -3,6 +3,8 @@ class KisError extends Error { constructor(code) { super(code); this.code=code; 
 // What a failed order request means (M-1a): KIS refused it, it never left the app (refused by the request-limit window
 // before it was sent: ORDER_NOT_SENT, with when to try again), or anything else, which may have reached KIS.
 // A rate limit KIS returns for the request itself stays uncertain: the request was sent.
+// A KIS refusal (rt_cd not 0) with KIS's message code (msg_cd) kept, and nothing else of the reply.
+function rejected(body){const error=new KisError('BROKER_REJECTED');if(/^[A-Z0-9_-]{1,24}$/.test(String(body?.msg_cd??'')))error.brokerCode=body.msg_cd;return error;}
 function orderError(error){if(error?.code==='BROKER_REJECTED')return new KisError('BROKER_REJECTED');
   if(error?.notSent===true){const e=new KisError('ORDER_NOT_SENT');if(Number.isFinite(error.retryAt))e.retryAt=error.retryAt;return e;}
   return new KisError('ORDER_UNCERTAIN');}
@@ -91,7 +93,8 @@ class KisReadOnlyClient {
   async quotation(endpoint,trId,params) {
     await this.authenticate();await this.wait(550);
     const {body}=await this.request((/^\/uapi\/(domestic-stock|etfetn)\/v1\//.test(endpoint)?endpoint:'/uapi/domestic-stock/v1/quotations/'+endpoint)+'?'+new URLSearchParams(params),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
-    if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+    // KIS's message code goes with the refusal (audit 2026-11-19: a refusal reached the log as BROKER_REJECTED with no code).
+    if(body.rt_cd!=='0')throw rejected(body);
     return body;
   }
   async getStreamConfig() {
@@ -178,7 +181,7 @@ class KisReadOnlyClient {
       await this.wait(550);
       const params=new URLSearchParams({CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,AFHR_FLPR_YN:'N',OFL_YN:'',INQR_DVSN:'02',UNPR_DVSN:'01',FUND_STTL_ICLD_YN:'N',FNCG_AMT_AUTO_RDPT_YN:'N',PRCS_DVSN:'00',CTX_AREA_FK100:fk,CTX_AREA_NK100:nk});
       const result=await this.request('/uapi/domestic-stock/v1/trading/inquire-balance?'+params,{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:this.#credentials.environment==='live'?'TTTC8434R':'VTTC8434R',custtype:'P',tr_cont:continuation}});
-      if(result.body.rt_cd!=='0') throw new KisError('BROKER_REJECTED');
+      if(result.body.rt_cd!=='0') throw rejected(result.body);
       if(!Array.isArray(result.body.output1) || !Array.isArray(result.body.output2) || !result.body.output2[0]) throw new KisError('INVALID_RESPONSE');
       rows.push(...result.body.output1); summary ??= result.body.output2[0];
       if(!['M','F'].includes(result.continuation)) return {...normalizeBalance(rows,summary,this.#credentials.environment),accountKey:require('node:crypto').createHmac('sha256',this.#credentials.appSecret).update(this.#credentials.environment+this.#credentials.accountNumber+this.#credentials.accountProductCode).digest('hex')};
@@ -328,4 +331,4 @@ class KisReadOnlyClient {
     }catch(error){throw orderError(error);}// M-1.5a: refused by the request-limit window before sending: ORDER_NOT_SENT
   }
 }
-module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS,orderError};
+module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS,orderError,rejected};
