@@ -21,10 +21,20 @@ class KisService {
     worker.on('exit',()=>{if(this.worker===worker){this.worker=null;this.rejectPending();this.onStatus?.({status:'unavailable',subscribed:0});}});
   }
   rejectPending() {for(const item of this.pending.values()){clearTimeout(item.timer);item.reject(new Error('BROKER_UNAVAILABLE'));}this.pending.clear();}
+  // B(1), 2026-11-19 overnight failures: every failed request leaves a record (operation, the app's code, KIS's own code,
+  // how long it waited in line and ran, whether a disconnect or the rate-limit cooldown refused it before sending). No
+  // payload and no account data. The last 200 are kept here; onFailure (main) stores them.
+  noteFailure(operation,error,{enqueuedAt,startedAt,generation}){try{const now=Date.now();const code=/^[A-Z][A-Z0-9_]{2,63}$/.test(error?.message??'')?error.message:'UNKNOWN';
+      const record={at:now,operation:String(operation).slice(0,40),code,...(/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?{brokerCode:error.brokerCode}:{}),
+        waitedMs:Number.isFinite(startedAt)?startedAt-enqueuedAt:now-enqueuedAt,ranMs:Number.isFinite(startedAt)?now-startedAt:null,
+        notSent:startedAt==null||error?.notSent===true,...(generation!==this.generation?{disconnected:true}:{}),...(code==='RATE_LIMITED'&&error?.notSent===true?{cooldown:true}:{})};
+      (this.failures??=[]).push(record);if(this.failures.length>200)this.failures.splice(0,this.failures.length-200);this.onFailure?.(record);}catch{}}
   request(operation,payload) {
     this.queued=(this.queued??0)+1;
-    const generation=this.generation;const entry={operation:String(operation)};
-    const run=()=>{if(generation!==this.generation)throw new Error('BROKER_UNAVAILABLE');if(Date.now()<(this.cooldownUntil??0)){const error=new Error('RATE_LIMITED');error.retryAt=this.cooldownUntil;error.notSent=true;throw error;}return this.send(operation,payload);};
+    const generation=this.generation;const entry={operation:String(operation)};const times={enqueuedAt:Date.now(),startedAt:null,generation};
+    const result=this.enqueue(operation,payload,generation,entry,times);result.catch(error=>this.noteFailure(operation,error,times));return result;}
+  enqueue(operation,payload,generation,entry,times){
+    const run=()=>{if(generation!==this.generation)throw new Error('BROKER_UNAVAILABLE');if(Date.now()<(this.cooldownUntil??0)){const error=new Error('RATE_LIMITED');error.retryAt=this.cooldownUntil;error.notSent=true;throw error;}times.startedAt=Date.now();return this.send(operation,payload);};
     // F3: a request made by the order that holds the queue goes straight to the worker; every other request waits in line.
     if(this.ownsHold()){const result=Promise.resolve().then(run);return result.finally(()=>{this.queued--;});}
     this.line.push(entry);

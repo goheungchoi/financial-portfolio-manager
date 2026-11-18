@@ -19,9 +19,13 @@ class BrokerBalances {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS broker_balances(id INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT NOT NULL,market TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL)');}
   // snapshot: a balance as the app holds it (snapshot.raw from kis-client.cjs or kis-overseas.cjs). Returns whether it was stored.
   record(account,market,snapshot){
-    if(typeof account!=='string'||!account||!['KR','US'].includes(market)||!snapshot?.raw)return false;const payload=JSON.stringify({readAt:snapshot.timestamp??null,raw:snapshot.raw});
+    if(typeof account!=='string'||!account||!['KR','US'].includes(market)||!snapshot?.raw)return false;
+    // 2026-11-19 (planner): KIS's U.S. buying-power figures (foreign currency only and integrated) and the integrated-margin
+    // flag they give, kept with the reading, so whether integrated margin is on can be answered from the records.
+    const bp=market==='US'&&snapshot.brokerBuyingPower?{foreignUSD:snapshot.brokerBuyingPower.foreignUSD??null,integratedUSD:snapshot.brokerBuyingPower.integratedUSD??null,integratedMargin:require('./buying-power.cjs').integratedOn(snapshot.brokerBuyingPower)}:null;
+    const payload=JSON.stringify({readAt:snapshot.timestamp??null,raw:snapshot.raw,...(bp?{buyingPower:bp}:{})});
     const last=this.db.prepare('SELECT payload FROM broker_balances WHERE account=? AND market=? ORDER BY id DESC LIMIT 1').get(account,market);
-    if(last&&JSON.stringify(JSON.parse(last.payload).raw)===JSON.stringify(snapshot.raw))return false;
+    if(last&&(p=>JSON.stringify(p.raw)===JSON.stringify(snapshot.raw)&&JSON.stringify(p.buyingPower??null)===JSON.stringify(bp))(JSON.parse(last.payload)))return false;
     const now=this.clock();this.db.prepare('INSERT INTO broker_balances(account,market,at,payload) VALUES(?,?,?,?)').run(account,market,now,payload);
     this.db.prepare('DELETE FROM broker_balances WHERE at<?').run(now-LIMITS.days*86400000);
     this.db.prepare('DELETE FROM broker_balances WHERE id NOT IN (SELECT id FROM broker_balances ORDER BY id DESC LIMIT ?)').run(LIMITS.rows);return true;

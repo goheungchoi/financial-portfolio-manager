@@ -2,8 +2,22 @@ import {useEffect,useRef,useState,type ReactNode} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
 import {HOME,tabGuides,workspaceGroups} from './WorkspaceUX';
 import {subscribeRuntime} from './runtimeFeed';
-type Market={status:string;error?:string|null;accountTimestamp?:string;stream?:{status:string;subscribed:number};quotes:{timestamp?:number;timeBasis?:string;stale:boolean}[]};
+type Market={status:string;marketsOpen?:boolean|null;error?:string|null;failure?:{code:string|null;request:string|null;at:number|null;brokerCode:string|null};accountTimestamp?:string;stream?:{status:string;subscribed:number};quotes:{timestamp?:number;timeBasis?:string;stale:boolean}[]};
 const kst=(ms:number)=>new Date(ms).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit'});
+// 2026-11-19: "Reconnecting" only when the stream is reconnecting. Before, any status but "connected" read so: a stale
+// quote overnight (markets closed) or one failed request showed "Reconnecting" with nothing reconnecting.
+// The stream's own states: 'reconnecting' and 'unavailable' (the KIS worker stopped) are named; 'disconnected', 'idle',
+// 'connecting', 'subscribing' and 'streaming' are not faults (quotes come by the REST fallback), so the label follows the
+// quotes. Old quotes with every market of the scope closed (marketsOpen false) are normal: "Closed", not "Stale".
+export function feedLabel(market:Market|null|undefined,stale:boolean){if(!market)return 'Connecting';if(market.stream?.status==='reconnecting')return 'Reconnecting';
+  if(market.stream?.status==='unavailable')return 'Unavailable';if(market.status==='error')return 'Request failed';
+  if(market.status==='stale'||stale)return market.marketsOpen===false?'Closed':'Stale';return 'Live';}
+// The chip's tone: a fault warns; closed markets and a live feed do not.
+export function feedTone(market:Market|null|undefined,stale:boolean){const l=feedLabel(market,stale);return l==='Live'?'success':l==='Closed'?'muted':'warning';}
+const REQUEST:Record<string,string>={quotes:'quote poll',balance:'balance refresh'};
+// Which request failed, its code (and KIS's own code), and when.
+export function failureLine(market:Market){const f=market.failure;if(!f)return `The last request failed (${market.error??'unknown'}).`;
+  return `The last ${REQUEST[f.request??'']??'request'} failed: ${f.code??'unknown'}${f.brokerCode?` (KIS ${f.brokerCode})`:''}${f.at?` at ${kst(f.at)} KST`:''}.`;}
 // A status chip that opens a small panel of details; closes on outside click or Escape.
 function Chip({label,tone,children,title}:{label:ReactNode;tone:string;children?:ReactNode;title?:string}){
   const [open,setOpen]=useState(false);const ref=useRef<HTMLDivElement>(null);
@@ -27,15 +41,15 @@ function EngineChip({onNavigate}:{onNavigate(tab:string):void}){
 }
 export function TopBar({tab,canBack,canForward,onBack,onForward,onNavigate,market,isKis,account,theme,onTheme}:{tab:string;canBack:boolean;canForward:boolean;onBack():void;onForward():void;onNavigate(tab:string):void;market:Market|null;isKis:boolean;account:string;theme:'dark'|'light';onTheme():void}){
   const group=workspaceGroups.find(g=>g.tabs.includes(tab))?.label;const quote=market?.quotes[0];const stale=market?.quotes.some(q=>q.stale);
-  const feedTone=market?.status!=='connected'?'warning':stale?'warning':'success';
+  const tone=feedTone(market,Boolean(stale));
   return <div className="topbar">
     <button className={`brand ${tab===HOME?'active':''}`} aria-label="Home" aria-current={tab===HOME?'page':undefined} title="Home" onClick={()=>onNavigate(HOME)}><span className="brand-mark" aria-hidden="true">◈</span><span className="brand-name">Portfolio</span></button>
     <div className="history-buttons"><button aria-label="Back" title="Back (Alt+←)" disabled={!canBack} onClick={onBack}>‹</button><button aria-label="Forward" title="Forward (Alt+→)" disabled={!canForward} onClick={onForward}>›</button></div>
     <nav className="breadcrumb" aria-label="Breadcrumb">{group&&<><span>{group}</span><span className="crumb-sep" aria-hidden="true">›</span></>}<h1 title={tabGuides[tab]?.description}>{tab}</h1></nav>
     <div className="top-status">
-      {isKis&&<Chip tone={feedTone} title="Market feed" label={<>{market?.status==='connected'?(stale?'Stale':'Live'):'Reconnecting'}{quote?.timestamp?<small>{kst(quote.timestamp)}</small>:null}</>}>
+      {isKis&&<Chip tone={tone} title="Market feed" label={<>{feedLabel(market,Boolean(stale))}{quote?.timestamp?<small>{kst(quote.timestamp)}</small>:null}</>}>
         <b>Market feed</b><p>{`WebSocket ${market?.stream?.status??'connecting'} · ${market?.stream?.subscribed??0} symbols · REST fallback`}</p>
-        {quote?.timestamp&&<p>{quote.timeBasis==='exchange'?'Last trade':'Last quote'} {kst(quote.timestamp)} KST</p>}{market?.accountTimestamp&&<p>Account synced {kst(Date.parse(market.accountTimestamp))} KST</p>}{market?.error&&<p className="negative">The last request failed.</p>}
+        {feedLabel(market,Boolean(stale))==='Closed'&&<p>Markets closed{quote?.timestamp?`; last quote ${kst(quote.timestamp)} KST`:''}.</p>}{quote?.timestamp&&<p>{quote.timeBasis==='exchange'?'Last trade':'Last quote'} {kst(quote.timestamp)} KST</p>}{market?.accountTimestamp&&<p>Account synced {kst(Date.parse(market.accountTimestamp))} KST</p>}{market?.error&&<p className="negative">{failureLine(market)}</p>}
       </Chip>}
       <Chip tone={account==='Not connected'?'muted':'accent'} label={account}>{account==='Not connected'?<><p>No broker account connected.</p><div className="chip-actions"><button className="primary" onClick={()=>onNavigate('Connections')}>Connect</button></div></>:<><b>{account}</b><div className="chip-actions"><button onClick={()=>onNavigate('Connections')}>Connections</button></div></>}</Chip>
       <EngineChip onNavigate={onNavigate}/>

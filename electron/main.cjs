@@ -134,8 +134,15 @@ function syntheticState() {
   const snapshot = { ...saved, holdings:saved.holdings.map(row=>({...row,price:quotes.find(q=>q.symbol===row.symbol)?.price ?? row.price})) };
   return {revision:++revision,source:'synthetic',paused:feedPaused,status:feedPaused?'paused':quotes.some(q=>q.stale)?'stale':'connected',quotes,snapshot};
 }
-function marketState() {return kisState.snapshot?{...buildKisMarket(kisState,kisQuotes),connectionId:kisGeneration,stream:streamState,revision:++revision}:syntheticState();}
+// Whether any session (regular or extended) of the scope's markets is open now: with none, old quotes are normal and the
+// Market feed reads "Closed", not "Stale" (2026-11-19). null when it cannot be told.
+function marketsOpenNow(){try{const S=require('./market-sessions.cjs'),H=require('./market-hours.cjs');const scope=automation?.config?.scope??'kis';const markets=H.marketsFor(scope).length?H.marketsFor(scope):['KR'];
+    const closedDays=new Set([...(automation?.closedDays??[]),...(automation?.officialClosedDays?.()??[])]);return markets.some(m=>S.marketStatus(m,Date.now(),m==='KR'?{closedDays}:{}).open.length>0);}catch{return null;}}
+function marketState() {return kisState.snapshot?{...buildKisMarket(kisState,kisQuotes),connectionId:kisGeneration,stream:streamState,marketsOpen:marketsOpenNow(),revision:++revision}:syntheticState();}
 function broadcastMarket() {const state=marketState();for(const win of BrowserWindow.getAllWindows())win.webContents.send('market:changed',state);}
+// Which request failed, when, and KIS's own code if it gave one, for the Market feed (2026-11-19: it said only
+// "The last request failed" and "Reconnecting").
+const failedRequest=(request,error)=>({errorRequest:request,errorAt:Date.now(),brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?error.brokerCode:null});
 async function pollKisQuotes() {
   if(kisService.isBusy || kisBusy || quoteBusy || !kisState.snapshot || Date.now()<nextQuoteAttempt)return;
   quoteBusy=true;const generation=kisGeneration;
@@ -143,10 +150,12 @@ async function pollKisQuotes() {
     const watched=automation?.watches.list(automation.watchScope()).map(row=>row.symbol).filter(symbol=>/^\d{6}$/.test(symbol))??[];const selected=live?.getState().policy?.symbols??[];
     const quotes=await kisService.request('quotes',{symbols:[...new Set([...watched,...selected,...kisState.snapshot.holdings.map(row=>row.symbol),...(automation?.discovery?.symbols('KR')??[])])].filter(symbol=>/^\d{6}$/.test(symbol)).slice(0,20)});
     if(generation===kisGeneration) {
+      // A good poll clears an error the quote poll itself set; a balance error stays until the balance is read again.
+      if(kisState.status==='error'&&kisState.errorRequest==='quotes')kisState={...kisState,status:'connected',error:null,errorRequest:null,errorAt:null,brokerCode:null};
       for(const quote of quotes){const previous=kisQuotes.get(quote.symbol);if(previous?.source!=='stream' || Date.now()-previous.receivedAt>60000)kisQuotes.set(quote.symbol,{...quote,source:'rest'});else if(quote.previousClose)kisQuotes.set(quote.symbol,{...previous,previousClose:quote.previousClose});}
       broadcastMarket();
     }
-  } catch(error) {if(generation===kisGeneration && kisState.snapshot){const code=kisErrorCode(error);if(code==='RATE_LIMITED')nextQuoteAttempt=Date.now()+120000;kisState={...kisState,status:'error',error:code};broadcastMarket();}}
+  } catch(error) {if(generation===kisGeneration && kisState.snapshot){const code=kisErrorCode(error);if(code==='RATE_LIMITED')nextQuoteAttempt=Date.now()+120000;kisState={...kisState,status:'error',error:code,...failedRequest('quotes',error)};broadcastMarket();}}
   finally {quoteBusy=false;}
 }
 async function refreshKisBalance() {
@@ -155,7 +164,7 @@ async function refreshKisBalance() {
   try {
     const snapshot=await kisService.request('refresh');
     if(generation===kisGeneration){kisState={status:'connected',...useKr(snapshot),error:null};live?.observeBalance(snapshot);detectFlows();kisQuotes=new Map([...kisQuotes].filter(([symbol])=>snapshot.holdings.some(h=>h.symbol===symbol)));broadcastMarket();}
-  } catch(error){if(generation===kisGeneration){kisState={...kisState,status:'error',error:kisErrorCode(error)};broadcastMarket();}}
+  } catch(error){if(generation===kisGeneration){kisState={...kisState,status:'error',error:kisErrorCode(error),...failedRequest('balance',error)};broadcastMarket();}}
   finally {kisBusy=false;}
   return kisState;
 }
@@ -248,6 +257,9 @@ app.whenReady().then(async () => {
   const exposure=new (require("./exposure.cjs").Exposure)(store.db);live.exposure=exposure;
   const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload),hold:(fn,options)=>kisService.hold(fn,options),ahead:()=>kisService.ahead()};
   // F3 (2026-11-18 order not sent): an order's hold on the KIS queue released by its 30-second limit is logged.
+  // B(1): each failed KIS request's record (kis-service.cjs noteFailure) is stored; the last 200 are kept.
+  {const db=store.db;try{db.exec('CREATE TABLE IF NOT EXISTS kis_failures(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,payload TEXT NOT NULL)');}catch{}
+    kisService.onFailure=record=>{try{db.prepare('INSERT INTO kis_failures(at,payload) VALUES(?,?)').run(record.at,JSON.stringify(record));db.prepare('DELETE FROM kis_failures WHERE id<=(SELECT max(id)-200 FROM kis_failures)').run();}catch{}};}
   kisService.onHoldLimit=({label,heldMs,limitMs})=>{try{automation.log(require('node:crypto').randomUUID(),'System','KIS queue released by its limit',`The order ${label} held the KIS request queue for ${Math.round(heldMs/1000)} s; after ${Math.round(limitMs/1000)} s the queue was released for other requests. The order's remaining requests wait in line.`);}catch{}};
   // Which part of unsettled U.S. buys is known to be KRW-funded, tracked across U.S. balance readings.
   const funding=new (require('./integrated-settlement.cjs').FundingTracker)(store.db);
