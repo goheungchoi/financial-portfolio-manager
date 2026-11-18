@@ -18,7 +18,10 @@ const domestic={accountKey:A,environment:'mock',source:'kis',cash:CASH,reportedT
   const held={amount:HELD,since,after:since-120000,parts:[{id:'seed-part',amount:HELD,after:since-120000,by:since}]};
   db.prepare('INSERT OR REPLACE INTO flow_watch VALUES(?,?)').run(A,JSON.stringify({at:since,krCash:CASH,usCash:null,basis:BASIS,provisionalKRW:0,provOut:0,unsettledKRW:0,fills:{},pending:{KR:held},settled:[]}));
   // A detected ₩2,000,000 deposit from an hour ago, not yet confirmed: recording it yourself replaces it (the form says so).
-  db.exec('CREATE TABLE IF NOT EXISTS cash_flows(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL)');const hourAgo=Date.now()-3600000,day=new Date(hourAgo+9*3600000).toISOString().slice(0,10);
+  db.exec('CREATE TABLE IF NOT EXISTS cash_flows(id TEXT PRIMARY KEY,account TEXT NOT NULL,payload TEXT NOT NULL)');// "An hour ago", but never before today's Seoul midnight: in the first hour after midnight it was yesterday, and the
+// fixture's own days (seedDay) moved on without it (the 1.5.69 suite at 00:0x KST, 2026-11-19).
+const seoulMidnight=Date.parse(new Date(Date.now()+9*3600000).toISOString().slice(0,10)+'T00:00:00+09:00');
+const hourAgo=Math.max(Date.now()-3600000,seoulMidnight+60000),day=new Date(hourAgo+9*3600000).toISOString().slice(0,10);
   db.prepare('INSERT OR REPLACE INTO cash_flows VALUES(?,?,?)').run('seed-detected',A,JSON.stringify({id:'seed-detected',day,market:'KR',currency:'KRW',amount:2000000,note:'Detected: Korean cash rose with no matching trade. Confirm or remove.',createdAt:hourAgo,detected:true,pendingIds:['seed-old-part'],occurredAfter:hourAgo-120000,occurredBy:hourAgo}));db.close();}
 dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path.join(process.env.PORTFOLIO_SMOKE_DATA,'fake-cash-check-file-never-read.json')]});
 require('../electron/kis-service.cjs').KisService.prototype.request=async function(operation,payload){
