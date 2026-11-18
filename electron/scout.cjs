@@ -23,12 +23,16 @@ const BRIEF_SCHEMA={type:'object',properties:{
 const validSymbol=s=>typeof s==='string'&&(/^\d{6}$/.test(s)||/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(s));
 const cut=(text,limit)=>{const t=String(text??'').trim();if(t.length<=limit)return t;const room=t.slice(0,limit-1);const end=Math.max(room.lastIndexOf('. '),room.lastIndexOf('다. '));return (end>limit/2?room.slice(0,end+1):room).trimEnd()+'…';};
 const pct=v=>v==null?null:Number.isFinite(v)&&v>=0&&v<=100?Math.round(v*10)/10:undefined;
-function validatePlan(value){
+// skipped (2026-11-18, artifacts/reviews/2026-11-18-empty-scout-plan): an array that receives each target left out and why,
+// so the run can say so; the plan itself is unchanged.
+function validatePlan(value,skipped=null){
   if(!value||typeof value!=='object'||typeof value.summary!=='string'||typeof value.focus!=='string'||!Array.isArray(value.targets))throw new Error('INVALID_AI_RESPONSE');
   const cash=pct(value.cashTargetPct);if(cash===undefined)throw new Error('INVALID_AI_RESPONSE');
-  const seen=new Set();const targets=[];
+  const seen=new Set();const targets=[];const skip=(t,reason)=>{if(skipped)skipped.push({symbol:typeof t?.symbol==='string'?t.symbol.slice(0,24):null,reason});};
+  if(skipped&&value.targets.length>12)for(const t of value.targets.slice(12))skip(t,'over 12 targets');
   for(const t of value.targets.slice(0,12)){
-    if(!t||!validSymbol(t.symbol)||!ROLES.includes(t.role)||seen.has(t.symbol))continue;const weight=pct(t.targetWeightPct);if(weight===undefined)continue;seen.add(t.symbol);
+    if(!t||!validSymbol(t.symbol)){skip(t,'not a symbol');continue;}if(!ROLES.includes(t.role)){skip(t,'unknown role');continue;}if(seen.has(t.symbol)){skip(t,'listed twice');continue;}
+    const weight=pct(t.targetWeightPct);if(weight===undefined){skip(t,'weight not a percent');continue;}seen.add(t.symbol);
     targets.push({symbol:t.symbol,name:cut(t.name,60),role:t.role,targetWeightPct:weight,thesis:cut(t.thesis,400),risks:cut(t.risks,300)});
   }
   const briefAnswers=(Array.isArray(value.briefAnswers)?value.briefAnswers:[]).filter(a=>a&&typeof a.briefId==='string'&&typeof a.answer==='string'&&a.answer.trim()).slice(0,8).map(a=>({briefId:a.briefId.trim().slice(0,20),answer:cut(a.answer,400)}));
@@ -37,6 +41,20 @@ function validatePlan(value){
     alternatives:unique(s.alternatives.filter(a=>a&&typeof a.symbol==='string'&&a.symbol.trim()&&['chosen','rejected','not-researched'].includes(a.verdict)),a=>a.symbol.trim()).slice(0,3).map(a=>({symbol:a.symbol.trim().slice(0,24),exposure:cut(a.exposure,160),verdict:a.verdict,reason:cut(a.reason,240)}))}));
   return {summary:cut(value.summary,900),cashTargetPct:cash,focus:cut(value.focus,400),targets,briefAnswers,retrospective:cut(typeof value.retrospective==='string'?value.retrospective:'',500),...(substitutions.length?{substitutions}:{})};
 }
+// Why a well-formed plan says nothing, or null (2026-11-18 empty plan: an answer with an empty summary and focus and
+// no Korean target replaced the plan on a Korean run). focus: the run's focused markets; heldMarkets: markets where the
+// account holds stocks (a holding always gets a hold, trim or exit target, so a plan that sells everything still lists them).
+const MARKET_NAME={KR:'Korea',US:'the U.S.'};
+function planProblem(plan,{focus=[],heldMarkets=[]}={}){
+  const reasons=[];if(!String(plan?.summary??'').trim())reasons.push('no summary');if(!String(plan?.focus??'').trim())reasons.push('no focus');
+  const markets=new Set((plan?.targets??[]).map(t=>marketOf(t.symbol)));
+  for(const m of focus)if(heldMarkets.includes(m)&&!markets.has(m))reasons.push(`no target for ${MARKET_NAME[m]??m}, where you hold stocks`);
+  return reasons.length?reasons.join('; '):null;
+}
+// The skipped targets as one short line: "2 targets left out: 1 unknown role, 1 weight not a percent (005930, XYZ)".
+function skippedLine(skipped){if(!skipped?.length)return null;const counts=new Map();for(const s of skipped)counts.set(s.reason,(counts.get(s.reason)??0)+1);
+  const symbols=skipped.map(s=>s.symbol).filter(Boolean).slice(0,6);
+  return `${skipped.length} target${skipped.length===1?'':'s'} left out: ${[...counts].map(([r,n])=>`${n} ${r}`).join(', ')}${symbols.length?` (${symbols.join(', ')})`:''}`;}
 // The market narrative's times in Seoul on weekdays: [hour, minute]. The scout's scheduled runs follow the session
 // calendar instead (scout-timing.cjs, step A4).
 const SCHEDULES={narrative:[[8,30],[16,30]]};
@@ -56,12 +74,22 @@ class ScoutStore {
   retrospectives(scope,limit=3){return this.db.prepare('SELECT payload FROM scout_plans WHERE scope=? ORDER BY timestamp DESC LIMIT 15').all(scope).map(r=>JSON.parse(r.payload)).filter(r=>r.plan.retrospective).slice(0,limit).map(r=>({asOf:new Date(r.timestamp).toISOString(),note:r.plan.retrospective}));}
   lastSlot(scope){return this.db.prepare('SELECT slot FROM scout_slots WHERE scope=?').get(scope)?.slot??null;}
   markSlot(scope,slot){this.db.prepare('INSERT INTO scout_slots VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET slot=excluded.slot').run(scope,slot);}
+  // The latest failed scout run of a scope (2026-11-18): {at, reason, trigger}. Kept until a later failure replaces it;
+  // it matters only while it is newer than the latest plan (failedAfter).
+  noteFailure(scope,{at=Date.now(),reason,trigger=null}){this.db.exec('CREATE TABLE IF NOT EXISTS scout_failures(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');
+    this.db.prepare('INSERT INTO scout_failures VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({at,reason:String(reason??'SCOUT_FAILED').slice(0,60),trigger:trigger==null?null:String(trigger).slice(0,40)}));}
+  lastFailure(scope){try{const row=this.db.prepare('SELECT payload FROM scout_failures WHERE scope=?').get(scope);return row?JSON.parse(row.payload):null;}catch{return null;}}
+  // The failure newer than the latest plan, or null.
+  failedAfter(scope,record=this.latest(scope)){const f=this.lastFailure(scope);return f&&(!record||f.at>record.timestamp)?f:null;}
 }
 // The plan as trading reviews see it: recent plans only, compact.
 // stale: carried targets that need reassessment (staleCarried), shown on their targets.
-function reviewContext(record,now=Date.now(),{stale=[]}={}){
+// failed (2026-11-18): a scheduled scout run that failed after this plan ({at, reason}); the review then sees
+// lastRunFailed, so it knows the plan predates that run. Absent otherwise.
+function reviewContext(record,now=Date.now(),{stale=[],failed=null}={}){
   if(!record||now-record.timestamp>36*3600000)return null;const p=record.plan;const flagged=new Map(stale.map(s=>[s.symbol,s.reasons]));
-  return {asOf:new Date(record.timestamp).toISOString(),summary:p.summary,cashTargetPct:p.cashTargetPct,focus:p.focus,targets:p.targets.map(({symbol,name,role,targetWeightPct,thesis,carriedFrom})=>({symbol,name,role,targetWeightPct,thesis,...(carriedFrom?{setAt:carriedFrom}:{}),...(carriedFrom&&flagged.has(symbol)?{needsReassessment:flagged.get(symbol)}:{})})),...(record.answered?.length?{briefAnswers:record.answered}:{}),...(p.substitutions?.length?{substitutions:p.substitutions}:{})};
+  const lastRunFailed=failed&&Number.isFinite(failed.at)&&failed.at>record.timestamp?{at:new Date(failed.at).toISOString(),reason:String(failed.reason??'SCOUT_FAILED').slice(0,60)}:null;
+  return {asOf:new Date(record.timestamp).toISOString(),...(lastRunFailed?{lastRunFailed}:{}),summary:p.summary,cashTargetPct:p.cashTargetPct,focus:p.focus,targets:p.targets.map(({symbol,name,role,targetWeightPct,thesis,carriedFrom})=>({symbol,name,role,targetWeightPct,thesis,...(carriedFrom?{setAt:carriedFrom}:{}),...(carriedFrom&&flagged.has(symbol)?{needsReassessment:flagged.get(symbol)}:{})})),...(record.answered?.length?{briefAnswers:record.answered}:{}),...(p.substitutions?.length?{substitutions:p.substitutions}:{})};
 }
 // Research rounds: the AI calls tools until it writes a plan; the last round must answer.
 // Three rounds of at most six requests: two research rounds (up to 12 tool calls), then the plan. maxBytes is the whole
@@ -72,7 +100,18 @@ function reviewContext(record,now=Date.now(),{stale=[]}={}){
 // no source, so it never spends a next-session read. Before each request older results are referenced (pointing at their
 // stored section) until the request fits; one that still does not fit is not sent.
 const SCOUT_REQUEST_BYTES=180000;
-async function runScout({request,tools,log,maxRounds=3,maxCalls=6,maxBytes=SCOUT_REQUEST_BYTES,overheadBytes=0,watched=[]}){
+// check (2026-11-18, artifacts/reviews/2026-11-18-empty-scout-plan): plan -> the reason it says nothing (planProblem), or
+// null. A plan with a reason is refused: its answer goes into the log (at most 4 KB), and the final call is asked once
+// more, with the same history and one sentence appended (the cached prefix is unchanged). A second refused plan fails
+// the run with SCOUT_EMPTY_PLAN, so the previous plan stays. Targets left out of any answer are logged with their reasons.
+const RETRY_NOTE=reason=>`Your answer had no plan (${reason}). Write the full plan now from the research above; tools are off.`;
+async function acceptPlan(result,{check,log,retry}){
+  const line=skippedLine(result.skippedTargets);if(line)log('System','Scout targets left out',line);
+  const reason=check?check(result.plan):null;if(!reason)return result;
+  log('System','Scout answer refused',`${reason}. Answer: ${JSON.stringify(result.answer??result.plan).slice(0,4096)}`);
+  if(!retry)throw Object.assign(new Error('SCOUT_EMPTY_PLAN'),{detail:reason});
+  const again=await retry(reason);return acceptPlan(again,{check,log,retry:null});}
+async function runScout({request,tools,log,maxRounds=3,maxCalls=6,maxBytes=SCOUT_REQUEST_BYTES,overheadBytes=0,watched=[],check=null}){
   let continuation,lastFrom=0;const usage={inputTokens:0,outputTokens:0,cachedTokens:0};const cache=new Map();let model=null;
   const rc=require('./review-context.cjs'),cf=require('./context-fit.cjs'),store=rc.resultStore(),meter=require('./research-meter.cjs').createMeter();
   const room=Math.floor(maxBytes*0.9)-overheadBytes;
@@ -85,7 +124,13 @@ async function runScout({request,tools,log,maxRounds=3,maxCalls=6,maxBytes=SCOUT
       if(total>maxBytes)throw Object.assign(new Error('CONTEXT_OVER_BUDGET'),{detail:`the scout request would be ${total} bytes, over its ${maxBytes}-byte limit`});}
     const result=await request({final:round===maxRounds-1,continuation});model=result.model??model;
     usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;usage.cachedTokens+=result.usage?.cachedTokens??0;
-    if(result.plan)return {plan:result.plan,usage,model,rounds:round+1,metrics:meter.summary(watched)};
+    if(result.plan){let retried=false;const sent=continuation;
+      // The retry needs the history the final call was sent; a plan from the very first call (no history) is not retried.
+      const retry=sent?async reason=>{retried=true;const again=await request({final:true,continuation:[...sent,{role:'user',content:RETRY_NOTE(reason)}]});model=again.model??model;
+        usage.inputTokens+=again.usage?.inputTokens??0;usage.outputTokens+=again.usage?.outputTokens??0;usage.cachedTokens+=again.usage?.cachedTokens??0;
+        if(!again.plan)throw Object.assign(new Error('SCOUT_EMPTY_PLAN'),{detail:`${reason}; the second answer had no plan`});return again;}:null;
+      const final=await acceptPlan(result,{check,log,retry});
+      return {plan:final.plan,usage,model,rounds:round+1,metrics:meter.summary(watched),...(retried?{retried:true}:{})};}
     if(!result.toolCalls?.length||!Array.isArray(result.continuation))throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the model returned neither a plan nor a tool request'});
     continuation=result.continuation;const keepFrom=continuation.length;lastFrom=keepFrom;
     // Every call needs an answer; requests beyond the per-round limit are told to wait for the next round.
@@ -178,4 +223,4 @@ function staleCarried(targets,{reviews=[],price=()=>null,movePct=6}={}){
     if(then>0&&last>0){const m=(last/then-1)*100;if(Math.abs(m)>=movePct)reasons.push(`The price moved ${m>0?'+':''}${m.toFixed(1)}% since the target was written (${then} at ${day(t.priceWhenSetAt)}).`);}
     return reasons.length?[{symbol:t.symbol,role:t.role,setAt:t.carriedFrom,reasons}]:[];});
 }
-module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,dueSlot,ScoutStore,reviewContext,runScout};
+module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout};

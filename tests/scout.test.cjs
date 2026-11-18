@@ -107,7 +107,7 @@ test('a trading review can brief the scout and ask for a run, which starts after
   const supplied=[];let reviewRound=0;let scoutStarted;const scoutDone=new Promise(resolve=>{scoutStarted=resolve;});
   const provider={request:async(operation,payload)=>{supplied.push([operation,payload]);
     if(operation==='decision'){reviewRound++;if(reviewRound===1)return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'No plan yet.',credit:'none',loanDate:'',scoutBrief:{request:'run',reason:'No plan yet and the market moved 3%.',lookingFor:'Dividend payers below book value',avoid:'',questions:'',feedback:[]}},usage:{inputTokens:1,outputTokens:1},provider:'openai'};return {decision:{action:'Hold',symbol:'',quantity:0,explanation:'Waiting for the scout.',credit:'none',loanDate:''},usage:{inputTokens:1,outputTokens:1},provider:'openai'};}
-    if(operation==='scout'){scoutStarted();const id=payload.context.briefs[0].id;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[{briefId:id,answer:'Found two banks below book.'},{briefId:'B-nope',answer:'x'}],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}}};
+    if(operation==='scout'){scoutStarted();const id=payload.context.briefs[0].id;return {plan:{summary:'s',cashTargetPct:null,focus:'Banks below book.',targets:[],briefAnswers:[{briefId:id,answer:'Found two banks below book.'},{briefId:'B-nope',answer:'x'}],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.evidence={get:async()=>({})};
   automation.discovery={list:()=>[],symbols:()=>[],screen_market:async()=>({}),search_securities:async()=>({}),research:async()=>({}),update_watchlist:async()=>({})};
   automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
@@ -146,7 +146,7 @@ test('with both markets, a failed U.S. account check does not stop the scout',as
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
   const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:false,status:'closed'}})},()=>({status:'connected',snapshot}));
-  let context;const provider={request:async(operation,payload)=>{context=payload.context;return {plan:{summary:'Korea only today.',cashTargetPct:null,focus:'',targets:[]},usage:{inputTokens:1,outputTokens:1}};}};
+  let context;const provider={request:async(operation,payload)=>{context=payload.context;return {plan:{summary:'Korea only today.',cashTargetPct:null,focus:'Korean exporters.',targets:[]},usage:{inputTokens:1,outputTokens:1}};}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.usLive={identity:()=>'acct:US',context:async()=>({}),getState:()=>({})};automation.refreshUS=async()=>{throw new Error('US_CASH_BROKER_REJECTED');};automation.providerStatus.aiConnected=true;
   automation.discovery={list:()=>[],symbols:()=>[]};
   automation.configure({scope:'both',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
@@ -194,7 +194,7 @@ test('the scout reads its scorecard and earlier self-reviews, and plans carry an
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
   const snapshot={accountKey:'acct',environment:'mock',reportedTotal:1000000,cash:1000000,holdings:[]};
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
-  const contexts=[];let n=0;const provider={request:async(operation,payload)=>{contexts.push(payload.context);n++;return {plan:{summary:'s'+n,cashTargetPct:null,focus:'',targets:[{symbol:'005930',name:'Samsung',role:'candidate',targetWeightPct:10,thesis:'Upside.',risks:''}],briefAnswers:[],retrospective:n===1?'Too few results to judge yet.':''},usage:{inputTokens:1,outputTokens:1}};}};
+  const contexts=[];let n=0;const provider={request:async(operation,payload)=>{contexts.push(payload.context);n++;return {plan:{summary:'s'+n,cashTargetPct:null,focus:'Samsung.',targets:[{symbol:'005930',name:'Samsung',role:'candidate',targetWeightPct:10,thesis:'Upside.',risks:''}],briefAnswers:[],retrospective:n===1?'Too few results to judge yet.':''},usage:{inputTokens:1,outputTokens:1}};}};
   const automation=new Automation(db,paper,provider,()=>{});automation.live=live;automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[],symbols:()=>[]};
   automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.scout();assert.equal(contexts[0].scorecard,undefined,'no picks yet');assert.equal(contexts[0].retrospectives,undefined);

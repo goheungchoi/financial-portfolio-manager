@@ -14,6 +14,9 @@ function scoreLine(card:NonNullable<ScoutState['scorecard']>){
   return `Past picks: ${total} tracked, first results after 5 trading days`;
 }
 const ERRORS:Record<string,string>={AI_BUDGET_EXHAUSTED:'Daily AI budget reached',SCOUT_BUSY:'A scout run is already going',RATE_LIMITED:'KIS is rate limiting; try again shortly',AI_TIMEOUT:'The AI took too long',STALE_DECISION:'The account changed during the run'};
+// A run that failed after the latest plan: "Last run gave no plan; the plan from 06-01 09:00 is kept." (example time).
+const kstStamp=(ms:number)=>{const k=new Date(ms+9*3600000).toISOString();return `${k.slice(5,10)} ${k.slice(11,16)}`;};
+export const failedLine=(f:{at:number;reason:string},planAt?:number)=>`Last run ${f.reason==='SCOUT_EMPTY_PLAN'?'gave no plan':'failed'}${planAt?`; the plan from ${kstStamp(planAt)} is kept`:''}.`;
 // The AI scout's latest plan, shown on Discover with a button to run it now.
 export function ScoutPanel({onOpenChart,onNavigate}:{onOpenChart(symbol:string):void;onNavigate(tab:string):void}){
   const [scout,setScout]=useState<ScoutState|null>(null);const [running,setRunning]=useState(false);const [note,setNote]=useState('');
@@ -26,6 +29,7 @@ export function ScoutPanel({onOpenChart,onNavigate}:{onOpenChart(symbol:string):
     <div className="section-head"><div><h2>AI scout</h2><small className={busy?'loading-label':''}>{busy&&<span className="spinner" aria-hidden="true"/>}{status}{scout.enabled&&!scout.blocked&&scout.times.length?` · next: ${scout.times.join(', ')}`:''}</small></div>
       <div className="actions">{latest?.runId&&<button className="link-button" onClick={()=>onNavigate('AI console')}>Research log</button>}<button className="primary" disabled={busy||Boolean(scout.blocked)} title={scout.blocked??'Research the market now and update the shortlist and plan'} onClick={()=>void run()}>{busy?'Researching…':'Run scout'}</button></div></div>
     {note&&<p className="warning-text" role="status">{note}</p>}
+    {!busy&&scout.failedAfter&&<p className="warning-text" aria-label="Last scout run">{failedLine(scout.failedAfter,latest?.timestamp)}</p>}
     {!plan?<p className="muted">The scout studies rankings, analyst views and estimates, picks a shortlist for your watchlist and writes a plan the trading reviews follow.{scout.enabled?'':' Turn on scheduled runs in Engine settings → Schedule and triggers.'}</p>:<>
       <p className="scout-summary">{plan.summary}</p>
       <div className="scout-facts">{plan.cashTargetPct!=null&&<span>Cash target <b>{plan.cashTargetPct}%</b></span>}{plan.focus&&<span title={plan.focus}>Watch <b>{plan.focus}</b></span>}</div>

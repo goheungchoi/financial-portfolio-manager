@@ -292,7 +292,7 @@ class AiClient {
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       let parsed;try{parsed=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:output.trim()?'the plan was not valid JSON':'the model returned no plan and no tool request'});}
-      try{return {plan:scout.validatePlan(parsed),usage:reportedUsage,provider:'openai',model:returnedModel};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}
+      try{const skippedTargets=[];const plan=scout.validatePlan(parsed,skippedTargets);return {plan,answer:parsed,skippedTargets,usage:reportedUsage,provider:'openai',model:returnedModel};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;if(error.detail)safe.detail=error.detail;throw safe;}
   }
   // Sends a request and keeps the size of its parts (input, instructions, tool definitions) for size reports.

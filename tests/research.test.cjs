@@ -256,7 +256,7 @@ test('scout context names the buyable markets and per-account product permission
   const live=new LiveEngine(db,{request:async()=>({balance:snapshot,quotes:[],marketSession:{open:true,status:'open'}})},()=>({status:'connected',snapshot}));
   // Switched on and eligibility confirmed (fact check X2: unconfirmed eligibility is not allowed).
   live.exposure={policy:()=>({leveragedEtps:{enabled:true,brokerEligible:true,maxPctOfEquity:20,maxHoldingDays:10},margin:{enabled:false},short:{enabled:false}}),context:()=>({products:[],warnings:[],leveragedEtps:{allowed:true}}),creditRisk:()=>null};
-  let context;const automation=new Automation(db,paper,{request:async(op,payload)=>{context=payload.context;return {plan:{summary:'s',cashTargetPct:null,focus:'',targets:[],briefAnswers:[],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}},()=>{});
+  let context;const automation=new Automation(db,paper,{request:async(op,payload)=>{context=payload.context;return {plan:{summary:'s',cashTargetPct:null,focus:'f',targets:[{symbol:'005930',name:'Samsung',role:'hold',targetWeightPct:null,thesis:'t',risks:''}],briefAnswers:[],retrospective:''},usage:{inputTokens:1,outputTokens:1}};}},()=>{});
   automation.live=live;automation.usLive={identity:()=>'acct:US',context:async()=>({market:'US',currency:'USD',equity:500,cash:0,positions:{}}),getState:()=>({})};automation.refreshUS=async()=>({});automation.providerStatus.aiConnected=true;automation.discovery={list:()=>[],symbols:()=>[]};
   automation.configure({scope:'both',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low'});
   await automation.scout();

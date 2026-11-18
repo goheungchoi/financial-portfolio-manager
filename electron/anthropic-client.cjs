@@ -61,6 +61,9 @@ function toMessages(items){
   for(const item of items){
     if(C.fromOpenAI(item))throw fail('a conversation from another provider');
     if(item?.type==='function_call_output'){(results??=[]).push({type:'tool_result',tool_use_id:String(item.call_id),content:String(item.output??'')});continue;}
+    // A user text right after tool results (the scout's retry, 2026-11-18) joins that user turn after its results, so the
+    // turns still alternate and every earlier block is sent byte for byte.
+    if(results&&item?.role==='user'&&typeof item.content==='string'){results.push({type:'text',text:item.content});flush();continue;}
     flush();
     if(item?.type==='anthropic_turn'){if(!Array.isArray(item.content))throw fail('a malformed assistant turn');messages.push({role:'assistant',content:item.content});}
     else if(item?.type==='function_call'&&item.vendor==='anthropic')continue;
@@ -299,7 +302,9 @@ class AnthropicClient {
     // The scout's own schema counts 28 with its 6 tools: enforced as it is, with the same fallback (enforced-form design 6).
     const r=await this.withFallback('scout',form=>this.structured({kind:'scout',system:RI.scoutText(RI.scoutPartsFor(context)),input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:form==='text'}));
     if(r.toolCalls)return r;const {parsed,...rest}=r;
-    try{return {...rest,plan:scout.validatePlan(parsed)};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}}
+    // answer and skippedTargets (2026-11-18): the plan as the model wrote it and the targets the check left out, so a refused
+    // plan can be logged (scout.cjs runScout); neither is saved with the plan.
+    try{const skippedTargets=[];const plan=scout.validatePlan(parsed,skippedTargets);return {...rest,plan,answer:parsed,skippedTargets};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}}
   client(timeout,call){
     const S=SDK();
     const fetchFn=async(url,init={})=>{

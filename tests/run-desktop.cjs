@@ -12,6 +12,7 @@ const cases=[
   ['Price-review rows: the four options from the user\'s state, Observe and the trial row','not-held-desktop.cjs',[],data('not-held')],
   ['Amounts of money: grouping, read-back, paste and the saved number','money-desktop.cjs',[],data('money')],
   ['A cash change being checked: the Home line and Record it','cash-check-desktop.cjs',[],data('cash-check')],
+  ['A scout run that gave no plan: the card keeps the plan and says so','scout-failed-desktop.cjs',[],data('scout-failed')],
   ['In-app updates against a local release server','update-desktop.cjs',[],data('updates')]
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};
