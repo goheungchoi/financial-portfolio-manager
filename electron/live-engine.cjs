@@ -230,7 +230,7 @@ class LiveEngine {
       // notSentCause says which.
       catch(error){timings.placeMs=since(t);if(Number.isFinite(error.ticketAgeMs))timings.ticketAgeMs=error.ticketAgeMs;order=stamp(order);
         if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
-        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};
+        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN',...(error.message==='BROKER_REJECTED'&&/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?{brokerCode:error.brokerCode}:{})};
         // Rule U (M-1.2): with several orders open allowed, an unclear order blocks only its own stock (openBlock) and is
         // counted in full in every sum; the market's trading stays on. Off: the market stops, as before.
         if(!this.severalOpen)this.enabled=false;}

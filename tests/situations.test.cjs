@@ -18,9 +18,10 @@ test('situation 1: a review\'s buy rests and a stop fires: on, the stop is sent;
 });
 test('situation 2: a later review decides another stock while the earlier order rests: on, placed; off, refused as today',async()=>{
   for(const on of [true,false]){const h=rig(on);h.decide({action:'Buy',symbol:'005930',quantity:10});await h.a.review('User request');
-    // Off: the engine's one-open-order rule refuses the send, and the review fails as it does today (REVIEW_FAILED).
+    // Off: the engine's one-open-order rule refuses the send. Since 2026-11-19 (A(b)) a single order refused with an order
+    // code is recorded as not sent and the review completes; before, the review failed (REVIEW_FAILED).
     h.decide({action:'Buy',symbol:'035420',quantity:1});const r=await h.a.review('Price movement trigger').then(()=>null,e=>e.message);const o=statusOf(h,'035420');
-    if(on){assert.equal(r,null);assert.equal(o.status,'Accepted');}else{assert.equal(r,'REVIEW_FAILED');assert.notEqual(o?.status??'none','Accepted');}
+    assert.equal(r,null,'the review completes');if(on)assert.equal(o.status,'Accepted');else assert.notEqual(o?.status??'none','Accepted');
     assert.equal(statusOf(h,'005930').status,'Accepted','the first order is untouched');}
 });
 test('situation 3: two conditional orders fire within minutes: on, both sent; off, the second is refused',async()=>{
@@ -30,7 +31,7 @@ test('situation 3: two conditional orders fire within minutes: on, both sent; of
 test('situation 4: your own order in KIS rests while the app trades: on, another stock is placed and yours of the same stock blocks it (D3); off, any open order at KIS refuses',async()=>{
   for(const on of [true,false]){const h=rig(on);h.mock.userOrder('KR',{symbol:'035420',side:'Buy',quantity:1,orderPrice:200000});
     h.decide({action:'Buy',symbol:'005930',quantity:10});const r=await h.a.review('User request').then(()=>null,e=>e.message);assert.equal(statusOf(h,'005930')?.status==='Accepted',on,'another stock');
-    if(!on)assert.equal(r,'REVIEW_FAILED','off: KIS lists an open order, so the preparation refuses (as today)');
+    if(!on)assert.equal(r,null,'off: KIS lists an open order, so the preparation refuses; the order is not sent and the review completes (A(b))');
     if(on){h.decide({action:'Buy',symbol:'035420',quantity:1});await h.a.review('Price movement trigger').catch(()=>{});assert.notEqual(statusOf(h,'035420')?.status??'none','Accepted','your open order of the stock blocks it');}}
 });
 test('row 32: at the daily automatic order cap, a fired entry waits for your approval while a protective sale is still sent',async()=>{

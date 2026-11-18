@@ -3,6 +3,13 @@ const {randomUUID}=require('node:crypto');
 // and how long routine reviews may wait for a pending order.
 // A scheduled scout run refused in passing by KIS before its AI request is tried once more (noteScoutRetry, 2026-11-19).
 const SCOUT_RETRY_CODES=['BROKER_REJECTED','RATE_LIMITED','REQUEST_TIMEOUT','NETWORK_UNAVAILABLE'],SCOUT_RETRY_MS=120000;
+// A(b), 2026-11-19: an order refused by a code of the order class: "Not sent" (it never became an order at KIS), or
+// "Rejected by KIS" (KIS refused it, at its broker check or its placement), with KIS's own code when it gave one.
+// Codes after which the order's state at KIS is unknown are not refusals: the review fails, as before.
+const UNKNOWN_AT_KIS=['ORDER_UNCERTAIN','BROKER_ORDER_MISMATCH'];
+function refusedNote(d,code,error=null){const what=`${d.action} ${d.quantity} ${d.symbol}`;
+  if(code==='BROKER_REJECTED')return `Rejected by KIS: ${what}${/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?` (KIS ${error.brokerCode})`:''}.`;
+  return `Not sent: ${what}: ${require('./activity-today.cjs').reasonText(code)}.`;}
 const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,BATCH_LIMIT_MS=5*60000,ORDERS_PER_REVIEW_MAX=22,NEW_ORDER_WAIT_MS=30*60000,UNIVERSE_PER_MARKET=20,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
 // creditProtectionApproved: the user approved Stage 3 (audit 2026-11-04); until then no credit close is automatic.
 const DEFAULTS={alertTrial:'off',notHeldPriceReviews:'default',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithOpenAI:false,shareKisWithAnthropic:false,anthropicCallsPerDay:10,anthropicUSDPerDay:1,anthropicUnlimitedCalls:false,anthropicUnlimitedBudget:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,orderUpdateReviews:false,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutAiRequests:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,ordersPerReview:1,severalOpenOrders:false,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS,...require('./scout-timing.cjs').TIMING_DEFAULTS};
@@ -596,7 +603,9 @@ class Automation {
         if(context.agentDesk){const symbols=[...new Set([...Object.keys(context.positions??{}),...(context.universe??[]).map(r=>r.symbol)])];const list=this.assessments.context(watchScope,{context,symbols,events:this.newsEvents.list(300),movePct:this.config.eventTolerancePct??3});if(list.length)context.assessments=list;}}
       // The previous review on this account, so a reversal (Hold to Buy, waiting to acted) explains what changed.
       if(context.environment!=='local-paper'){const key=this.accountTag()?.key;const prev=key?this.db.prepare("SELECT payload FROM reviews WHERE json_extract(payload,'$.account.key')=? ORDER BY rowid DESC LIMIT 1").get(key):null;
-        if(prev){const r=JSON.parse(prev.payload),d=r.decision??{};context.previousReview={at:new Date(r.timestamp).toISOString(),action:d.withheld?'Buy withheld (incomplete plan)':d.action,...(d.action!=='Hold'||d.withheld?{symbol:d.withheld?.symbol??d.symbol,quantity:d.withheld?.quantity??d.quantity}:{}),verdicts:Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict])),explanation:String(d.explanation??'').slice(0,400),
+        if(prev){const r=JSON.parse(prev.payload),d=r.decision??{};context.previousReview={at:new Date(r.timestamp).toISOString(),action:d.withheld?'Buy withheld (incomplete plan)':d.action,...(d.action!=='Hold'||d.withheld?{symbol:d.withheld?.symbol??d.symbol,quantity:d.withheld?.quantity??d.quantity}:{}),
+          // A(b) 2, 2026-11-19: whether its order went out, and why not (the review decided the same U.S. buy twice).
+          ...((d.action==='Buy'||d.action==='Sell')&&!d.withheld?{sent:Boolean(r.orderId)&&!['Rejected','Ready','Uncertain','Submitting'].includes(r.orderOutcome?.status),...(/^(Not sent|Rejected by KIS):/.test(r.executionNote??'')?{notPlaced:String(r.executionNote).slice(0,240)}:{})}:{}),verdicts:Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict])),explanation:String(d.explanation??'').slice(0,400),
           // M-6 part 3: the previous review's further orders, and whether each was sent (only when it had them).
           ...(Array.isArray(r.orders)&&r.orders.length?{moreOrders:r.orders.map(o=>({action:o.action,symbol:o.symbol,quantity:o.quantity,sent:Boolean(o.orderId)&&!['Rejected','Uncertain','Submitting'].includes(o.orderOutcome?.status)}))}:{})};}}
     return {context,emergency,usValue,execution,lessonIds};
@@ -827,13 +836,23 @@ class Automation {
       let batchRows=null;
       if(further){const sent=batchRows=await this.placeBatch([...(result.decision.action!=='Hold'?[result.decision]:[]),...further],{id,context,watchScope,revision,costRevision,base:execution,decidedAt:recorded.timestamp,onProposal});
         const first=sent.find(r=>r.item===0);if(first)({proposal,order,executionNote}=first);}
-      else if(result.decision.action!=='Hold')({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal}));
+      // A(b), 2026-11-19: a single order refused with an order code (order-outcomes.cjs ORDER: a refusal of this order) is
+      // recorded as not sent, with its reason, and the review completes, as in the batch path. A stop code or an unknown
+      // one still fails the review. Before, every refusal thrown by the send failed the review (and counted toward the
+      // consecutive-failure guardrail and the no-review alert). An order whose state at KIS is unknown (ORDER_UNCERTAIN,
+      // BROKER_ORDER_MISMATCH) still fails the review: it is not a refusal, and its intent is left for reconciliation.
+      else if(result.decision.action!=='Hold'){try{({proposal,order,executionNote}=await this.placeOrder(result.decision,{id,context,watchScope,revision,base:execution,onProposal}));}
+        catch(error){const O=require('./order-outcomes.cjs'),code=O.codeOf(error);if(O.classOf(code)!=='order'||UNKNOWN_AT_KIS.includes(code))throw error;proposal=error?.proposal??null;order=null;
+          const d=result.decision;executionNote=refusedNote(d,code,error);
+          this.log(id,'System',code==='BROKER_REJECTED'?'Order rejected by KIS':'Order not sent',executionNote);}}
       const review={model:result.model??null,contextEvidence,id,scope:this.config.scope,account:recorded.account,timestamp:Date.now(),trigger,provider:result.provider,...(recorded.vendor?{vendor:recorded.vendor}:{}),...(recorded.instructions?{instructions:recorded.instructions}:{}),...(recorded.reviewScope?{reviewScope:recorded.reviewScope}:{}),...(recorded.assessed?{triggerSymbols:recorded.triggerSymbols,assessed:recorded.assessed}:{}),...(recorded.alerts?{alerts:recorded.alerts}:{}),emergency:context.emergency.active,marketSession:context.marketSession?.status??null,decision:result.decision,executionNote,proposalId:proposal?.id??null,orderId:order?.id??null,...(order?{orderOutcome:{status:order.status??null,reason:order.reason??null}}:{}),usage:result.usage??null,research:result.metrics??null,...(recorded.formulaUse?{formulaUse:recorded.formulaUse}:{}),...(batchRows?{orders:furtherOrderRows(batchRows)}:{})};
       this.db.prepare('UPDATE reviews SET payload=? WHERE id=?').run(JSON.stringify(review),id);
       this.lastFingerprint={...hash,scope:watchScope,completedAt:Date.now()};
       // M-5 (e): each further order kept for a closed market is its own pending decision, and closes its own (carried out).
       const more=batchRows?batchRows.filter(r=>r.item>0).map(r=>({decision:further.find(o=>o.item===r.item)??r,orderId:r.order?.id??null,proposalId:r.proposal?.id??null})):[];
-      try{this.pending.record(watchScope,{decision:result.decision,reviewId:id,proposalId:proposal?.id??null,orderId:order?.id??null,context,marketOpen:this.marketOpenIn(context),...(more.length?{more}:{})});}catch{}
+      try{this.pending.record(watchScope,{decision:result.decision,reviewId:id,proposalId:proposal?.id??null,
+        // An order that did not go out (refused, or Ready waiting for approval) is not a carried-out decision (A(b) 3).
+        orderId:order?.id&&!['Rejected','Ready'].includes(order.status)?order.id:null,context,marketOpen:this.marketOpenIn(context),...(more.length?{more}:{})});}catch{}
       if(gateMode!=='off')try{const RG=require('./review-gate.cjs'),m=result.metrics??{};const prev=this.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 20').all().map(r=>JSON.parse(r.payload)).find(r=>r.id!==id&&r.scope===this.config.scope&&r.decision);
         this.reviewGate.complete(id,{completed:true,orderId:order?.id??null,...(batchRows?{orders:batchRows.filter(r=>r.order?.id).length}:{}),proposalId:proposal?.id??null,research:{toolCalls:m.toolCalls??0,researchReads:m.researchReads??0,detailReads:m.detailReads??0,fetched:m.fetched??0,refreshed:m.refreshed??0,reused:m.reused??0},change:RG.decisionChange(prev?.decision,result.decision)});}catch{}
       // The baseline is also what focused routine reviews compare with, so it is kept while they are on, gate or no gate.
@@ -1161,6 +1180,8 @@ class Automation {
           this.settleAutoSlot(slot,context.environment==='local-paper'?{status:'Filled'}:statusOf()??order);this.log(id,'Tool','Order submission',JSON.stringify(order));
           // M-1a: refused by KIS's request limit before it was sent: nothing is at KIS, trading stays on, and a review
           // decides again once KIS may be asked (on fresh prices and checks), not before.
+          // A(b): KIS refused the placement (the send saved it Rejected with BROKER_REJECTED): said so, with KIS's code.
+          if(order?.status==='Rejected'&&order.reason==='BROKER_REJECTED'){executionNote=refusedNote(d,'BROKER_REJECTED',order);this.log(id,'System','Order rejected by KIS',executionNote);}
           if(order?.status==='Rejected'&&order.reason==='ORDER_NOT_SENT'){const at=Number.isFinite(order.retryAt)?order.retryAt:Date.now()+60000;
             executionNote=`Not sent: ${order.notSentCause==='ticket-expired'?'the broker check made for':'KIS\'s request limit was reached just before'} ${d.action} ${d.quantity} ${d.symbol} ${order.notSentCause==='ticket-expired'?'expired (15 seconds) before it could go out':'went out'}, so nothing reached KIS. Trading stays on; a review decides again after ${new Date(at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST.`;
             this.log(id,'System',order.notSentCause==='ticket-expired'?'Order not sent · check expired':'Order not sent · request limit',executionNote);this.requestReview('Order not sent',`${d.action} ${d.symbol} was not sent (${order.notSentCause==='ticket-expired'?'its broker check expired':'KIS request limit'}); decide again.`,d.symbol,{notBefore:at});}}
