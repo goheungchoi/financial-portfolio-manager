@@ -771,12 +771,18 @@ app.whenReady().then(async () => {
     return value;
   });
   ipcMain.handle('kis:get',event=>{authorize(event);return kisState;});
-  ipcMain.handle('kis:activity',async(event,kind,startDate,endDate)=>{
+  // The last report per kind, for Activity and Performance to show at once (activity-cache.cjs, Activity step 2).
+  const activityCache=new (require('./activity-cache.cjs').ActivityCache)(store.db);
+  ipcMain.handle('kis:activity-cached',(event,kind)=>{authorize(event);const row=activityCache.get(kind,kisState.snapshot?.accountKey??null);return row?{ok:true,data:row.data}:{ok:false};});
+  ipcMain.handle('kis:activity',async(event,kind,startDate,endDate,options={})=>{
     authorize(event);
     if(!kisState.snapshot)return {ok:false,error:'NOT_CONNECTED'};
+    // An automatic refresh never runs ahead of an account request, a review or an order (the history read holds the
+    // KIS queue for all its pages); the screen keeps what it shows and says why.
+    if(options?.automatic===true){const skipped=require('./activity-cache.cjs').skipReason({kisBusy,reviewBusy:Boolean(automation?.busy),orderHeld:Boolean(kisService.holding)});if(skipped)return {ok:false,error:'SKIPPED',skipped};}
     if(kisBusy)return {ok:false,error:'BUSY'};
     if(!['orders','profit'].includes(kind))return {ok:false,error:'INVALID_REQUEST'};
-    const generation=kisGeneration;
+    const generation=kisGeneration,account=kisState.snapshot.accountKey??null;
     try {
       require('./kis-activity.cjs').validateRange(startDate,endDate);
       let data=await kisService.request(kind,{startDate,endDate});
@@ -786,6 +792,7 @@ app.whenReady().then(async () => {
         // The totals' guard: a chain the app knows whose rows fill more than its order is marked (activity-chains.cjs).
         try{const intents=[...(live?.orders?.()??[]),...(usLive?.orders?.()??[])];data={...data,orders:require('./activity-chains.cjs').markChains(data.orders,intents)};}catch{}}
       if(generation!==kisGeneration)return {ok:false,error:'CONNECTION_CHANGED'};
+      activityCache.put(kind,account,data);
       return {ok:true,data};
     }catch(error){return {ok:false,error:kisErrorCode(error)};}
   });

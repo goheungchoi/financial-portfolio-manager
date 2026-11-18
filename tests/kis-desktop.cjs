@@ -84,8 +84,8 @@ app.once('browser-window-created',(_event,win)=>{
       fs.writeFileSync(path.join(__dirname,'../artifacts/live-chart.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Activity').click()");
       await new Promise(resolve=>setTimeout(resolve,100));
-      await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Load history').click()");
-      await new Promise(resolve=>setTimeout(resolve,100));
+      // Activity step 2: the tab reads its history by itself on opening, with no click.
+      for(let i=0;i<50&&await win.webContents.executeJavaScript('document.querySelectorAll("tbody tr").length')!==3;i++)await new Promise(resolve=>setTimeout(resolve,100));
       assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("tbody tr").length'),3);
       assert.equal(await win.webContents.executeJavaScript('document.querySelector(".metrics strong").textContent'),'₩600');
       await win.webContents.executeJavaScript("(()=>{const select=document.querySelectorAll('.report-toolbar select')[1];select.value='Rejected';select.dispatchEvent(new Event('change',{bubbles:true}));})()");
@@ -96,8 +96,7 @@ app.once('browser-window-created',(_event,win)=>{
       fs.writeFileSync(path.join(__dirname,'../artifacts/activity-fixture.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('.nav')).find(button=>button.textContent==='Performance').click()");
       await new Promise(resolve=>setTimeout(resolve,100));
-      await win.webContents.executeJavaScript("Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Load performance').click()");
-      await new Promise(resolve=>setTimeout(resolve,100));
+      for(let i=0;i<50&&await win.webContents.executeJavaScript('document.querySelector(".metrics strong")?.textContent??""')!=='₩125';i++)await new Promise(resolve=>setTimeout(resolve,100));
       assert.equal(await win.webContents.executeJavaScript('document.querySelector(".metrics strong").textContent'),'₩125');
       assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll(".realized-chart rect").length'),1);
       fs.writeFileSync(path.join(__dirname,'../artifacts/performance-fixture.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
