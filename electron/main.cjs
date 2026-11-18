@@ -797,7 +797,11 @@ app.whenReady().then(async () => {
       if(kind==='orders'){let us=[],usError=null;try{const rows=await kisService.request('us-order-history',{startDate,endDate});if(Array.isArray(rows))us=rows;else usError='INVALID_RESPONSE';}catch(error){usError=kisErrorCode(error);}
         data={...data,orders:[...(data.orders??[]).map(o=>({...o,market:'KR',currency:'KRW'})),...us].sort((a,b)=>b.timestamp-a.timestamp),...(usError?{usError}:{})};
         // The totals' guard: a chain the app knows whose rows fill more than its order is marked (activity-chains.cjs).
-        try{const intents=[...(live?.orders?.()??[]),...(usLive?.orders?.()??[])];data={...data,orders:require('./activity-chains.cjs').markChains(data.orders,intents)};}catch{}}
+        try{const intents=[...(live?.orders?.()??[]),...(usLive?.orders?.()??[])];data={...data,orders:require('./activity-chains.cjs').markChains(data.orders,intents)};
+          // Where each order came from, and the orders the app did not send (activity-origin.cjs, Activity step 4). Review
+          // ids are read (in SQL) only when an order of the period has no origin mark.
+          const O=require('./order-origin.cjs'),since=Date.parse(startDate+'T00:00:00+09:00'),unmarked=intents.some(o=>!o.madeBy&&o.createdAt>=since);
+          data={...data,orders:require('./activity-origin.cjs').labelRows(data.orders,intents,{reviews:unmarked?O.reviewIdRows(store.db,since):[],conditionals:O.conditionalRows(store.db),startDate,endDate})};}catch{}}
       if(generation!==kisGeneration)return {ok:false,error:'CONNECTION_CHANGED'};
       activityCache.put(kind,account,data);
       return {ok:true,data};

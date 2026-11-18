@@ -208,7 +208,8 @@ class LiveEngine {
       // day is restricted; nothing is sent, its reservation is released, and the order stays Ready with the reason, so
       // you can still approve it. Your manual submissions and protective orders (sales, repayments, covers) are not held.
       if(automatic){const stop=this.lossRestriction(order);if(stop){this.funding?.release(order,'stopped before sending: '+stop);const {session:_,...rest}=order;this.writeOrder({...rest,reason:stop});throw new Error(stop);}}
-      order={...order,status:'Submitting'};this.save(order);
+      // sentBy (Activity step 4, 2026-11-19): sent automatically or submitted by the user; older orders carry no claim.
+      order={...order,status:'Submitting',sentBy:automatic?'auto':'you'};this.save(order);
       timings.aheadOfPlace=this.broker.ahead?.()??null;t=Date.now();
       try {const {ticketAgeMs,...result}=await this.broker.request('place-order',{ticket:prepared.ticket});timings.placeMs=since(t);if(Number.isFinite(ticketAgeMs))timings.ticketAgeMs=ticketAgeMs;order=stamp({...order,...result,status:'Accepted'});}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
