@@ -700,8 +700,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('live:submit',liveAction((id,phrase)=>live.submit(id,phrase)));
   ipcMain.handle('live:reconcile',liveAction(()=>live.reconcile()));
   ipcMain.handle('live:link',liveAction((id,brokerId,phrase)=>live.linkUncertain(id,brokerId,phrase)));
-  ipcMain.handle('runtime:start',async(event,token)=>{authorize(event);try{const message=await require('./auto-launch.cjs').start(automation,token);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.message,state:runtimeState()};}});
-  ipcMain.handle('runtime:stop',event=>{authorize(event);const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};});
+  ipcMain.handle('runtime:start',async(event,token)=>{authorize(event);try{const message=await require('./auto-launch.cjs').start(automation,token);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.text??error.message,state:runtimeState()};}});
+  ipcMain.handle('runtime:stop',event=>{authorize(event);try{const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.text??error.message,state:runtimeState()};}});
   ipcMain.handle('runtime:get',event=>{authorize(event);return runtimeState();});
   ipcMain.handle('runtime:history',event=>{authorize(event);return historyOf(automation.getState());});
   ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});

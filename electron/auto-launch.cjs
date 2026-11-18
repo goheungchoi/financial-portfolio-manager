@@ -41,5 +41,6 @@ async function start(a,token){
   if(a.firstAfterStart)return 'Auto trading started. A review is due and starts shortly.';
   return `Auto trading started. Next review at ${at(next)}, on schedule.`;
 }
-function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;a.configure({enabled:false,autoSubmit:false});a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);return 'Auto trading stopped. Existing broker orders remain active.';}
+// The engines stop even if the save throws (2026-11-18); the error then reaches runtime:stop, which shows it.
+function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;try{a.configure({enabled:false,autoSubmit:false});}finally{a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);}return 'Auto trading stopped. Existing broker orders remain active.';}
 module.exports={launchState,start,stop};

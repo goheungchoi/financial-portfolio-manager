@@ -179,8 +179,12 @@ class Automation {
     // Claude trading D-1: with the gate open, a Claude trading model is saved only under the conditions of the D-0 note,
     // section 2. claudeTradingConfirmed belongs to this save only and is never stored. Switching back is always allowed.
     const toClaude=this.vendorOf(next.openaiModel)==='anthropic'&&this.vendorOf(this.config.openaiModel)!=='anthropic',fromClaude=this.vendorOf(next.openaiModel)!=='anthropic'&&this.vendorOf(this.config.openaiModel)==='anthropic';
-    if(this.vendorOf(next.openaiModel)==='anthropic'){const why=this.claudeTradingRefusal(next,{saving:true,switching:toClaude});if(why)throw new Error(why.code);}
-    delete next.claudeTradingConfirmed;{const AM=require('./agent-models.cjs');const claude=AM.AGENTS.filter(a=>a!=='trading').some(a=>this.vendorOf(AM.agentModel(next,a).openaiModel)==='anthropic');AM.validate(next,{claudeAllowed:claude&&Boolean(this.completedClaudeDryRun())});}
+    // Stop is never refused (2026-11-18): a save that only turns scheduled reviews and order submission off skips the
+    // Claude conditions. Before, Stop on Claude with no dry run that counted (or no key, or consent off) threw here and
+    // auto trading stayed on.
+    const turningOff=Object.keys(value).length>0&&Object.entries(value).every(([k,v])=>(k==='enabled'||k==='autoSubmit')&&v===false);
+    if(!turningOff&&this.vendorOf(next.openaiModel)==='anthropic'){const why=this.claudeTradingRefusal(next,{saving:true,switching:toClaude});if(why)throw Object.assign(new Error(why.code),{text:why.text});}
+    delete next.claudeTradingConfirmed;{const AM=require('./agent-models.cjs');const claude=AM.AGENTS.filter(a=>a!=='trading').some(a=>this.vendorOf(AM.agentModel(next,a).openaiModel)==='anthropic');AM.validate(next,{claudeAllowed:turningOff||claude&&Boolean(this.completedClaudeDryRun())});}
     if(['sessionKrNxt','sessionUsPre','sessionUsAfter','sessionUsDaytime'].some(k=>typeof next[k]!=='boolean')||!Number.isFinite(next.extendedMaxOrderPct)||next.extendedMaxOrderPct<0.5||next.extendedMaxOrderPct>50||!['pre-open','off','keep'].includes(next.closedMarketReviews)||typeof next.skipUnchanged!=='boolean'||typeof next.degradeNearBudget!=='boolean'||!Number.isInteger(next.maxSkipMinutes)||next.maxSkipMinutes<15||next.maxSkipMinutes>720)throw new Error('INVALID_SETTINGS');
     if(typeof next.scoutAiRequests!=='boolean'||typeof next.scoutEnabled!=='boolean')throw new Error('INVALID_SETTINGS');require('./scout-timing.cjs').validate(next);
     // M-6: several open orders (the user's switch, default off) and the most orders one review may place (default 1; at
@@ -940,8 +944,11 @@ class Automation {
   // or null. A record with the instructions fingerprint must match the current set's (a later text, tool or schema change
   // asks for a new dry run); one with only an app version needs 1.5.60 or later; an older-style record counts when it was
   // made at or after 1.5.60's publish time and its final request recorded its answer form (the 1.5.60 forms record it).
+  // 2026-11-18 (artifacts/reviews/2026-11-18-claude-dry-run-start): a dry run that offered several orders records the
+  // set's several-orders fingerprint (M-6 part 2); it counts too. Its inputs hold the single-order inputs unchanged and in
+  // order, so a match vouches for both. Before, only the single-order fingerprint counted, so no such dry run ever did.
   claudeTradingDryRun(){const r=this.completedClaudeDryRun();if(!r)return null;
-    if(r.instructions?.fingerprint)return r.instructions.fingerprint===require('./review-instructions.cjs').fingerprint()?r:null;
+    if(r.instructions?.fingerprint){const RI=require('./review-instructions.cjs');return [RI.fingerprint(),RI.fingerprint(undefined,{orders:true})].includes(r.instructions.fingerprint)?r:null;}
     if(r.appVersion)return versionAtLeast(r.appVersion,'1.5.60')?r:null;
     return r.timestamp>=CLAUDE_FORMS_SINCE&&r.answerForm?r:null;}
   // Why a Claude trading model may not trade, or null (D-0 note section 2). cfg: the settings being saved, or the saved
