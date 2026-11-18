@@ -47,3 +47,8 @@ test('copy: one line, the rest behind More, nothing claims the origin is unknown
   assert.ok(src.includes("'Orders in both markets, newest first. Totals are what KIS reports.'"));assert.ok(src.includes("'Realized profit as KIS reports it, not total return.'"));
   assert.match(src,/<details className="inline-help" aria-label="About this report: more"><summary>More<\/summary>/);
   assert.match(src,/The app stores the last order history it read\./,'said where it is read');});
+// The planner's remark on activity-rows-dark.png (run-BBUX3p): with From, "Ordered / executed" and "Remaining" touched.
+test('the orders table: headers padded like the cells, and it scrolls in its card below 920 px',()=>{
+  const src=fs.readFileSync(path.join(__dirname,'../src/ActivityReport.tsx'),'utf8'),css=fs.readFileSync(path.join(__dirname,'../src/polish.css'),'utf8');
+  assert.ok(src.includes('<div className="table-scroll"><table className="activity-orders">'));
+  assert.match(css,/\.activity-orders\{min-width:920px\}/);assert.match(css,/\.activity-orders th\{padding-right:12px\}/);});

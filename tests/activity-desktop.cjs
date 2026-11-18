@@ -57,6 +57,11 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   assert.ok(from.some(t=>t.startsWith('AI review · sent automatically')),JSON.stringify(from));assert.ok(from.some(t=>t.startsWith('Outside the app')),JSON.stringify(from));
   for(const theme of ['dark','light']){if(await run('document.documentElement.dataset.theme')!==theme){await run(`document.querySelector('[aria-label="Dark mode"]').click()`);await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'theme');}
     await run('window.scrollTo(0,0)');await capture(`activity-open-${theme}`);await run(`document.querySelector('table')?.scrollIntoView({block:'center'})`);await capture(`activity-rows-${theme}`);}
+  // 3b. At 760 px the orders table scrolls inside its card; the page itself does not scroll sideways.
+  win.setSize(760,900);await new Promise(r=>setTimeout(r,400));await run(`document.querySelector('table')?.scrollIntoView({block:'center'})`);
+  assert.ok(await run('document.querySelector("main").scrollWidth-document.querySelector("main").clientWidth<=2'),'no page overflow at 760 px');
+  assert.ok(await run('(()=>{const s=document.querySelector(".table-scroll");return s.scrollWidth>s.clientWidth;})()'),'the table scrolls in its card');
+  await capture('activity-rows-760');win.setSize(1280,900);await new Promise(r=>setTimeout(r,300));
   // 4. A failed refresh keeps the rows and says why.
   failOrders=true;await run(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Refresh').click()`);
   await until(`${text('[aria-label="Refresh status"]')}.startsWith('Not refreshed:')`,'the not-refreshed line');

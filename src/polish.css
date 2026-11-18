@@ -590,3 +590,8 @@ table.discover-table{table-layout:auto}
 .movement-more table{width:100%;font-size:11.5px;font-variant-numeric:tabular-nums;border-collapse:collapse}.movement-more th,.movement-more td{padding:2px 4px;text-align:right}.movement-more th:first-child,.movement-more td:first-child{text-align:left}
 /* B1: the AI provider cards in Connections keep the normal card spacing. */
 .provider-cards{display:flex;flex-direction:column;gap:16px}
+
+/* Activity orders table (1.5.69): eight columns with From; headers get the cells' right padding, and the table scrolls
+   inside its card below 920 px rather than squeezing the numbers together. */
+.activity-orders{min-width:920px}
+.activity-orders th{padding-right:12px}
