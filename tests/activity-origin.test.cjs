@@ -39,3 +39,11 @@ test('sentBy is written where the order goes out; main labels the period; review
   const main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');
   assert.match(main,/require\('\.\/activity-origin\.cjs'\)\.labelRows\(data\.orders,intents,\{reviews:unmarked\?O\.reviewIdRows\(store\.db,since\):\[\],conditionals:O\.conditionalRows\(store\.db\),startDate,endDate\}\)/);
   assert.ok(main.indexOf('markChains(data.orders,intents)')<main.indexOf('labelRows(data.orders,intents'),'the guard marks first');});
+
+// Step 5: one short line under the title; the explanation behind More; the old "origin is unknown" text is gone.
+test('copy: one line, the rest behind More, nothing claims the origin is unknown',()=>{
+  const src=fs.readFileSync(path.join(__dirname,'../src/ActivityReport.tsx'),'utf8');
+  assert.doesNotMatch(src,/origin is unknown/);
+  assert.ok(src.includes("'Orders in both markets, newest first. Totals are what KIS reports.'"));assert.ok(src.includes("'Realized profit as KIS reports it, not total return.'"));
+  assert.match(src,/<details className="inline-help" aria-label="About this report: more"><summary>More<\/summary>/);
+  assert.match(src,/The app stores the last order history it read\./,'said where it is read');});
