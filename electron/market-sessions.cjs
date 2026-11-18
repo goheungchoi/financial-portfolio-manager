@@ -43,7 +43,9 @@ function tradability(id,regular,environment,enabled){if(regular)return 'app';con
 function sessionsOn(market,day,{closedDays=new Set(),environment='mock',enabled={}}={}){
   const tz=market==='KR'?'Asia/Seoul':'America/New_York';
   if(market==='KR'?!krTradingDay(day,closedDays):!usTradingDay(day))return [];
-  return (market==='KR'?KR_SESSIONS:US_SESSIONS(day)).filter(s=>active(s,day)).map(s=>{const startAt=zoned(s.startDay??day,s.start,tz),endAt=zoned(day,s.end,tz);
+  // Korean days with other hours (kr-hours.cjs): each row as that day has it; a session not held is left out.
+  const rows=market==='KR'?KR_SESSIONS.map(s=>require('./kr-hours.cjs').sessionOn(day,s)).filter(Boolean):US_SESSIONS(day);
+  return rows.filter(s=>active(s,day)).map(s=>{const startAt=zoned(s.startDay??day,s.start,tz),endAt=zoned(day,s.end,tz);
     const appEndAt=s.appEnd?zoned(day,s.appEnd,tz):s.appEndMinutesBefore?endAt-s.appEndMinutesBefore*60000:endAt;
     return {id:s.id,label:s.label,venue:s.venue,day,startAt,endAt,regular:Boolean(s.regular),...(s.early?{earlyClose:true}:{}),
       tradable:tradability(s.id,s.regular,environment,enabled),...(s.regular?{appEndAt}:{})};});

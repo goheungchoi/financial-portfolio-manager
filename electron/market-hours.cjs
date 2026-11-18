@@ -3,7 +3,8 @@
 const {usSession}=require('./kis-overseas.cjs');
 const PRE_OPEN_MS=10*60000;
 const seoul=t=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(t)).map(r=>[r.type,r.value]));return {day:`${p.year}-${p.month}-${p.day}`,weekday:p.weekday,minutes:Number(p.hour)*60+Number(p.minute)};};
-function krOpen(t,closedDays){const s=seoul(t);return !['Sat','Sun'].includes(s.weekday)&&!closedDays.has(s.day)&&s.minutes>=540&&s.minutes<920;}
+// The window moves on the days listed in kr-hours.cjs (2026-11-19: 10:00–16:20).
+function krOpen(t,closedDays){const s=seoul(t);if(['Sat','Sun'].includes(s.weekday)||closedDays.has(s.day))return false;const w=require('./kr-hours.cjs').krWindow(s.day);return s.minutes>=w.open&&s.minutes<w.appEnd;}
 const usOpen=t=>usSession(new Date(t)).open;
 const marketsFor=scope=>scope==='kis'?['KR']:scope==='us'?['US']:scope==='both'?['KR','US']:[];
 // The next opening minute within a week, found by stepping a minute at a time from the next whole minute.

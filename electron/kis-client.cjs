@@ -245,7 +245,9 @@ class KisReadOnlyClient {
   async checkSession(session=null) {
     const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
     const local=new Date(Date.now()+9*3600000);const minutes=local.getUTCHours()*60+local.getUTCMinutes();
-    if(!(session&&!session.regular)&&(minutes<9*60 || minutes>=15*60+20))throw new KisError('SESSION_CLOSED');
+    // The regular window moves on the days listed in kr-hours.cjs (2026-11-19: 10:00–16:20).
+    const w=require('./kr-hours.cjs').krWindow(today);
+    if(!(session&&!session.regular)&&(minutes<w.open || minutes>=w.appEnd))throw new KisError('SESSION_CLOSED');
     // The mock server has no holiday calendar (CTCA0903R returns EGW02006), so mock accounts use weekdays and hours; the broker still rejects holiday orders.
     if(this.#credentials.environment!=='live'){if([0,6].includes(local.getUTCDay()))throw new KisError('SESSION_CLOSED');return {open:true,basis:'trading hours (holiday calendar unavailable on mock accounts)'};}
     if(!this.holidayDay || this.holidayDay!==today) {
