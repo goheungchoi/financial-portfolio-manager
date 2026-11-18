@@ -25,8 +25,8 @@ const marketOf=o=>o.market==='US'||String(o.accountKey??'').endsWith(':US')?'US'
 class FundingLedger {
   // fresh(market): a fresh balance for that market (null when that market has no account); fx(): {usdKRW, timestamp};
   // regime: a verified funding regime, or null (unknown); alert(title, message).
-  constructor(db,{clock=Date.now,fresh=null,fx=null,regime=null,buffer=BUFFER,alert=null}={}){
-    this.db=db;this.clock=clock;this.fresh=fresh;this.fxSource=fx;this.verifiedRegime=REGIMES.includes(regime)&&regime!=='unknown'?regime:null;this.buffer=buffer;this.alert=alert;this.queue=Promise.resolve();
+  constructor(db,{clock=Date.now,fresh=null,balance=null,fx=null,regime=null,buffer=BUFFER,alert=null}={}){
+    this.db=db;this.clock=clock;this.fresh=fresh;this.balanceOnly=balance;this.fxSource=fx;this.verifiedRegime=REGIMES.includes(regime)&&regime!=='unknown'?regime:null;this.buffer=buffer;this.alert=alert;this.queue=Promise.resolve();
     db.exec('CREATE TABLE IF NOT EXISTS funding_commitments(orderId TEXT PRIMARY KEY,account TEXT NOT NULL,market TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS funding_events(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,orderId TEXT,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS funding_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
     // What settled buys released of their filled part (S1a/S1b: by KIS evidence or by age; stage 2b.3's reconciliation
     // releases and reversals are gone since S4b-2/S5). Append-only; a commitment counts its amount less what was
@@ -120,15 +120,21 @@ class FundingLedger {
   // Commitments of an account in each currency.
   commitments(account){const rows=this.rows(account).filter(c=>c.state!=='released').map(c=>this.effective(c));const sum=m=>rows.filter(c=>c.market===m).reduce((n,c)=>n+c.amount,0);
     return {usd:Math.round(sum('US')*100)/100,krw:Math.round(sum('KR')),overCommitted:rows.some(c=>c.overCommitted),rows};}
+  // F1/F2 (2026-11-18 order not sent): the other market's balance for an order of market, read before its broker check.
+  // balance (constructor) reads a balance alone, no quotes; without it, fresh. A read that throws gives null, which the
+  // check then takes as inputs takes a missing reading (a Korean one is refused as stale).
+  async otherReading(market){const m=market==='US'?'KR':'US';const read=this.balanceOnly??this.fresh;if(!read)return null;try{return await read(m);}catch{return null;}}
   // One at a time: fresh balances, the check and the durable reservation.
   lock(fn){const run=this.queue.then(fn,fn);this.queue=run.catch(()=>{});return run;}
   // The balances and rate a check needs, each fresh and each of the order's own account and environment (stage 1
   // review, P1: a fresh balance of another account funded a submission). own: the balance the engine just read.
   // account: the order's account (Korean key; the U.S. one is it with ':US'); environment: live or mock.
-  async inputs(market,own,{account=null,environment=null}={}){
+  // other (2026-11-18 order not sent, F1): the other market's balance, read by otherReading before the order's broker
+  // check; given, nothing is read here. It is held to the same account, environment and two-minute rules below.
+  async inputs(market,own,{account=null,environment=null,other}={}){
     // Ages are measured after every read has finished, just before the check (stage 1 review, P2: a slow read let
     // inputs older than the limit pass, measured from before the reads); the check follows with no further wait.
-    const fresh=async m=>m===market&&own?own:(this.fresh?await this.fresh(m):null);const kr=await fresh('KR'),us=await fresh('US');const appRate=this.fxSource?.()??null;const now=this.clock();
+    const fresh=async m=>m===market&&own?own:other!==undefined&&m!==market?other:(this.fresh?await this.fresh(m):null);const kr=await fresh('KR'),us=await fresh('US');const appRate=this.fxSource?.()??null;const now=this.clock();
     const env=environment??own?.environment??null;
     for(const [b,key,label] of [[kr,account,'Korean'],[us,account?account+':US':null,'U.S.']])if(b&&(key&&b.accountKey!==key||env&&b.environment!==env))throw fail('ACCOUNT_CHANGED',`the ${label} balance read for this check is of another account or environment`);
     const t=b=>{const x=Date.parse(b?.timestamp??'');return Number.isFinite(x)?x:null;};
@@ -144,9 +150,10 @@ class FundingLedger {
   // no wait in between, so nothing that changed during the reads is missed (stage 1 review, P1).
   // alsoOpen (M-1.4, several orders open): the cost of open buys at KIS in this market the app did not place (yours), in
   // this market's currency. It must fit beside this order but is not reserved: it is not the app's. 0: as before.
-  async admit({order,market,cost,balance,environment=null,alsoOpen=0}){
+  // other: see inputs (F1); without it the other market is read here, as before.
+  async admit({order,market,cost,balance,environment=null,alsoOpen=0,other}){
     return this.lock(async()=>{
-      const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment});
+      const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment,...(other!==undefined?{other}:{})});
       const c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
       const check=this.check({market,cost:cost+(Number(alsoOpen)>0?Number(alsoOpen):0),commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);
       const prev=this.row(order.id);const reserved={...FundingLedger.commitment({...order,status:'Submitting'},prev),state:'reserved',reason:'reserved before submission'};

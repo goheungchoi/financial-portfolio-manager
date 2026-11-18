@@ -136,7 +136,19 @@ class LiveEngine {
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
       const turnover=this.orders().filter(row=>row.day===this.day()&&['Submitting','Uncertain','Accepted','Partially filled','Filled','Canceled',...(this.severalOpen?['Cancellation uncertain']:[])].includes(row.status)).reduce((sum,row)=>sum+row.notional,0);
       if(policy.maxDailyTurnoverKRW!=null&&turnover+order.notional>policy.maxDailyTurnoverKRW)throw new Error('DAILY_TURNOVER_LIMIT');
+      // 2026-11-18 order not sent (artifacts/reviews/2026-11-18-order-not-sent). F1: a buy's funding check needs the other
+      // market's balance; it is read now, before the broker check, so the check's 15 seconds hold nothing but the order's
+      // own steps (it was read after the check: the whole U.S. context, up to 20 quotes, 7 to 18 s inside the clock).
+      // F3: from the check to the placement the order holds the KIS queue. F6: how long each step took, and what the
+      // order waited behind, go on the order record (the "Order submission" event).
+      const timings={},since=t=>Date.now()-t;let other;
+      if(this.funding?.otherReading&&order.side==='Buy'&&order.credit?.kind!=='margin-buy'){const t=Date.now();other=await this.funding.otherReading(this.market,{account:order.accountKey,environment});timings.otherMarketMs=since(t);}
+      timings.aheadOfCheck=this.broker.ahead?.()??null;
+      const held=fn=>typeof this.broker.hold==='function'?this.broker.hold(fn,{label:`${order.side} ${order.quantity} ${order.symbol}`}):fn({waitedMs:0,released:()=>false});
+      return await held(async hold=>{timings.holdWaitMs=hold.waitedMs;const stamp=o=>({...o,timings:{...timings,...(hold.released()?{holdReleasedByLimit:true}:{})}});
+      let t=Date.now();
       const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})},...(this.severalOpen?{severalOpen:true}:{})});
+      timings.checkMs=since(t);t=Date.now();
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
@@ -182,7 +194,8 @@ class LiveEngine {
       // durably before anything is sent. Sales are never held back here.
       // Your own open buys at KIS in this market must fit beside it (at this order's fee factor); the app's are in the ledger.
       const yoursCost=pending.filter(o=>o.yours&&o.side==='Buy').reduce((n,o)=>n+o.notional,0)*FundingLedger.feeFactor(order);
-      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy')await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,...(yoursCost>0?{alsoOpen:yoursCost}:{})});
+      timings.checksMs=since(t);t=Date.now();
+      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy'){await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,...(yoursCost>0?{alsoOpen:yoursCost}:{}),...(other!==undefined?{other}:{})});timings.fundingMs=since(t);t=Date.now();}
       // Rechecked immediately before sending, with no wait until the order is marked Submitting: trading may have been
       // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
       // been sent, so the reservation is released.
@@ -196,7 +209,8 @@ class LiveEngine {
       // you can still approve it. Your manual submissions and protective orders (sales, repayments, covers) are not held.
       if(automatic){const stop=this.lossRestriction(order);if(stop){this.funding?.release(order,'stopped before sending: '+stop);const {session:_,...rest}=order;this.writeOrder({...rest,reason:stop});throw new Error(stop);}}
       order={...order,status:'Submitting'};this.save(order);
-      try {const result=await this.broker.request('place-order',{ticket:prepared.ticket});order={...order,...result,status:'Accepted'};}
+      timings.aheadOfPlace=this.broker.ahead?.()??null;t=Date.now();
+      try {const {ticketAgeMs,...result}=await this.broker.request('place-order',{ticket:prepared.ticket});timings.placeMs=since(t);if(Number.isFinite(ticketAgeMs))timings.ticketAgeMs=ticketAgeMs;order=stamp({...order,...result,status:'Accepted'});}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
       // credit-path check before the request: the order was not placed.
       // M-1a: refused by the request limit before it left the app (ORDER_NOT_SENT from the worker, or the service's own
@@ -205,12 +219,14 @@ class LiveEngine {
       // KIS returns for the order request itself is not this case: that request was sent, so it stays uncertain.
       // M-1c: so is a prepared ticket the worker refused as missing or expired (15 s) before sending (TICKET_EXPIRED);
       // notSentCause says which.
-      catch(error){if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
+      catch(error){timings.placeMs=since(t);if(Number.isFinite(error.ticketAgeMs))timings.ticketAgeMs=error.ticketAgeMs;order=stamp(order);
+        if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
         if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN'};
         // Rule U (M-1.2): with several orders open allowed, an unclear order blocks only its own stock (openBlock) and is
         // counted in full in every sum; the market's trading stays on. Off: the market stops, as before.
         if(!this.severalOpen)this.enabled=false;}
       this.save(order);return order;
+      });
     }finally{this.busy=false;}
   }
   // Rule U (M-1.2, several orders open allowed): why a new order may not be sent while others are open, or null.

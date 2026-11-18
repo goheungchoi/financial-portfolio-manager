@@ -35,7 +35,9 @@ process.parentPort.on('message',async ({data})=>{
       else if(operation==='us-order-history')snapshot=await us.orderHistory(data.startDate,data.endDate);
       else if(operation==='us-revise-order')snapshot=await us.revise(data.command??{});
       else if(operation==='us-prepare-order'){const check=await us.prepare(data.command,sess,{severalOpen:data.severalOpen===true});const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,market:'US',session:sess,expiresAt:Date.now()+15000});snapshot={...check,ticket,session:sess};}
-      else if(operation==='us-place-order'){const entry=require('./order-tickets.cjs').takeTicket(prepared,data.ticket,'US');if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot=await us.place(entry.command,entry.session);}
+      else if(operation==='us-place-order'){const entry=require('./order-tickets.cjs').takeTicket(prepared,data.ticket,'US');if(entry.session&&!entry.session.regular){const again=sessions.tradableNow('US',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[sessions.TOGGLES[entry.session.id]]:true}});if(again?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}snapshot={...await us.place(entry.command,entry.session),ticketAgeMs:entry.ageMs};}
+      // F2 (2026-11-18 order not sent): the U.S. balance alone, for the funding check of a Korean buy; no quotes.
+      else if(operation==='us-balance')snapshot=await us.balance();
       else throw new Error();
       process.parentPort.postMessage({id,ok:true,snapshot});return;
     }
@@ -59,7 +61,7 @@ process.parentPort.on('message',async ({data})=>{
       const entry=require('./order-tickets.cjs').takeTicket(prepared,data.ticket,'KR');
       // The session must still be open at placement (the same one the order was prepared for).
       if(entry.session&&!entry.session.regular){const now=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:{[require('./market-sessions.cjs').TOGGLES[entry.session.id]]:true}});if(now?.id!==entry.session.id)throw new Error('SESSION_CLOSED');}
-      process.parentPort.postMessage({id,ok:true,snapshot:await client.placeOrder(entry.command,entry.session)});return;
+      process.parentPort.postMessage({id,ok:true,snapshot:{...await client.placeOrder(entry.command,entry.session),ticketAgeMs:entry.ageMs}});return;
     }
     if(operation==='revise-order') {
       process.parentPort.postMessage({id,ok:true,snapshot:await client.reviseOrder(data.command??{})});return;
@@ -111,6 +113,6 @@ process.parentPort.on('message',async ({data})=>{
     // precede it) is not at KIS.
     // An expired or missing ticket (M-1c) keeps its own code: also not sent, for another reason than the request limit.
     // M-1.5a: revisions and cancellations too (a sign-in refused before the request included).
-    const code=['place-order','us-place-order','revise-order','us-revise-order'].includes(operation)&&error.notSent===true&&error.code!=='TICKET_EXPIRED'?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
+    const code=['place-order','us-place-order','revise-order','us-revise-order'].includes(operation)&&error.notSent===true&&error.code!=='TICKET_EXPIRED'?'ORDER_NOT_SENT':error.code??error.message;process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,...(Number.isFinite(error.ticketAgeMs)?{ticketAgeMs:error.ticketAgeMs}:{}),code:operation.startsWith('us-')?require('./us-errors.cjs').publicUSCode(code):allowed.includes(code)?code:'REQUEST_FAILED'});
   } finally {busy=false;}
 });

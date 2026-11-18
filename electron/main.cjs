@@ -246,7 +246,9 @@ app.whenReady().then(async () => {
   costs.krClosed=()=>new Set(automation.officialClosedDays?.()??[]);costs.marketRate=()=>usSnapshot?.fx?.usdKRW??null;costs.holdings=()=>kisState.snapshot&&usSnapshot?.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot.holdings:null;
   // Leveraged/inverse products, margin and short policy per account.
   const exposure=new (require("./exposure.cjs").Exposure)(store.db);live.exposure=exposure;
-  const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload)};
+  const usBroker={request:(operation,payload)=>kisService.request(operation==='live-context'?'us-context':'us-'+operation,payload),hold:(fn,options)=>kisService.hold(fn,options),ahead:()=>kisService.ahead()};
+  // F3 (2026-11-18 order not sent): an order's hold on the KIS queue released by its 30-second limit is logged.
+  kisService.onHoldLimit=({label,heldMs,limitMs})=>{try{automation.log(require('node:crypto').randomUUID(),'System','KIS queue released by its limit',`The order ${label} held the KIS request queue for ${Math.round(heldMs/1000)} s; after ${Math.round(limitMs/1000)} s the queue was released for other requests. The order's remaining requests wait in line.`);}catch{}};
   // Which part of unsettled U.S. buys is known to be KRW-funded, tracked across U.S. balance readings.
   const funding=new (require('./integrated-settlement.cjs').FundingTracker)(store.db);
   usLive=new LiveEngine(store.db,usBroker,()=>({snapshot:kisState.snapshot&&usSnapshot?.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot:null}),{market:'US'});
@@ -260,7 +262,18 @@ app.whenReady().then(async () => {
   usLive.buyingPower=balance=>require('./buying-power.cjs').usBuyingPower({usdCash:balance?.cash??0,broker:balance?.brokerBuyingPower??null,krwCash:kisState.snapshot?(Number.isFinite(kisState.snapshot.settledCash)?kisState.snapshot.settledCash:kisState.snapshot.cash):null,usdKRW:balance?.fx?.usdKRW??automation?.fx?.()?.usdKRW??null});usLive.costs=costs;usLive.exposure=exposure;automation.usLive=usLive;
   // One funding ledger for both markets' buys (electron/funding-ledger.cjs): checked under one lock against balances read
   // fresh for the check, with the rate read within two minutes; no funding regime is verified, so the shared-pool rule applies.
-  const fundingLedger=new (require('./funding-ledger.cjs').FundingLedger)(store.db,{fresh:async market=>{if(market==='KR'){await refreshKisBalance();return kisState.snapshot??null;}try{await automation.refreshUS?.();}catch{}const u=usHeldReading??usSnapshot;return kisState.snapshot&&u?.accountKey===kisState.snapshot.accountKey+':US'?u:null;},fx:()=>automation.fx?.()??null,alert:(title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message)});
+  const fundingLedger=new (require('./funding-ledger.cjs').FundingLedger)(store.db,{fresh:async market=>{if(market==='KR'){await refreshKisBalance();return kisState.snapshot??null;}try{await automation.refreshUS?.();}catch{}const u=usHeldReading??usSnapshot;return kisState.snapshot&&u?.accountKey===kisState.snapshot.accountKey+':US'?u:null;},
+    // F2 (2026-11-18 order not sent): the other market's balance alone, read before an order's broker check. Korea: the
+    // balance refresh, which reads the balance only. U.S.: us-balance (no quotes), kept apart from the stored reading:
+    // it goes to this check only. It is not passed through the settlement hold or the funding tracker, not stored, and
+    // the U.S. snapshot, its quotes and their time stay as the last full read left them. The check takes what it took
+    // before: the new reading itself (fresh above gives the held raw reading when a settlement hold is on). A failed
+    // read gives the stored reading, as fresh does, and the two-minute rule decides.
+    balance:async market=>{if(market==='KR'){await refreshKisBalance();return kisState.snapshot??null;}
+      const stored=()=>{const u=usHeldReading??usSnapshot;return kisState.snapshot&&u?.accountKey===kisState.snapshot.accountKey+':US'?u:null;};
+      if(!kisState.snapshot)return null;const generation=kisGeneration;
+      try{const b=await kisService.request('us-balance');return generation===kisGeneration&&b?.accountKey===kisState.snapshot?.accountKey+':US'?b:stored();}catch{return stored();}},
+    fx:()=>automation.fx?.()??null,alert:(title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message)});
   fundingLedger.init();live.funding=usLive.funding=fundingLedger;automation.fundingState=()=>kisState.snapshot?.accountKey?fundingLedger.summary(kisState.snapshot.accountKey):null;
   let usRefreshTask=null,usRefreshGeneration=-1;
   automation.refreshUS=()=>{if(usRefreshTask&&usRefreshGeneration===kisGeneration)return usRefreshTask;const generation=kisGeneration;usRefreshGeneration=generation;lastUSRefresh=Date.now();const task=(async()=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');const selected=usLive.getState().policy?.symbols??[];const watched=automation.watches.list(automation.watchScope()).map(row=>row.symbol).filter(symbol=>/^(NASD|NYSE|AMEX):/.test(symbol));const listedUS=automation.discovery?.symbols('US')??[];// Review watches are price alerts on symbols already reviewed; only the watchlist, allowlist or holdings replace starters.

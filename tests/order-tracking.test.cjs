@@ -102,7 +102,7 @@ test('orders that end unfilled close instead of blocking: expired at the session
   const g=engine();g.add();g.e.broker.request=async()=>{throw new Error('REQUEST_FAILED');};await assert.rejects(g.e.reconcile());assert.equal(g.e.orderReconciliation().status,'unconfirmed','a failed read is reported, not guessed');
 });
 test('the U.S. engine sends revisions as us-revise-order',()=>{
-  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usBroker=\{request:\(operation,payload\)=>kisService\.request\(operation==='live-context'\?'us-context':'us-'\+operation,payload\)\}/);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/main.cjs'),'utf8');assert.match(src,/usBroker=\{request:\(operation,payload\)=>kisService\.request\(operation==='live-context'\?'us-context':'us-'\+operation,payload\),/);
   const worker=require('node:fs').readFileSync(require.resolve('../electron/kis-worker.cjs'),'utf8');assert.match(worker,/operation==='us-revise-order'/);assert.match(worker,/operation==='revise-order'/);
 });
 test('after an unclear reply, history settles it: the asked-for revision is adopted, a listing without it settles nothing, anything else is your takeover',async()=>{
