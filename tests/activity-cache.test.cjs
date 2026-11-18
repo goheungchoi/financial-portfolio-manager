@@ -46,3 +46,10 @@ test('the period line does not throw for a report without environment or read ti
   const src=fs.readFileSync(path.join(__dirname,'../src/ActivityReport.tsx'),'utf8');
   assert.doesNotMatch(src,/data\.environment\.toUpperCase\(\)/);assert.ok(src.includes("KIS{data.environment?` ${String(data.environment).toUpperCase()}`:''}"));
   assert.ok(src.includes("{data.retrievedAt?` · Updated ${time(data.retrievedAt)} KST`:''}"));});
+// The same class, checked once more (planner, 2026-11-18): rows, records and the Today reply missing or not lists.
+test('the screen tolerates a report or Today reply with missing rows, records, counts or list',()=>{
+  const src=fs.readFileSync(path.join(__dirname,'../src/ActivityReport.tsx'),'utf8');
+  assert.ok(src.includes('const orders=Array.isArray(data?.orders)?data.orders:[];'));
+  assert.ok(src.includes('const records=Array.isArray(data?.records)?data.records:[];const days=dailyRealized(records);'));assert.doesNotMatch(src,/data\.records\?\.map/);
+  assert.ok(src.includes('if(!today?.counts)return null;const c=today.counts;const latest=Array.isArray(today.latest)?today.latest:[];'));assert.doesNotMatch(src,/today\.latest\.(length|map)/);
+  assert.match(src,/\{data\.summary\?\.returnPct==null\?'Unavailable':/,'the one method call on a summary field is guarded');});
