@@ -648,3 +648,18 @@ test('G3: an unreadable plan_stop_failures table: the review completes, getState
   const logged=events.filter(e=>e.title==='Error: purchases without a stop order could not be read');assert.equal(logged.length,1,'once per run');
   assert.match(logged[0].body,/^The list could not be read \([A-Z_]+\)\. Rows skipped as unreadable: 0\./);
 });
+// 2026-11-19 overnight failures, A(c): a purchase an automatic send refused before it reached KIS (the U.S. block) is
+// marked Rejected with its code at once, and its linked plan stop closes at once ("not sent"), not two minutes later.
+test('A(c): a purchase refused before sending ends Rejected with its code, and its linked stop closes at once',()=>{
+  const {a,records,stops,closed}=planHarness();records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:0,status:'Ready',expiresAt:Date.now()+120000});
+  a.live.annotate=(id,patch)=>{records.set(id,{...records.get(id),...patch});return records.get(id);};
+  a.followPlan(a.watchScope(),planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}});const id=stops()[0].id;
+  assert.equal(a.endUnsent(a.live,'P1',new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED')),true);
+  assert.equal(records.get('P1').status,'Rejected');assert.equal(records.get('P1').reason,'INTEGRATED_MARGIN_AUTOMATION_BLOCKED');assert.ok(Number.isFinite(records.get('P1').notSentAt));
+  assert.equal(stops().length,0);assert.equal(closed(id).status,'cancelled');assert.equal(closed(id).outcome,'Not needed: the purchase was not sent (INTEGRATED_MARGIN_AUTOMATION_BLOCKED).');});
+test('A(c): an order already sent, or past Ready, is not touched; its stop stays',()=>{
+  const {a,records,stops}=planHarness();records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:0,status:'Submitting'});
+  let annotated=false;a.live.annotate=()=>{annotated=true;};a.followPlan(a.watchScope(),planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}});
+  assert.equal(a.endUnsent(a.live,'P1',new Error('REQUEST_TIMEOUT')),false);assert.equal(annotated,false);assert.equal(stops().length,1);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');
+  assert.ok(src.includes("if(context.environment!=='local-paper')this.endUnsent(execution,proposal.id,error);"),'placeOrder\'s refused send ends the purchase');});

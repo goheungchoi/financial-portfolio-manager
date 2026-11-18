@@ -6,7 +6,7 @@ const {originOf}=require('./order-origin.cjs');
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 // Why an order did not reach KIS, in words.
 const NOT_SENT={'ticket-expired':'the check with KIS expired before it was sent','rate-limit':'the KIS request limit was reached',SESSION_CLOSED:'the market was closed',
-  CREDIT_PATH_UNVERIFIED:'its credit path is not verified',APPROVAL_REQUIRED:'it needed your approval',SUPERSEDED:'a newer order replaced it',EXPIRED:'it expired unapproved'};
+  CREDIT_PATH_UNVERIFIED:'its credit path is not verified',INTEGRATED_MARGIN_AUTOMATION_BLOCKED:'automatic U.S. purchases are off (integrated margin not verified)',APPROVAL_REQUIRED:'it needed your approval',SUPERSEDED:'a newer order replaced it',EXPIRED:'it expired unapproved'};
 const seoulDay=t=>Number.isFinite(t)?new Date(t+9*3600000).toISOString().slice(0,10):null;
 // What happened to one order: {kind, label, reason?}. kind: filled | partly | open | notSent | rejected | waiting | canceled.
 function stateOf(o,now=Date.now()){

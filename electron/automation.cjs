@@ -1153,7 +1153,11 @@ class Automation {
         const orderCap=this.config.maxAutoOrdersPerDay;const slot=autoEligible?this.guardrails.reserveSlot({cap:orderCap,source:'review',ref:id,closing:!opening}):null;
         if(autoEligible&&!slot){executionNote=`Guardrail: the daily limit of ${orderCap} automatic orders is reached. Proposal awaits manual approval.`;this.log(id,'System','Guardrail · order limit',executionNote);this.trip('order-limit',`Daily automatic order limit (${orderCap}) reached; later proposals need approval.`);}
         else if(autoEligible) {const statusOf=()=>{try{return context.environment==='local-paper'?null:execution.orders?.().find(r=>r.id===proposal.id)??null;}catch{return null;}};
-          try{order=context.environment!=='local-paper'?await execution.autoSubmit(proposal.id):this.paper.submit(proposal.id);}catch(error){this.settleAutoSlot(slot,statusOf());throw error&&typeof error==='object'?Object.assign(error,{proposal}):error;}
+          try{order=context.environment!=='local-paper'?await execution.autoSubmit(proposal.id):this.paper.submit(proposal.id);}catch(error){this.settleAutoSlot(slot,statusOf());
+            // 2026-11-19 (A(c)): refused before it reached KIS (still Ready, e.g. INTEGRATED_MARGIN_AUTOMATION_BLOCKED): the
+            // purchase is marked Rejected with its code now, and the stops linked to it close at once, not when it expires.
+            if(context.environment!=='local-paper')this.endUnsent(execution,proposal.id,error);
+            throw error&&typeof error==='object'?Object.assign(error,{proposal}):error;}
           this.settleAutoSlot(slot,context.environment==='local-paper'?{status:'Filled'}:statusOf()??order);this.log(id,'Tool','Order submission',JSON.stringify(order));
           // M-1a: refused by KIS's request limit before it was sent: nothing is at KIS, trading stays on, and a review
           // decides again once KIS may be asked (on fresh prices and checks), not before.
@@ -1564,10 +1568,16 @@ class Automation {
   // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
   linkedPurchase(order,now=Date.now()){const l=order?.linkedBuy;if(!l)return null;const engine=(l.market??(/:/.test(order.symbol)?'US':'KR'))==='US'?this.usLive:this.live;let rec=null;try{rec=engine?.orders?.().find(r=>r.id===l.id)??null;}catch{rec=null;}if(!rec)return null;
     const ended=['Filled','Canceled','Rejected'].includes(rec.status)||rec.status==='Ready'&&Number.isFinite(rec.expiresAt)&&now>rec.expiresAt;return {record:rec,filled:Math.max(0,Number(rec.filled)||0),ended,status:rec.status==='Ready'&&ended?'expired':String(rec.status).toLowerCase(),reason:rec.reason??null};}
+  // An order an automatic send refused before it reached KIS (it is still Ready): marked Rejected with the refusal's code,
+  // and its linked stops synced at once (A(c), 2026-11-19). An order already past Ready (sent, uncertain) is not touched.
+  endUnsent(engine,id,error){try{const code=require('./order-outcomes.cjs').codeOf(error)??'NOT_SENT';const rec=engine?.orders?.().find(r=>r.id===id);
+      if(rec?.status!=='Ready')return false;engine.annotate?.(id,{status:'Rejected',reason:code,notSentAt:Date.now()});this.syncLinkedStops();return true;}catch{return false;}}
   // Linked stops follow their purchase once it ends (P1): nothing filled, the stop is cancelled with the reason; partly
   // filled, its quantity becomes what was bought. Unlinked orders are not touched.
   syncLinkedStops(scope=this.watchScope()){for(const o of this.desk.orders(scope)){if(!o.linkedBuy||o.side!=='Sell')continue;const p=this.linkedPurchase(o);if(!p||!p.ended)continue;
-      if(p.filled<1){this.desk.update(o,{status:'cancelled',outcome:`Not needed: the purchase did not fill (it was ${p.status}${p.reason?`: ${p.reason}`:''}).`,closedAt:Date.now(),closedBy:'app'});this.log(o.id,'System','Conditional order · cancelled',`${o.side} ${o.quantity} ${o.symbol} (${o.purpose}): its purchase did not fill.`);}
+      if(p.filled<1){const unsent=Number.isFinite(p.record?.notSentAt);
+        this.desk.update(o,{status:'cancelled',outcome:unsent?`Not needed: the purchase was not sent (${p.reason??'refused before sending'}).`:`Not needed: the purchase did not fill (it was ${p.status}${p.reason?`: ${p.reason}`:''}).`,closedAt:Date.now(),closedBy:'app'});
+        this.log(o.id,'System','Conditional order · cancelled',`${o.side} ${o.quantity} ${o.symbol} (${o.purpose}): its purchase ${unsent?'was not sent':'did not fill'}.`);}
       else if(p.filled<o.quantity){this.desk.update(o,{quantity:p.filled,resizedFrom:o.quantity});this.log(o.id,'System','Conditional order · resized',`${o.side} ${o.symbol} (${o.purpose}): now ${p.filled}, the shares its purchase bought.`);}}}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
   // The stop is armed when the purchase is proposed, so protection exists the moment a fill can happen, and is linked
