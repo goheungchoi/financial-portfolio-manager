@@ -16,7 +16,24 @@ const NOT_SENT={'ticket-expired':'the check with KIS expired before it was sent'
   MARGIN_LIMIT:'it would go over the margin limit',MARGIN_NOT_ENABLED:'margin trading is off',SHORT_LIMIT:'it would go over the short-selling limit',SHORT_NOT_ENABLED:'short selling is off',
   OPEN_BROKER_ORDERS:'another order for it is open at KIS',ORDER_NOT_SENT:'it could not be sent',TICKET_EXPIRED:'the check with KIS expired before it was sent',RATE_LIMITED:'the KIS request limit was reached',
   ORDER_SIZE_LIMIT:'it is above the order size limit',ORDER_UNCERTAIN:'KIS\'s reply was unclear, so it is not confirmed',PRICE_MOVED:'the price moved past its limit',RECONCILIATION_REQUIRED:'open orders must be confirmed with KIS first',
-  FX_STALE:'the exchange rate was too old',FUNDING_BALANCE_STALE:'the cash reading was too old to check its funding'};
+  FX_STALE:'the exchange rate was too old',FUNDING_BALANCE_STALE:'the cash reading was too old to check its funding',
+  // Order-rule audit item 13, 2026-11-19: the STOP codes (order-outcomes.cjs STOP), in words. They stop the rest of a
+  // batch; these say why for the Console, Home, Activity and the review failure line.
+  STALE_DECISION:'the account or saved settings changed during the review',AUTO_TRADING_STOPPED:'automatic trading was stopped',
+  SEVERAL_OPEN_OFF:'several open orders was turned off',BATCH_LIMIT:'the batch limit (5 minutes from the decision) passed',
+  ACCOUNT_CHANGED:'another KIS account was connected',ACTIVATION_REQUIRED:'trading for this market is not switched on',AUTH_FAILED:'KIS sign-in failed',
+  AUTO_KIS_DISABLED:'automatic orders are off for this market',BROKER_UNAVAILABLE:'the KIS connection stopped',
+  DAILY_SESSION_SETUP_REQUIRED:'today\'s trading session is not set up yet (switch the market\'s trading on again)',
+  DISABLED_OR_EXPIRED:'trading was switched off or the order expired (2 minutes after it was made)',
+  FUNDING_OVERCOMMITTED:'KIS reported more shares filled than the app held funds for, so new buys stop until that is reviewed',
+  INCOMPLETE_BALANCE:'KIS returned an incomplete balance',US_BALANCE_INVALID_RESPONSE:'KIS returned a U.S. balance the app cannot read',
+  INVALID_RESPONSE:'KIS returned a reply the app cannot read',REQUEST_FAILED:'a KIS request failed',INVALID_CREDENTIAL_FILE:'the KIS key file could not be read',
+  INVALID_LIMITS:'the saved limits are not valid',INVALID_SETTINGS:'the saved settings are not valid',KIS_NOT_CONNECTED:'KIS is not connected',
+  KIS_TRADING_DISABLED:'trading for this market is switched off',NO_FUNDED_BALANCE:'the account has no cash or holdings',
+  RISK_DATA_UNAVAILABLE:'the risk data could not be read',INCOMPLETE_HISTORY:'KIS returned an incomplete order history',
+  INVALID_DATE_RANGE:'the date range is not valid',INVALID_RELEASE:'a funding release was not valid',INVALID_REQUEST:'the request was not valid',
+  ORDER_NOT_OPEN:'the order is no longer open',ORDER_TAKEN_OVER:'the order was changed outside the app',TRACKING_STOPPED:'its tracking was stopped',
+  UNKNOWN_ORDER:'the order was not found',UNKNOWN_PROPOSAL:'the proposal was not found'};
 // A code in words: the sentence above, else the code in lower case (as before).
 function reasonText(code){return NOT_SENT[code]??String(code??'not sent').toLowerCase().replace(/_/g,' ');}
 const seoulDay=t=>Number.isFinite(t)?new Date(t+9*3600000).toISOString().slice(0,10):null;

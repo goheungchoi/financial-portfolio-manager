@@ -863,6 +863,8 @@ class Automation {
     }catch(error){this.lastRun=Date.now();this.lastErrorAt=this.lastRun;this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+require('./ai-errors.cjs').sizeDetail(error);
       // B(2), 2026-11-19: a failure from a KIS request names its code, KIS's own code and the request, whatever the review's
       // code shows (01:22 read only "REVIEW_FAILED · Stage: Account data"). App codes only; no reply text.
+      // Order-rule audit item 13: a STOP code from the order path says why, in words (activity-today.cjs).
+      if(typeof error?.kisOperation!=='string'&&require('./order-outcomes.cjs').classOf(error?.message)==='stop')this.lastErrorDetail=`${error.message}: ${require('./activity-today.cjs').reasonText(error.message)}. `+(this.lastErrorDetail??'');
       if(typeof error?.kisOperation==='string'&&/^[A-Z][A-Z0-9_]{2,63}$/.test(error.message??''))this.lastErrorDetail=`KIS ${error.message}${/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?` (KIS ${error.brokerCode})`:''} on ${error.kisOperation}. `+this.lastErrorDetail;
       // M-5 (e): a batch that failed on an error the app does not know: its record keeps what became of each order (the
       // first order's proposal id was written when it was made; the further orders here).
