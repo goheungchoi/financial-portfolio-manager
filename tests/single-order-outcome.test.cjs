@@ -64,3 +64,18 @@ test('the next review is told its last order was not placed, and why: not sent, 
 
 test('a pending decision is not closed as carried out by an order that did not go out',()=>{
   assert.ok(fs.readFileSync(require.resolve('../electron/automation.cjs'),'utf8').includes("orderId:order?.id&&!['Rejected','Ready'].includes(order.status)?order.id:null,"));});
+
+// B(2): a review that fails on a KIS request names the code, KIS's code and the request (01:22 read only REVIEW_FAILED).
+test('B(2): a review failing at the account read names "KIS {code} (KIS {code}) on {request}"',async()=>{
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'F',price:100}],()=>[]);const events=[];
+  const a=new Automation(db,paper,{request:async()=>({provider:'openai',decision})},(id,kind,title,body)=>events.push({title,body}));
+  const fail=Object.assign(new Error('REQUEST_TIMEOUT'),{kisOperation:'live-context',brokerCode:'EGW00201'});
+  a.live={market:'KR',enabled:true,getState:()=>({loss:null}),orders:()=>[],context:async()=>{throw fail;},identity:()=>'acct',autoEnabled:true};a.providerStatus.aiConnected=true;
+  a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true});const e=await a.review().catch(x=>x);assert.equal(e.message,'REVIEW_FAILED');
+  const line=events.find(x=>x.title==='Review failed');assert.ok(line,'logged');assert.match(line.body,/^REVIEW_FAILED · KIS REQUEST_TIMEOUT \(KIS EGW00201\) on live-context\. /);});
+test('B(2): an AI provider error at the decision gives no "KIS" prefix',async()=>{
+  const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',name:'F',price:100}],()=>[]);const events=[];
+  const a=new Automation(db,paper,{request:async()=>{throw new Error('RATE_LIMITED');}},(id,kind,title,body)=>events.push({title,body}));
+  a.live={market:'KR',enabled:true,getState:()=>({loss:null}),orders:()=>[],context:async()=>({environment:'kis',market:'KR',currency:'KRW',equity:1000,cash:500,positions:{},universe:[{symbol:'005930',price:1}],quotes:[{symbol:'005930',price:1}],orders:[],risk:{baseline:1000,lossLimit:{mode:'off',value:0}},marketSession:{open:true,status:'open'}}),identity:()=>'acct',autoEnabled:true};
+  a.providerStatus.aiConnected=true;a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true});await a.review().catch(()=>{});
+  const line=events.find(x=>x.title==='Review failed');assert.ok(line);assert.doesNotMatch(line.body,/KIS /);});

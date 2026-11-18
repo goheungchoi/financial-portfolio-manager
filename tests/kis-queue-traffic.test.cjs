@@ -75,3 +75,17 @@ test('the Market feed chip: Reconnecting and Unavailable for the stream; Request
   assert.equal(failureLine({status:'error',error:'BROKER_REJECTED',failure:{code:'BROKER_REJECTED',request:'quotes',at:Date.parse('2026-11-11T21:38:00Z'),brokerCode:'EGW00123'}}),'The last quote poll failed: BROKER_REJECTED (KIS EGW00123) at 06:38 KST.');
   assert.ok(src.includes("{feedLabel(market,Boolean(stale))==='Closed'&&<p>Markets closed"),'the tooltip says so');
   assert.match(fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8'),/marketsOpen:marketsOpenNow\(\)/);});
+
+// B(2): a failed request's error names the operation it came from, so a failed review can say which request failed.
+test('B(2): the error of a failed request carries its operation; an existing one is not overwritten',async()=>{
+  const s=svc();const e=await s.request('live-context',{fail:'REQUEST_TIMEOUT',brokerCode:'EGW00201'}).catch(x=>x);
+  assert.equal(e.message,'REQUEST_TIMEOUT');assert.equal(e.kisOperation,'live-context');assert.equal(e.brokerCode,'EGW00201');
+  const t=svc();t.send=async()=>{throw Object.assign(new Error('BROKER_REJECTED'),{kisOperation:'inner'});};assert.equal((await t.request('quotes').catch(x=>x)).kisOperation,'inner');
+  const u=svc();const held=await u.hold(async()=>u.request('prepare-order',{fail:'BROKER_REJECTED'}).catch(x=>x));assert.equal(held.kisOperation,'prepare-order','inside a hold too');});
+
+// The planner, 2026-11-19: KisService also runs the AI provider and calendar workers. Only the KIS broker worker's
+// requests are tagged (kisOperation) and recorded, so an AI error is never shown or stored as a KIS one.
+test('the AI provider and calendar services tag nothing and record nothing; the KIS service does',async()=>{
+  for(const script of ['provider-worker.cjs','calendar-worker.cjs']){const s=new KisService(script);const seen=[];s.onFailure=r=>seen.push(r);s.send=async()=>{throw new Error('RATE_LIMITED');};
+    const e=await s.request('review',{}).catch(x=>x);assert.equal(e.message,'RATE_LIMITED');assert.equal('kisOperation' in e,false,script);assert.equal(seen.length,0,script);assert.equal(s.failures,undefined,script);}
+  const k=svc();const e=await k.request('quotes',{fail:'RATE_LIMITED'}).catch(x=>x);assert.equal(e.kisOperation,'quotes');assert.equal(k.seen.length,1);assert.equal(new KisService().isKis,true);});

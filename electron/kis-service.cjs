@@ -24,7 +24,8 @@ class KisService {
   // B(1), 2026-11-19 overnight failures: every failed request leaves a record (operation, the app's code, KIS's own code,
   // how long it waited in line and ran, whether a disconnect or the rate-limit cooldown refused it before sending). No
   // payload and no account data. The last 200 are kept here; onFailure (main) stores them.
-  noteFailure(operation,error,{enqueuedAt,startedAt,generation}){try{const now=Date.now();const code=/^[A-Z][A-Z0-9_]{2,63}$/.test(error?.message??'')?error.message:'UNKNOWN';
+  get isKis(){return this.workerScript==='kis-worker.cjs';}
+  noteFailure(operation,error,{enqueuedAt,startedAt,generation}){if(!this.isKis)return;try{const now=Date.now();const code=/^[A-Z][A-Z0-9_]{2,63}$/.test(error?.message??'')?error.message:'UNKNOWN';
       const record={at:now,operation:String(operation).slice(0,40),code,...(/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?{brokerCode:error.brokerCode}:{}),
         waitedMs:Number.isFinite(startedAt)?startedAt-enqueuedAt:now-enqueuedAt,ranMs:Number.isFinite(startedAt)?now-startedAt:null,
         notSent:startedAt==null||error?.notSent===true,...(generation!==this.generation?{disconnected:true}:{}),...(code==='RATE_LIMITED'&&error?.notSent===true?{cooldown:true}:{})};
@@ -32,7 +33,12 @@ class KisService {
   request(operation,payload) {
     this.queued=(this.queued??0)+1;
     const generation=this.generation;const entry={operation:String(operation)};const times={enqueuedAt:Date.now(),startedAt:null,generation};
-    const result=this.enqueue(operation,payload,generation,entry,times);result.catch(error=>this.noteFailure(operation,error,times));return result;}
+    // This class also runs the AI provider and calendar workers: only the KIS broker worker's requests are tagged and
+    // recorded, so an AI error is never shown as a KIS one.
+    if(!this.isKis)return this.enqueue(operation,payload,generation,entry,times);
+    // B(2): the error names the KIS request it came from (kisOperation), so a failed review can say which one failed.
+    return this.enqueue(operation,payload,generation,entry,times).catch(error=>{try{if(error&&typeof error==='object'&&!error.kisOperation)error.kisOperation=String(operation).slice(0,40);}catch{}
+      this.noteFailure(operation,error,times);throw error;});}
   enqueue(operation,payload,generation,entry,times){
     const run=()=>{if(generation!==this.generation)throw new Error('BROKER_UNAVAILABLE');if(Date.now()<(this.cooldownUntil??0)){const error=new Error('RATE_LIMITED');error.retryAt=this.cooldownUntil;error.notSent=true;throw error;}times.startedAt=Date.now();return this.send(operation,payload);};
     // F3: a request made by the order that holds the queue goes straight to the worker; every other request waits in line.
