@@ -252,7 +252,8 @@ test('a temporary refusal before anything reached KIS is retried three times wit
   const ctx=c.live.context;c.live.context=async()=>({...(await ctx()),quotes:[{symbol:'005930',price:300000}]});assert.equal((await fired(c,c.desk.orders(cs)[0])).retries,0,'not met: the count restarts');
   // The proposal reached Submitting before the error: it may be at KIS, so it is unconfirmed and never retried.
   const {automation:b}=harness();engines(b,{kr:{autoSubmit:async id=>{b.book.find(p=>p.id===id).status='Submitting';throw new Error('REQUEST_TIMEOUT');}}});
-  const u=await fired(b,armOrder(b,{side:'Sell'}));assert.equal(u.status,'submitted');assert.equal(u.unconfirmed,true);assert.equal(b.calls.annotate.length,0,'a proposal that may be at KIS is left alone');
+  const u=await fired(b,armOrder(b,{side:'Sell'}));assert.equal(u.status,'submitted');assert.equal(u.unconfirmed,true);assert.equal(b.calls.annotate.filter(([,patch])=>'expiresAt' in patch).length,0,'a proposal that may be at KIS is left alone (never retired)');
+  assert.deepEqual(b.calls.annotate.map(([,patch])=>patch.madeBy),['conditional'],'only its origin mark (order-origin.cjs)');
 });
 test('a stop that reached the broker and then lapsed leaves its unfilled shares unprotected',()=>{
   let now=Date.parse('2026-10-28T01:00:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:5};
@@ -313,10 +314,11 @@ test('a fired conditional order goes in at the best bid and gives the tracker it
   const open={marketSession:{open:true},quotes:[{symbol:'005930',price:217000}],positions:{'005930':{quantity:4}},equity:10000000,cash:5000000};
   const {automation:a}=harness({engineCtx:()=>open});const notes=[];a.live.annotate=(id,patch)=>notes.push([id,patch]);
   a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:216000,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['005930']});
-  await a.fireConditional(a.desk.orders(a.watchScope())[0]);assert.equal(a.calls.propose[0].limitPrice,217000,'the bid, above the floor');assert.deepEqual(notes,[['P1',{tracking:{bound:216000}}]]);
+  const armed=a.desk.orders(a.watchScope())[0];await a.fireConditional(armed);assert.equal(a.calls.propose[0].limitPrice,217000,'the bid, above the floor');
+  assert.deepEqual(notes,[['P1',{madeBy:'conditional',conditionalId:armed.id,tracking:{bound:216000}}]],'its bound, with its origin mark');
   const {automation:b}=harness({engineCtx:()=>open});const none=[];b.live.annotate=(id,patch)=>none.push(patch);
   b.desk.setOrder(b.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:b.config,universe:['005930']});
-  await b.fireConditional(b.desk.orders(b.watchScope())[0]);assert.deepEqual(none,[],'no limitPrice: no bound, it fills at any price');
+  const armedB=b.desk.orders(b.watchScope())[0];await b.fireConditional(armedB);assert.deepEqual(none,[{madeBy:'conditional',conditionalId:armedB.id}],'no limitPrice: no bound, it fills at any price; only its origin mark');
 });
 test('a combined review reasons from the account valuation: its low bound, and how much it may understate and why',async()=>{
   const {automation:a}=harness();a.configure({scope:'both'});

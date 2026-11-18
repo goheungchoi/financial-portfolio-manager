@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   disconnectKis: () => ipcRenderer.invoke('kis:disconnect'),
   getActivity: (kind,startDate,endDate,options) => ipcRenderer.invoke('kis:activity',kind,startDate,endDate,options),
   getActivityCached: kind => ipcRenderer.invoke('kis:activity-cached',kind),
+  getActivityToday: () => ipcRenderer.invoke('activity:today'),
   getEvents: () => ipcRenderer.invoke('events:get'),
   getSnapshot: () => ipcRenderer.invoke('snapshot:get'),
   getTheme: () => ipcRenderer.invoke('theme:get'),

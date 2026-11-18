@@ -36,8 +36,10 @@ async function review(decision,{bid=278.4,ask=278.6,usOpen=true,book=null,wait=n
 test('a Sell with a floor above the bid goes in at the floor, and its bounds are on the order before it is submitted',async()=>{
   const soon=new Date(Date.now()+3600000).toISOString();const log=await review({...base,execution:{bound:280,cancelAfter:soon,cancelIf:[]}});
   assert.deepEqual(log.map(x=>x[0]),['propose','annotate','submit'],'annotated before submission');assert.equal(log[0][1].limitPrice,280,'held at the floor, not the $278.40 bid');
-  assert.deepEqual(log[1][2],{tracking:{bound:280,cancelAfter:soon}});
-  const plain=await review(base);assert.equal(plain[0][1].limitPrice,278.4,'no bound: the bid');assert.deepEqual(plain.map(x=>x[0]),['propose','submit'],'nothing to annotate');
+  // With its origin mark (order-origin.cjs, 2026-11-19): a review's order, with the review's id.
+  const {madeBy,reviewId,...rest}=log[1][2];assert.equal(madeBy,'review');assert.equal(typeof reviewId,'string');assert.deepEqual(rest,{tracking:{bound:280,cancelAfter:soon}});
+  const plain=await review(base);assert.equal(plain[0][1].limitPrice,278.4,'no bound: the bid');assert.deepEqual(plain.map(x=>x[0]),['propose','annotate','submit'],'only the origin mark, before submission');
+  assert.equal('tracking' in plain[1][2],false,'no bound: nothing to track');assert.equal(plain[1][2].madeBy,'review');
 });
 // Review of 8ef1be1, P1: a Sell whose stop time had passed produced a proposal and was submitted at the current bid.
 test('restrictions supplied but invalid, or already stopping the order, produce no proposal and no submission',async()=>{
@@ -57,7 +59,7 @@ test('a stop time that passes while the order book is awaited withholds the orde
   assert.deepEqual(log2,[],'priced after the stop time: nothing proposed');
 });
 test('a conditional order carries its limitPrice to the tracker as its bound',()=>{
-  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.match(src,/if\(order\.limitPrice>0\)engine\.annotate\?\.\(proposal\.id,\{tracking:\{bound:order\.limitPrice\}\}\)/);
+  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.ok(src.includes("engine.annotate?.(proposal.id,{madeBy:'conditional',conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});"));
 });
 
 // Edge case: a cancel condition met while the review was running. The recheck used the review's own quotes, read when it

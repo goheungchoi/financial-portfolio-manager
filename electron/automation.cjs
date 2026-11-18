@@ -1141,7 +1141,8 @@ class Automation {
         proposal=context.environment!=='local-paper'?execution.propose({...(d.credit&&d.credit!=='none'?{credit:{kind:d.credit,...(d.loanDate?{loanDate:d.loanDate}:{})}}:{}),symbol:d.symbol,side:d.action,quantity:d.quantity,limitPrice:placement.price}):this.paper.propose({symbol:d.symbol,side:d.action,quantity:d.quantity});
         onProposal?.(proposal);
         // The order carries its bounds for the tracker, saved before it can be submitted.
-        if(bounds&&context.environment!=='local-paper')execution.annotate?.(proposal.id,{tracking:bounds});
+        // and where it came from (madeBy, order-origin.cjs: a review's order, the first or a further one).
+        if(context.environment!=='local-paper')execution.annotate?.(proposal.id,{madeBy:'review',reviewId:id,...(bounds?{tracking:bounds}:{})});
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
         if(d.action==='Buy'&&(d.credit??'none')==='none'&&d.plan&&context.environment!=='local-paper')this.followPlan(watchScope,d,id,{proposalId:proposal.id,market:execution.market??null,positions:(()=>{try{const bal=execution.riskBalance??execution.getConnection?.()?.snapshot;return Object.fromEntries((bal?.holdings??[]).map(h=>[h.symbol,{quantity:h.quantity}]));}catch{return {};}})()});
         const autoEligible=this.config.autoSubmit && (context.environment==='local-paper'||execution.autoEnabled!==false) && proposal.status==='Ready' && (context.environment==='kis-combined'?context.markets.find(row=>row.market===execution.market)?.marketSession.open===true:context.marketSession?.open!==false);
@@ -1471,7 +1472,7 @@ class Automation {
         // because the setting can change after the order was armed.
         {const refused=this.leveragedEntryRefusal(engine,order.symbol,order.side);if(refused)return note('rejected',refused+' Nothing was sent.',{results:check.results});}
       }
-      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})});if(order.limitPrice>0)engine.annotate?.(proposal.id,{tracking:{bound:order.limitPrice}});
+      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})});engine.annotate?.(proposal.id,{madeBy:'conditional',conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});
       // The same daily cap as reviews' (1.5.48 audit, A6), taken before the send; a closing order is not held back by it.
       const cap=this.config.maxAutoOrdersPerDay;const wanted=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval;
       const closing=(()=>{try{return !require('./credit-paths.cjs').effectOf({side:order.side,credit:order.credit?.kind??'none'}).opening;}catch{return order.side==='Sell'&&!order.credit;}})();

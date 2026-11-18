@@ -319,7 +319,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('costs:remove-opening-lot',(event,id)=>{authorize(event);costs.removeOpeningLot(id);return costs.taxSummary();});
   ipcMain.handle('costs:tax-profile',event=>{authorize(event);return {profile:costs.profile.get(),account:costs.currentAccount()?{accountKey:require('./tax-profile.cjs').ownerAccount(costs.currentAccount().accountKey),environment:costs.currentAccount().environment}:null};});
   ipcMain.handle('costs:save-tax-profile',(event,value)=>{authorize(event);costs.profile.save(value);return {profile:costs.profile.get(),account:costs.currentAccount()?{accountKey:require('./tax-profile.cjs').ownerAccount(costs.currentAccount().accountKey),environment:costs.currentAccount().environment}:null};});
-  for(const name of ['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'])ipcMain.handle('us:'+name,async(event,...args)=>{authorize(event);try{let data;if(name==='get')data=null;else if(name==='refresh'){if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');await automation.refreshUS();data=null;}else if(name==='auto-off'){usLive.autoEnabled=false;}else if(name==='auto')data=usLive.enableAuto(...args);else if(name==='link')data=await usLive.linkUncertain(...args);else data=await usLive[name](...args);return {ok:true,data,state:usLive.getState()};}catch(error){if(name==='refresh'){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}const allowed=['NO_FUNDED_BALANCE','LEVERAGED_NOT_ENABLED','LEVERAGED_EXPOSURE_LIMIT','KIS_NOT_CONNECTED','ACTIVATION_REQUIRED','INVALID_LIMITS','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','RECONCILIATION_REQUIRED','KIS_TRADING_DISABLED','DISABLED_OR_EXPIRED','BROKER_REJECTED','ORDER_UNCERTAIN','ACCOUNT_CHANGED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:require('./us-errors.cjs').publicUSCode(error.message),state:usLive.getState()};}});
+  for(const name of ['get','refresh','configure','stop','auto','auto-off','propose','submit','reconcile','link'])ipcMain.handle('us:'+name,async(event,...args)=>{authorize(event);try{let data;if(name==='get')data=null;else if(name==='refresh'){if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');await automation.refreshUS();data=null;}else if(name==='auto-off'){usLive.autoEnabled=false;}else if(name==='auto')data=usLive.enableAuto(...args);else if(name==='link')data=await usLive.linkUncertain(...args);else{data=await usLive[name](...args);if(name==='propose'&&data?.id)data=usLive.annotate(data.id,{madeBy:'ticket'})??data;}return {ok:true,data,state:usLive.getState()};}catch(error){if(name==='refresh'){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);usLive.brokerCode=/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null;}const allowed=['NO_FUNDED_BALANCE','LEVERAGED_NOT_ENABLED','LEVERAGED_EXPOSURE_LIMIT','KIS_NOT_CONNECTED','ACTIVATION_REQUIRED','INVALID_LIMITS','INVALID_ORDER','SESSION_CLOSED','PRICE_MOVED','INSUFFICIENT_CAPACITY','OPEN_BROKER_ORDERS','RECONCILIATION_REQUIRED','KIS_TRADING_DISABLED','DISABLED_OR_EXPIRED','BROKER_REJECTED','ORDER_UNCERTAIN','ACCOUNT_CHANGED','BROKER_ORDER_MISMATCH'];return {ok:false,error:allowed.includes(error.message)?error.message:require('./us-errors.cjs').publicUSCode(error.message),state:usLive.getState()};}});
   
   notifier=new Notifications(store.db,providerService,()=>({...automation.config,pushConnected:automation.providerStatus.pushConnected}),message=>{if(Notification.isSupported())new Notification({title:'Financial Portfolio Manager',body:message}).show();});
   automation.notify=(id,message)=>notifier.notify(id,message);
@@ -696,7 +696,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('live:stop',liveAction(()=>live.stop()));
   ipcMain.handle('live:auto',liveAction(phrase=>live.enableAuto(phrase)));
   ipcMain.handle('live:auto-off',liveAction(()=>{live.autoEnabled=false;return live.getState();}));
-  ipcMain.handle('live:propose',liveAction(command=>live.propose(command)));
+  // An order ticket is the user's own order: marked so (order-origin.cjs madeBy 'ticket').
+  ipcMain.handle('live:propose',liveAction(command=>{const p=live.propose(command);return (p?.id&&live.annotate(p.id,{madeBy:'ticket'}))||p;}));
   ipcMain.handle('live:submit',liveAction((id,phrase)=>live.submit(id,phrase)));
   ipcMain.handle('live:reconcile',liveAction(()=>live.reconcile()));
   ipcMain.handle('live:link',liveAction((id,brokerId,phrase)=>live.linkUncertain(id,brokerId,phrase)));
@@ -773,6 +774,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('kis:get',event=>{authorize(event);return kisState;});
   // The last report per kind, for Activity and Performance to show at once (activity-cache.cjs, Activity step 2).
   const activityCache=new (require('./activity-cache.cjs').ActivityCache)(store.db);
+  // The Today strip (activity-today.cjs, Activity step 3): today's app orders from its own records; no KIS request.
+  // Reviews are read only for orders made before the madeBy mark, and then only their ids (order-origin.cjs).
+  ipcMain.handle('activity:today',event=>{authorize(event);try{const O=require('./order-origin.cjs'),T=require('./activity-today.cjs');
+      const intents=[...(live?.orders?.()??[]),...(usLive?.orders?.()??[])].map(({accountKey,...o})=>o);const day=T.seoulDay(Date.now());
+      const unmarked=intents.some(o=>T.seoulDay(o.createdAt)===day&&!o.madeBy);
+      return {ok:true,data:T.today({intents,reviews:unmarked?O.reviewIdRows(store.db,Date.now()-2*86400000):[],conditionals:O.conditionalRows(store.db)})};}catch{return {ok:false};}});
   ipcMain.handle('kis:activity-cached',(event,kind)=>{authorize(event);const row=activityCache.get(kind,kisState.snapshot?.accountKey??null);return row?{ok:true,data:row.data}:{ok:false};});
   ipcMain.handle('kis:activity',async(event,kind,startDate,endDate,options={})=>{
     authorize(event);
