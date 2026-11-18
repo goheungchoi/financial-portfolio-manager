@@ -331,6 +331,8 @@ main{margin-left:var(--side-w)!important;padding-top:calc(var(--topbar-h) + 22px
 .compact-rows{list-style:none;margin:6px 0 0;padding:0}
 .compact-rows>li{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--border);min-width:0;transform:none!important;border-radius:0!important;border-left:0!important;border-right:0!important;border-bottom:0!important;grid-template-columns:none}
 .compact-rows>li:first-child{border-top:0}
+.home-holdings-list{max-height:362px;overflow-y:auto;padding-right:2px}
+.home-holdings-list .company-link:focus-visible{outline-offset:-2px}
 .compact-rows .row-text,.compact-rows .company-link{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
 /* Item 9: a cash change being checked wraps instead of clipping, so "not a return yet" and the hold reason read without hovering. */
 .attention-item[data-id^="cash-check-"] .row-text{white-space:normal;line-height:1.4}

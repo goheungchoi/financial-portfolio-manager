@@ -158,11 +158,12 @@ export function HomeCalendar(){
     </div>)}</div>
   </section>;
 }
-// Largest positions first, one line each; the full table lives on Holdings.
+// Every position, largest first, one line each; past about 10 rows the list scrolls inside the card. The full table
+// lives on Holdings.
 export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:PortfolioState;onCompany(symbol:string):void;onAll():void;onRefresh():void;busy:boolean}){
   const fx=state.fx?.usdKRW??null;const cash=(state.cash.KRW??0)+(state.cash.USD??0)*(fx??0);
   const equity=state.rows.reduce((sum,row)=>sum+(row.valueKRW??0),0)+cash+pendingKRW(state);
-  const rows=[...state.rows].sort((a,b)=>(b.valueKRW??0)-(a.valueKRW??0));const top=rows.slice(0,6);
+  const rows=[...state.rows].sort((a,b)=>(b.valueKRW??0)-(a.valueKRW??0));
   const [group,setGroup]=useDraftState('portfolio:group','Company');
   const labelOf=(r:PortfolioRow)=>group==='Sector'?r.sector:group==='Region'?r.region:group==='Market'?(r.market==='KR'?'Korea':'U.S.'):group==='Currency'?r.currency:r.name;
   const grouped=new Map<string,{label:string;value:number;percent:number;color:string;members:{name:string;symbol:string;value:number}[]}>();
@@ -170,8 +171,8 @@ export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:Portf
   const buckets=equity>0?[...grouped.values(),{label:'Cash',value:cash,percent:0,color:'#7e858c',members:[]}]:[];
   const change=(row:PortfolioRow)=>row.cost>0?(row.price/row.cost-1)*100:null;
   return <div className="home-bottom">
-    <section className="home-holdings" aria-label="Top holdings"><div className="section-head"><h2>Holdings</h2><div className="actions"><button className="link-button" disabled={busy} onClick={onRefresh}>{busy?'Refreshing…':'Refresh'}</button><button className="link-button" onClick={onAll}>All {state.rows.length} →</button></div></div>
-      {top.length?<ul className="compact-rows">{top.map(row=>{const c=change(row);return <li key={row.symbol}><button className="company-link" onClick={()=>onCompany(row.symbol)}>{row.name}</button><span className="num">{native(row.price,row.currency)}</span><span className={`num ${c==null||Math.abs(c)<.005?'muted':c>0?'positive':'negative'}`} title="Gain or loss against your average cost">{c==null||Math.abs(c)<.005?'—':pct(c)}</span><span className="num muted" title="Share of total equity">{equity>0&&row.valueKRW!=null?`${(row.valueKRW/equity*100).toFixed(0)}%`:'—'}</span></li>;})}</ul>:<p className="muted">No positions yet.</p>}
+    <section className="home-holdings" aria-label="Holdings"><div className="section-head"><h2>Holdings</h2><div className="actions"><button className="link-button" disabled={busy} onClick={onRefresh}>{busy?'Refreshing…':'Refresh'}</button><button className="link-button" onClick={onAll}>All {state.rows.length} →</button></div></div>
+      {rows.length?<ul className="compact-rows home-holdings-list">{rows.map(row=>{const c=change(row);return <li key={row.symbol}><button className="company-link" onClick={()=>onCompany(row.symbol)}>{row.name}</button><span className="num">{native(row.price,row.currency)}</span><span className={`num ${c==null||Math.abs(c)<.005?'muted':c>0?'positive':'negative'}`} title="Gain or loss against your average cost">{c==null||Math.abs(c)<.005?'—':pct(c)}</span><span className="num muted" title="Share of total equity">{equity>0&&row.valueKRW!=null?`${(row.valueKRW/equity*100).toFixed(0)}%`:'—'}</span></li>;})}</ul>:<p className="muted">No positions yet.</p>}
     </section>
     <section className="home-allocation" aria-label="Allocation"><div className="section-head"><h2>Allocation</h2><select aria-label="Allocation grouping" value={group} onChange={e=>setGroup(e.target.value)}>{['Company','Sector','Region','Market','Currency'].map(label=><option key={label}>{label}</option>)}</select></div>{buckets.length?<AllocationChart buckets={buckets} equity={equity}/>:<p className="muted">Waiting for balances.</p>}</section>
   </div>;
