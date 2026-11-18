@@ -11,8 +11,19 @@ const REVERSAL_DAYS=30;
 const clip=(t,n)=>{const s=String(t??'').trim().replace(/\s+/g,' ');return s.length>n?s.slice(0,n-1)+'…':s;};
 const iso=t=>Number.isFinite(t)?new Date(t).toISOString():null;
 const OPPOSITE={OPEN_LONG:'CLOSE_LONG',OPEN_SHORT:'CLOSE_SHORT',CLOSE_LONG:'OPEN_LONG',CLOSE_SHORT:'OPEN_SHORT'};
+// An order made by a conditional order (outcome.trigger, outcome-ledger.cjs; 2026-11-18): what made it and why, in
+// place of a review's rationale. decidedAt stays null: nothing decided it at the time it was made.
+const PURPOSE={stop_loss:'stop-loss order',take_profit:'take-profit order',entry:'entry order'};
+const won=(v,market)=>v==null?'?':market==='US'?`$${Number(v).toFixed(2)}`:`₩${Math.round(v).toLocaleString('en-US')}`;
+function triggerView(t,market,side){const what=PURPOSE[t.purpose]??'conditional order',day=Number.isFinite(t.armedAt)?new Date(t.armedAt+9*3600000).toISOString().slice(0,10):null;
+  const trail=t.trail?(t.trail.kind==='atr'?`trailing ${won(t.trail.distance,market)} (${t.trail.atrMultiple} × ATR) below a high of ${won(t.trail.high,market)}`:`trailing ${t.trail.pct}% below a high of ${won(t.trail.high,market)}`):null;
+  const rationale=`${side==='Buy'?'Bought':'Sold'} by its ${what} ${t.orderId} at the ${t.levelKind==='trailing'?'trailing':'fixed'} level ${won(t.level,market)}${trail?`, ${trail}`:''}${day||t.armedByReviewId?`; armed${day?' '+day:''}${t.armedByReviewId?` by review ${t.armedByReviewId}`:''}`:''}${t.reason?`: ${t.reason}`:''}`;
+  return {madeBy:what,orderRef:t.orderId,level:t.level,levelKind:t.levelKind,...(trail?{trail}:{}),armedAt:iso(t.armedAt),armedByReviewId:t.armedByReviewId??null,rationale:clip(rationale,500)};}
 // One filled order as the review sees it. reviewAt: review id -> its time.
 function view(o,reviewAt){const d=o.decision??null,p=d?.plan??null,q=o.reviewEvidence?.quote??null;
+  if(!d&&o.trigger?.kind==='conditional'){const t=triggerView(o.trigger,o.market,o.side);
+    return {decisionId:null,decidedAt:null,filledAt:iso(o.timestamp),effect:o.effect,...(o.credit?{credit:o.credit.kind,...(o.credit.loanDate?{loanDate:o.credit.loanDate}:{})}:{}),
+      filled:o.quantity,requested:o.requested??o.quantity,...(o.requested>o.quantity?{partial:true}:{}),fillPrice:o.averagePrice??null,orderId:o.orderId??null,...t};}
   return {decisionId:o.reviewId??null,decidedAt:iso(reviewAt.get(o.reviewId)),filledAt:iso(o.timestamp),effect:o.effect,...(o.credit?{credit:o.credit.kind,...(o.credit.loanDate?{loanDate:o.credit.loanDate}:{})}:{}),
     filled:o.quantity,requested:o.requested??o.quantity,...(o.requested>o.quantity?{partial:true}:{}),fillPrice:o.averagePrice??null,orderId:o.orderId??null,
     ...(q?{quoteAtDecision:{price:q.price??null,...(q.bid!=null?{bid:q.bid}:{}),...(q.ask!=null?{ask:q.ask}:{})}}:{}),

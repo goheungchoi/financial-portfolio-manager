@@ -15,7 +15,7 @@ function triggerOf(conditionals,record,reviews){
   const level=num(t?.level)??num(c.conditions?.[0]?.value);
   const trigger={kind:'conditional',orderId:c.id,purpose:c.purpose??null,reason:clip(c.reason,300)||null,level,levelKind:t?'trailing':'fixed',
     ...(t?{trail:{kind:t.kind??null,...(t.kind==='atr'?{atrMultiple:num(t.atrMultiple),atr:num(t.atr),distance:num(t.distance)}:{pct:num(t.pct)}),high:num(t.high),highAt:num(t.highAt),floor:num(t.floor)}}:{}),
-    armedAt:num(c.createdAt),armedByReviewId:c.reviewId??null,firedAt:num(c.firingAt)??num(c.closedAt),
+    armedAt:num(c.createdAt),armedByReviewId:c.reviewId??null,firedAt:num(c.closedAt),
     ...(chain.length?{replaces:chain,chainStartsAt:oldest.id,firstArmedByReviewId:oldest.reviewId??null}:{})};
   const arming=c.reviewId?reviews.find(r=>r.id===c.reviewId)?.decision??null:null;
   const armingDecision=arming?{explanation:clip(arming.explanation,500)||null,...(arming.plan?{plan:arming.plan}:{})}:null;

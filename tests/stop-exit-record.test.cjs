@@ -24,7 +24,7 @@ test('a sale placed by a stop order names it: purpose, trailing level, trail, ar
   const {ledger,put}=fixture();seed(put);ledger.sync();const o=ledger.list()[0];
   assert.equal(o.reviewId,null,'no review decided this sale at its time');assert.equal(o.decision,null);
   assert.deepEqual(o.trigger,{kind:'conditional',orderId:'C-a1b2c3',purpose:'stop_loss',reason:'Trail the gain under the 2 × ATR stop.',level:64600,levelKind:'trailing',
-    trail:{kind:'atr',atrMultiple:2,atr:3487.19,distance:7183.62,high:70000,highAt:TRAIL.highAt,floor:64600},armedAt:Date.parse('2026-11-14T01:00:00Z'),armedByReviewId:'5d6e7f80',firedAt:Date.parse('2026-11-18T01:22:40Z'),
+    trail:{kind:'atr',atrMultiple:2,atr:3591.81,distance:7183.62,high:71800,highAt:TRAIL.highAt,floor:64600},armedAt:Date.parse('2026-11-06T01:30:00Z'),armedByReviewId:'5d6e7f80',firedAt:Date.parse('2026-11-11T02:47:15Z'),
     replaces:['C-c4d5e6','C-f7a8b9','C-0c1d2e','C-3f4a5b'],chainStartsAt:'C-3f4a5b',firstArmedByReviewId:'1a2b3c4d'});
   assert.deepEqual(o.armingDecision,{explanation:'Keep 990050; raise the stop to trail the gain.',plan:{thesis:'Earnings growth',stopPrice:64600}});
   assert.ok(!JSON.stringify(o.trigger).includes('C-6c7d8e'),'the expired plan stop is not linked');});
@@ -56,3 +56,22 @@ test('a replaces loop or a missing link stops the chain; it is capped at five',(
 test('a database without conditional_orders still syncs',()=>{
   const db=new DatabaseSync(':memory:');for(const t of ['reviews','live_intents','paper_orders','paper_fills'])db.exec(`CREATE TABLE ${t}(id TEXT PRIMARY KEY,payload TEXT)`);
   db.prepare('INSERT INTO live_intents VALUES(?,?)').run(SALE.id,JSON.stringify(SALE));const l=new OutcomeLedger(db);l.sync();assert.equal(l.list()[0].trigger,undefined);});
+
+// Step 2: position memory (trading reviews) and the reflection's episode read the trigger through view().
+const PM=require('../electron/position-memory.cjs');
+test('view(): a stop exit says what sold it and why, in place of "unavailable"; decidedAt stays null',()=>{
+  const {ledger,put}=fixture();seed(put);ledger.sync();const o=ledger.list()[0];const v=PM.view({...o,effect:'CLOSE_LONG'},new Map());
+  assert.equal(v.decisionId,null);assert.equal(v.decidedAt,null);assert.equal(v.madeBy,'stop-loss order');assert.equal(v.orderRef,'C-a1b2c3');assert.equal(v.levelKind,'trailing');assert.equal(v.level,64600);
+  assert.equal(v.trail,'trailing ₩7,184 (2 × ATR) below a high of ₩71,800');assert.equal(v.armedByReviewId,'5d6e7f80');
+  assert.equal(v.rationale,'Sold by its stop-loss order C-a1b2c3 at the trailing level ₩64,600, trailing ₩7,184 (2 × ATR) below a high of ₩71,800; armed 2026-11-06 by review 5d6e7f80: Trail the gain under the 2 × ATR stop.');
+  assert.doesNotMatch(JSON.stringify(v),/unavailable/);assert.equal(v.filled,3);assert.equal(v.fillPrice,64600);});
+test('view(): a fixed stop with no arming review; a review exit is unchanged',()=>{
+  const v=PM.view({source:'broker',side:'Sell',quantity:1,timestamp:0,effect:'CLOSE_LONG',market:'KR',trigger:{kind:'conditional',orderId:'C-1',purpose:'stop_loss',level:52500,levelKind:'fixed',armedAt:null,armedByReviewId:null,reason:null}},new Map());
+  assert.equal(v.rationale,'Sold by its stop-loss order C-1 at the fixed level ₩52,500');assert.equal(v.trail,undefined);
+  const r=PM.view({source:'broker',side:'Sell',quantity:1,timestamp:0,effect:'CLOSE_LONG',reviewId:'rv',decision:{explanation:'Sell on the miss.'},trigger:undefined},new Map([['rv',1000]]));
+  assert.equal(r.rationale,'Sell on the miss.');assert.equal(r.madeBy,undefined);
+  const none=PM.view({source:'broker',side:'Sell',quantity:1,timestamp:0,effect:'CLOSE_LONG'},new Map());assert.equal(none.rationale,'unavailable','no trigger, no review: as before');});
+test('position memory: the sold stock\'s row\'s last exit names the stop',()=>{
+  const {ledger,put}=fixture();seed(put);put('live_intents',{...SALE,id:'buy1',side:'Buy',fillPrice:58700,createdAt:Date.parse('2026-10-14T01:52:00Z'),resultCosts:{gross:176100,fees:27}});ledger.sync();
+  const rows=PM.build(ledger.list(),{accounts:[ledger.list()[0].accountKey],positions:{},now:Date.parse('2026-11-12T00:00:00Z')});const row=rows.find(r=>r.symbol==='990050');
+  assert.equal(row.lastMaterial,'exit');assert.equal(row.lastExit.madeBy,'stop-loss order');assert.match(row.lastExit.rationale,/^Sold by its stop-loss order C-a1b2c3/);});
