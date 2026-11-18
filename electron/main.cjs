@@ -782,7 +782,9 @@ app.whenReady().then(async () => {
       let data=await kisService.request(kind,{startDate,endDate});
       // Orders cover both markets: U.S. orders join the Korean ones; if the U.S. part fails, the Korean report still shows.
       if(kind==='orders'){let us=[],usError=null;try{const rows=await kisService.request('us-order-history',{startDate,endDate});if(Array.isArray(rows))us=rows;else usError='INVALID_RESPONSE';}catch(error){usError=kisErrorCode(error);}
-        data={...data,orders:[...(data.orders??[]).map(o=>({...o,market:'KR',currency:'KRW'})),...us].sort((a,b)=>b.timestamp-a.timestamp),...(usError?{usError}:{})};}
+        data={...data,orders:[...(data.orders??[]).map(o=>({...o,market:'KR',currency:'KRW'})),...us].sort((a,b)=>b.timestamp-a.timestamp),...(usError?{usError}:{})};
+        // The totals' guard: a chain the app knows whose rows fill more than its order is marked (activity-chains.cjs).
+        try{const intents=[...(live?.orders?.()??[]),...(usLive?.orders?.()??[])];data={...data,orders:require('./activity-chains.cjs').markChains(data.orders,intents)};}catch{}}
       if(generation!==kisGeneration)return {ok:false,error:'CONNECTION_CHANGED'};
       return {ok:true,data};
     }catch(error){return {ok:false,error:kisErrorCode(error)};}

@@ -1,9 +1,17 @@
+// Totals of one currency's orders (2026-11-18, artifacts/reviews/2026-11-18-activity-tab step 1). KIS gives a revised or
+// cancelled order its own row with its own fills, so every row's executed amount is summed; a corrected order no longer
+// hides the totals. Left out, and counted: a chain the app knows whose rows fill more than its order (chainOverfill,
+// electron/activity-chains.cjs). A side with an executed row whose amount KIS did not report has no total (null), with
+// the count, never a zero or a guess.
 export function executionSummary(orders) {
-  const ambiguous=orders.some(order=>order.originalOrderId);
-  const executed=orders.filter(order=>order.filled>0);
-  const buy=executed.filter(order=>order.side==='Buy').reduce((sum,order)=>sum+order.executionAmount,0);
-  const sell=executed.filter(order=>order.side==='Sell').reduce((sum,order)=>sum+order.executionAmount,0);
-  return {orderCount:orders.length,executedOrders:executed.length,ambiguous,buy:ambiguous?null:buy,sell:ambiguous?null:sell,grossFlow:ambiguous?null:sell-buy};
+  // Corrected rows counted in the totals only: a chain left out is said once, as not included.
+  const corrected=orders.filter(order=>order.originalOrderId&&!order.chainOverfill).length;
+  const excluded=new Set(orders.filter(order=>order.chainOverfill).map(order=>order.chainId??order.orderId)).size;
+  const executed=orders.filter(order=>!order.chainOverfill&&order.filled>0);
+  const side=name=>{const rows=executed.filter(order=>order.side===name),missing=rows.filter(order=>!Number.isFinite(order.executionAmount)).length;
+    return {total:missing?null:rows.reduce((sum,order)=>sum+order.executionAmount,0),missing};};
+  const b=side('Buy'),s=side('Sell');
+  return {orderCount:orders.length,executedOrders:executed.length,corrected,excluded,buy:b.total,sell:s.total,grossFlow:b.total==null||s.total==null?null:s.total-b.total,missing:{buy:b.missing,sell:s.missing}};
 }
 export function dailyRealized(records) {
   const days=new Map();

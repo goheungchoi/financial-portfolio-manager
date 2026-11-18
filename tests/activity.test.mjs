@@ -28,10 +28,11 @@ test('a live order row with a blank cancel flag is a normal order, not a malform
   const [order]=normalizeOrders([live],'20261023','20261023');assert.equal(order.status,'Filled');assert.equal(order.orderId,'0009876500');assert.equal(order.filled,3);
   assert.throws(()=>normalizeOrders([{...live,cncl_yn:'X'}],'20261023','20261023'),/INVALID_RESPONSE/,'other values are still rejected');
 });
-test('gross trading cash flow is separate from profit and correction-linked aggregates remain unavailable',()=>{
+// 2026-11-11 (Activity tab step 1): a corrected order no longer hides the totals; every row's own fills are summed.
+test('gross trading cash flow is separate from profit; a corrected order is summed and counted, not hidden',()=>{
   const orders=normalizeOrders([row,{...row,odno:'0002',sll_buy_dvsn_cd:'01',tot_ccld_amt:'800'}],'20261001','20261015');
-  assert.deepEqual(executionSummary(orders),{orderCount:2,executedOrders:2,ambiguous:false,buy:600,sell:800,grossFlow:200});
-  assert.equal(executionSummary([{...orders[0],originalOrderId:'123'}]).grossFlow,null);
+  assert.deepEqual(executionSummary(orders),{orderCount:2,executedOrders:2,corrected:0,excluded:0,buy:600,sell:800,grossFlow:200,missing:{buy:0,sell:0}});
+  const s=executionSummary([{...orders[0],originalOrderId:'123'},orders[1]]);assert.equal(s.grossFlow,200);assert.equal(s.corrected,1);
 });
 test('broker profit retains reported totals and missing fees are unavailable, not zero',()=>{
   const data=normalizeProfit([{trad_dt:'20261015',pdno:'005930',prdt_name:'Fixture',rlzt_pfls:'100',fee:'10',tl_tax:'5'}],{tot_rlzt_pfls:'100',tot_fee:'10',tot_pftrt:'2.5'},'20261001','20261015');
