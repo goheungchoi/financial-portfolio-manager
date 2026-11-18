@@ -16,6 +16,7 @@ const cases=[
   ['Home Holdings card: every holding, 7 rows fit','home-holdings-desktop.cjs',['--count','7'],data('home-holdings-7')],
   ['Home Holdings card: every holding, 15 rows scroll inside the card','home-holdings-desktop.cjs',['--count','15'],data('home-holdings-15')],
   ['Claude trading with several orders: Start, Stop with a dry run that no longer counts, and the refusal sentence','claude-start-stop-desktop.cjs',[],data('claude-start-stop')],
+  ['Activity: opens with rows, totals with a corrected order, Today and not-sent, From, a failed refresh keeps rows, both themes','activity-desktop.cjs',[],data('activity')],
   ['In-app updates against a local release server','update-desktop.cjs',[],data('updates')]
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};
