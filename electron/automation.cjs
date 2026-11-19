@@ -1189,7 +1189,7 @@ class Automation {
         // and where it came from (madeBy, order-origin.cjs: a review's order, the first or a further one).
         if(context.environment!=='local-paper')execution.annotate?.(proposal.id,{madeBy:'review',reviewId:id,...(bounds?{tracking:bounds}:{})});
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
-        if(d.action==='Buy'&&(d.credit??'none')==='none'&&d.plan&&context.environment!=='local-paper')this.followPlan(watchScope,d,id,{proposalId:proposal.id,market:execution.market??null,positions:(()=>{try{const bal=execution.riskBalance??execution.getConnection?.()?.snapshot;return Object.fromEntries((bal?.holdings??[]).map(h=>[h.symbol,{quantity:h.quantity}]));}catch{return {};}})()});
+        if(d.action==='Buy'&&(d.credit??'none')==='none'&&d.plan&&context.environment!=='local-paper')this.followPlan(watchScope,d,id,{proposalId:proposal.id,market:execution.market??null,positions:(()=>{try{const bal=execution.riskBalance??execution.getConnection?.()?.snapshot;return Object.fromEntries((bal?.holdings??[]).map(h=>[h.symbol,{quantity:h.quantity}]));}catch{return {};}})(),quotes:context.quotes??[],placedAt:placement?.price??null});
         const autoEligible=this.config.autoSubmit && (context.environment==='local-paper'||execution.autoEnabled!==false) && proposal.status==='Ready' && (context.environment==='kis-combined'?context.markets.find(row=>row.market===execution.market)?.marketSession.open===true:context.marketSession?.open!==false);
         // One daily cap across reviews and conditional orders (1.5.48 audit, A6): the slot is taken before the send and
         // released only when the engine's record shows nothing was sent.
@@ -1572,7 +1572,7 @@ class Automation {
     // T3: trailSeen (this run, per order): when tracking last stepped, when a quote was last accepted, and since when the
     // regular session has been open, for the gap test and "not tracked since"; trailCatching: catch-ups in flight.
     this.trailSeen??=new Map();this.trailCatching??=new Set();
-    for(let o of this.desk.orders(scope)){if(!o.trail)continue;try{const market=T.marketOf(o.symbol),regular=t=>regularOpen(market,t,closed);
+    for(let o of this.desk.orders(scope)){if(!o.trail&&o.trailWanted&&o.linkedBuy){this.trailAtFill(o,now);continue;}if(!o.trail)continue;try{const market=T.marketOf(o.symbol),regular=t=>regularOpen(market,t,closed);
       // A plan stop starts trailing once its purchase has filled, from the fill price (ruling 4).
       if(o.trail.awaitingFill){const lp=this.linkedPurchase(o);if(!(lp?.filled>=1))continue;o=this.desk.update(o,T.startFromFill(o,{fillPrice:Number(lp.record?.fillPrice),now}));this.trailSeen.set(o.id,{stepAt:now,acceptedAt:null,regularSince:null});continue;}
       const seen=this.trailSeen.get(o.id),gap=!seen||now-seen.stepAt>T.GAP_MS;const s={stepAt:now,acceptedAt:seen?.acceptedAt??null,regularSince:regular(now)?(seen?.regularSince??now):null};this.trailSeen.set(o.id,s);
@@ -1589,6 +1589,14 @@ class Automation {
       if(!accepted&&s.regularSince!=null&&now-base>300000&&!t.notTrackedSince)patch={...(patch??{}),trail:{...t,notTrackedSince:base}};
       else if(accepted&&t.notTrackedSince){const {notTrackedSince,...rest}=t;patch={...(patch??{}),trail:rest};}
       if(!patch)continue;this.desk.update(o,patch);for(const e of r?.events??[])this.log(o.id,'System',e.title,e.body);}catch{}}}
+  // A plan stop armed without its planned trail (trailWanted): once its purchase has filled, the trail is added from the
+  // fill price; a purchase that ended without a fill price, or a trail that still fails its checks, keeps the fixed stop,
+  // and the reason replaces the old one (Home's "Needs you" goes on listing it). Never throws.
+  trailAtFill(o,now=Date.now()){try{const lp=this.linkedPurchase(o);if(!(lp?.filled>=1))return;const fill=Number(lp.record?.fillPrice);
+      if(!(fill>0)&&!lp.ended)return;
+      const r=this.desk.trailAtFill(o,{fillPrice:fill,config:this.config,atr:sym=>this.trailAtr(sym)});
+      if(r.patch){const n=this.desk.update(o,r.patch);(this.trailSeen??=new Map()).set(n.id,{stepAt:now,acceptedAt:null,regularSince:null});this.log(n.id,'System',`Trailing stop armed · ${n.symbol}`,`At the fill of its purchase: ${require('./trailing-stops.cjs').armedText(n)}`);return;}
+      this.desk.update(o,{trailWanted:null,trailNotUsed:`${r.reason} (checked again at the fill)`});this.log(o.id,'System','Plan stop stays without trailing',`${o.quantity} ${o.symbol}: ${r.reason}. It stays a fixed stop at ${o.conditions[0]?.value}.`);}catch{}}
   // The catch-up for one trailing stop (T3): its daily bars read fresh, unless a capital change is known in the gap (review
   // D, Korean listings with OpenDART filings). Never throws; the order stays armed at its level whatever happens.
   // Queued (review T3, question 2): catch-ups read their daily bars one at a time, so ten stops at Start make ten reads in
@@ -1629,7 +1637,8 @@ class Automation {
   // to it (plan stop fixes P1-P3, artifacts/reviews/2026-11-11-agent-tools/plan-stop-fixes.md): it never sells more than
   // that purchase filled, so shares held before it are never sold by it; it may not stack beyond the shares held plus
   // those being bought; and a stop that could not be armed is said so, on Home, by phone alert and in the next review.
-  followPlan(scope,decision,reviewId,{proposalId=null,market=null,positions={}}={}){
+  // quotes: the review's quotes; placedAt: the price the purchase was placed at. Both are for the trail's price check.
+  followPlan(scope,decision,reviewId,{proposalId=null,market=null,positions={},quotes=[],placedAt=null}={}){
     // A cash long entry only (Stage 3): a cover or margin trade gets no ordinary Sell stop, and a short's protection
     // would be a cover above the price on its own lot, a path not yet confirmed (electron/credit-paths.cjs).
     if(decision.action!=='Buy'||(decision.credit??'none')!=='none')return;
@@ -1641,12 +1650,18 @@ class Automation {
       // A plan whose stop trails (T3): armed with the trail, trailing from the fill. A trail that cannot be used (both
       // fields, out of bounds, no ATR or price) arms the fixed stop and says why (ruling 3); the Buy is not held back.
       const wants=require('./agent-desk.cjs').trailingAllowed(this.config)&&(p.trailPct!=null||p.trailAtrMultiple!=null);let stop,trailNotUsed=null;
-      if(wants){let price=null;try{price=this.formulaData(this.liveQuotes()).price(decision.symbol);}catch{}
+      // The price the trail is checked against (found in live use): the review's own quote, then the price the
+      // purchase was placed at, then the app's live quotes, which hold only stocks already held (main.cjs), so a stock
+      // bought for the first time had none there and its trail was refused.
+      if(wants){let price=null;const own=Number((quotes??[]).find(q=>q?.symbol===decision.symbol&&!q.stale)?.price);
+        if(own>0)price=own;else if(Number(placedAt)>0)price=Number(placedAt);else try{price=this.formulaData(this.liveQuotes()).price(decision.symbol);}catch{}
         stop=this.desk.setOrder(scope,{...args,trail:{pct:p.trailPct??null,atrMultiple:p.trailAtrMultiple??null,activateAt:null}},{...opts,quotes:price>0?[{symbol:decision.symbol,price}]:[],atr:sym=>this.trailAtr(sym)});
         if(stop.status!=='armed'){const fixed=this.desk.setOrder(scope,args,opts);if(fixed.status==='armed'){trailNotUsed=stop.reason??'the trail was refused';stop=fixed;}}}
       else stop=this.desk.setOrder(scope,args,opts);
       if(stop.status==='armed'){this.log(reviewId,'Tool','Stop-loss armed from the plan',JSON.stringify(stop));const o=this.desk.orders(scope).find(x=>x.id===stop.id);
-        if(trailNotUsed){if(o)this.desk.update(o,{trailNotUsed});this.log(stop.id,'System','Plan stop armed without trailing',`${decision.quantity} ${decision.symbol} at ${p.stopPrice}: ${trailNotUsed}`);}
+        // A stop linked to its purchase keeps the plan's trail (trailWanted): it is added at the fill, from the fill price,
+        // when the trail's checks pass then (trackTrailing). Until then Home's "Needs you" lists it.
+        if(trailNotUsed){if(o)this.desk.update(o,{trailNotUsed,...(o.linkedBuy?{trailWanted:{pct:p.trailPct??null,atrMultiple:p.trailAtrMultiple??null}}:{})});this.log(stop.id,'System','Plan stop armed without trailing',`${decision.quantity} ${decision.symbol} at ${p.stopPrice}: ${trailNotUsed}`);}
         else if(o?.trail)this.log(o.id,'System',`Trailing stop armed · ${o.symbol}`,require('./trailing-stops.cjs').armedText(o));
         return;}
       const reason=stop.reason??'the stop order was refused';this.log(reviewId,'System','Stop-loss NOT armed from the plan',`${decision.quantity} ${decision.symbol} at ${p.stopPrice}: ${reason} The purchase goes ahead without a stop order.`);

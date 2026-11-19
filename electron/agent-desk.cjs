@@ -167,6 +167,18 @@ class AgentDesk {
     return {status:'armed',id:o.id,replaced:replaced.id,expiresAt:new Date(o.expiresAt).toISOString(),note:`${note} ${replaced.id} was cancelled in the same step.`};
   }
   update(order,patch){return this.write('conditional_orders',{...order,...patch});}
+  // A plan stop armed fixed because its trail could not be checked then (trailWanted, found in live use): at the
+  // purchase's fill, the trail is checked again against the fill price and, if it passes, added from the fill, as a trail
+  // armed with the purchase would start (trailing-stops.cjs startFromFill). The patch, or {reason} when it still cannot.
+  trailAtFill(order,{fillPrice,config,atr=null}){const w=order?.trailWanted;if(!w)return {reason:'no planned trail'};if(!(Number(fillPrice)>0))return {reason:'the fill price is not known'};
+    const args={action:'add',side:order.side,purpose:order.purpose,symbol:order.symbol,credit:order.credit??null,combine:order.combine,trail:{pct:w.pct??null,atrMultiple:w.atrMultiple??null,activateAt:null}};
+    const r=this.checkTrail(args,{conditions:order.conditions},{config,quote:{price:Number(fillPrice)},atr});if(r.reason)return {reason:r.reason};
+    const T=require('./trailing-stops.cjs'),market=T.marketOf(order.symbol),now=this.clock();
+    const t=T.create(r.spec,{floor:r.floor,price:r.price,atr:r.atr?.value??null,atrDate:r.atr?.date??null,now,market,startHigh:Number(fillPrice)});
+    const [c0,...rest]=order.conditions;return {patch:{trail:{...t,addedAtFill:true},conditions:[{...c0,value:t.level},...rest],trailWanted:null,trailNotUsed:null}};}
+  // Armed plan stops that still wait for their planned trail, for Home's "Needs you" (a stop without its trail is not
+  // only a Console line).
+  plannedTrailsMissing(scope){try{return this.orders(scope).filter(o=>o.trailNotUsed&&!o.trail);}catch{return [];}}
   // A stop from a trade plan that could not be armed (P3): {symbol, quantity, reason, proposalId}. Listed for a day,
   // until a stop loss for the symbol is armed after it.
   recordPlanStopFailure(scope,{symbol,quantity,reason,proposalId=null}){const at=this.clock();const item={id:'PSF-'+randomUUID().slice(0,8),scope,symbol,quantity,reason:cut(reason,300),proposalId,at};this.db.prepare('INSERT INTO plan_stop_failures VALUES(?,?,?)').run(item.id,scope,JSON.stringify(item));return item;}

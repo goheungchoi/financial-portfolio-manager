@@ -26,7 +26,7 @@ Contents
 
 One object, `Automation` (`automation.cjs:107`, `class Automation`), decides when an AI review runs, builds what the
 model reads, pays for the call out of a daily budget, checks the answer, hands any order to the engines of Part 2, and
-writes down what happened. It is called once a second by the main process (`main.cjs:752`,
+writes down what happened. It is called once a second by the main process (`main.cjs:754`,
 `setInterval(publishMarket,1000)`; `publishMarket` calls `automation?.tick()` at `main.cjs:239`). Every second `tick()`
 (`automation.cjs:1927`) walks a fixed list of checks and starts **at most one** thing. Only one review runs at a time
 (`this.busy`; a second request throws `REVIEW_BUSY`, `automation.cjs:722`).
@@ -113,7 +113,7 @@ against the provider's daily limits; section 4) unless skipped.
 | `Order update` | An app order became Filled / Partially filled / Canceled / Rejected (`ORDER_EVENTS`, `:13`); at least 30 s after the last review (`:1978`). | `orderUpdateReviews` (**false**: updates are noted, start nothing) | No | Model review |
 | `Emergency loss response` | The daily loss limit is breached (`emergencyState()`, `:274`); first at once, then every 60 s (`:1984`). Runs with markets closed too. With `lossAction==='stop'` auto trading is stopped instead (step 5). | `lossAction` (`'review'`); the loss limit itself is Part 2 §5.3 | No; never skipped (`skippable` excludes emergencies, `:735`) | Model review. It is still held by the format backoff (`:696`) and by the provider wait, but on a rate wait it waits at most max(Retry-After, 2 min) (`providerWaitUntil` with `emergency`, `:649`) |
 | The app's own request (`trigger` given by caller, kind `placement`) | `requestReview()` (`:1260`), e.g. an order that could not be priced. | — | No | Model review |
-| `User request` | The user presses Review (`runtime:review`, `main.cjs:729`). Runs with auto trading off, markets closed, during a provider wait and during the format backoff (`:696`). | — | No | Model review |
+| `User request` | The user presses Review (`runtime:review`, `main.cjs:731`). Runs with auto trading off, markets closed, during a provider wait and during the format backoff (`:696`). | — | No | Model review |
 | `External agent` | A decision delivered through the agent bridge (`agent-bridge.cjs`); paper scope only. | `provider==='external'` | No | No model call by the app |
 
 What does **not** start a review: Start auto trading; a conditional order firing; a scout run finishing; a market
@@ -191,7 +191,7 @@ A fourth, optional: `maxConsecutiveFailures` (0 = off): that many failed reviews
 
 ### 1.9 Start and Stop auto trading (`electron/auto-launch.cjs`)
 
-**What Start does.** `start(a, token)` (`auto-launch.cjs:10-43`), called from `runtime:start` (`main.cjs:718`). It
+**What Start does.** `start(a, token)` (`auto-launch.cjs:10-43`), called from `runtime:start` (`main.cjs:720`). It
 refreshes the U.S. account when in scope, re-applies each selected engine's saved limits and switches the engine on
 with automatic orders (`e.configure(policy, 'ENABLE LIVE|MOCK')`, `e.enableAuto(...)`, `:25`), un-pauses the paper
 account in paper scope, then saves `enabled:true, autoSubmit:true` (`:27`) and arms the session (`a.sessionArmed=true`): Start is the only
@@ -243,7 +243,7 @@ arms it, including turning "Scheduled reviews" on, which saves the switch for th
 auto-stopped trip (which calls Stop) and a save with `enabled` off disarm it (`automation.cjs` `configure`). Until
 1.5.69 every Engine settings save carried the saved `enabled:true` and re-armed a paused session without Start. The start notice (`start-notice.cjs:2-4`) tells the user on launch that auto trading is
 paused, how many stop orders are not being watched and how the app last stopped. The app updater refuses to install
-while `enabled && sessionArmed` (`main.cjs:638`, `AUTO_TRADING_ARMED`).
+while `enabled && sessionArmed` (`main.cjs:640`, `AUTO_TRADING_ARMED`).
 
 **Guardrail stop.** `trip('auto-stopped', detail)` (`automation.cjs:320-325`) calls the same `stop()` and records and
 notifies a guardrail event; used for the daily loss limit with `lossAction==='stop'` and for
@@ -943,7 +943,7 @@ design that narrows it (a separate "form" fingerprint; demand only at Start and 
 ### 3.8 Dry run and replay
 
 **Dry run** (`dryRun(mode, options)`, `automation.cjs:380-438`; from Home/Dashboard, `runtime:dry-run`,
-`main.cjs:727`). KIS scopes only (`DRY_RUN_NEEDS_KIS`).
+`main.cjs:729`). KIS scopes only (`DRY_RUN_NEEDS_KIS`).
 
 - `inputs`: builds a fresh review context through the normal path and makes **no AI call**. It still refreshes market
   data and reconciles open orders with KIS.

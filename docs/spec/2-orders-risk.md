@@ -427,7 +427,7 @@ refusing, or the request limit refusing before sending, restores the order. Any 
 interrupted by a restart is treated the same way (`:21`).
 
 There is no user-facing "cancel" call on the engine other than `revise(id,{cancel:true})`; whether a screen calls it is
-not determined (no `live:revise` or `live:cancel` IPC handler appears in the list at `main.cjs:706-715`).
+not determined (no `live:revise` or `live:cancel` IPC handler appears in the list at `main.cjs:708-717`).
 
 ### 3.9 The order tracker — `Automation.trackOrders` (`automation.cjs:1206-1236`)
 
@@ -631,7 +631,7 @@ The decision document calls this check "R17" and the ledger rule "R3".
   which has no timestamp (`main.cjs:297`).
 - The ledger accepts a rate only when it is under two minutes old (`funding-ledger.cjs:144-145`), so the user's
   indicative rate never passes a funding check (inferred: its timestamp is null).
-- Daily reference rates for tax records come from ECOS and are stored in `fx_rates` (`main.cjs:658`;
+- Daily reference rates for tax records come from ECOS and are stored in `fx_rates` (`main.cjs:660`;
   `trading-costs.cjs:89`) — a different use; owned by the costs part.
 
 ### 4.4 Settlement modules (what each is for)
@@ -820,6 +820,16 @@ A trailing stop is an armed cash-share Sell (`stop_loss` or `take_profit`) with 
   distinct quotes** at or above it; the lower of the two counts (`usable`, `step`, `:27-28`, `:50-72`).
 - `activateAt`: the trail starts only once that price is reached.
 - A plan stop with a trail starts trailing from its purchase's fill price (`startFromFill`, `:43-45`).
+- The price a plan trail is checked against when it is armed: the review's own quote for the stock, then the price the
+  purchase was placed at, then the app's live quotes (`followPlan`, `automation.cjs`). The live quotes hold only stocks
+  already held, so before 1.5.70 a first purchase of a stock had its trail refused ("The current price of … is not
+  known"), found in live use.
+- A plan trail that still cannot be used arms the fixed stop, with the reason (`trailNotUsed`). A stop linked to its
+  purchase keeps the plan's trail (`trailWanted`). When the purchase fills and its fill price is known, the trail is
+  checked again against the fill price and added from it ("Trailing stop armed · <symbol>", "At the fill of its
+  purchase: …"; `trailAtFill`, `automation.cjs` and `agent-desk.cjs`). If it still fails, or the purchase ended without
+  a fill price, the stop stays fixed with the new reason ("Plan stop stays without trailing"). Until a trail is added,
+  Home's "Needs you" lists the stop ("Stop for <symbol> has no trailing"; `plannedTrailsMissing`).
 - **Catch-up** after a gap of over 2 minutes (the app was closed, auto trading was off): daily highs since tracking
   stopped are applied, never the arming or fill day's bar; unreadable bars → retry in 5 minutes; a Korean capital change
   filed in the gap → no catch-up, with the reason (`catchUp`, `:96-110`; `automation.cjs:1577-1591`).
@@ -925,7 +935,7 @@ Class: **O** = ORDER (this order only; a single order's review completes with "N
 batch is not sent; the review fails), per `order-outcomes.cjs`. "Words" are from `activity-today.cjs:8-36`
 (`NOT_SENT`), shown in Console, Home and Activity and told to the next review. "Setting" names what the user controls;
 "fixed" means nothing does. The user's own ticket shows the code through `liveAction` / the `us:` handler
-(`main.cjs:705`, `:334`); a code not on those allowlists reads `KIS_ORDER_FAILED` (Korea) or a `US_*` code (U.S.). How
+(`main.cjs:707`, `:334`); a code not on those allowlists reads `KIS_ORDER_FAILED` (Korea) or a `US_*` code (U.S.). How
 `src/` words each code on the ticket: not determined.
 
 ### 8.1 Refusals
@@ -1089,7 +1099,7 @@ worker's tickets; the service's queue, cooldown and last-200 failures list; the 
 
 1. How often the U.S. balance and quotes are refreshed (the timer around `automation.refreshUS`).
 2. Whether any screen lets the user cancel or revise an open app order (no `live:revise`/`live:cancel` handler in
-   `main.cjs:706-715`; the rest of `main.cjs` and `preload.cjs` were not searched for one).
+   `main.cjs:708-717`; the rest of `main.cjs` and `preload.cjs` were not searched for one).
 3. Whether `Cancellation uncertain` is ever written by code outside `electron/` or by an older version; nothing in
    `electron/` assigns it.
 4. The exact words each refusal code gets on the user's own order ticket (`src/`), and all screen text for limits,

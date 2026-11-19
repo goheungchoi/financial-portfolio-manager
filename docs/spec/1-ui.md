@@ -28,12 +28,12 @@ Contents:
 - **First tab**: `AI console` when `location.hash === '#console'`, otherwise `Home` (`src/main.tsx:43`; `HOME`, `src/WorkspaceUX.tsx:5`). Where the `#console` hash is set: not determined (the only occurrence found is this read).
 - **Stylesheets** loaded by the shell: `style.css`, `themes.css`, `polish.css` (`src/main.tsx:29-31`).
 - **Browser preview** (no preload bridge, `window.portfolio` undefined): the theme is read from and written to `localStorage` key `theme` (`src/main.tsx:76-78`, `:119`); KIS actions answer "KIS connection is available in the desktop app." (`src/main.tsx:109`).
-- **Startup failure**: if the database cannot be opened, a native error box "Startup failed" / "The local portfolio database could not be opened. The app will close without submitting any orders." and the app exits (main.cjs:860).
-- **Quit**: closing all windows quits the app except on macOS (main.cjs:871). There is no tray icon: no `Tray` is created anywhere in `electron/main.cjs` (searched for `new Tray`, `setContextMenu`, `setToolTip`: no match).
+- **Startup failure**: if the database cannot be opened, a native error box "Startup failed" / "The local portfolio database could not be opened. The app will close without submitting any orders." and the app exits (main.cjs:862).
+- **Quit**: closing all windows quits the app except on macOS (main.cjs:873). There is no tray icon: no `Tray` is created anywhere in `electron/main.cjs` (searched for `new Tray`, `setContextMenu`, `setToolTip`: no match).
 
 ## 1.2 Application menu
 
-Defined once at main.cjs:856 (`Menu.setApplicationMenu`):
+Defined once at main.cjs:858 (`Menu.setApplicationMenu`):
 
 | Menu | Items |
 |---|---|
@@ -195,8 +195,8 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | window.portfolio method | IPC channel | main.cjs handler | Engine call |
 |---|---|---|---|
-| `getRuntime()` (through `subscribeRuntime`) | `runtime:get` | main.cjs:720 | `runtimeState()` (main.cjs:720) |
-| `reviewRuntime()` | `runtime:review` | main.cjs:729 | `automation.review()`; on failure the reply is `{ok:false,error:automation.lastError??'REVIEW_FAILED',message:...}` (main.cjs:729) |
+| `getRuntime()` (through `subscribeRuntime`) | `runtime:get` | main.cjs:722 | `runtimeState()` (main.cjs:722) |
+| `reviewRuntime()` | `runtime:review` | main.cjs:731 | `automation.review()`; on failure the reply is `{ok:false,error:automation.lastError??'REVIEW_FAILED',message:...}` (main.cjs:731) |
 
 - **Subscriptions**: `subscribeRuntime` (shared 2-second poll of `getRuntime`, src/runtimeFeed.ts:32-36; src/Home.tsx:183).
 - **Saved state**: none (renderer-only `busy`/`note`, src/Home.tsx:182).
@@ -248,7 +248,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | window.portfolio method | IPC channel | main.cjs handler | Engine call |
 |---|---|---|---|
-| `getMarketStatus()` | `market:status` | main.cjs:705 | `marketStatus` from `electron/market-sessions.cjs`, with `officialKrCalendar()` and `automation.closedDays` (main.cjs:705) |
+| `getMarketStatus()` | `market:status` | main.cjs:707 | `marketStatus` from `electron/market-sessions.cjs`, with `officialKrCalendar()` and `automation.closedDays` (main.cjs:707) |
 
 - **Subscriptions**: polls every 60000 ms (src/MarketStatus.tsx:18).
 - **Saved state**: none.
@@ -271,7 +271,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 - **Component files**: `HomeCalendar` (src/Home.tsx:146); mounted beside `HomeTrend` (src/main.tsx:135).
 - **What it shows**: nothing when there are no events (src/Home.tsx:149). Otherwise the head "Coming up · next 3 weeks", then up to 10 items grouped by day; each day shows the date with "Today" or "Tomorrow" (Seoul date) (src/Home.tsx:150-153). Each item: a kind chip "Earnings", "Dividend", "Meeting", "Macro" or "Expiry" (src/Home.tsx:127,155), the label (company short name or the event title), tickers joined with " · ", and a sub-line: for earnings "After the U.S. close · <weekday> morning KST", "Before the U.S. open · <weekday> evening KST" or "Estimated date, not announced"; for dividends "Record date"; for macro/expiry "Korea" or "U.S." (src/Home.tsx:138-142,156). Share classes of one company on the same day are merged into one item (src/Home.tsx:132-139).
 - **Controls**: none.
-- **Calls and channels**: `getRuntime()` → `runtime:get` → main.cjs:720 → `runtimeState()`; the component reads `state.calendar` (src/Home.tsx:148).
+- **Calls and channels**: `getRuntime()` → `runtime:get` → main.cjs:722 → `runtimeState()`; the component reads `state.calendar` (src/Home.tsx:148).
 - **Subscriptions**: its own poll every 60000 ms (src/Home.tsx:148).
 - **Saved state**: none.
 - **Notes**: none.
@@ -286,13 +286,13 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | window.portfolio method | IPC channel | main.cjs handler | Engine call |
 |---|---|---|---|
-| `getAttention()` | `workspace:attention` | main.cjs:628 | `attentionState()` (main.cjs:602-627) |
-| `dismissAttention(id)` | `workspace:dismiss` | main.cjs:633 | sets `restartNoticeDismissed=true` only when `id==='restart-notice'`; any other id changes nothing; returns `attentionState()` |
-| `reviewRuntime()` | `runtime:review` | main.cjs:729 | `automation.review()` |
+| `getAttention()` | `workspace:attention` | main.cjs:630 | `attentionState()` (main.cjs:602-629) |
+| `dismissAttention(id)` | `workspace:dismiss` | main.cjs:635 | sets `restartNoticeDismissed=true` only when `id==='restart-notice'`; any other id changes nothing; returns `attentionState()` |
+| `reviewRuntime()` | `runtime:review` | main.cjs:731 | `automation.review()` |
 
 - **Subscriptions**: `useAttention` poll every 5000 ms (src/Dashboard.tsx:13). After "Dismiss" the reply is not applied to the list; the row goes at the next poll (src/Dashboard.tsx:31, the returned value is discarded).
 - **Saved state**: `restartNoticeDismissed` is a main-process variable (main.cjs:7), not written to disk; it resets when the app restarts (inferred from the plain `let` at main.cjs:7).
-- **Notes**: every item kind built by `attentionState()` (main.cjs:602-627), in the order they are added:
+- **Notes**: every item kind built by `attentionState()` (main.cjs:602-629), in the order they are added:
 
 | # | id | Tone | Title (exact) | Detail (tooltip) | Created when | Button label → where |
 |---|---|---|---|---|---|---|
@@ -314,8 +314,9 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 | 16 | `stop-unreadable-<order id>` | warning | "Stop order for <symbol> cannot read its purchase" | "It stays armed and keeps trying; it sells nothing until the purchase can be read." | a desk conditional order with `linkedBuy` unreadable for more than 5 minutes (main.cjs:620) | "Orders and triggers" → Journal, view "Orders and triggers" |
 | 17 | `claude-first-review` | action | "First review on Claude Opus 5.5 not run yet" | "Automatic reviews wait until it completes. Armed stops keep running." | `automation.claudeFirstReview()?.state==='pending'` and the trading model's vendor is Anthropic (main.cjs:622) | "Run first review" → runs `reviewRuntime()`; no navigation (`run:'review'`; the item's `tab` is 'Dashboard' but is not used, src/Dashboard.tsx:31) |
 | 18 | `plan-stop-<id>` | warning | "No stop order for the purchase of <symbol>" | "<qty> <symbol>: <reason>" | one per `automation.desk.planStopFailures(scope)` (main.cjs:623) | "Orders and triggers" → Journal, view "Orders and triggers" |
-| 19 | `restart-notice` | warning | "Auto trading paused after a restart", "Paused: N stop order(s) not watched" or "Paused: stop orders not watched" (electron/start-notice.cjs:38) | the full message: how the app stopped, "The app started and auto trading is paused." + stop details + "Open the app and press Start auto trading." (electron/start-notice.cjs:36) | `restartNotice` was built at start (main.cjs:342), it is not dismissed, and auto trading is not running (main.cjs:624) | "Orders and triggers" → Journal, view "Orders and triggers"; has "Dismiss" (`dismissible:true`) |
-| 20 | `update` | info | "Version <x> is ready to install" | "Install from Connections when no trading is active." | `updates.view().status==='downloaded'` (main.cjs:625) | "Install" → Connections |
+| 19 | `plan-trail-<order id>` | warning | "Stop for <symbol> has no trailing" | "A fixed stop at <level> protects <qty> <symbol>; its plan gave a trail. " + "The trail is added when the purchase fills. " (while it waits for its purchase) + "Why: <reason>" | one per armed plan stop whose plan gave a trail it could not use (`automation.desk.plannedTrailsMissing(scope)`, main.cjs:625) | "Orders and triggers" → Journal, view "Orders and triggers" |
+| 20 | `restart-notice` | warning | "Auto trading paused after a restart", "Paused: N stop order(s) not watched" or "Paused: stop orders not watched" (electron/start-notice.cjs:38) | the full message: how the app stopped, "The app started and auto trading is paused." + stop details + "Open the app and press Start auto trading." (electron/start-notice.cjs:36) | `restartNotice` was built at start (main.cjs:342), it is not dismissed, and auto trading is not running (main.cjs:626) | "Orders and triggers" → Journal, view "Orders and triggers"; has "Dismiss" (`dismissible:true`) |
+| 21 | `update` | info | "Version <x> is ready to install" | "Install from Connections when no trading is active." | `updates.view().status==='downloaded'` (main.cjs:627) | "Install" → Connections |
 
   Each block is wrapped in try/catch, so a failing source drops its item silently (main.cjs:606-624). `counts` drive sidebar badges: `approvals` on "KIS trading" and "U.S. stocks" (title "Orders waiting for approval"), `lessons` on Journal ("Optional learning feedback: nothing waits on it"), `news` on News ("Important disclosures today") (src/main.tsx:135).
 
@@ -343,13 +344,13 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | window.portfolio method | IPC channel | main.cjs handler | Engine call |
 |---|---|---|---|
-| `getRuntime()` via `subscribeRuntime` | `runtime:get` | main.cjs:720 | `runtimeState()` |
-| `startAutoTrading(token)` | `runtime:start` | main.cjs:718 | `require('./auto-launch.cjs').start(automation,token)` |
-| `stopAutoTrading()` | `runtime:stop` | main.cjs:719 | `require('./auto-launch.cjs').stop(automation)` |
-| `reviewRuntime()` | `runtime:review` | main.cjs:729 | `automation.review()` |
-| `setBackgroundAi(paused)` | `runtime:background-ai` | main.cjs:728 | `automation.setBackgroundPaused(paused)` |
-| `dryRunEstimate(model)` | `runtime:dry-run-estimate` | main.cjs:726 | `automation.dryRunEstimate({model})`; only `'claude-opus-5-5'` is passed through, else null (also filtered in electron/preload.cjs:30) |
-| `dryRun(mode, options)` | `runtime:dry-run` | main.cjs:727 | `automation.dryRun(mode,{model})`; on failure `{ok:false,error:<CODE or 'DRY_RUN_FAILED'>,failure:automation.dryRunFailure(started)}` |
+| `getRuntime()` via `subscribeRuntime` | `runtime:get` | main.cjs:722 | `runtimeState()` |
+| `startAutoTrading(token)` | `runtime:start` | main.cjs:720 | `require('./auto-launch.cjs').start(automation,token)` |
+| `stopAutoTrading()` | `runtime:stop` | main.cjs:721 | `require('./auto-launch.cjs').stop(automation)` |
+| `reviewRuntime()` | `runtime:review` | main.cjs:731 | `automation.review()` |
+| `setBackgroundAi(paused)` | `runtime:background-ai` | main.cjs:730 | `automation.setBackgroundPaused(paused)` |
+| `dryRunEstimate(model)` | `runtime:dry-run-estimate` | main.cjs:728 | `automation.dryRunEstimate({model})`; only `'claude-opus-5-5'` is passed through, else null (also filtered in electron/preload.cjs:30) |
+| `dryRun(mode, options)` | `runtime:dry-run` | main.cjs:729 | `automation.dryRun(mode,{model})`; on failure `{ok:false,error:<CODE or 'DRY_RUN_FAILED'>,failure:automation.dryRunFailure(started)}` |
 
 - **Subscriptions**: `subscribeRuntime` (2-second shared poll); a 3-second timer that only refreshes the countdown clock (src/Dashboard.tsx:58).
 - **Saved state**: none in the renderer (`dryModel`, `estimate`, notes are component state, src/Dashboard.tsx:57-63). "Pause background AI" is described on screen as "paused for this session" (src/Dashboard.tsx:83); where the engine keeps it: not determined.
@@ -390,7 +391,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | window.portfolio method | IPC channel | main.cjs handler | Engine call |
 |---|---|---|---|
-| `getRuntime()` | `runtime:get` | main.cjs:720 | `runtimeState()`; the panel reads its `exposure` field (src/Exposure.tsx:8). The field `movesTogether` is produced in `electron/portfolio-risk.cjs` (file found by search; the function that fills `state.exposure` was not read: not determined) |
+| `getRuntime()` | `runtime:get` | main.cjs:722 | `runtimeState()`; the panel reads its `exposure` field (src/Exposure.tsx:8). The field `movesTogether` is produced in `electron/portfolio-risk.cjs` (file found by search; the function that fills `state.exposure` was not read: not determined) |
 
 - **Subscriptions**: its own poll every 30000 ms (src/Exposure.tsx:8).
 - **Saved state**: none.
@@ -654,8 +655,8 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | What it calls |
 |---|---|---|---|
-| `getTheme()` (src/ChartWindow.tsx:7) | `theme:get` (electron/preload.cjs:89) | main.cjs:781 | `store.getTheme()` |
-| `onTheme(cb)` (src/ChartWindow.tsx:7) | broadcast `theme:changed` (electron/preload.cjs:91-95) | sent at main.cjs:785 | sets `document.documentElement.dataset.theme` (src/ChartWindow.tsx:6) |
+| `getTheme()` (src/ChartWindow.tsx:7) | `theme:get` (electron/preload.cjs:89) | main.cjs:783 | `store.getTheme()` |
+| `onTheme(cb)` (src/ChartWindow.tsx:7) | broadcast `theme:changed` (electron/preload.cjs:91-95) | sent at main.cjs:787 | sets `document.documentElement.dataset.theme` (src/ChartWindow.tsx:6) |
 | all `CompanyView` calls | see Charts tab | | |
 
 - **Subscriptions**: `onTheme`; `onChartTick`; a 60000 ms timer that re-reads `company:get` (src/ChartWindow.tsx:7, :9; src/CompanyView.tsx:29-30).
@@ -663,7 +664,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 - **Notes**:
   - Window options (`openChartWindow`, main.cjs:215-220): one window per symbol (an existing one is restored and focused, main.cjs:216); width 1040, height 780, minWidth 560, minHeight 480; background "#f3f6fa" (light theme) or "#181818"; title "`<symbol>` · Chart"; `contextIsolation:true`, `sandbox:true`, `nodeIntegration:false`, same preload (main.cjs:217). The menu is removed, new windows are denied and navigation is blocked (main.cjs:218). It loads the same page with hash `chart:<encoded symbol>` (main.cjs:220). Pop-out windows close when the main window closes (main.cjs:210-211).
   - Narrow window: `main.chart-window` is centred with max-width 1180 px and padding 20px 24px; at ≤700 px the padding is 12px 16px with no margin (src/themes.css:111-112).
-  - `market:history` (main.cjs:767) is exposed as `getHistory` (electron/preload.cjs:99) but none of the Charts files call it; the Charts bars come from `company:get` and `chart:bars` (src/CompanyView.tsx:13; src/TechnicalSummary.tsx:12). The handler serves `1d`/`1m`/`5m` bars for held symbols through `kisService.request('history',…)` with a 60 s (1d) or 30 s bucket cache, throwing "Unsupported instrument or interval" or "Connection changed" (main.cjs:767-779). Its renderer caller: not determined (outside the assigned files).
+  - `market:history` (main.cjs:769) is exposed as `getHistory` (electron/preload.cjs:99) but none of the Charts files call it; the Charts bars come from `company:get` and `chart:bars` (src/CompanyView.tsx:13; src/TechnicalSummary.tsx:12). The handler serves `1d`/`1m`/`5m` bars for held symbols through `kisService.request('history',…)` with a 60 s (1d) or 30 s bucket cache, throwing "Unsupported instrument or interval" or "Connection changed" (main.cjs:769-781). Its renderer caller: not determined (outside the assigned files).
 
 ## Performance tab
 
@@ -788,12 +789,12 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | What it calls |
 |---|---|---|---|
-| `getScoreboard()` (src/Scoreboard.tsx:41) | `scoreboard:get` (electron/preload.cjs:49) | main.cjs:678 | starts `refreshDecisionCloses()` and `refreshBenchmarks()` when older than 6 h; replies `scoreboardState()` = `automation.scoreboard.build()` plus `pricesUpdatedAt`, `pricesError`, `refreshing`, `benchmarkUpdatedAt` (main.cjs:676; electron/scoreboard.cjs:94) |
-| `refreshScoreboard()` (src/Scoreboard.tsx:43) | `scoreboard:refresh` (electron/preload.cjs:50) | main.cjs:679 | awaits `refreshBenchmarks()` then `refreshDecisionCloses()`; the latter fetches daily bars (`company-chart`, `daily_technicals`) for up to 14 pending symbols and calls `automation.scoreboard.saveCloses` (main.cjs:671-674) |
+| `getScoreboard()` (src/Scoreboard.tsx:41) | `scoreboard:get` (electron/preload.cjs:49) | main.cjs:680 | starts `refreshDecisionCloses()` and `refreshBenchmarks()` when older than 6 h; replies `scoreboardState()` = `automation.scoreboard.build()` plus `pricesUpdatedAt`, `pricesError`, `refreshing`, `benchmarkUpdatedAt` (main.cjs:678; electron/scoreboard.cjs:94) |
+| `refreshScoreboard()` (src/Scoreboard.tsx:43) | `scoreboard:refresh` (electron/preload.cjs:50) | main.cjs:681 | awaits `refreshBenchmarks()` then `refreshDecisionCloses()`; the latter fetches daily bars (`company-chart`, `daily_technicals`) for up to 14 pending symbols and calls `automation.scoreboard.saveCloses` (main.cjs:673-676) |
 
-  - Reply wrapper `scoreboardAction`: `{ok:true,state}` or `{ok:false,error}` with the thrown code or `SCOREBOARD_FAILED` (main.cjs:677). A failed price fetch is kept as `pricesError` (code or `PRICE_HISTORY_FAILED`) and shows only as " · last refresh failed" (main.cjs:674; src/Scoreboard.tsx:60).
-- **Subscriptions**: A timer re-reads `scoreboard:get` every 30000 ms, or every 2000 ms while `state.refreshing` is true (src/Scoreboard.tsx:41). Main side: a 10-minute check refreshes decision closes when older than 6 h (main.cjs:675).
-- **Saved state**: None from the screen. The refresh stores closes through `automation.scoreboard.saveCloses` (main.cjs:673). The decision-table toggle is component state (src/Scoreboard.tsx:38).
+  - Reply wrapper `scoreboardAction`: `{ok:true,state}` or `{ok:false,error}` with the thrown code or `SCOREBOARD_FAILED` (main.cjs:679). A failed price fetch is kept as `pricesError` (code or `PRICE_HISTORY_FAILED`) and shows only as " · last refresh failed" (main.cjs:676; src/Scoreboard.tsx:60).
+- **Subscriptions**: A timer re-reads `scoreboard:get` every 30000 ms, or every 2000 ms while `state.refreshing` is true (src/Scoreboard.tsx:41). Main side: a 10-minute check refreshes decision closes when older than 6 h (main.cjs:677).
+- **Saved state**: None from the screen. The refresh stores closes through `automation.scoreboard.saveCloses` (main.cjs:675). The decision-table toggle is component state (src/Scoreboard.tsx:38).
 - **Notes**: Horizons `[1,5,20]`, primary 5, minimum sample 5 (electron/scoreboard.cjs:4). Excess prints with sign and two decimals; a value within ±0.00005 has no tone (src/Scoreboard.tsx:11-13).
 
 ### ActivityReport, profit mode ("Realized performance")
@@ -809,7 +810,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
   - Table columns: "Trade date (KST)", "Company" (name and symbol), "Realized P&L", "Fees", "Taxes" (src/ActivityReport.tsx:102). All amounts print in KRW; a null prints "Unavailable" (src/ActivityReport.tsx:9, :102).
   - Not connected: "Connect KIS to see order history." (src/ActivityReport.tsx:92).
 - **Controls**: Date inputs "From" (aria "Report start date") and "Through" (aria "Report end date"), button "Refresh" / "Refreshing…", disclosure "More" (profit text: "Broker-reported realized profit and loss, not total portfolio return. Fees and taxes are shown separately and not subtracted again. Deposits, withdrawals, dividends and unrealized changes are not in this report." and "It opens with the last report read and refreshes by itself when it is older than five minutes.") (src/ActivityReport.tsx:92-100). Behaviour is the same as in orders mode; see the Activity tab.
-- **Calls and channels**: `getActivity('profit',…)` → `kis:activity` and `getActivityCached('profit')` → `kis:activity-cached`; see the Activity tab table. For `profit` the handler calls `kisService.request('profit',{startDate,endDate})` → worker `client.getActivity('profit',…)` (main.cjs:809; electron/kis-worker.cjs:72-73).
+- **Calls and channels**: `getActivity('profit',…)` → `kis:activity` and `getActivityCached('profit')` → `kis:activity-cached`; see the Activity tab table. For `profit` the handler calls `kisService.request('profit',{startDate,endDate})` → worker `client.getActivity('profit',…)` (main.cjs:811; electron/kis-worker.cjs:72-73).
 - **Subscriptions**: none of its own in profit mode (the Today strip is orders-only, src/ActivityReport.tsx:101).
 - **Saved state**: Renderer session memory `report:profit:start`, `report:profit:end` (plus unused `report:profit:query`, `:side`, `:status`) (src/ActivityReport.tsx:42-51). Main side: the last report in table `activity_last`, row `profit` (electron/activity-cache.cjs:9, :14-15).
 - **Notes**: The error table is shared with orders mode (see Activity tab). `FEATURE_UNAVAILABLE` reads "This version supports realized-P&L reports for live accounts only." (src/ActivityReport.tsx:19).
@@ -834,7 +835,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
   - Line (aria "Corrected orders"): "Includes N corrected order(s)." and/or "N corrected order(s) not included: KIS reports more filled shares than the order had." (src/ActivityReport.tsx:101).
   - Table (class `activity-orders`) columns: "Order / company", "Order time (KST)", "Side / status", "From", "Ordered / executed", "Remaining", "Average execution", "Executed amount" (src/ActivityReport.tsx:101). Cell contents: name in bold with "U.S. · " (U.S. rows), symbol, " · #`<order number>`", " · Original #`<number>`"; time in Seoul time; side with status and " · `<reason>`"; origin label with detail under it (tooltip = detail), "—" when none; "quantity / filled"; remaining; average price or "—" when nothing filled; executed amount in the order's currency (src/ActivityReport.tsx:101). Not-sent rows are greyed (class `muted not-sent`) (src/ActivityReport.tsx:101).
   - Empty: "No matching order records in this period." (src/ActivityReport.tsx:101).
-  - Notice "U.S. orders could not be loaded (`<CODE>`); Korean orders are shown." when the U.S. part failed (src/ActivityReport.tsx:101; main.cjs:811-812).
+  - Notice "U.S. orders could not be loaded (`<CODE>`); Korean orders are shown." when the U.S. part failed (src/ActivityReport.tsx:101; main.cjs:813-814).
 - **Controls**:
   - Date input "From" (aria "Report start date"): min = 60 days ago (Seoul), max = the end date; disabled while busy (src/ActivityReport.tsx:92).
   - Date input "Through" (aria "Report end date"): min = the start date, max = today (Seoul); disabled while busy (src/ActivityReport.tsx:92).
@@ -849,11 +850,11 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | What it calls |
 |---|---|---|---|
-| `getActivityCached(kind)` (src/main.tsx:145; src/ActivityReport.tsx:71) | `kis:activity-cached` (electron/preload.cjs:85) | main.cjs:797 | `activityCache.get(kind,accountKey)` (electron/activity-cache.cjs:11); `{ok:true,data}` or `{ok:false}` |
-| `getActivity(kind,start,end,options)` (src/main.tsx:145; src/ActivityReport.tsx:61) | `kis:activity` (electron/preload.cjs:84) | main.cjs:798-823 | `validateRange` (electron/kis-activity.cjs:8); `kisService.request(kind,{startDate,endDate})` → worker `client.getActivity` (electron/kis-worker.cjs:72-73); for `orders` also `kisService.request('us-order-history',…)` → `us.orderHistory` (electron/kis-worker.cjs:35), then `activity-chains.cjs` `markChains` and `activity-origin.cjs` `labelRows` (main.cjs:811-818); `activityCache.put` (main.cjs:820) |
-| `getActivityToday()` (src/ActivityReport.tsx:32) | `activity:today` (electron/preload.cjs:86) | main.cjs:793-796 | `activity-today.cjs` `today({intents,reviews,conditionals})` (electron/activity-today.cjs:52) with `order-origin.cjs` `reviewIdRows` and `conditionalRows` (electron/order-origin.cjs:30, :40); no KIS request (main.cjs:791) |
+| `getActivityCached(kind)` (src/main.tsx:145; src/ActivityReport.tsx:71) | `kis:activity-cached` (electron/preload.cjs:85) | main.cjs:799 | `activityCache.get(kind,accountKey)` (electron/activity-cache.cjs:11); `{ok:true,data}` or `{ok:false}` |
+| `getActivity(kind,start,end,options)` (src/main.tsx:145; src/ActivityReport.tsx:61) | `kis:activity` (electron/preload.cjs:84) | main.cjs:800-825 | `validateRange` (electron/kis-activity.cjs:8); `kisService.request(kind,{startDate,endDate})` → worker `client.getActivity` (electron/kis-worker.cjs:72-73); for `orders` also `kisService.request('us-order-history',…)` → `us.orderHistory` (electron/kis-worker.cjs:35), then `activity-chains.cjs` `markChains` and `activity-origin.cjs` `labelRows` (main.cjs:813-820); `activityCache.put` (main.cjs:822) |
+| `getActivityToday()` (src/ActivityReport.tsx:32) | `activity:today` (electron/preload.cjs:86) | main.cjs:795-798 | `activity-today.cjs` `today({intents,reviews,conditionals})` (electron/activity-today.cjs:52) with `order-origin.cjs` `reviewIdRows` and `conditionalRows` (electron/order-origin.cjs:30, :40); no KIS request (main.cjs:793) |
 
-  - `kis:activity` replies (main.cjs:800-822): `{ok:false,error:'NOT_CONNECTED'}`; for an automatic read `{ok:false,error:'SKIPPED',skipped:'order'|'review'|'account'}` (order being sent, review running, account request running; electron/activity-cache.cjs:20); `BUSY`; `INVALID_REQUEST` (kind not `orders`/`profit`); `CONNECTION_CHANGED`; otherwise `kisErrorCode(error)`, one of `INVALID_CREDENTIAL_FILE`, `INVALID_RESPONSE`, `AUTH_FAILED`, `RATE_LIMITED`, `REQUEST_FAILED`, `BROKER_REJECTED`, `INCOMPLETE_BALANCE`, `BROKER_UNAVAILABLE`, `BUSY`, `INCOMPLETE_HISTORY`, `INVALID_DATE_RANGE`, `FEATURE_UNAVAILABLE` (main.cjs:68-71).
+  - `kis:activity` replies (main.cjs:802-824): `{ok:false,error:'NOT_CONNECTED'}`; for an automatic read `{ok:false,error:'SKIPPED',skipped:'order'|'review'|'account'}` (order being sent, review running, account request running; electron/activity-cache.cjs:20); `BUSY`; `INVALID_REQUEST` (kind not `orders`/`profit`); `CONNECTION_CHANGED`; otherwise `kisErrorCode(error)`, one of `INVALID_CREDENTIAL_FILE`, `INVALID_RESPONSE`, `AUTH_FAILED`, `RATE_LIMITED`, `REQUEST_FAILED`, `BROKER_REJECTED`, `INCOMPLETE_BALANCE`, `BROKER_UNAVAILABLE`, `BUSY`, `INCOMPLETE_HISTORY`, `INVALID_DATE_RANGE`, `FEATURE_UNAVAILABLE` (main.cjs:68-71).
   - Date-range rule (`INVALID_DATE_RANGE`): both dates `YYYY-MM-DD`, start ≤ end, end ≤ today (Seoul), start no more than 60 days before today (electron/kis-activity.cjs:8-16).
 - **Subscriptions**: On mount (once per tab and connection): read the cached report, show it, then an automatic refresh when there is no cache, it is older than 5 minutes (`FRESH_MS`), or it is of another period (src/ActivityReport.tsx:23, :69-78). A request counter drops replies that arrive after a newer request or after unmount (src/ActivityReport.tsx:53, :58, :62, :75). No repeating timer in the report itself.
 - **Saved state**: Renderer session memory (`useDraftState`): `report:orders:start` (default 29 days ago, Seoul), `report:orders:end` (today), `report:orders:query`, `report:orders:side` ("All"), `report:orders:status` ("All") (src/ActivityReport.tsx:42-51). "Execution totals" toggle is component state (src/ActivityReport.tsx:52). Main side: the last successful report per kind is kept in memory and in table `activity_last` (one row per kind, with the account) and survives restarts; a read for another account clears it (electron/activity-cache.cjs:1-16).
@@ -890,7 +891,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
 | KIS row with no app record | "Outside the app", detail "KIS channel: `<channel>`" when KIS gives one |
 
   - Not-sent rows added to the list (electron/activity-origin.cjs:23-25): app orders with no broker order id, created inside the period, whose state is `notSent`; they carry status "Not sent", filled 0, the reason in words and their origin label.
-  - Order rows from Korea are tagged `market:'KR'`, `currency:'KRW'`; the merged list is sorted newest first (main.cjs:812; electron/activity-origin.cjs:26).
+  - Order rows from Korea are tagged `market:'KR'`, `currency:'KRW'`; the merged list is sorted newest first (main.cjs:814; electron/activity-origin.cjs:26).
 
 ### TodayStrip ("Today")
 
@@ -902,7 +903,7 @@ Order: Home, Holdings, Charts, pop-out chart window, Performance, Activity, Kore
   - List (aria "Latest orders") of up to five rows: time (HH:MM Seoul), "`<side>` `<quantity>` `<symbol>`", "`<label>` · `<reason>`", and the origin label; a not-sent row is greyed (src/ActivityReport.tsx:39; electron/activity-today.cjs:56).
   - Renders nothing until a reply with counts arrives (src/ActivityReport.tsx:35).
 - **Controls**: none (src/ActivityReport.tsx:37-39).
-- **Calls and channels**: `getActivityToday()` → `activity:today` (see the table above). On failure the handler returns `{ok:false}` and the strip keeps what it shows (main.cjs:796; src/ActivityReport.tsx:32).
+- **Calls and channels**: `getActivityToday()` → `activity:today` (see the table above). On failure the handler returns `{ok:false}` and the strip keeps what it shows (main.cjs:798; src/ActivityReport.tsx:32).
 - **Subscriptions**: `subscribeRuntime` (the shared 2-second `getRuntime` poll, src/runtimeFeed.ts:14-17); the strip re-reads at most every 10 seconds (src/ActivityReport.tsx:32-33).
 - **Saved state**: none; read-only.
 - **Notes**:
@@ -1222,18 +1223,18 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs line | Calls |
 |---|---|---|---|
-| `getRuntime()` (src/RuntimeSettings.tsx:42) | `runtime:get` (electron/preload.cjs:24) | main.cjs:720 | `runtimeState()` = `lightState({...automation.getState(), funding, launch, connections, bridgePipe, bridgeScript, notifications},{version:automation.historyVersion()})` (main.cjs:690; `lightState` electron/runtime-state.cjs:13) |
-| `getRuntimeHistory()` (src/RuntimeSettings.tsx:42) | `runtime:history` (electron/preload.cjs:29) | main.cjs:721 | `historyOf(automation.getState())` (electron/runtime-state.cjs:19) |
-| `refreshNews()` (action `'news'`, src/RuntimeSettings.tsx:48) | `runtime:news` (electron/preload.cjs:33) | main.cjs:737 | `refreshNews()` (main.cjs:109) then `runtimeState()` |
-| `configureRuntime(value)` (action `'save'`, src/RuntimeSettings.tsx:49) | `runtime:configure` (electron/preload.cjs:25) | main.cjs:722 | `automation.configure(value)` (validation in electron/automation.cjs:177-202) |
-| `approveLesson(id,approved)` (action `'lesson'`, src/RuntimeSettings.tsx:49) | `runtime:lesson` (electron/preload.cjs:71) | main.cjs:741 | `automation.approveLesson(id,approved)` (electron/automation.cjs:1999) |
+| `getRuntime()` (src/RuntimeSettings.tsx:42) | `runtime:get` (electron/preload.cjs:24) | main.cjs:722 | `runtimeState()` = `lightState({...automation.getState(), funding, launch, connections, bridgePipe, bridgeScript, notifications},{version:automation.historyVersion()})` (main.cjs:692; `lightState` electron/runtime-state.cjs:13) |
+| `getRuntimeHistory()` (src/RuntimeSettings.tsx:42) | `runtime:history` (electron/preload.cjs:29) | main.cjs:723 | `historyOf(automation.getState())` (electron/runtime-state.cjs:19) |
+| `refreshNews()` (action `'news'`, src/RuntimeSettings.tsx:48) | `runtime:news` (electron/preload.cjs:33) | main.cjs:739 | `refreshNews()` (main.cjs:109) then `runtimeState()` |
+| `configureRuntime(value)` (action `'save'`, src/RuntimeSettings.tsx:49) | `runtime:configure` (electron/preload.cjs:25) | main.cjs:724 | `automation.configure(value)` (validation in electron/automation.cjs:177-202) |
+| `approveLesson(id,approved)` (action `'lesson'`, src/RuntimeSettings.tsx:49) | `runtime:lesson` (electron/preload.cjs:71) | main.cjs:743 | `automation.approveLesson(id,approved)` (electron/automation.cjs:1999) |
 
 - **Subscriptions**: a `setInterval` of 2000 ms calls `getRuntime()` (src/RuntimeSettings.tsx:42). In journal and news modes (`wantsHistory`, src/RuntimeSettings.tsx:40) it then calls `getRuntimeHistory()` when `needsHistory(seen, value.historyVersion, has)` is true: no history held yet, or the version is null, or the version differs from the one seen (src/runtimeFeed.ts:23). The history reply is merged over the light state (`withHistory`, src/RuntimeSettings.tsx:41).
 - **What the history carries**: the keys `reviews`, `allReviews`, `outcomes`, `newsEvents` (`HISTORY_KEYS`, electron/runtime-state.cjs:5). The 2-second state carries only the latest three reviews in brief plus `historyVersion` and `historyCounts` (electron/runtime-state.cjs:13-17). `historyVersion` is built from the database change counter, the settings revision, the watch scope, the current minute and the database data version (electron/automation.cjs:139), so the history is fetched again at least once a minute (inferred from the minute component). In the engine state `reviews` is `reviewHistory(50)` (connected account) and `allReviews` is `reviewHistory(50,true)`; `newsEvents` is `newsEvents.list(100)`; `outcomes` is `outcomes.list()` (electron/automation.cjs:346).
 - **Saved state**: the draft config is kept under draft key `runtime:<mode>:config`, with refs `runtime:<mode>:dirty` and `runtime:<mode>:changed` (src/RuntimeSettings.tsx:38). Drafts are session memory only: kept across navigation, lost on reload or exit (src/useDraftState.ts:2-3). While `dirty` is true the polled config does not replace the draft (src/RuntimeSettings.tsx:42 `dirty.current?current:value.config`).
 - **Notes**:
   - `JournalView` receives `onLesson` (src/RuntimeSettings.tsx:65) but does not use it: its parameter list destructures only `state,onNavigate,onDesk` (src/JournalView.tsx:42). Lesson buttons call the API directly in `LessonCard` (src/LearningPanel.tsx:14).
-  - `SAVE_ERRORS` (src/RuntimeSettings.tsx:28-30) maps 8 refusal codes to text. They concern the Engine settings save; main.cjs returns only the Claude codes or `INVALID_SETTINGS` (main.cjs:722), and `INVALID_SETTINGS` has no entry, so a refused news save shows the raw `INVALID_SETTINGS` in the notice and the toast "Not saved: INVALID_SETTINGS" (src/RuntimeSettings.tsx:50) (inferred from the fallback chain `SAVE_ERRORS[...]??claudeGateMessage()??reply.message??reply.error`).
+  - `SAVE_ERRORS` (src/RuntimeSettings.tsx:28-30) maps 8 refusal codes to text. They concern the Engine settings save; main.cjs returns only the Claude codes or `INVALID_SETTINGS` (main.cjs:724), and `INVALID_SETTINGS` has no entry, so a refused news save shows the raw `INVALID_SETTINGS` in the notice and the toast "Not saved: INVALID_SETTINGS" (src/RuntimeSettings.tsx:50) (inferred from the fallback chain `SAVE_ERRORS[...]??claudeGateMessage()??reply.message??reply.error`).
 
 ## Journal
 
@@ -1250,7 +1251,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 - **Subscriptions**: none of its own (parent polls every 2 s, src/RuntimeSettings.tsx:42).
 - **Saved state**: draft keys (session memory only, src/useDraftState.ts:2): `journal:view` (open sub-tab, default 'Decisions'), `journal:filter` (default 'All'), `journal:selected` (selected review id), `history:accounts` (account scope, default 'account', shared with the Console) (src/JournalView.tsx:43). A saved view that no longer exists opens Decisions; the old name 'Reviewed lessons' maps to Lessons (src/journalTabs.ts:7).
 - **Notes**:
-  - Home's attention items can open a specific sub-tab: an item with `view` sets draft `journal:view` before navigating (src/Dashboard.tsx:31 "journal:view"). Items that do this: `stop-unreadable-<id>`, `plan-stop-<id>`, `restart-notice`, all with `view:'Orders and triggers'` (main.cjs:620, :623, :624).
+  - Home's attention items can open a specific sub-tab: an item with `view` sets draft `journal:view` before navigating (src/Dashboard.tsx:31 "journal:view"). Items that do this: `stop-unreadable-<id>`, `plan-stop-<id>`, `plan-trail-<id>`, `restart-notice`, all with `view:'Orders and triggers'` (main.cjs:620, :623, :625, :626).
   - Sidebar badge for Journal: `attention.counts.lessons` (src/main.tsx:135). See "Sidebar badges" at the end.
 
 ### Decisions (Journal sub-tab)
@@ -1380,7 +1381,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs line | Calls |
 |---|---|---|---|
-| `getOutcomeHistory(id)` (src/TradeOutcomes.tsx:17) | `runtime:outcome-history` (electron/preload.cjs:68) | main.cjs:738 | `automation.outcomes.history(id)` = `OutcomeLedger.history` (electron/outcome-ledger.cjs:91): up to 20 versions, newest first; throws `INVALID_REQUEST` for a non-string or an id over 200 characters |
+| `getOutcomeHistory(id)` (src/TradeOutcomes.tsx:17) | `runtime:outcome-history` (electron/preload.cjs:68) | main.cjs:740 | `automation.outcomes.history(id)` = `OutcomeLedger.history` (electron/outcome-ledger.cjs:91): up to 20 versions, newest first; throws `INVALID_REQUEST` for a non-string or an id over 200 characters |
 
 - **Subscriptions**: none; the list comes from `state.outcomes` (history fetch, see Shared loader). The versions load each time the disclosure is opened (src/TradeOutcomes.tsx:17).
 - **Saved state**: none. The source filter is renderer-only `useState` and resets when the sub-tab is left (src/TradeOutcomes.tsx:5).
@@ -1415,8 +1416,8 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs line | Calls |
 |---|---|---|---|
-| `reviewLesson(id,{action,expectedSignature,note,applicability,days})` (lessons with a lifecycle, src/LearningPanel.tsx:14) | `runtime:review-lesson` (electron/preload.cjs:70) | main.cjs:740 | `automation.syncLearning()`, then `automation.memory.review(id,value)` (electron/learning-memory.cjs:75) |
-| `approveLesson(id,approved)` (lessons without a lifecycle, src/LearningPanel.tsx:14) | `runtime:lesson` (electron/preload.cjs:71) | main.cjs:741 | `automation.approveLesson(id,approved)` (electron/automation.cjs:1999) |
+| `reviewLesson(id,{action,expectedSignature,note,applicability,days})` (lessons with a lifecycle, src/LearningPanel.tsx:14) | `runtime:review-lesson` (electron/preload.cjs:70) | main.cjs:742 | `automation.syncLearning()`, then `automation.memory.review(id,value)` (electron/learning-memory.cjs:75) |
+| `approveLesson(id,approved)` (lessons without a lifecycle, src/LearningPanel.tsx:14) | `runtime:lesson` (electron/preload.cjs:71) | main.cjs:743 | `automation.approveLesson(id,approved)` (electron/automation.cjs:1999) |
 
 - **Subscriptions**: none of its own; lessons, `learning`, `reflections`, `lessonTrials` arrive in the 2-second state (src/RuntimeSettings.tsx:42; electron/automation.cjs:346).
 - **Saved state**:
@@ -1425,7 +1426,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 - **Notes**:
   - Review-period default: 90 when the lesson has `approvedAt` or status `approved`; otherwise `lifecycle.reviewDays`, else 30 (src/LearningPanel.tsx:13).
   - Result messages (src/LearningPanel.tsx:14): ok "Saved."; `LESSON_CHANGED` "Trade evidence changed. Review the updated record before approving."; `OUTCOME_NOT_FINAL` "Wait until this order is final."; any other error "Could not save. Check the lesson text and review period."; a thrown call "Could not save lesson."
-  - Codes main.cjs can return for `runtime:review-lesson`: `LESSON_CHANGED`, `OUTCOME_NOT_FINAL`, `INVALID_LESSON_REVIEW`, `LESSON_NOT_FOUND`, else `LESSON_REVIEW_FAILED` (main.cjs:740). For `runtime:lesson`: `INVALID_REQUEST` (main.cjs:741).
+  - Codes main.cjs can return for `runtime:review-lesson`: `LESSON_CHANGED`, `OUTCOME_NOT_FINAL`, `INVALID_LESSON_REVIEW`, `LESSON_NOT_FOUND`, else `LESSON_REVIEW_FAILED` (main.cjs:742). For `runtime:lesson`: `INVALID_REQUEST` (main.cjs:743).
   - Engine rules for a review (electron/learning-memory.cjs:76-82): action must be `approve`, `retire` or `reopen`; note at most 2000 characters; applicability non-empty and at most 1000; days an integer 1 to 365; approving needs `assessment.eligible`; approving a procedural lesson needs a non-empty note. Status after: `approved`, `retired`, or `pending` (reopen), with change reasons "Approved for context; not a validated strategy.", "Retired by user", "Reopened for review" (electron/learning-memory.cjs:83-84).
   - `memory.list()` returns at most 100 lessons (electron/learning-memory.cjs:86).
   - The card's React key includes the signature, so a card is rebuilt when the evidence signature changes (src/LearningPanel.tsx:8).
@@ -1451,14 +1452,14 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs line | Calls |
 |---|---|---|---|
-| `lessonTrial('start',lessonId,{...form,signature,numbers})` (src/LessonTrials.tsx:10) | `runtime:lesson-trial` (electron/preload.cjs:69) | main.cjs:739 | `automation.syncLearning()`, then `automation.trials.start(id,value)` (electron/lesson-trials.cjs:7) |
-| `lessonTrial('stop',trialId)` (src/LessonTrials.tsx:10) | `runtime:lesson-trial` | main.cjs:739 | `automation.trials.stop(id)` (electron/lesson-trials.cjs:14) |
+| `lessonTrial('start',lessonId,{...form,signature,numbers})` (src/LessonTrials.tsx:10) | `runtime:lesson-trial` (electron/preload.cjs:69) | main.cjs:741 | `automation.syncLearning()`, then `automation.trials.start(id,value)` (electron/lesson-trials.cjs:7) |
+| `lessonTrial('stop',trialId)` (src/LessonTrials.tsx:10) | `runtime:lesson-trial` | main.cjs:741 | `automation.trials.stop(id)` (electron/lesson-trials.cjs:14) |
 
 - **Subscriptions**: none; experiments come from `state.lessonTrials` (src/LearningPanel.tsx:8).
 - **Saved state**: engine table `lesson_trials` (electron/lesson-trials.cjs:4, :6). The form is draft `trial:<lessonId>` (session memory only) (src/LessonTrials.tsx:8).
 - **Notes**:
   - Form defaults: rule `loss-exit`, threshold 10, activation 5, fee 0.1, sale levy 0, slippage 0.1, days 30, hypothesis empty (src/LessonTrials.tsx:8).
-  - Engine validation (electron/lesson-trials.cjs:9-11): `LESSON_CHANGED` when the lesson has no lifecycle, is not eligible, is retired or its signature differs; `INVALID_TRIAL` unless rule is `loss-exit` or `trailing-profit`, hypothesis is non-empty and at most 2000 characters, threshold is above 0 and at most 100, activation 0 to 100, each of the three cost percentages 0 to 10, and days an integer 1 to 365; `TRIAL_ACTIVE` when the lesson already has a collecting experiment. Stop: `TRIAL_NOT_FOUND` (electron/lesson-trials.cjs:14). main.cjs:739 also raises `LOCAL_EVALUATION_FAILED` and `INVALID_TRIAL` for an unknown action; which codes it passes back to the window is not determined (the handler line is longer than could be read).
+  - Engine validation (electron/lesson-trials.cjs:9-11): `LESSON_CHANGED` when the lesson has no lifecycle, is not eligible, is retired or its signature differs; `INVALID_TRIAL` unless rule is `loss-exit` or `trailing-profit`, hypothesis is non-empty and at most 2000 characters, threshold is above 0 and at most 100, activation 0 to 100, each of the three cost percentages 0 to 10, and days an integer 1 to 365; `TRIAL_ACTIVE` when the lesson already has a collecting experiment. Stop: `TRIAL_NOT_FOUND` (electron/lesson-trials.cjs:14). main.cjs:741 also raises `LOCAL_EVALUATION_FAILED` and `INVALID_TRIAL` for an unknown action; which codes it passes back to the window is not determined (the handler line is longer than could be read).
   - The error code is shown raw, with no code-to-text table (src/LessonTrials.tsx:10).
   - `list()` returns at most 200 experiments (electron/lesson-trials.cjs:5).
 
@@ -1542,11 +1543,11 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs line | Calls |
 |---|---|---|---|
-| `getEvents()` (called in `App`, src/main.tsx:129) | `events:get` (electron/preload.cjs:87) | main.cjs:838 | returns the in-memory `events` array, which is `store.getEvents()` after each append (main.cjs:106; electron/storage.cjs:36) |
-| `onEvents(cb)` (in `App`, src/main.tsx:128) | broadcast `events:changed` (electron/preload.cjs:105-109) | sent at main.cjs:107 and main.cjs:852 | the whole events array is sent to every window |
-| `getRuntime()` (src/AiConsole.tsx:59) | `runtime:get` | main.cjs:720 | `runtimeState()`; only `account` is read |
-| `exportJournal()` (src/AiConsole.tsx:67) | `events:export` (electron/preload.cjs:5) | main.cjs:839 | a save dialog titled 'Export interaction journal', default file name 'portfolio-journal.json', JSON filter; on a chosen path writes `{exportedAt, events, reviews: automation.getState().reviews, lessons: automation.getState().lessons}` as indented JSON |
-| `runDemo()` (declared only, src/main.tsx:38; no caller in src/) | `demo:run` (electron/preload.cjs:96) | main.cjs:840-855 | throws `TEST_ONLY` unless the environment variable `PORTFOLIO_SMOKE_DATA` is set; otherwise builds `domain.demoEvents(...)` from the synthetic state and appends one event every 400 ms, broadcasting `events:changed` after each; ignores a call while one is running |
+| `getEvents()` (called in `App`, src/main.tsx:129) | `events:get` (electron/preload.cjs:87) | main.cjs:840 | returns the in-memory `events` array, which is `store.getEvents()` after each append (main.cjs:106; electron/storage.cjs:36) |
+| `onEvents(cb)` (in `App`, src/main.tsx:128) | broadcast `events:changed` (electron/preload.cjs:105-109) | sent at main.cjs:107 and main.cjs:854 | the whole events array is sent to every window |
+| `getRuntime()` (src/AiConsole.tsx:59) | `runtime:get` | main.cjs:722 | `runtimeState()`; only `account` is read |
+| `exportJournal()` (src/AiConsole.tsx:67) | `events:export` (electron/preload.cjs:5) | main.cjs:841 | a save dialog titled 'Export interaction journal', default file name 'portfolio-journal.json', JSON filter; on a chosen path writes `{exportedAt, events, reviews: automation.getState().reviews, lessons: automation.getState().lessons}` as indented JSON |
+| `runDemo()` (declared only, src/main.tsx:38; no caller in src/) | `demo:run` (electron/preload.cjs:96) | main.cjs:842-857 | throws `TEST_ONLY` unless the environment variable `PORTFOLIO_SMOKE_DATA` is set; otherwise builds `domain.demoEvents(...)` from the synthetic state and appends one event every 400 ms, broadcasting `events:changed` after each; ignores a call while one is running |
 
 - **How events are appended and broadcast**: `interaction(runId,kind,title,body)` (main.cjs:101-108) does nothing while the app is closing; shortens a title over 500 characters and a body over 32000 characters, adding "… [shortened from `<n>` characters]"; adds the account key and label from `automation.accountTag()` when there is one; calls `store.appendEvent`; reloads `events` from the store; and sends `events:changed` with the full array to all windows. A storage error is swallowed and nothing is broadcast (main.cjs:106). `appendEvent` requires string `id`, `runId`, `timestamp`, `kind`, `title`, `body` of at most 32000 characters each, keeps optional `account` and `accountLabel` of at most 200 characters, inserts with `INSERT OR IGNORE`, and deletes all but the latest 600 rows (electron/storage.cjs:20-35). There is no renderer write API for events (electron/storage.cjs:21).
 - **Subscriptions**:
@@ -1555,7 +1556,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 - **Saved state**:
   - Events: the app database table `events`, latest 600 (electron/storage.cjs:31-32).
   - Drafts (session memory only): `console:query`, `console:filter` (default 'All'), `console:scroll` (default true), `console:run` (selected run), `history:accounts` (shared with the Journal) (src/AiConsole.tsx:58, :61). `console:focus` is a one-time value set by the Journal and removed when read (src/AiConsole.tsx:61; src/useDraftState.ts:8).
-  - The export writes a file the user picks (main.cjs:839).
+  - The export writes a file the user picks (main.cjs:841).
 - **Notes**:
   - **main.tsx `query`, `filter`, `scroll`**: `App` declares `query`, `filter`, `scroll` and a ref `end` (src/main.tsx:66-69), an effect that scrolls `end` into view (src/main.tsx:132) and a filtered list `shown` (src/main.tsx:133). None of them is passed to `AiConsole`, which receives only `events` (src/main.tsx:151) and keeps its own `query`, `filter`, `scroll`, `end` (src/AiConsole.tsx:61). `end` is not attached to any element in `App`'s JSX and `shown`, `setQuery`, `setFilter`, `setScroll` are not used there (src/main.tsx:135-152). They are leftovers with no effect on screen.
   - Run outcome and tone (`summarize`, src/AiConsole.tsx:12-24). Outcome, first match:
@@ -1575,7 +1576,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   - Run trigger: the title of the first `Program` event, else the first event's title (src/AiConsole.tsx:23). Model: the first word of the body of the "Model used" event (src/AiConsole.tsx:15, :23). Tokens: input plus output tokens from the "Review completed"/"Replay finished" body (src/AiConsole.tsx:15, :23).
   - The account filter leaves out events saved before accounts were recorded; they show only under "All accounts" (src/AccountScope.tsx:1-2; src/AiConsole.tsx:60).
   - Auto-scroll uses `scrollIntoView({block:'nearest'})` (src/AiConsole.tsx:65).
-  - The export includes `reviews` for the connected account only (`getState().reviews`, electron/automation.cjs:346 `reviewHistory(50)`) and all listed lessons; it does not apply the search, type or account filters of the screen (main.cjs:839).
+  - The export includes `reviews` for the connected account only (`getState().reviews`, electron/automation.cjs:346 `reviewHistory(50)`) and all listed lessons; it does not apply the search, type or account filters of the screen (main.cjs:841).
   - Home attention items that open this tab ("See details"): `review-backoff`, `provider-wait-<vendor>`, `review-error` (main.cjs:614, :616, :617).
 
 ## Discover
@@ -1743,17 +1744,17 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs line | Calls |
 |---|---|---|---|
-| `refreshNews()` (src/RuntimeSettings.tsx:48) | `runtime:news` (electron/preload.cjs:33) | main.cjs:737 | `refreshNews()` (main.cjs:109-124), then returns `runtimeState()` |
-| `openNews(url)` (src/NewsView.tsx:16) | `runtime:open-news` (electron/preload.cjs:72) | main.cjs:743 | `shell.openExternal(url)` only when the URL is a string found in `automation.news` or in `automation.newsEvents.list(300)`; otherwise nothing |
-| `getSuggestedFeeds()` (src/NewsSources.tsx:9) | `news:suggested` (electron/preload.cjs:53) | main.cjs:742 | returns `SUGGESTED_FEEDS` from electron/news.cjs:29-35 |
-| `configureRuntime({newsURL,newsTrigger})` (src/RuntimeSettings.tsx:49) | `runtime:configure` (electron/preload.cjs:25) | main.cjs:722 | `automation.configure(value)` |
-| `configureRuntime({newsFeeds})`, `({kisNews})`, `({usTickerNews})` (src/NewsSources.tsx:10-11, :19-20) | `runtime:configure` | main.cjs:722 | `automation.configure(value)` |
-| `getRuntime()`, `getRuntimeHistory()` | `runtime:get`, `runtime:history` | main.cjs:720-721 | see Shared loader |
+| `refreshNews()` (src/RuntimeSettings.tsx:48) | `runtime:news` (electron/preload.cjs:33) | main.cjs:739 | `refreshNews()` (main.cjs:109-124), then returns `runtimeState()` |
+| `openNews(url)` (src/NewsView.tsx:16) | `runtime:open-news` (electron/preload.cjs:72) | main.cjs:745 | `shell.openExternal(url)` only when the URL is a string found in `automation.news` or in `automation.newsEvents.list(300)`; otherwise nothing |
+| `getSuggestedFeeds()` (src/NewsSources.tsx:9) | `news:suggested` (electron/preload.cjs:53) | main.cjs:744 | returns `SUGGESTED_FEEDS` from electron/news.cjs:29-35 |
+| `configureRuntime({newsURL,newsTrigger})` (src/RuntimeSettings.tsx:49) | `runtime:configure` (electron/preload.cjs:25) | main.cjs:724 | `automation.configure(value)` |
+| `configureRuntime({newsFeeds})`, `({kisNews})`, `({usTickerNews})` (src/NewsSources.tsx:10-11, :19-20) | `runtime:configure` | main.cjs:724 | `automation.configure(value)` |
+| `getRuntime()`, `getRuntimeHistory()` | `runtime:get`, `runtime:history` | main.cjs:722-723 | see Shared loader |
 
 - **What a refresh does** (main.cjs:109-124): skips when a refresh is already running; gathers sources: every URL in `config.newsFeeds` plus `config.newsURL` (duplicates removed) through `news.fetchFeed`; when `usTickerNews` is on, a Yahoo Finance headline feed for up to 5 U.S. symbols taken from U.S. holdings and the U.S. watchlist (`news.yahooFeed`, electron/news.cjs:37); when `kisNews` is on and KIS is connected and idle, the KIS `news` request; when DART is connected, the provider `disclosures` request. Feeds and ticker feeds are skipped when `PORTFOLIO_SMOKE_DATA` is set. Names of failed sources go to `automation.newsSourceErrors`. Unless every source failed, `automation.news` becomes the items de-duplicated by URL, newest first, at most 200, `newsUpdatedAt` is set, and the items are ingested into `automation.newsEvents` with the relevant securities. `automation.newsError` is `'NEWS_REFRESH_FAILED'` when all sources failed or on an exception, else null.
 - **Subscriptions**: the parent's 2-second `getRuntime()` poll plus the history fetch (see Shared loader). Main process timer: inside the main tick, a refresh starts when the last one is older than 300000 ms (scheduled reviews enabled and news trigger not `off`) or 1800000 ms otherwise, and at least one of `newsURL`, a non-empty `newsFeeds`, `kisNews` or a DART connection exists (main.cjs:242). The period of that tick is not determined here.
 - **Saved state**:
-  - `newsURL`, `newsTrigger`, `newsFeeds`, `kisNews`, `usTickerNews` are fields of the automation config, written through `automation.configure` (main.cjs:722; electron/automation.cjs:15, :177, :183, :202).
+  - `newsURL`, `newsTrigger`, `newsFeeds`, `kisNews`, `usTickerNews` are fields of the automation config, written through `automation.configure` (main.cjs:724; electron/automation.cjs:15, :177, :183, :202).
   - The draft of `newsURL` and `newsTrigger` lives under draft key `runtime:news:config` with `runtime:news:dirty` (session memory only) until "Save news settings" (src/RuntimeSettings.tsx:38, :58).
   - `NewsSources` keeps `feeds`, `kis`, `us` in `useState`, initialised from the config when the component mounts; they are not re-read from later polls (src/NewsSources.tsx:7-8).
   - The headline filter, source select and "Only my symbols" are renderer-only `useState` (src/NewsView.tsx:7).
@@ -1769,7 +1770,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 ## Sidebar badges for Journal and News
 
-- `App` calls `useAttention()` (src/main.tsx:42), which calls `getAttention()` on mount and every 5000 ms (src/Dashboard.tsx:11-13) -> channel `workspace:attention` (electron/preload.cjs:18) -> main.cjs:628 `attentionState()` (main.cjs:602-627), returning `{items,counts}` with `counts={approvals:{'KIS trading':n,'U.S. stocks':n},lessons,news}` (main.cjs:603).
+- `App` calls `useAttention()` (src/main.tsx:42), which calls `getAttention()` on mount and every 5000 ms (src/Dashboard.tsx:11-13) -> channel `workspace:attention` (electron/preload.cjs:18) -> main.cjs:630 `attentionState()` (main.cjs:602-629), returning `{items,counts}` with `counts={approvals:{'KIS trading':n,'U.S. stocks':n},lessons,news}` (main.cjs:603).
 - Badge value per sidebar row (src/main.tsx:135): Journal = `attention.counts.lessons`; News = `attention.counts.news`; every other tab = `attention.counts.approvals[name]`. A zero or missing value shows no badge.
 - `counts.lessons` = `automation.memory.summary().pending` (main.cjs:609): lifecycle records with status `pending` or `needs-review` (electron/learning-memory.cjs:87). The same step adds the Home item "Optional: `<n>` learning note(s) to look at" with action "Open Journal" (main.cjs:609).
 - `counts.news` = the number of news events (from the latest 100) with importance `high`, at least one matched symbol, and first seen within the last 86400000 ms (main.cjs:619). The same step adds the Home item "`<n>` important disclosure(s) about your stocks today" with action "Read" (main.cjs:619).
@@ -1862,7 +1863,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 ### External agent bridge card (`src/Connections.tsx:85-88`)
 
-- "External agent bridge", "MCP stdio bridge · paper snapshots and risk-checked proposals only". Disclosure "Setup command": "No KIS credentials, live-account data or live-order tools are exposed. Select “External agent bridge” as the decision provider in Engine settings." and the command `node "<bridgeScript>" "<bridgePipe>"` built from the runtime state (`runtimeState()` fields `bridgeScript`, `bridgePipe`, main.cjs:690).
+- "External agent bridge", "MCP stdio bridge · paper snapshots and risk-checked proposals only". Disclosure "Setup command": "No KIS credentials, live-account data or live-order tools are exposed. Select “External agent bridge” as the decision provider in Engine settings." and the command `node "<bridgeScript>" "<bridgePipe>"` built from the runtime state (`runtimeState()` fields `bridgeScript`, `bridgePipe`, main.cjs:692).
 
 ### Closing note
 
@@ -1878,7 +1879,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   - Disclosure "Release notes" (when the release has notes; HTML tags stripped, at most 2000 characters, `electron/app-updates.cjs` `summary`).
   - Checkbox "Check for updates every 6 hours" (aria-label "Check for updates automatically"): saves at once.
   - Note "Updates are checksum-verified. Installing restarts the app once trading is idle."
-- **Blocked reasons** (`BLOCKED`, `src/AppUpdates.tsx:5`; produced by `canInstall`, main.cjs:638): `AUTO_TRADING_ARMED` "Stop auto trading first; updating restarts the app." (scheduled reviews on and the session armed); `REVIEW_RUNNING` "An AI review is running; try again when it finishes."; `ORDERS_OPEN` "Wait until open broker orders are filled, canceled or reconciled." (any Korea or U.S. order in `Submitting`, `Uncertain`, `Accepted` or `Partially filled`). Unknown: "Installing is blocked right now."
+- **Blocked reasons** (`BLOCKED`, `src/AppUpdates.tsx:5`; produced by `canInstall`, main.cjs:640): `AUTO_TRADING_ARMED` "Stop auto trading first; updating restarts the app." (scheduled reviews on and the session armed); `REVIEW_RUNNING` "An AI review is running; try again when it finishes."; `ORDERS_OPEN` "Wait until open broker orders are filled, canceled or reconciled." (any Korea or U.S. order in `Submitting`, `Uncertain`, `Accepted` or `Partially filled`). Unknown: "Installing is blocked right now."
 - **Error texts** (`ERRORS`, `:6`; codes from `publicError`, `electron/app-updates.cjs`): `NETWORK_UNAVAILABLE` "Could not reach GitHub. Check the connection."; `RELEASE_NOT_FOUND` "No published release was found for this app yet."; `CHECKSUM_MISMATCH` "The download did not match its published checksum and was discarded."; `SIGNATURE_INVALID` "The download signature did not verify and was discarded."; `UPDATE_FAILED` "The update could not be completed." Other refusals: "The request could not be completed."; exception: "Could not reach the engine."
 
 ### Calls and channels
@@ -1897,7 +1898,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 | `configureRuntime(patch)` | `runtime:configure` | `'runtime:configure'` | `automation.configure` |
 | `getSecContact` / `setSecContact` / `testSec` | `sec:get` / `sec:set` / `sec:test` | `'sec:get'` etc. (≈698-703) | `secState()`; `store.setSetting('sec-contact-email', …)`; `providerService.request('sec-company',{symbol:'NASD:AAPL',…})` |
 | `getUpdates` / `checkForUpdates` / `downloadUpdate` / `installUpdate` / `saveUpdateSettings` | `update:get` / `update:check` / `update:download` / `update:install` / `update:settings` | `'update:get'` etc. (≈642-646) | `AppUpdates.view` / `check` / `download` / `install` / `saveSettings` (`electron/app-updates.cjs`) |
-| `onUpdates` | broadcast `update:changed` | sent from `onChange` (main.cjs:639) | every updater event |
+| `onUpdates` | broadcast `update:changed` | sent from `onChange` (main.cjs:641) | every updater event |
 
 ### Subscriptions
 
@@ -1910,7 +1911,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 - **Remembered file locations**: `settings` rows `connection-file:kis`, `connection-file:providers`, `connection-file:calendar`, holding the absolute path only (`electron/remembered-files.cjs` `key`, `remember`). Written after a successful import (main.cjs:80, :92, :97). Deleted by Forget. A new import first forgets the old path.
 - Keys are held by the worker services (`kisService`, `providerService`, `calendarService`) that were asked to `import` the file; the on-screen note states they are not copied into the database (`src/Connections.tsx:90`). What the workers keep in memory: not determined (worker files not read; credential files never opened).
-- Importing a provider file with an AI key sets the automation config `provider` to `openai` (`connectProviderFile`, main.cjs:80); not on the automatic restore at start (`selectProvider=false`, main.cjs:858).
+- Importing a provider file with an AI key sets the automation config `provider` to `openai` (`connectProviderFile`, main.cjs:80); not on the automatic restore at start (`selectProvider=false`, main.cjs:860).
 - Sharing switches and daily limits: automation config (see section 3).
 - SEC contact email: setting `sec-contact-email` (main.cjs `'sec:set'`).
 - Update preference: table `app_update_settings`, one JSON row (`electron/app-updates.cjs` `saveSettings`).
@@ -1943,23 +1944,23 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | Engine method |
 |---|---|---|---|
-| `getRuntime()` (src/RuntimeSettings.tsx:42) | `runtime:get` (electron/preload.cjs:24) | electron/main.cjs:720 | `runtimeState()` (main.cjs helper; wraps `automation.getState()`: inferred from the name, its body was not read) |
-| `getRuntimeHistory()` (journal/news only, src/RuntimeSettings.tsx:42) | `runtime:history` (preload.cjs:29) | electron/main.cjs:721 | `historyOf(automation.getState())` |
-| `configureRuntime(value)` (src/RuntimeSettings.tsx:49) | `runtime:configure` (preload.cjs:25) | electron/main.cjs:722 | `automation.configure(value)` (electron/automation.cjs:172) |
-| `reviewRuntime()` (src/RuntimeSettings.tsx:49, kind `review`) | `runtime:review` (preload.cjs:26) | electron/main.cjs:729 | `automation.review()` (electron/automation.cjs:695) |
-| `importProviders()` (kind `import`; no caller inside EngineSettings) | `runtime:providers` (preload.cjs:32) | electron/main.cjs:730 | not read (belongs to Connections) |
-| `refreshNews()` (news mode) | `runtime:news` (preload.cjs:33) | electron/main.cjs:737 | `refreshNews()` in main.cjs |
-| `approveLesson(id,approved)` (journal mode) | `runtime:lesson` (preload.cjs:71) | electron/main.cjs:741 | `automation.approveLesson(id,approved)` |
+| `getRuntime()` (src/RuntimeSettings.tsx:42) | `runtime:get` (electron/preload.cjs:24) | electron/main.cjs:722 | `runtimeState()` (main.cjs helper; wraps `automation.getState()`: inferred from the name, its body was not read) |
+| `getRuntimeHistory()` (journal/news only, src/RuntimeSettings.tsx:42) | `runtime:history` (preload.cjs:29) | electron/main.cjs:723 | `historyOf(automation.getState())` |
+| `configureRuntime(value)` (src/RuntimeSettings.tsx:49) | `runtime:configure` (preload.cjs:25) | electron/main.cjs:724 | `automation.configure(value)` (electron/automation.cjs:172) |
+| `reviewRuntime()` (src/RuntimeSettings.tsx:49, kind `review`) | `runtime:review` (preload.cjs:26) | electron/main.cjs:731 | `automation.review()` (electron/automation.cjs:695) |
+| `importProviders()` (kind `import`; no caller inside EngineSettings) | `runtime:providers` (preload.cjs:32) | electron/main.cjs:732 | not read (belongs to Connections) |
+| `refreshNews()` (news mode) | `runtime:news` (preload.cjs:33) | electron/main.cjs:739 | `refreshNews()` in main.cjs |
+| `approveLesson(id,approved)` (journal mode) | `runtime:lesson` (preload.cjs:71) | electron/main.cjs:743 | `automation.approveLesson(id,approved)` |
 
 - **What a save sends** (src/RuntimeSettings.tsx:49): in settings and journal mode the value is only the keys in the `changed` set (each with the draft's value), plus `enabled: config.enabled` always, plus `claudeTradingConfirmed:true` only after the Claude confirmation. In news mode it is `{newsURL,newsTrigger}` only.
-- **What the handler returns** (electron/main.cjs:722): `{ok:true,state}` on success. On a throw: `{ok:false,error}` where `error` is the engine's own code only for `CLAUDE_NOT_ENABLED_FOR_TRADING`, `CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)`, `CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)` and `CLAUDE_MODEL_NOT_FOR_TRADING`; every other failure becomes `INVALID_SETTINGS`. No `state` is returned on failure.
+- **What the handler returns** (electron/main.cjs:724): `{ok:true,state}` on success. On a throw: `{ok:false,error}` where `error` is the engine's own code only for `CLAUDE_NOT_ENABLED_FOR_TRADING`, `CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)`, `CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)` and `CLAUDE_MODEL_NOT_FOR_TRADING`; every other failure becomes `INVALID_SETTINGS`. No `state` is returned on failure.
 - **Subscriptions**: its own `setInterval(refresh,2000)` on `getRuntime` (src/RuntimeSettings.tsx:42). It does not use `subscribeRuntime`. While the draft is dirty, a refresh does not overwrite the draft (`dirty.current?current:value.config`, :42).
 - **Saved state**: the automation config, saved by `automation.configure` into the table `automation_settings` row 1 as JSON (electron/automation.cjs:171 `saveConfig`, :212). The draft, the dirty flag and the changed-key set are session memory only (src/useDraftState.ts:2 "Session memory only: navigation retains drafts; reload/exit discards them").
 - **Notes**:
   - The save error table is `SAVE_ERRORS` (src/RuntimeSettings.tsx:28-30), listed in full under "Error-code-to-text tables" below.
   - A save in settings mode sends only the keys changed (src/RuntimeSettings.tsx:49). A save never arms the session: only Start auto trading does (audit item 15, 1.5.69). Turning "Scheduled reviews" off disarms it; turning it on saves the switch, and the schedule runs from the next Start. After an app start `sessionArmed` is false (electron/automation.cjs:123 "this.sessionArmed=false"). Until 1.5.69 every save carried the saved `enabled` and re-armed a session paused after a restart.
-  - A value the engine refuses for range or type reasons comes back as `INVALID_SETTINGS` (electron/main.cjs:722). `SAVE_ERRORS` has no entry for it, so the notice shows the raw code "INVALID_SETTINGS" and the toast "Not saved: INVALID_SETTINGS" (src/RuntimeSettings.tsx:50; inferred from the fallback chain `reply.message??reply.error`).
-  - `SAVE_ERRORS` has an `INVALID_MODEL_SETTINGS` text, but the handler at electron/main.cjs:722 does not pass that code through (it maps it to `INVALID_SETTINGS`), so that text cannot appear from a save (inferred from the handler's allow-list).
+  - A value the engine refuses for range or type reasons comes back as `INVALID_SETTINGS` (electron/main.cjs:724). `SAVE_ERRORS` has no entry for it, so the notice shows the raw code "INVALID_SETTINGS" and the toast "Not saved: INVALID_SETTINGS" (src/RuntimeSettings.tsx:50; inferred from the fallback chain `reply.message??reply.error`).
+  - `SAVE_ERRORS` has an `INVALID_MODEL_SETTINGS` text, but the handler at electron/main.cjs:724 does not pass that code through (it maps it to `INVALID_SETTINGS`), so that text cannot appear from a save (inferred from the handler's allow-list).
   - Unknown keys are refused: any key not in `DEFAULTS` (other than `claudeTradingConfirmed`) throws `INVALID_SETTINGS`; keys in `LEGACY_SETTINGS` are silently dropped (electron/automation.cjs:173-175, :20).
   - Narrow window: the unsaved bar is fixed at the bottom right, width `min(520px, 100vw - 240px)` (src/polish.css:247). Under 760px each row stacks its text above its control and selects take the full width (src/polish.css:245).
 
@@ -1971,7 +1972,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 - **Controls**:
   - Tab buttons (`role="tab"`): switch the sub-tab; the choice is kept for the session under draft key `engine:tab`, default "Trading" (src/EngineSettings.tsx:29).
   - "Run portfolio review" (primary; reads "Reviewing…" while `state.busy`): calls `onReview` → `action('review')` → `reviewRuntime()`. Disabled when `busy`, `state.busy` or the draft is dirty. Tooltip: "Save or discard your changes before reviewing" when dirty, else "Run one review now with the saved settings" (src/EngineSettings.tsx:32).
-- **Calls and channels**: `reviewRuntime()` → `runtime:review` → electron/main.cjs:729 → `automation.review()` (electron/automation.cjs:695, default trigger 'User request'). On failure the handler returns `{ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.'}` (electron/main.cjs:729). The notice shows `reply.message` first, then the code (src/RuntimeSettings.tsx:50). On success the notice reads "Completed." (:50).
+- **Calls and channels**: `reviewRuntime()` → `runtime:review` → electron/main.cjs:731 → `automation.review()` (electron/automation.cjs:695, default trigger 'User request'). On failure the handler returns `{ok:false,error:automation.lastError??'REVIEW_FAILED',message:automation.lastErrorDetail??'Review failed.'}` (electron/main.cjs:731). The notice shows `reply.message` first, then the code (src/RuntimeSettings.tsx:50). On success the notice reads "Completed." (:50).
 - **Subscriptions**: none of its own; it gets `state` from the parent's 2-second poll (src/RuntimeSettings.tsx:42).
 - **Saved state**: the open tab, session memory only (`useDraftState('engine:tab')`, src/EngineSettings.tsx:29; src/useDraftState.ts:2).
 - **Notes**: the tab strip is sticky at the top (src/polish.css:178 `.settings-jump{position:sticky`). The settings column is at most 860px wide (src/polish.css:173).
@@ -1990,7 +1991,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
      - "Risk per trade", hint "Largest loss at the stop, as a share of equity. Sets the AI's position-size ceiling." (:88).
      - "Stop distance", hint "Multiple of the daily average true range (ATR)." (:89).
      - "Data sharing", hint "Per provider, in Connections · OpenAI on/off, Anthropic on/off" (built from `shareKisWithOpenAI` and `shareKisWithAnthropic`), with the link button "Open Connections" (:91).
-     - "Start with Windows", hint by state: the `reason` when not available ("Available in the installed app." electron/login-item.cjs:31, or "Windows did not answer. Try again later." :13), else the `note` ("Set for all users of this PC; turn it off in Windows Startup apps." :20, "Turned off in Windows Startup apps." :21), else "Opens the app when you sign in to Windows. After a restart at night it opens only once you sign in. It starts paused." An `error` is appended ("Windows did not accept the change." electron/login-item.cjs:48, "Invalid request." electron/main.cjs:632) (src/EngineSettings.tsx:269-270).
+     - "Start with Windows", hint by state: the `reason` when not available ("Available in the installed app." electron/login-item.cjs:31, or "Windows did not answer. Try again later." :13), else the `note` ("Set for all users of this PC; turn it off in Windows Startup apps." :20, "Turned off in Windows Startup apps." :21), else "Opens the app when you sign in to Windows. After a restart at night it opens only once you sign in. It starts paused." An `error` is appended ("Windows did not accept the change." electron/login-item.cjs:48, "Invalid request." electron/main.cjs:634) (src/EngineSettings.tsx:269-270).
   3. Card "Extended hours", hint "Trade outside regular sessions. Each session has its own switch; all start off.", badge "On" when any of the four session switches is on, else "Off" (src/EngineSettings.tsx:230-231). When the account is not live: notice "The connected account is a mock account, which accepts no extended-session orders. These switches take effect on a live account." (:232; `live` is `state.accountEnvironment==='live'`, :94). Rows:
      - "Korea · Nextrade (NXT)", hint "Pre-market 08:00–08:50 and after-market 15:30–20:00 KST, limit orders on NXT" (:233).
      - "U.S. · KIS daytime session", hint "During Korean daytime (09:00–17:00 KST in summer), limit orders only" (:234).
@@ -2040,9 +2041,9 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | Engine method |
 |---|---|---|---|
-| `getLoginItem()` (src/EngineSettings.tsx:267) | `system:login-item` (electron/preload.cjs:18) | electron/main.cjs:631 | `loginItem.get()` (electron/login-item.cjs:29) |
-| `setLoginItem(on)` (src/EngineSettings.tsx:268) | `system:set-login-item` (preload.cjs:18) | electron/main.cjs:632 | `loginItem.set(on)` (electron/login-item.cjs:37) |
-| everything else on this tab | saved through `configureRuntime` | electron/main.cjs:722 | `automation.configure` |
+| `getLoginItem()` (src/EngineSettings.tsx:267) | `system:login-item` (electron/preload.cjs:18) | electron/main.cjs:633 | `loginItem.get()` (electron/login-item.cjs:29) |
+| `setLoginItem(on)` (src/EngineSettings.tsx:268) | `system:set-login-item` (preload.cjs:18) | electron/main.cjs:634 | `loginItem.set(on)` (electron/login-item.cjs:37) |
+| everything else on this tab | saved through `configureRuntime` | electron/main.cjs:724 | `automation.configure` |
 
 - **Subscriptions**: `StartWithWindows` reads Windows' state once on mount (src/EngineSettings.tsx:267). No timers.
 - **Saved state**: automation config keys as listed in "Settings rows". "Start with Windows" is Windows' own login item, not a saved engine setting; it is read from Windows every time and can be set only by the installed (packaged) app (electron/login-item.cjs:2-6, :31, :40). Turning trailing stops off or on has side effects in `configure`: armed trailing stops stay armed as fixed stops and a console line "Trailing stops paused" is logged; switching on resumes from the next quotes (electron/automation.cjs:204-209).
@@ -2070,7 +2071,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   - Switch "Scheduled market narrative" → `narrativeEnabled` (:156). Switch "Post-trade reflection" → `reflectionEnabled` (:163).
   - `Limit` "Reflection calls per day": number 1–200 and "No limit" switch → `reflectionCallsPerDay`, `reflectionUnlimitedCalls` (:165). `Limit` "Daily reflection budget (USD)": money field (currency USD) 0.01–100 step 0.01 and "No limit" switch → `reflectionUSDPerDay`, `reflectionUnlimitedBudget` (:166).
   - Disclosure "Recent API calls" (:172).
-- **Calls and channels**: none of its own; all values are saved by `configureRuntime` (electron/main.cjs:722 → `automation.configure`). Model checks run in electron/ai-models.cjs `settings` (:30) and `assertTradingModel` (:28), electron/agent-models.cjs `validate` (:31), and electron/automation.cjs `claudeTradingRefusal` (:990).
+- **Calls and channels**: none of its own; all values are saved by `configureRuntime` (electron/main.cjs:724 → `automation.configure`). Model checks run in electron/ai-models.cjs `settings` (:30) and `assertTradingModel` (:28), electron/agent-models.cjs `validate` (:31), and electron/automation.cjs `claudeTradingRefusal` (:990).
 - **Subscriptions**: none of its own.
 - **Saved state**: automation config keys `openaiModel`, `reasoningEffort`, the eight agent keys, `narrativeEnabled`, `reflectionEnabled`, `reflectionCallsPerDay`, `reflectionUSDPerDay`, `reflectionUnlimitedCalls`, `reflectionUnlimitedBudget`. The provider limits shown on "Daily AI budget" (`maxCallsPerDay`, `maxUSDPerDay`, `unlimitedCalls`, `unlimitedBudget`, `anthropicCallsPerDay`, `anthropicUSDPerDay`, `anthropicUnlimitedCalls`, `anthropicUnlimitedBudget`) are read-only here and are set in Connections (src/EngineSettings.tsx:168-171).
 - **Notes**:
@@ -2092,7 +2093,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   7. "Context compacting uses <Claude model name>." or "Context compacting still uses OpenAI (<model name>)." (:20).
   8. "The first review waits for you: run it from Home. Automatic reviews start after it completes." (:21).
 - **Controls**: "Trade with Claude" (primary): closes the dialog, sets `confirmed.current=true` and saves; the save then carries `claudeTradingConfirmed:true` (src/ClaudeConfirm.tsx:10; src/RuntimeSettings.tsx:49, :62). "Cancel": closes the dialog; nothing is saved and the draft stays (src/RuntimeSettings.tsx:62). Both disabled while `busy`. The flag is cleared after every action (`confirmed.current=false`, src/RuntimeSettings.tsx:51).
-- **Calls and channels**: `configureRuntime` → `runtime:configure` → electron/main.cjs:722 → `automation.configure` (electron/automation.cjs:172).
+- **Calls and channels**: `configureRuntime` → `runtime:configure` → electron/main.cjs:724 → `automation.configure` (electron/automation.cjs:172).
 - **Subscriptions**: none.
 - **Saved state**: `claudeTradingConfirmed` is never stored: it is deleted before the config is saved (electron/automation.cjs:174, :196). On a switch to Claude the engine sets the first-review state to `pending` in table `claude_trading_state`; switching back to another vendor clears it (electron/automation.cjs:215, :989).
 - **Notes** (the engine's order of checks for a Claude trading model, electron/automation.cjs:187-196, :990-1000; electron/ai-models.cjs:24-28):
@@ -2101,7 +2102,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   3. `claudeTradingDryRun()` (electron/automation.cjs:976-979): the completed Claude dry run counts when its instructions fingerprint equals the current single-order or several-orders fingerprint; or, for a record with only an app version, when that version is at least 1.5.60; or, for an older record, when it was made at or after `CLAUDE_FORMS_SINCE` and recorded its answer form.
   4. Then the per-agent check `CLAUDE_DRY_RUN_REQUIRED:<agent>` (electron/agent-models.cjs:44; agents are checked in the order scout, narrative, compacting, reflection, :12).
   - The UI side: the option is disabled while the gate is closed (src/EngineSettings.tsx:149); the dialog opens only when the draft model is Claude and the saved one is not (src/RuntimeSettings.tsx:61). `state.claudeTrading` = `{enabled, dryRunReady, firstReview}` comes from electron/automation.cjs:346.
-  - The handler passes the code only; the engine's own text (`error.text`, which for `CLAUDE_TRADING_LIMITS` carries the numbers) is not sent to the window by `runtime:configure` (electron/main.cjs:722; electron/automation.cjs:998). The window shows the `SAVE_ERRORS` text.
+  - The handler passes the code only; the engine's own text (`error.text`, which for `CLAUDE_TRADING_LIMITS` carries the numbers) is not sent to the window by `runtime:configure` (electron/main.cjs:724; electron/automation.cjs:998). The window shows the `SAVE_ERRORS` text.
 
 ### Sub-tab "Schedule and triggers"
 
@@ -2143,7 +2144,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   - Switch "Review after an order update" → `orderUpdateReviews` (:185).
   - Switches "Scheduled scout runs" → `scoutEnabled`; "Reviews can request a scout run" → `scoutAiRequests`; slot switches → `scoutBeforeKrOpen`, `scoutAfterKrOpen`, `scoutKrMidday`, `scoutBeforeUsOpen` (:188-191). Number "Minutes after the Korean open" min 10 max 240 "min" → `scoutAfterOpenMinutes` (:193).
   - Switch "Skip unchanged reviews" → `skipUnchanged` (src/TokenSaving.tsx:10). Select aria-label "Review gate": "Observe only" (`observe`), "On" (`on`), "Off" (`off`) → `reviewGate` (:11). Select aria-label "Research suppression": "Off", "On" → `researchSuppression` (:12). Select aria-label "Routine review scope": "Full" (`full`), "Focused on changes" (`focused`) → `routineReviews` (:15). Number "Maximum skip minutes" min 15 max 720 "min" → `maxSkipMinutes` (:16). Switch "Slow down near the budget" → `degradeNearBudget` (:17).
-- **Calls and channels**: none of its own; saved by `configureRuntime` (electron/main.cjs:722). Validation: electron/automation.cjs:177 (interval, tolerance), :182 (gate, routine scope, suppression, watchlist, trial, not-held, wider move), :197 (closed-market choice, skip, slow-down, max skip), :198 and electron/scout-timing.cjs:43-46 (scout).
+- **Calls and channels**: none of its own; saved by `configureRuntime` (electron/main.cjs:724). Validation: electron/automation.cjs:177 (interval, tolerance), :182 (gate, routine scope, suppression, watchlist, trial, not-held, wider move), :197 (closed-market choice, skip, slow-down, max skip), :198 and electron/scout-timing.cjs:43-46 (scout).
 - **Subscriptions**: none of its own.
 - **Saved state**: automation config keys listed in "Settings rows". Changing `alertTrial` in `configure` starts or ends the trial and writes a console line ("Watchlist alert trial started" / "Watchlist alert trial stopped") (electron/automation.cjs:210-211).
 - **Notes**:
@@ -2173,9 +2174,9 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | Engine method |
 |---|---|---|---|
-| `previewDigest()` | `runtime:digest-preview` (electron/preload.cjs:35) | electron/main.cjs:723 | `require('./daily-digest.cjs').buildDigest(automation)` (electron/daily-digest.cjs:11; "No AI or broker calls", :2) |
+| `previewDigest()` | `runtime:digest-preview` (electron/preload.cjs:35) | electron/main.cjs:725 | `require('./daily-digest.cjs').buildDigest(automation)` (electron/daily-digest.cjs:11; "No AI or broker calls", :2) |
 | `testPhoneSnapshot()` | `phone:test` (preload.cjs:36) | electron/main.cjs:554 | returns `PHONE_ALERTS_OFF` when the saved `mobileAlerts` is off, `NO_WEBHOOK` when no webhook; else `notifier.post(phone.testSnapshot({figures:figures()}))` (electron/phone-snapshot.cjs:54, title "Test snapshot", description "Snapshots will look like this after each buy or sell.") |
-| `resetReviewWatches()` | `runtime:reset-watches` (preload.cjs:34) | electron/main.cjs:724 | `automation.revision++`, `automation.watches.reset(automation.watchScope())`, returns `runtimeState()` |
+| `resetReviewWatches()` | `runtime:reset-watches` (preload.cjs:34) | electron/main.cjs:726 | `automation.revision++`, `automation.watches.reset(automation.watchScope())`, returns `runtimeState()` |
 
 - **Subscriptions**: none of its own.
 - **Saved state**: automation config keys `desktopAlerts`, `mobileAlerts`, `phoneSnapshots`, `phoneAmounts`, `digestEnabled`, `digestHour`. The preview text and the phone note are renderer-only state (src/EngineSettings.tsx:203). The watch reset changes the engine's watch store for the current watch scope (`scope:identity`, electron/automation.cjs:156).
@@ -2205,7 +2206,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 - **Component files**: src/useDraftState.ts: `setDraft` (:6), `takeDraft` (:8), `useDraftState` (:9), `useDraftRef` (:14). src/runtimeFeed.ts: `subscribeRuntime` (:14), `refreshRuntime` (:20), `needsHistory` (:23).
 - **What it shows**: nothing (helpers).
 - **Controls**: none.
-- **Calls and channels**: `subscribeRuntime` calls `getRuntime()` → `runtime:get` → electron/main.cjs:720 (src/runtimeFeed.ts:10).
+- **Calls and channels**: `subscribeRuntime` calls `getRuntime()` → `runtime:get` → electron/main.cjs:722 (src/runtimeFeed.ts:10).
 - **Subscriptions**: `subscribeRuntime` runs one shared 2000 ms interval; the first subscriber starts it and the last one stops it; a failed request passes the last good state with `failed=true` (src/runtimeFeed.ts:2-5, :14-18). `RuntimeSettings` does not use it; it has its own 2-second timer (src/RuntimeSettings.tsx:42).
 - **Saved state**: two module-level `Map`s, `values` and `refs` (src/useDraftState.ts:3-4): "Session memory only: navigation retains drafts; reload/exit discards them" (:2). Keys used by this screen: `runtime:settings:dirty`, `runtime:settings:changed`, `runtime:settings:config` (src/RuntimeSettings.tsx:38), `engine:tab` (src/EngineSettings.tsx:29), and the one-time `connections:ai-providers` set for the Connections page (:91).
 - **Notes**: `needsHistory` decides when Journal and News fetch the large history: when there is none, when the version is null, or when it differs from the one seen (src/runtimeFeed.ts:21-23).
@@ -2220,12 +2221,12 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | Engine method |
 |---|---|---|---|
-| `dryRunEstimate(model)` | `runtime:dry-run-estimate` (electron/preload.cjs:30) | electron/main.cjs:726 | `automation.dryRunEstimate({model})` (electron/automation.cjs:539) |
-| `dryRun(mode,options)` | `runtime:dry-run` (preload.cjs:28) | electron/main.cjs:727 | `automation.dryRun(mode,{model})` (electron/automation.cjs:380); on failure `automation.dryRunFailure(started)` (:957) |
+| `dryRunEstimate(model)` | `runtime:dry-run-estimate` (electron/preload.cjs:30) | electron/main.cjs:728 | `automation.dryRunEstimate({model})` (electron/automation.cjs:539) |
+| `dryRun(mode,options)` | `runtime:dry-run` (preload.cjs:28) | electron/main.cjs:729 | `automation.dryRun(mode,{model})` (electron/automation.cjs:380); on failure `automation.dryRunFailure(started)` (:957) |
 
 - **Subscriptions**: `subscribeRuntime` plus a 3-second clock (src/Dashboard.tsx:58).
 - **Saved state**: dry-run records are stored by the engine in table `dry_runs` (electron/automation.cjs:957, :960). The Claude dry run sends `{openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}` as a one-off override; it does not change the saved settings (src/Dashboard.tsx:65; electron/automation.cjs:382).
-- **Notes**: dry-run error codes thrown at the start of `dryRun` (electron/automation.cjs:381-385): `INVALID_REQUEST`, `REVIEW_BUSY`, `INVALID_MODEL_SETTINGS`, `DRY_RUN_NEEDS_KIS` (scope is paper), `AI_NOT_CONNECTED` (provider is not `openai` or the key is missing), `DATA_SHARING_NOT_ENABLED`. The handler passes codes matching `^[A-Z_]{3,40}$`, else `DRY_RUN_FAILED` (electron/main.cjs:727). The window shows the raw code inside "Dry run failed (<code>)." (src/Dashboard.tsx:65).
+- **Notes**: dry-run error codes thrown at the start of `dryRun` (electron/automation.cjs:381-385): `INVALID_REQUEST`, `REVIEW_BUSY`, `INVALID_MODEL_SETTINGS`, `DRY_RUN_NEEDS_KIS` (scope is paper), `AI_NOT_CONNECTED` (provider is not `openai` or the key is missing), `DATA_SHARING_NOT_ENABLED`. The handler passes codes matching `^[A-Z_]{3,40}$`, else `DRY_RUN_FAILED` (electron/main.cjs:729). The window shows the raw code inside "Dry run failed (<code>)." (src/Dashboard.tsx:65).
 
 ### Start / stop auto trading and background AI (not on this tab)
 
@@ -2237,9 +2238,9 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | `window.portfolio` method | IPC channel | main.cjs handler line | Engine method |
 |---|---|---|---|
-| `startAutoTrading(token)` | `runtime:start` (electron/preload.cjs:22) | electron/main.cjs:718 | `require('./auto-launch.cjs').start(automation,token)`; returns `{ok:true,message,state}` or `{ok:false,error:error.text??error.message,state}` |
-| `stopAutoTrading()` | `runtime:stop` (preload.cjs:23) | electron/main.cjs:719 | `require('./auto-launch.cjs').stop(automation)`; same reply shape |
-| `setBackgroundAi(paused)` | `runtime:background-ai` (preload.cjs:27) | electron/main.cjs:728 | `automation.setBackgroundPaused(paused)` (electron/automation.cjs:342) |
+| `startAutoTrading(token)` | `runtime:start` (electron/preload.cjs:22) | electron/main.cjs:720 | `require('./auto-launch.cjs').start(automation,token)`; returns `{ok:true,message,state}` or `{ok:false,error:error.text??error.message,state}` |
+| `stopAutoTrading()` | `runtime:stop` (preload.cjs:23) | electron/main.cjs:721 | `require('./auto-launch.cjs').stop(automation)`; same reply shape |
+| `setBackgroundAi(paused)` | `runtime:background-ai` (preload.cjs:27) | electron/main.cjs:730 | `automation.setBackgroundPaused(paused)` (electron/automation.cjs:342) |
 
 - **Subscriptions**: `subscribeRuntime` (src/Dashboard.tsx:58).
 - **Saved state**:
@@ -2278,9 +2279,9 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 **2. `CLAUDE_DRY_RUN_REQUIRED:<agent>`** (src/RuntimeSettings.tsx:32; src/agentDraft.mjs:15-17): "<Title> is set to Claude Opus 5.5, which needs a measured dry run on this account. Run one, or choose another model for it." Titles: `scout` "Scout", `narrative` "Market narrative", `compacting` "Context compacting", `reflection` "Reflection"; unknown → "An agent".
 
-**3. Engine-side texts of `claudeTradingRefusal`** (electron/automation.cjs:991-999; same codes as table 1; these texts are attached as `error.text` and reach the window only through `runtime:start`/`runtime:stop`, electron/main.cjs:718-719). They equal table 1 except `CLAUDE_TRADING_LIMITS`: "Your Claude daily limits do not cover one review (about $X and up to N requests). Raise them in Engine settings."
+**3. Engine-side texts of `claudeTradingRefusal`** (electron/automation.cjs:991-999; same codes as table 1; these texts are attached as `error.text` and reach the window only through `runtime:start`/`runtime:stop`, electron/main.cjs:720-721). They equal table 1 except `CLAUDE_TRADING_LIMITS`: "Your Claude daily limits do not cover one review (about $X and up to N requests). Raise them in Engine settings."
 
-**4. Codes the `runtime:configure` handler lets through** (electron/main.cjs:722): `CLAUDE_NOT_ENABLED_FOR_TRADING`, `CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)`, `CLAUDE_TRADING_DRY_RUN`, `CLAUDE_TRADING_KEY`, `CLAUDE_TRADING_CONSENT`, `CLAUDE_TRADING_LIMITS`, `CLAUDE_TRADING_CONFIRM`, `CLAUDE_MODEL_NOT_FOR_TRADING`. Everything else: `INVALID_SETTINGS`.
+**4. Codes the `runtime:configure` handler lets through** (electron/main.cjs:724): `CLAUDE_NOT_ENABLED_FOR_TRADING`, `CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)`, `CLAUDE_TRADING_DRY_RUN`, `CLAUDE_TRADING_KEY`, `CLAUDE_TRADING_CONSENT`, `CLAUDE_TRADING_LIMITS`, `CLAUDE_TRADING_CONFIRM`, `CLAUDE_MODEL_NOT_FOR_TRADING`. Everything else: `INVALID_SETTINGS`.
 
 **5. Start auto trading: refusals thrown by `start`** (electron/auto-launch.cjs:11-24; plain sentences, no codes; complete):
 
@@ -2309,9 +2310,9 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 **10. Model names** (src/EngineSettings.tsx:18; src/claudeConfirmLines.mjs:5): `gpt-6-luna` "GPT-6 Luna", `gpt-6-sol` "GPT-6 Sol", `gpt-6-astra` "GPT-6 Astra", `claude-opus-5-5` "Claude Opus 5.5", `claude-haiku-5-5` "Claude Haiku 5.5".
 
-**11. Start with Windows** (electron/login-item.cjs:13, :20, :21, :31, :48; electron/main.cjs:632): texts listed in the Trading tab above.
+**11. Start with Windows** (electron/login-item.cjs:13, :20, :21, :31, :48; electron/main.cjs:634): texts listed in the Trading tab above.
 
-**12. Manual review** (electron/main.cjs:729): error `automation.lastError ?? 'REVIEW_FAILED'`, message `automation.lastErrorDetail ?? 'Review failed.'`. Automatic (not user-requested) reviews can throw `REVIEW_BACKOFF` and `REVIEW_PROVIDER_WAIT` (electron/automation.cjs:696-700); a user request skips both checks (:696).
+**12. Manual review** (electron/main.cjs:731): error `automation.lastError ?? 'REVIEW_FAILED'`, message `automation.lastErrorDetail ?? 'Review failed.'`. Automatic (not user-requested) reviews can throw `REVIEW_BACKOFF` and `REVIEW_PROVIDER_WAIT` (electron/automation.cjs:696-700); a user request skips both checks (:696).
 
 ## Fees & taxes
 
@@ -2394,8 +2395,8 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 
 | window.portfolio method | IPC channel | main.cjs handler | Engine call |
 |---|---|---|---|
-| `getTaxSummary()` | `costs:tax-summary` | main.cjs:665 | `costs.taxSummary()` (electron/trading-costs.cjs:257) plus `refreshedAt`, `error`, `refreshing`, `environment` |
-| `refreshCharges()` | `costs:refresh-charges` | main.cjs:666 | `refreshCharges()` (main.cjs:658-661): `engine.refreshCharges()` for the Korea and U.S. engines, `importTaxTrades()` (main.cjs:653-657), then missing FX rates via `providerService.request('fx-rates')` and `costs.saveRates` |
+| `getTaxSummary()` | `costs:tax-summary` | main.cjs:667 | `costs.taxSummary()` (electron/trading-costs.cjs:257) plus `refreshedAt`, `error`, `refreshing`, `environment` |
+| `refreshCharges()` | `costs:refresh-charges` | main.cjs:668 | `refreshCharges()` (main.cjs:660-663): `engine.refreshCharges()` for the Korea and U.S. engines, `importTaxTrades()` (main.cjs:655-659), then missing FX rates via `providerService.request('fx-rates')` and `costs.saveRates` |
 | `addOpeningLot(value)` | `costs:add-opening-lot` | main.cjs:332 | `costs.addOpeningLot(value)` (electron/trading-costs.cjs:227-232); returns `costs.taxSummary()` |
 | `removeOpeningLot(id)` | `costs:remove-opening-lot` | main.cjs:333 | `costs.removeOpeningLot(id)` (electron/trading-costs.cjs:233) |
 | `addIncome(value)` | `costs:add-income` | main.cjs:328 | `costs.addIncome(value)` (electron/trading-costs.cjs:123) → `income.add` → `validate` (electron/income-events.cjs:9-15,32) |
@@ -2403,12 +2404,12 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 | `declareIncome(year,value)` | `costs:declare-income` | main.cjs:330 | `costs.income.declare(year,value)` (electron/income-events.cjs:37) |
 | `setFundClass(symbol,value)` | `costs:fund-class` | main.cjs:331 | `costs.setFundClass(symbol,value)` (electron/trading-costs.cjs:118-119) |
 
-- **Subscriptions**: polls `getTaxSummary()` every 60000 ms (src/TaxLedger.tsx:17). The main process refreshes charges every 15 minutes and once 2 minutes after start (main.cjs:662-664).
+- **Subscriptions**: polls `getTaxSummary()` every 60000 ms (src/TaxLedger.tsx:17). The main process refreshes charges every 15 minutes and once 2 minutes after start (main.cjs:664-666).
 - **Saved state**: SQLite tables `tax_opening_lots` (electron/trading-costs.cjs:226,231), `income_events` and `income_declarations` (electron/income-events.cjs:32,37), `fund_tax_class` (electron/trading-costs.cjs:117-119), `fx_rates` (electron/trading-costs.cjs:126). The form fields are component state only (src/TaxLedger.tsx:16).
 - **Notes**:
   - Failures of these calls are swallowed in the renderer: no message is shown, the form just stays filled (src/TaxLedger.tsx:19-22). Engine error codes: `INVALID_OPENING_LOT` (symbol format, integer quantity 1–10,000,000, a date not after today, cost 0–1e13, boolean flag), `KIS_NOT_CONNECTED` (opening lot without an account; income without a live account), `INVALID_INCOME_EVENT`, `INVALID_FUND_CLASS` (electron/trading-costs.cjs:118-119,123,228-229; electron/income-events.cjs:11-13,37).
-  - `chargesError` codes shown after "Last check:": any upper-case code from the engines, else `CHARGES_FAILED` or `TAX_IMPORT_FAILED` (main.cjs:659-661).
-  - Tax trade import runs only for a live account (main.cjs:653).
+  - `chargesError` codes shown after "Last check:": any upper-case code from the engines, else `CHARGES_FAILED` or `TAX_IMPORT_FAILED` (main.cjs:661-663).
+  - Tax trade import runs only for a live account (main.cjs:655).
 
 ### MoneyField and money.ts (how money inputs behave)
 
@@ -2517,7 +2518,7 @@ Defaults for the provider sharing and limit keys are taken from the Engine setti
 
 ## 3.2 Engine settings (automation config)
 
-All keys below are in the automation config (`automation.config`, table `automation_settings`, electron/automation.cjs:171) and are written through `configureRuntime` → `runtime:configure` (electron/main.cjs:722) → `Automation.configure` (electron/automation.cjs:172), unless the row says otherwise. Defaults are from `DEFAULTS` (electron/automation.cjs:15), `COND_DEFAULTS` (electron/agent-desk.cjs:5), `AGENT_DEFAULTS` (electron/agent-models.cjs:13) and `TIMING_DEFAULTS` (electron/scout-timing.cjs:21). A saved profile is merged over the defaults at start (electron/automation.cjs:123). "configure:NNN" means the validation line in electron/automation.cjs.
+All keys below are in the automation config (`automation.config`, table `automation_settings`, electron/automation.cjs:171) and are written through `configureRuntime` → `runtime:configure` (electron/main.cjs:724) → `Automation.configure` (electron/automation.cjs:172), unless the row says otherwise. Defaults are from `DEFAULTS` (electron/automation.cjs:15), `COND_DEFAULTS` (electron/agent-desk.cjs:5), `AGENT_DEFAULTS` (electron/agent-models.cjs:13) and `TIMING_DEFAULTS` (electron/scout-timing.cjs:21). A saved profile is merged over the defaults at start (electron/automation.cjs:123). "configure:NNN" means the validation line in electron/automation.cjs.
 
 | Screen | Label on screen (exact) | Control type | Config key written | Default | Allowed range/values | Enforced by |
 |---|---|---|---|---|---|---|
@@ -2686,7 +2687,7 @@ Not saved (renderer drafts only, so not settings): Discover market tab, search m
 | Short & leverage | "Set a daily multiple" (symbol + multiple) | text + number + "Set multiple"/"Remove" | table `product_overrides` (other: product classification) | none | symbol six digits or `NASD|NYSE|AMEX:TICKER`; multiple non-zero, absolute value ≤ 5 | electron/exposure.cjs `setOverride` (lines 47-51), `classify` (line 39) |
 | Holdings | "Sector" / "Region / exposure label" (classification editor) | two text inputs + "Save classification" | table `instrument_metadata` (other: portfolio view metadata) | sector "Unclassified"; region "South Korea (listing)" / "United States (listing)" (electron/portfolio-view.cjs:6) | each at most 100 characters, no control characters | electron/portfolio-view.cjs `PortfolioView.save` (line 24) |
 | Home | (none saved) | n/a | Home has no saved settings: the trend period, allocation grouping and chart options are in-memory session drafts (src/Home.tsx:96,167; src/AllocationChart.tsx:6; src/useDraftState.ts:2) | n/a | n/a | n/a |
-| Home (AI activity) | "Pause background AI" / "Resume background AI" | link button | `automation.setBackgroundPaused(paused)` (main.cjs:728); on-screen text says "paused for this session" (src/Dashboard.tsx:83) | not determined | boolean | electron automation `setBackgroundPaused` (file and persistence not determined) |
+| Home (AI activity) | "Pause background AI" / "Resume background AI" | link button | `automation.setBackgroundPaused(paused)` (main.cjs:730); on-screen text says "paused for this session" (src/Dashboard.tsx:83) | not determined | boolean | electron automation `setBackgroundPaused` (file and persistence not determined) |
 
 ## 3.6 Charts, Performance, Activity
 
@@ -2846,7 +2847,7 @@ Flow for each of the three files (KIS account, provider keys, calendar key):
 2. The remembered path of that kind is forgotten first, then the chosen path is handed to the matching worker service with an `import` request (`kisService`, `providerService`, `calendarService`; main.cjs:78-100). The renderer never receives the file contents or the path, only a file name and a status (`remembered.state()`: `remembered`, `name`, `status`, `error`; `electron/remembered-files.cjs`).
 3. On success the absolute path is saved in the `settings` table under `connection-file:<kind>` and the status becomes `connected`. For KIS, the first balance snapshot becomes the app's KIS state and the market state is broadcast (main.cjs:97-99). For providers, the returned flags (`aiConnected`, `openaiConnected`, `anthropicConnected`, `dartConnected`, `pushConnected`, and others such as `ecosConnected`, `fredConnected`, `secConnected` read by the UI) become `automation.providerStatus`, and an AI key selects the `openai` decision provider (main.cjs:80).
 4. On failure the service is disconnected, the status becomes `error`, and a fixed sentence is stored for the card (section 2, Connections → Notes). For KIS the account error code comes from `kisErrorCode(error)` and is shown through `kisErrors`.
-5. At every start the app reopens all remembered files (`remembered.restore`, main.cjs:858; skipped in verification runs). The on-screen note adds: "Trading and scheduled reviews still start paused."
+5. At every start the app reopens all remembered files (`remembered.restore`, main.cjs:860; skipped in verification runs). The on-screen note adds: "Trading and scheduled reviews still start paused."
 6. "Disconnect" (KIS only) ends the session but keeps the remembered path; "Forget & disconnect" deletes the path and disconnects; "Reconnect" re-imports from the remembered path.
 
 Connecting or disconnecting KIS stops both live engines first (`live.stop()`, `usLive?.stop()`; main.cjs:96, `'kis:disconnect'`, `'connections:forget'`).
@@ -2855,13 +2856,13 @@ Expected file shapes shown to the user (placeholders only): the KIS file has `en
 
 ## 5.3 In-app updates
 
-UI: the "App updates" section at the bottom of Connections (section 2). Behaviour (`electron/app-updates.cjs`; wiring at main.cjs:636-646):
+UI: the "App updates" section at the bottom of Connections (section 2). Behaviour (`electron/app-updates.cjs`; wiring at main.cjs:638-648):
 
 - Updates exist only for installer builds: the app must be packaged and have `app-update.yml` in its resources. Otherwise the status is `disabled` and the section says "Updates work in the installed app only."
 - Source: GitHub Releases through `electron-updater`. `autoDownload`, `autoInstallOnAppQuit`, pre-releases and downgrades are all off.
 - Automatic check: 30 seconds after start and then tested every 10 minutes; a check runs when the setting is on, the status is `idle`, `up-to-date` or `error`, and the last check is at least 6 hours old (`tick`, `CHECK_EVERY_MS`).
 - The user starts the download ("Download <version>") and the install ("Restart and install"). Install calls `quitAndInstall(false, true)`.
-- Install is refused while auto trading is armed, a review is running, or a broker order is open (`canInstall`, main.cjs:638). The reason shows under the button.
+- Install is refused while auto trading is armed, a review is running, or a broker order is open (`canInstall`, main.cjs:640). The reason shows under the button.
 - A downloaded update also appears in "Needs you": "Version <x> is ready to install", button "Install" → Connections.
 - State changes reach every window through `update:changed`.
 - Errors are reduced to five codes so no URL or path reaches the UI (`publicError`).
@@ -2869,7 +2870,7 @@ UI: the "App updates" section at the bottom of Connections (section 2). Behaviou
 ## 5.4 Start with Windows
 
 - UI: the switch "Start with Windows" in Engine settings → Trading (`src/EngineSettings.tsx:241-270`). It applies at once and is not part of the settings draft. Hint: "Opens the app when you sign in to Windows. After a restart at night it opens only once you sign in. It starts paused." (text as recorded in the Engine settings pass, `src/EngineSettings.tsx:269-270`).
-- Calls: `getLoginItem` → `system:login-item`; `setLoginItem(on)` → `system:set-login-item` (main.cjs:630-632) → `electron/login-item.cjs` `createLoginItem`.
+- Calls: `getLoginItem` → `system:login-item`; `setLoginItem(on)` → `system:set-login-item` (main.cjs:632-634) → `electron/login-item.cjs` `createLoginItem`.
 - The state is read from Windows each time (`app.getLoginItemSettings` with the quoted exe path), never from a saved copy. Only the installed app can set it; a development run answers "Available in the installed app." and the switch is disabled. Test runs use an in-memory fake.
 - Other sentences: "Windows did not answer. Try again later."; "Set for all users of this PC; turn it off in Windows Startup apps."; "Turned off in Windows Startup apps."; "Windows did not accept the change."; "Invalid request."
 - Turning it on first removes every existing per-user Run value for this exe, then adds one; machine-wide values are left alone (`set`, `electron/login-item.cjs`).
@@ -2981,7 +2982,7 @@ Answered elsewhere: `MarketStatus` (Home); `SaleCosts` is defined in `src/Tradin
 Answered elsewhere: `MoneyField` behaviour (Fees & taxes).
 
 - `runtimeState()` in electron/main.cjs: its body was not read; that it wraps `automation.getState()` is inferred.
-- The body of the `runtime:providers` handler (electron/main.cjs:730) and of `automation.approveLesson`: not read (other screens).
+- The body of the `runtime:providers` handler (electron/main.cjs:732) and of `automation.approveLesson`: not read (other screens).
 - Where each setting takes effect at run time beyond its validation (for example which module reads `sizingRiskPct`, `orderTracking`, `degradeNearBudget`, `closedMarketReviews`): not traced; the "Enforced by" column names the validator, plus the run-time function only where it was read.
 - `MoneyField` (src/MoneyField.tsx), used by `NumberField` when `currency` is set: not read; its formatting and range behaviour for "Reflection spending" are not determined.
 - The value of `CLAUDE_FORMS_SINCE` and the body of `versionAtLeast` (electron/automation.cjs:978-979): not read.
@@ -2996,14 +2997,14 @@ Answered elsewhere: `MoneyField` behaviour (Fees & taxes).
 
 Answered elsewhere: `Scoreboard` (Performance section, "Scoreboard"); `Note` markup (4.2); some narrow-window rules (4.7).
 
-- The full body of the `runtime:lesson-trial` handler (main.cjs:739): which error codes it returns to the window after `LOCAL_EVALUATION_FAILED` / `INVALID_TRIAL` (the line was longer than the bounded read).
+- The full body of the `runtime:lesson-trial` handler (main.cjs:741): which error codes it returns to the window after `LOCAL_EVALUATION_FAILED` / `INVALID_TRIAL` (the line was longer than the bounded read).
 - The bodies of `automation.replay` and `replayPlan` (electron/automation.cjs:1697-1698) and `ReplayStore` (electron/replay.cjs): how many runs are kept, the engine-side limits for `limit`, `capUSD` and `instructions`, and where `REPLAY_NO_CHANGE`, `REPLAY_NOTHING`, `REPLAY_BUSY` are raised.
 - The full body of `automation.approveLesson` beyond its first statements (electron/automation.cjs:1999).
 - The period of the main-process tick that hosts the news refresh check (main.cjs:242).
 - How `newsEvents.ingest` decides `importance` and matched `symbols`, and what `newsEvents.pending(mode)` selects (electron/news-events.cjs was read only for `MODES`).
 - What `Scoreboard` shows (another agent's screen).
 - The exact markup of `Note` (src/Note.tsx:3): treated here as a disclosure with a summary (inferred from its `summary` prop).
-- Whether any main-process code other than `interaction` (main.cjs:101) and `demo:run` (main.cjs:850) appends events; the search for `appendEvent` in electron/ found only those two callers and the definition (electron/storage.cjs:20).
+- Whether any main-process code other than `interaction` (main.cjs:101) and `demo:run` (main.cjs:852) appends events; the search for `appendEvent` in electron/ found only those two callers and the definition (electron/storage.cjs:20).
 - Narrow-window behaviour of these screens (CSS was not read).
 - Where the `#console` hash is set by the main process (a search of src/ and electron/ for "#console" found only src/main.tsx:43).
 

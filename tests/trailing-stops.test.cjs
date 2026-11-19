@@ -302,6 +302,31 @@ test('T3: followPlan arms the trailing plan stop (or the fixed one with the reas
   assert.equal(t.watchedDay,today);assert.ok(t.catchUpFrom>=T.nextDay(today),'never before the day after the switch (the harness arms on 11-09, so it may be later)');assert.ok(t.resumedAt>0);assert.equal(T.catchUp(d.armed(),[bar(today,99000)],{now:Date.now(),from:Date.now()}).patch.trail.high,81200,'today (the off time) is not caught up');
 });
 
+// Found in live use (the planner's note on the fault): a plan stop for a stock not held
+// had no live quote (the app's quotes hold only held stocks), so its trail was refused. Made-up symbol and prices.
+test('A plan trail for a stock not held: checked against the review quote, then the placed price; else the fixed stop waits and the trail is added at the fill',()=>{
+  const plan=(extra={})=>({action:'Buy',symbol:'000099',quantity:4,credit:'none',plan:{thesis:'t',invalidation:'below 45,000',stopPrice:45000,targetPrice:null,horizonDays:30,confidence:'medium',trailPct:6,...extra}});
+  const fresh=()=>{const h=harness();h.a.desk.cancelOrder(h.scope,h.a.desk.orders(h.scope)[0].id);h.a.config.trailingStops=true;return {...h,stop:()=>h.a.desk.orders(h.scope).find(o=>o.symbol==='000099')};};
+  {const {a,scope,stop}=fresh();a.followPlan(scope,plan(),'R1',{proposalId:'B1',market:'KR',positions:{},quotes:[{symbol:'000099',price:50000}]});
+    assert.equal(stop().trail.awaitingFill,true,'the review quote');assert.equal(stop().trailNotUsed,undefined);assert.deepEqual(a.desk.plannedTrailsMissing(scope),[]);}
+  {const {a,scope,stop}=fresh();a.followPlan(scope,plan(),'R1',{proposalId:'B1',market:'KR',positions:{},quotes:[{symbol:'000099',price:50000,stale:true}],placedAt:49800});
+    assert.equal(stop().trail.awaitingFill,true,'a stale review quote is passed over for the placed price');}
+  // No price anywhere: the fixed stop, the Console line as before, the plan's trail kept for the fill, listed for Home.
+  const {a,scope,stop,events}=fresh();a.followPlan(scope,plan(),'R1',{proposalId:'B1',market:'KR',positions:{}});
+  assert.equal(stop().trail,undefined);assert.equal(stop().conditions[0].value,45000);assert.match(stop().trailNotUsed,/current price of 000099 is not known/);
+  assert.deepEqual(stop().trailWanted,{pct:6,atrMultiple:null});assert.ok(events.some(e=>e.title==='Plan stop armed without trailing'));
+  assert.deepEqual(a.desk.plannedTrailsMissing(scope).map(o=>o.id),[stop().id]);
+  a.live.orders=()=>[{id:'B1',status:'Accepted',filled:0}];a.trackTrailing(scope,KR_OPEN);assert.equal(stop().trail,undefined,'not before the fill');
+  a.live.orders=()=>[{id:'B1',status:'Filled',filled:4,fillPrice:52000}];a.trackTrailing(scope,KR_OPEN+5000);const t=stop().trail;
+  assert.equal(t.active,true);assert.equal(t.high,52000,'from the fill');assert.ok(t.level>45000&&t.level<=52000*0.94);assert.equal(stop().conditions[0].value,t.level);
+  assert.equal(stop().trailWanted,null);assert.equal(stop().trailNotUsed,null);assert.deepEqual(a.desk.plannedTrailsMissing(scope),[],'off the Needs you list');
+  assert.ok(events.some(e=>e.title==='Trailing stop armed · 000099'&&/^At the fill of its purchase: /.test(e.body)));
+  // A purchase that ended without a fill price: the fixed stop stays, the reason says so, it stays listed.
+  {const {a,scope,stop,events}=fresh();a.followPlan(scope,plan(),'R1',{proposalId:'B1',market:'KR',positions:{}});a.live.orders=()=>[{id:'B1',status:'Filled',filled:4}];a.trackTrailing(scope,KR_OPEN);
+    assert.equal(stop().trail,undefined);assert.equal(stop().trailWanted,null);assert.equal(stop().trailNotUsed,'the fill price is not known (checked again at the fill)');
+    assert.ok(events.some(e=>e.title==='Plan stop stays without trailing'));assert.equal(a.desk.plannedTrailsMissing(scope).length,1);}
+});
+
 test('T3: the start notice says trailing stops catch up on Start and may sell at once (review B)',()=>{
   const N=require('../electron/start-notice.cjs');const prev={kind:'normal',at:KR_OPEN};
   const n=N.startNotice({previousStop:prev,stops:{count:2,any:true},wasRunning:false,trailing:1,now:KR_OPEN+60000});

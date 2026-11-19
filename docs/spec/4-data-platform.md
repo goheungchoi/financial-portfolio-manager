@@ -89,12 +89,12 @@ data/errors never enter console logs", kis-service.cjs:9-10). Mechanics:
 | 12 | `PerformanceHistory`, `ValuationCorrections`, `FlowDetector`, `BrokerBalances`, `BrokerCapacity`, `InFlight`, `FundingTransfers`, `SettlementBaseline`, performance corrections; `detectFlows` is defined; the 60 s `recordValue` timer | main.cjs:456-534 |
 | 13 | Korean calendar refresh timer; intraday value sampler (60 s); phone snapshot wiring; benchmarks timer | main.cjs:535-559 |
 | 14 | `MacroStore` (first refresh after 30 s, then every 6 h) | main.cjs:597-599 |
-| 15 | Attention list, login item, `AppUpdates` (first tick after 30 s, then every 10 min) | main.cjs:602-646 |
-| 16 | Charges and tax-history timer (first after 2 min, then every 15 min); scoreboard closes timer | main.cjs:648-675 |
-| 17 | Remaining IPC (discovery, runtime, connections, live, paper, market, activity, events) | main.cjs:680-855 |
-| 18 | Main timers: `publishMarket` every 1 s, `pollKisQuotes` every 30 s, `refreshKisBalance` every 120 s, synthetic snapshot save every 30 s | main.cjs:752-757 |
-| 19 | Application menu, `createWindow()`, then `remembered.restore(...)` reconnects the remembered KIS, providers and calendar files (not in a package check) | main.cjs:856-858 |
-| 20 | Any failure in 4-19: an error box ("The local portfolio database could not be opened. The app will close without submitting any orders.") and exit code 1 | main.cjs:860 |
+| 15 | Attention list, login item, `AppUpdates` (first tick after 30 s, then every 10 min) | main.cjs:602-648 |
+| 16 | Charges and tax-history timer (first after 2 min, then every 15 min); scoreboard closes timer | main.cjs:650-677 |
+| 17 | Remaining IPC (discovery, runtime, connections, live, paper, market, activity, events) | main.cjs:682-857 |
+| 18 | Main timers: `publishMarket` every 1 s, `pollKisQuotes` every 30 s, `refreshKisBalance` every 120 s, synthetic snapshot save every 30 s | main.cjs:754-759 |
+| 19 | Application menu, `createWindow()`, then `remembered.restore(...)` reconnects the remembered KIS, providers and calendar files (not in a package check) | main.cjs:858-860 |
+| 20 | Any failure in 4-19: an error box ("The local portfolio database could not be opened. The app will close without submitting any orders.") and exit code 1 | main.cjs:862 |
 
 Things connected by assignment after construction (so the order above matters): `automation.live`, `automation.usLive`,
 `automation.costs`, `live.costs`, `live.exposure`, `live.funding = usLive.funding = fundingLedger`,
@@ -115,7 +115,7 @@ every 10 s, and sends `market:changed` to every window.
 | Only the app's own page may call | `authorize(event)`: the sender must be the main frame, its URL (without the hash) must equal the file URL of `dist/index.html`, and it must belong to a `BrowserWindow`; otherwise `Unauthorized IPC sender`. Every one of the 124 `ipcMain.handle` handlers calls it (some through wrappers such as `liveAction`, `performanceAction`, `updateAction`, `discoveryAction`, `exposureAction`, `deskAction`, `paperAction`, `scoreboardAction`) | main.cjs:182-186 |
 | No navigation, no new windows | `setWindowOpenHandler(()=>({action:'deny'}))`, `will-navigate` prevented | main.cjs:189, 199, 218 |
 | Outside links are checked in main | Filings: only `dart.fss.or.kr/dsaf001/main.do?rcpNo=<14 digits>` or `www.sec.gov/Archives/edgar/data/...`; news: only a URL the app itself holds in its news lists | main.cjs:445, 743 |
-| The page never sees a key or a file's content | Files are chosen with a main-process dialog and opened inside a worker; the page gets flags (`aiConnected`, `dartConnected`, ...) and the file's base name | main.cjs:694, 732, 829; remembered-files.cjs:10; provider-worker.cjs:14 |
+| The page never sees a key or a file's content | Files are chosen with a main-process dialog and opened inside a worker; the page gets flags (`aiConnected`, `dartConnected`, ...) and the file's base name | main.cjs:696, 732, 829; remembered-files.cjs:10; provider-worker.cjs:14 |
 | Error texts are fixed codes | Each wrapper passes only a listed code or a pattern `^[A-Z_]{3,40}$`, else a generic one | e.g. main.cjs:69-70 `kisErrorCode`, 707 |
 | The page cannot write the console log | "No renderer write API" for `events` | storage.cjs:21 |
 | Permission handlers (camera, etc.) | not determined (no `setPermissionRequestHandler` found in electron/) | |
@@ -136,7 +136,7 @@ What the page may call (`window.portfolio`, electron/preload.cjs:2-110), by grou
 | News and discovery | `refreshNews, openNews, getSuggestedFeeds, refreshNarrative, hideNarrativeDriver, getDiscovery, getWatchQuotes, searchSecurities, screenMarket, updateWatchlist, refreshSecurityMaster` |
 | Workspace | `getAttention, dismissAttention, getLoginItem, setLoginItem, getTheme, setTheme, onTheme, getEvents, onEvents, exportJournal, testPhoneSnapshot` |
 | Updates | `getUpdates, checkForUpdates, downloadUpdate, installUpdate, saveUpdateSettings, onUpdates` |
-| Test only | `runDemo` (the handler throws `TEST_ONLY` unless `PORTFOLIO_SMOKE_DATA` is set, main.cjs:840-841) |
+| Test only | `runDemo` (the handler throws `TEST_ONLY` unless `PORTFOLIO_SMOKE_DATA` is set, main.cjs:842-843) |
 
 ### 1.4 How state reaches the screens
 
@@ -144,26 +144,26 @@ What the page may call (`window.portfolio`, electron/preload.cjs:2-110), by grou
 |---|---|---|---|
 | `market:changed` | every second (`publishMarket`) and on connection, quote and balance changes (`broadcastMarket`) | `marketState()`: KIS snapshot and quotes (`buildKisMarket`), `connectionId`, `stream`, `marketsOpen`, a rising `revision`; without KIS, the made-up synthetic state | main.cjs:141-142, 243-244 |
 | `events:changed` | each new AI console entry (`interaction`) | the whole `events` list (at most 600 rows) | main.cjs:101-108 |
-| `theme:changed` | theme saved | 'dark' or 'light' | main.cjs:782-786 |
-| `update:changed` | updater state change | `AppUpdates.view()` | main.cjs:639 |
+| `theme:changed` | theme saved | 'dark' or 'light' | main.cjs:784-788 |
+| `update:changed` | updater state change | `AppUpdates.view()` | main.cjs:641 |
 | `chart:tick` | a trade or polled quote for a charted symbol | only to the windows showing that symbol | main.cjs:28 `sendChartTick` |
 
 Everything else is pulled: the page asks (`runtime:get`, `portfolio:get`, `performance:get`, ...). The runtime state
 the window polls every two seconds is a light copy (`lightState`, runtime-state.cjs:13-18): the latest three decisions
 in brief; the full review lists, outcomes and news events come from `runtime:history` only when `historyVersion`
-changes (runtime-state.cjs:1-5, main.cjs:690, 721). The page-side hooks are described in part 1.
+changes (runtime-state.cjs:1-5, main.cjs:692, 721). The page-side hooks are described in part 1.
 
 ### 1.5 App lifecycle
 
 | Topic | Behaviour | Cite |
 |---|---|---|
-| Closing the window | `window-all-closed` quits the app (except on macOS). There is no tray: with the window closed nothing runs, including stops | main.cjs:871 |
-| Quit | `will-quit`: exit record `stop('clean')`; `closing=true`; automation and notifier marked disposed; Korean `live.stop()`; bridge closed; provider and KIS workers killed; timers cleared; a last synthetic snapshot saved; database closed | main.cjs:861-870 |
+| Closing the window | `window-all-closed` quits the app (except on macOS). There is no tray: with the window closed nothing runs, including stops | main.cjs:873 |
+| Quit | `will-quit`: exit record `stop('clean')`; `closing=true`; automation and notifier marked disposed; Korean `live.stop()`; bridge closed; provider and KIS workers killed; timers cleared; a last synthetic snapshot saved; database closed | main.cjs:863-872 |
 | Exit record | One row (`app_exit`): `startedAt`, `heartbeatAt` (every 60 s, with the watched account scope), `stop:{kind, at, reasons, tentative, phoneSent}`. Kinds: `clean`, `windows-shutdown`; a run with no stop reads as `unexpected` at its last heartbeat. Nothing in it throws | exit-record.cjs:1-6, 17-34, 43-49 |
 | Windows restart or shutdown | `query-session-end` writes a tentative stop (the shutdown may be cancelled; a later heartbeat clears it); `session-end` confirms it and, best effort, sends one phone message straight to the webhook (not the outbox). Nothing holds Windows back | main.cjs:190-198; exit-record.cjs:22-32; start-notice.cjs:43-47 |
 | After any restart | Auto trading is not armed again by itself: the session starts paused (the package check asserts `sessionArmed===false`, scheduler label `Paused after restart`, main.cjs:204; `auto-launch.cjs`, part 3). The last review time is kept (`auto-launch.cjs:30-31`) | |
 | Start notice | Only when a previous run is on record and (stop orders are armed, or trailing stops are armed and allowed, or auto trading was running): desktop and phone alert 3 s after start (id `restart-notice:<startedAt>`), and a dismissible Home item until Start or Dismiss. Text: how it stopped, "auto trading is paused", how many stop orders are not being watched, what trailing stops will do on Start | start-notice.cjs:33-40; main.cjs:342-343, 624, 633 |
-| Start with Windows | Read from Windows every time (`getLoginItemSettings` with the exe path quoted), never from a saved copy. Only the installed app may set it; a source run answers "Available in the installed app."; test runs use an in-memory fake. Turning on first removes every Run value for this exe in the user's key, then adds one. No hidden or minimised start argument is passed (none found in `login-item.cjs`) | login-item.cjs:2-12, 27-51; main.cjs:630-632 |
+| Start with Windows | Read from Windows every time (`getLoginItemSettings` with the exe path quoted), never from a saved copy. Only the installed app may set it; a source run answers "Available in the installed app."; test runs use an in-memory fake. Turning on first removes every Run value for this exe in the user's key, then adds one. No hidden or minimised start argument is passed (none found in `login-item.cjs`) | login-item.cjs:2-12, 27-51; main.cjs:632-634 |
 | Environment switches | `PORTFOLIO_SMOKE_DATA` (test profile: no single-instance lock, no downloads, fake login item, updates off, `demo:run` allowed), `PORTFOLIO_MASTER_DIR`, `PORTFOLIO_PERFORMANCE_SEED`, `PORTFOLIO_MACRO_SEED`, `PORTFOLIO_UPDATE_TEST`, `PORTFOLIO_VERIFY_DIR` with `--verify-build` / `--verify-profile` | main.cjs:2, 113, 172-178, 355-356, 464, 597, 630, 636 |
 | Where the data lives | `app.getPath('userData')/portfolio.sqlite`; app name set to "Financial Portfolio Manager" before the path is used | main.cjs:171, 224 |
 
@@ -190,7 +190,7 @@ each module creates its own tables with `CREATE TABLE IF NOT EXISTS` in its cons
 | What | Where | Shape | Written by / read by | Cite |
 |---|---|---|---|---|
 | App settings (plain, not secrets) | `settings(key,value)` | keys found: `theme` ('dark' default / 'light'); `sec-contact-email`; `connection-file:kis`, `connection-file:providers`, `connection-file:calendar` (absolute paths) | `PortfolioStore.setTheme/setSetting`, `RememberedFiles` | storage.cjs:11-19; main.cjs:376, 699; remembered-files.cjs:6-9 |
-| Engine settings | `automation_settings` (one row, id=1, JSON) | the `automation.config` object (scope, enabled, autoSubmit, alerts, news feeds, model choices, ...; fields in part 3) | `Automation.configure` (IPC `runtime:configure`) | automation.cjs:110; main.cjs:722 |
+| Engine settings | `automation_settings` (one row, id=1, JSON) | the `automation.config` object (scope, enabled, autoSubmit, alerts, news feeds, model choices, ...; fields in part 3) | `Automation.configure` (IPC `runtime:configure`) | automation.cjs:110; main.cjs:724 |
 | Korean and U.S. trading policy | `live_policy(accountKey, payload)`: one row per account key; the U.S. engine uses `<account>:US` | limits, allowlist, loss baseline (part 2) | `LiveEngine.configure` | live-engine.cjs:20; main.cjs:266, 709 |
 | Leverage, margin, short policy | `exposure_policy(account, payload)`; `product_overrides(symbol, factor)` | per account | `Exposure.savePolicy / setOverride` | exposure.cjs:34, 49; main.cjs:324-325 |
 | Update settings | `app_update_settings` (one row) | `{checkAutomatically}` only; default true; any other key is refused | `AppUpdates.saveSettings` | app-updates.cjs:20-21 |
@@ -202,19 +202,19 @@ each module creates its own tables with `CREATE TABLE IF NOT EXISTS` in its cons
 In plain words: the app never copies a key. It remembers where the file is, and at each start asks the worker to open
 it again.
 
-1. **Import**: the user picks a JSON file in a main-process dialog (`kis:import` main.cjs:824-835, `runtime:providers`
-   main.cjs:730-736, `calendar:import` main.cjs:693-695). The earlier path is forgotten first.
+1. **Import**: the user picks a JSON file in a main-process dialog (`kis:import` main.cjs:826-837, `runtime:providers`
+   main.cjs:732-738, `calendar:import` main.cjs:695-697). The earlier path is forgotten first.
 2. The path (a string) goes to the worker (`request('import', file)`), which opens and parses the file and keeps the
    keys in its own memory (kis-worker.cjs:12-24; provider-worker.cjs:7-14; calendar-worker.cjs:12-17).
 3. **Remember**: on success the absolute path is saved in `settings` under `connection-file:<kind>`
    (`RememberedFiles.remember`, remembered-files.cjs:8; main.cjs:80, 92, 97). Only the path: no file content, no
    encryption (no `safeStorage` use found).
-4. **Restore**: after the window is created, `remembered.restore` reconnects all three in parallel (main.cjs:858).
+4. **Restore**: after the window is created, `remembered.restore` reconnects all three in parallel (main.cjs:860).
    A provider file restored this way does not switch the AI provider (`selectProvider=false`, main.cjs:78-80, 858).
    On failure the path stays remembered, the status is `error` with a fixed sentence, and the user can press
-   Reconnect (`connections:reconnect`, main.cjs:692).
+   Reconnect (`connections:reconnect`, main.cjs:694).
 5. **Forget**: `connections:forget` deletes the row and disconnects that worker; for KIS it also stops both engines
-   and clears the snapshot and quotes (main.cjs:691). `kis:disconnect` disconnects without forgetting (main.cjs:837).
+   and clears the snapshot and quotes (main.cjs:693). `kis:disconnect` disconnects without forgetting (main.cjs:839).
 6. The page sees `{remembered, name (base name only), status, error}` per kind (remembered-files.cjs:10).
 
 The provider file's fields, as the worker reads them: `openaiApiKey, anthropicApiKey, dartApiKey, pushURL, ecosApiKey,
@@ -234,7 +234,7 @@ here; parts 2 and 3 describe them.
 |---|---|---|---|---|---|
 | `settings` | storage.cjs:6 | key PK, value | one plain setting (2.2) | PortfolioStore, RememberedFiles | kept; deleted on forget / null |
 | `events` | storage.cjs:7 | seq PK auto, id unique, payload JSON | one AI console / System log entry (`id, runId, timestamp, kind, title, body`, optional `account, accountLabel`; each at most 32,000 characters) | `appendEvent` via `interaction` (main.cjs:101); read `getEvents` | newest 600 (storage.cjs:32) |
-| `snapshots` | storage.cjs:8 | id PK auto, timestamp, payload JSON | the made-up (synthetic) portfolio, `environment:'synthetic'`; not the real account | `saveSnapshot` every 30 s and at quit (main.cjs:755-757, 868) | newest 100 (storage.cjs:53) |
+| `snapshots` | storage.cjs:8 | id PK auto, timestamp, payload JSON | the made-up (synthetic) portfolio, `environment:'synthetic'`; not the real account | `saveSnapshot` every 30 s and at quit (main.cjs:757-759, 868) | newest 100 (storage.cjs:53) |
 | `app_exit` | exit-record.cjs:8 | id=1, payload JSON | how this run started and stopped (1.5) | ExitRecord | one row |
 | `app_update_settings` | app-updates.cjs:8 | id=1, payload JSON | update settings | AppUpdates | one row |
 | `notification_outbox` | notifications.cjs:5-6 | id PK, message, attempts, nextAt, delivered, payload (added), createdAt (added) | one phone message waiting or sent | Notifications | kept (rows expire unsent after 12 h by `attempts=99`, never deleted) |
@@ -304,7 +304,7 @@ here; parts 2 and 3 describe them.
 | `narrative_hidden` | narrative.cjs:52 | id PK | a driver the user hid | narrative.cjs | until unhidden |
 | `narrative_slots` | automation.cjs:122 | id=1, slot | the last narrative time slot run | Automation | one row |
 | `market_episodes` | episodes.cjs:27 | id PK, day unique, payload JSON | a large market move with its narrative | episodes.cjs | kept (single deletes) |
-| `symbol_closes` | scoreboard.cjs:22 | symbol, day, close; PK | a daily close for scoring decisions | scoreboard.cjs (`refreshDecisionCloses`, main.cjs:671-674) | kept |
+| `symbol_closes` | scoreboard.cjs:22 | symbol, day, close; PK | a daily close for scoring decisions | scoreboard.cjs (`refreshDecisionCloses`, main.cjs:673-676) | kept |
 | `symbol_close_fetches` | scoreboard.cjs:22; scout-feedback.cjs:48 | symbol PK, at | when a symbol's closes were last fetched | both | one row per symbol |
 
 **Trading engines (part 2)**
@@ -367,7 +367,7 @@ Each feature: what it does / where the data comes from / where it is shown. Scre
 
 | Feature | What it does | Data and mechanics | Shown |
 |---|---|---|---|
-| Korean balance | Cash, settled (D+2) cash and holdings of the Korean account | KIS `inquire-balance` (TR `TTTC8434R` live / `VTTC8434R` mock, kis-client.cjs:183) through worker operations `import`/`refresh` (kis-worker.cjs:105-109). Refreshed every 120 s (main.cjs:754) and on request (`kis:refresh`, `portfolio:refresh`) | Home, Portfolio (`UnifiedPortfolio.tsx`), `KisAccount.tsx` |
+| Korean balance | Cash, settled (D+2) cash and holdings of the Korean account | KIS `inquire-balance` (TR `TTTC8434R` live / `VTTC8434R` mock, kis-client.cjs:183) through worker operations `import`/`refresh` (kis-worker.cjs:105-109). Refreshed every 120 s (main.cjs:756) and on request (`kis:refresh`, `portfolio:refresh`) | Home, Portfolio (`UnifiedPortfolio.tsx`), `KisAccount.tsx` |
 | Korean prices | Latest price per held, watched or allowed symbol, at most 20 | REST `quotes` every 30 s (main.cjs:146-160, 753) plus the KIS stream (`kisService.onQuote`, main.cjs:34-43); a streamed tick wins unless it is over 60 s old (main.cjs:155). A `RATE_LIMITED` poll waits 120 s (main.cjs:158) | `market:changed` -> every page |
 | U.S. balance and prices | USD cash, pending sale proceeds, holdings, quotes | Worker `us-context` (kis-worker.cjs:31): KIS overseas `inquire-balance` `TTTS3012R` and `inquire-present-balance` `CTRP6504R` (kis-overseas.cjs:44, 47). Every 60 s when KIS is free and not cooling down (`automation.refreshUS`, main.cjs:241, 293-298); at most 20 symbols | Portfolio, U.S. stocks |
 | Settlement holds | While KIS moves a settlement overnight, a reading that is inconsistent is not used: the last consistent one is held, or the new one is marked provisional | `BalanceHold` / `UsBalanceHold` (settlement-check.cjs; `useKr`, `useUs`, main.cjs:45-59). A provisional reading sets no daily record, high, low or graph point (main.cjs:47, 530, 544) | part 2 for the rules |
@@ -412,13 +412,13 @@ Each feature: what it does / where the data comes from / where it is shown. Scre
 
 | Feature | What it does | Data and mechanics | Shown |
 |---|---|---|---|
-| Period list (orders) | Orders in both markets for a date range of at most 60 days back, newest first | `kis:activity` (main.cjs:798-823): KIS Korean order history (`orders`, kis-worker.cjs:72; shapes checked in `normalizeOrders`, kis-activity.cjs:25-44) joined with `us-order-history`; a U.S. failure still shows the Korean part (`usError`) | `ActivityReport.tsx` |
-| Chains | KIS gives a revised or cancelled order its own row; where the app knows the chain, rows that would count fills twice are marked | `activity-chains.cjs markChains` (main.cjs:814) | totals (`src/activity.mjs`) |
-| Origin | Each row says where it came from: a review, a conditional order (stop), the user's ticket, "Changed outside the app", "Outside the app"; orders decided but not sent are listed with the reason | `activity-origin.cjs labelRows`, `order-origin.cjs` (`madeBy` mark on `live_intents`; older orders matched to reviews in SQL) (main.cjs:815-818) | Activity "From" column |
-| Today strip | Today's app orders by outcome and the latest five, with no KIS request | `activity:today` from `live_intents`, reviews and conditional orders (main.cjs:793-796; activity-today.cjs:1-4) | Activity |
-| Cache | The page opens with the last report; a report of another account is never shown | `activity_last` (activity-cache.cjs:1-16). An automatic refresh is skipped while an order is being sent, a review runs or another account request runs (`skipReason`, main.cjs:803); at most every 5 minutes (`FRESH_MS`) | Activity, Performance |
-| Realized P&L | Realized profit per trade day with fees and taxes, "as KIS reports it, not total return" | KIS `profit` report (`rlzt_pfls`, `fee`, `tl_tax`; kis-activity.cjs:45-53). Korean account only (the handler adds U.S. rows to `orders` only, main.cjs:811). The app computes no realized P&L of its own for the Home tile (home-result.mjs:4) | `ActivityReport.tsx:92-102` |
-| Console log | Every AI and System entry | `events` table, newest 600 (storage.cjs:20-36) | AI console; export to JSON by the user (`events:export`, main.cjs:839) |
+| Period list (orders) | Orders in both markets for a date range of at most 60 days back, newest first | `kis:activity` (main.cjs:800-825): KIS Korean order history (`orders`, kis-worker.cjs:72; shapes checked in `normalizeOrders`, kis-activity.cjs:25-44) joined with `us-order-history`; a U.S. failure still shows the Korean part (`usError`) | `ActivityReport.tsx` |
+| Chains | KIS gives a revised or cancelled order its own row; where the app knows the chain, rows that would count fills twice are marked | `activity-chains.cjs markChains` (main.cjs:816) | totals (`src/activity.mjs`) |
+| Origin | Each row says where it came from: a review, a conditional order (stop), the user's ticket, "Changed outside the app", "Outside the app"; orders decided but not sent are listed with the reason | `activity-origin.cjs labelRows`, `order-origin.cjs` (`madeBy` mark on `live_intents`; older orders matched to reviews in SQL) (main.cjs:817-820) | Activity "From" column |
+| Today strip | Today's app orders by outcome and the latest five, with no KIS request | `activity:today` from `live_intents`, reviews and conditional orders (main.cjs:795-798; activity-today.cjs:1-4) | Activity |
+| Cache | The page opens with the last report; a report of another account is never shown | `activity_last` (activity-cache.cjs:1-16). An automatic refresh is skipped while an order is being sent, a review runs or another account request runs (`skipReason`, main.cjs:805); at most every 5 minutes (`FRESH_MS`) | Activity, Performance |
+| Realized P&L | Realized profit per trade day with fees and taxes, "as KIS reports it, not total return" | KIS `profit` report (`rlzt_pfls`, `fee`, `tl_tax`; kis-activity.cjs:45-53). Korean account only (the handler adds U.S. rows to `orders` only, main.cjs:813). The app computes no realized P&L of its own for the Home tile (home-result.mjs:4) | `ActivityReport.tsx:92-102` |
+| Console log | Every AI and System entry | `events` table, newest 600 (storage.cjs:20-36) | AI console; export to JSON by the user (`events:export`, main.cjs:841) |
 
 ### 3.5 Fees, taxes and income
 
@@ -426,8 +426,8 @@ Each feature: what it does / where the data comes from / where it is shown. Scre
 |---|---|---|---|
 | Commission plan | Rates used for estimates: Korea 0.015%, U.S. 0.25%, U.S. sale fee 0.00206% with a USD 0.01 minimum (defaults; the user edits them) | `DEFAULT_COSTS` trading-costs.cjs:5; `costs:get/save` | `TradingCosts.tsx` |
 | Korean sale tax | Dated statutory rules: 2026 KOSPI 0.05% + 0.15% rural tax, KOSDAQ 0.20%, KONEX 0.10%; ETFs and ETNs exempt; an unknown market takes the higher rate, labelled an assumption; the user may set an override | `KR_SALE_TAX` tax-rules.cjs:15-20; trading-costs.cjs:24-25 | order estimates, Tax ledger |
-| Broker-reported charges | Actual fee and tax per executed order | `engine.refreshCharges()` for both engines every 15 minutes (KIS `charges`, kis-worker.cjs:69; main.cjs:658-664) | Costs page |
-| U.S. tax record | The broker's U.S. trade history is the tax record: from January of last year once a day in 90-day windows, the last two weeks at every check; live accounts only. A range not read whole stays a named gap and is retried | `importTaxTrades` (main.cjs:649-657), `TradingCosts.syncHistory`, `trade-history.cjs`; tables `tax_events`, `trade_history_*` | `TaxLedger.tsx` |
+| Broker-reported charges | Actual fee and tax per executed order | `engine.refreshCharges()` for both engines every 15 minutes (KIS `charges`, kis-worker.cjs:69; main.cjs:660-666) | Costs page |
+| U.S. tax record | The broker's U.S. trade history is the tax record: from January of last year once a day in 90-day windows, the last two weeks at every check; live accounts only. A range not read whole stays a named gap and is retried | `importTaxTrades` (main.cjs:651-659), `TradingCosts.syncHistory`, `trade-history.cjs`; tables `tax_events`, `trade_history_*` | `TaxLedger.tsx` |
 | Overseas gains tax | Yearly: net gain above KRW 2,500,000, then 20% + 2% local; amounts below 10 won dropped (an assumption) | `OVERSEAS_GAINS`, `overseasGainsTax`, `ROUNDING` tax-rules.cjs:21-41 | Tax ledger |
 | Lots | Cost basis per instrument and account: moving average (KIS's method, default) or FIFO; opening lots entered by the user for shares bought before the record | tax-lots.cjs:1-10; `taxMethod` trading-costs.cjs:5, 16; `costs:add-opening-lot` | Tax ledger |
 | Tax result certainty | Every figure is `reconciled`, `estimated`, `incomplete` or `unsupported`, with missing inputs and assumptions | `taxResult` tax-rules.cjs:44-49 | Tax ledger |
@@ -442,7 +442,7 @@ Each feature: what it does / where the data comes from / where it is shown. Scre
 | Company chart | Company facts, daily and minute bars for one symbol | `company:get`: three `company-chart` requests (`company`, `daily_technicals`, `minute_technicals`), cached 30 s, one at a time (main.cjs:313-315) | `CompanyView.tsx`, `CandleChart.tsx` |
 | Technical summary bars | Extra bars: Korea today's 1-minute bars (combined into 5/15/30/60), 200 weekly, 100 monthly; U.S. 120 bars per intraday interval | `chart:bars` -> `kis-evidence.cjs fetchBars` (lines 46-49), cached 60 s per symbol (main.cjs:303-312) | `TechnicalSummary.tsx`, `src/technical-summary.mjs` |
 | Live ticks | A chart window follows its symbol: Korean symbols join the stream (at most 5 charted, 20 in all); U.S. symbols, and Korean ones while the stream is down, are polled every 10 s while a session is open. Ticks do not feed the portfolio or reviews | main.cjs:23-37, 237, 305-308; kis-worker.cjs:89-92 | `ChartWindow.tsx` |
-| Holdings history | Daily, 1-minute and 5-minute candles for held symbols | `market:history`, cached per time bucket (main.cjs:767-779) | Portfolio charts |
+| Holdings history | Daily, 1-minute and 5-minute candles for held symbols | `market:history`, cached per time bucket (main.cjs:769-781) | Portfolio charts |
 | Indicators | RSI 14, stochastic RSI, MACD (12/26/9), ATR 14, ADX 14 with +DI/-DI, CCI 14, ultimate oscillator, 20-day range position; values only, no buy or sell labels; needs 15 candles | `indicators.cjs technicals` (lines 22-29). Callers: not determined (the screen's summary is computed in `src/technical-summary.mjs`, inferred) | AI evidence (part 3) |
 | Phone chart image | Today on top, last 30 days below, drawn as a PNG in a hidden sandboxed window | chart-image.cjs:1-2; `notifier.render` (main.cjs:545) | phone snapshot |
 
@@ -463,8 +463,8 @@ Each feature: what it does / where the data comes from / where it is shown. Scre
 |---|---|---|
 | Korean holidays | Official KRX list from KIS (`chk-holiday`, TR `CTCA0903R`) through the calendar worker, for today and 24 days ahead, into `kr_calendar`; refreshed every 6 hours. Needs a second, live key. Without it: "Weekdays only" | main.cjs:83-89, 535, 706; calendar-worker.cjs:21-23 |
 | Korean days with other hours | A hand-kept table; today only 2026-11-19 (exam day: regular 10:00-16:30, app orders until 16:20) | kr-hours.cjs:9-16; docs/EXTERNAL-FACTS.md `F-KRX-CSAT-2026` |
-| U.S. holidays and early closes | Rules in code ("NYSE holiday and early-close rules, checked against nyse.com for 2026-2027") | main.cjs:706; market-sessions.cjs (part 2) |
-| Session status | Every session today for both markets, what is open, what is next, what this account may trade | `market:status` (main.cjs:705-706) -> `MarketStatus.tsx` |
+| U.S. holidays and early closes | Rules in code ("NYSE holiday and early-close rules, checked against nyse.com for 2026-2027") | main.cjs:708; market-sessions.cjs (part 2) |
+| Session status | Every session today for both markets, what is open, what is next, what this account may trade | `market:status` (main.cjs:707-708) -> `MarketStatus.tsx` |
 | U.S. earnings dates | Nasdaq's public calendar API (`api.nasdaq.com/api/calendar/earnings?date=`), every weekday for 21 days ahead, 0.8 s apart; and the 200 largest U.S. companies from Nasdaq's screener. Refreshed when older than 20 hours | us-calendar.cjs:27-41; main.cjs:411-415 |
 | Event calendar | Macro releases, options expiries, earnings, dividend record dates and meetings for relevant symbols; built from cached research, nothing fetched | event-calendar.cjs:1-2, 16; main.cjs:427-431 |
 | Korean earnings | OpenDART (announced results date replaces the estimate); U.S.: the listed date first, then an SEC-based estimate | main.cjs:428-431 |
@@ -492,13 +492,13 @@ Each feature: what it does / where the data comes from / where it is shown. Scre
 | Stories | "Top stories": a term bursting across many outlets in 24 hours groups headlines into a story | news-stories.cjs:1-5 |
 | Trigger | An event not yet used starts a review while inside its trigger window: mode `all`, or `disclosures` (default: only high-importance DART filings), or `off` | news-events.cjs:55-62; automation.cjs:15 `newsTrigger` |
 | Shown | `NewsView.tsx`, `NewsSources.tsx`; Home item "important disclosures about your stocks today" | main.cjs:619 |
-| Opening a link | Only a URL the app holds; opened in the system browser | main.cjs:743 |
+| Opening a link | Only a URL the app holds; opened in the system browser | main.cjs:745 |
 
 ### 3.11 Discovery, watchlist and research cache
 
 | Feature | What it does | Data and mechanics | Shown |
 |---|---|---|---|
-| Watchlist | Per account; symbols join the review universe and the quote poll. The user adds, removes, pins; the AI may add up to 3 per call and remove only its own unpinned entries; AI entries are capped | `watchlist` table; `discovery:watch` (main.cjs:687); discovery.cjs:12, 42 | `Discover.tsx` |
+| Watchlist | Per account; symbols join the review universe and the quote poll. The user adds, removes, pins; the AI may add up to 3 per call and remove only its own unpinned entries; AI entries are capped | `watchlist` table; `discovery:watch` (main.cjs:689); discovery.cjs:12, 42 | `Discover.tsx` |
 | Screener | KIS rankings joined with the master | worker `screen` -> `kis-rankings.cjs` (kis-worker.cjs:86-88); `discovery:screen` | Discover |
 | Starter candidates | With no allowlist, watchlist or holdings in a market, its largest listed companies | `StarterCandidates` (main.cjs:369-372; discovery.cjs:51-53) | AI context |
 | Company research | Sections (overview, about, analysts, estimates, financials, dividends, events, release, flows, risk, valuation, peers, fund, holdings, factors, fairvalue) built from KIS, OpenDART and SEC EDGAR | `ResearchService` (research-service.cjs:15-24); `research:company` (main.cjs:446) | `ResearchPanel.tsx`, `CompanyView.tsx`; AI tools |
@@ -516,13 +516,13 @@ install; the install is refused while trading is active.
 
 | Topic | Behaviour | Cite |
 |---|---|---|
-| Source | GitHub Releases of `goheungchoi/financial-portfolio-manager` through `electron-updater`; only installer builds (they carry `app-update.yml`); portable and source runs show `disabled` | package.json build.publish; main.cjs:634-637 |
-| Check | Automatic every 6 hours when `checkAutomatically` (default true); ticked 30 s after start and every 10 minutes; or the user presses Check | app-updates.cjs:4, 20, 27; main.cjs:640 |
+| Source | GitHub Releases of `goheungchoi/financial-portfolio-manager` through `electron-updater`; only installer builds (they carry `app-update.yml`); portable and source runs show `disabled` | package.json build.publish; main.cjs:636-639 |
+| Check | Automatic every 6 hours when `checkAutomatically` (default true); ticked 30 s after start and every 10 minutes; or the user presses Check | app-updates.cjs:4, 20, 27; main.cjs:642 |
 | Download | Never automatic (`autoDownload=false`); only from state `available` | app-updates.cjs:11, 24 |
 | Verification | electron-updater checks the file against `latest.yml` (SHA-512); the desktop test rejects a wrong checksum. Errors reach the screen as codes only (`NETWORK_UNAVAILABLE`, `RELEASE_NOT_FOUND`, `CHECKSUM_MISMATCH`, `SIGNATURE_INVALID`, `UPDATE_FAILED`). Code signing of the installer: not determined (no certificate setting in package.json) | app-updates.cjs:30-31; tests/update-desktop.cjs:1 |
-| Install | Only on the user's press, from state `downloaded`; `quitAndInstall(false, true)`. Refused with `AUTO_TRADING_ARMED`, `REVIEW_RUNNING` or `ORDERS_OPEN` (an order Submitting, Uncertain, Accepted or Partially filled). No install on quit (`autoInstallOnAppQuit=false`), no prerelease, no downgrade | app-updates.cjs:11, 25; main.cjs:638 |
+| Install | Only on the user's press, from state `downloaded`; `quitAndInstall(false, true)`. Refused with `AUTO_TRADING_ARMED`, `REVIEW_RUNNING` or `ORDERS_OPEN` (an order Submitting, Uncertain, Accepted or Partially filled). No install on quit (`autoInstallOnAppQuit=false`), no prerelease, no downgrade | app-updates.cjs:11, 25; main.cjs:640 |
 | User controls | One setting (`checkAutomatically`); buttons Check, Download, Install | app-updates.cjs:21; `AppUpdates.tsx` |
-| Home | "Version X is ready to install" once downloaded | main.cjs:625 |
+| Home | "Version X is ready to install" once downloaded | main.cjs:627 |
 
 ### 4.2 Notifications, phone snapshots, digest
 
@@ -535,8 +535,8 @@ install; the install is refused while trading is active.
 | Shutdown message | Sent straight to the webhook when Windows ends the session (1.5) | main.cjs:194-198 |
 | Phone control | Nothing inbound exists: the app only posts to the webhook; no listener or command channel was found in main.cjs or preload.cjs | |
 | Daily digest | Once per Seoul day at or after `digestHour` (default 16, off by default) while the app is open; missed days are not sent later. Content: value and change per market, the day's investment return or why it is unavailable, reviews by decision, orders by outcome, AI calls and cost, guardrails. Local only: no AI or broker call. Stored in `daily_digests`, sent through `notify`; preview with `runtime:digest-preview` | daily-digest.cjs:2, 11-52; automation.cjs:15 |
-| Outbox on screen | The last 30 rows (`status()`) in the runtime state | notifications.cjs:45; main.cjs:690 |
-| Needs you | The Home attention list is computed on request (`workspace:attention`): cash checks, connect KIS, orders awaiting approval, lessons, guardrail, loss limit, review back-off, provider wait, last review failed, credit warnings, important disclosures, unreadable stops, Claude first review, missing plan stops, the restart notice, an update ready | main.cjs:602-628 |
+| Outbox on screen | The last 30 rows (`status()`) in the runtime state | notifications.cjs:45; main.cjs:692 |
+| Needs you | The Home attention list is computed on request (`workspace:attention`): cash checks, connect KIS, orders awaiting approval, lessons, guardrail, loss limit, review back-off, provider wait, last review failed, credit warnings, important disclosures, unreadable stops, Claude first review, missing plan stops, the restart notice, an update ready | main.cjs:602-630 |
 
 ### 4.3 CPU and responsiveness safeguards
 
