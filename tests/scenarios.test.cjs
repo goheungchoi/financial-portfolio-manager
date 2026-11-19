@@ -21,7 +21,7 @@ test('a scenario with a field the runner does not know fails, wherever it is',()
   for(const [where,bad] of [['top',{...s,extra:1}],['expect',{...s,expect:{...s.expect,orderCount:3}}],['expect.first',{...s,expect:{...s.expect,first:{action:'Buy',qty:1}}}],
     ['expect.orders',{...s,expect:{...s.expect,orders:[{item:1,status:'x'}]}}],['config',{...s,config:{ordersPerReview:3,model:'x'}}],['broker',{...s,broker:[{op:'place-order',call:1,fault:'lost',when:'x'}]}],
     ['broker op',{...s,broker:[{op:'buy',call:1,fault:'lost'}]}],['broker fault',{...s,broker:[{op:'place-order',call:1,fault:'boom'}]}],
-    ['config.scope',{...s,config:{ordersPerReview:3,scope:'asia'}}],['config.model',{...s,config:{ordersPerReview:3,model:'claude-haiku-5-5'}}],['config.usFunding',{...s,config:{ordersPerReview:3,usFunding:'pooled'}}]])
+    ['config.scope',{...s,config:{ordersPerReview:3,scope:'asia'}}],['config.model',{...s,config:{ordersPerReview:3,model:'claude-haiku-5-5'}}]])
     assert.throws(()=>validate(bad),/unknown field|one of|unknown or separate/,where);
   // Steps: each field of each step kind, the during events, and the expect fields inside them.
   const {answers,expect,...base}=s;const steps=st=>({...base,steps:st});

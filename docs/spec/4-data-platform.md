@@ -582,7 +582,7 @@ determined. The docs folder is shipped beside the app (package.json build.extraF
 
 | Command | What runs | Cite |
 |---|---|---|
-| `npm test` | `node --test` on a list of test files written by hand in package.json. On 2026-11-19 the list has 235 files and matches the 235 `*.test.cjs|mjs` files in tests/ (counted). The last check report: 1,978 tests | package.json:10; 2026-11-19-pre-release-1569/check-report.md:12 |
+| `npm test` | `node --test` on a list of test files written by hand in package.json. On 2026-11-19 the list has 236 files and matches the 236 `*.test.cjs|mjs` files in tests/ (counted; 1.5.69 work). The last check report: 1,978 tests | package.json:10; 2026-11-19-pre-release-1569/check-report.md:12 |
 | `npm run test:hours` | The files of that list that start a scout, run again with the clock started at six times: Korean hours, evening extended sessions, U.S. hours, no market open, weekend, and the 2026-11-19 late open. `helpers/shift-clock.cjs` shifts `Date` from `PORTFOLIO_FAKE_NOW` | tests/run-hours.cjs:1-19 |
 | `npm run test:desktop` (= `test:ui`) | Build, then 19 cases, each a real Electron process on the compiled page with its own made-up profile; stops at the first failure; writes `artifacts/ui-tests/run-*/report.html`, logs and screenshots; 180 s per case | tests/run-desktop.cjs:5-28; package.json:14, 16 |
 | `npm run package` | Build, then a portable folder `release/Financial-Portfolio-Manager-<time>/` (Electron's files, `electron/`, `dist/`, two `src` modules, the bridge script, README, docs) and `release/latest.json` | scripts/package.cjs:2-12 |
@@ -609,6 +609,10 @@ shape of every answer with the mock's (lines 1-7). `tests/helpers/app-harness.cj
 around the two engines (funding ledger, costs, exposure, the `detectFlows` reading order), and
 `tests/app-harness.test.cjs` checks that order against main.cjs's own source (lines 1-14).
 `tests/helpers/scenario.cjs` injects a review's answers through the real AI client on a fake network (lines 1-4).
+Its scenarios run under the app's own funding regime (`unknown`): a U.S. buy is counted against Korean won cash at
+the rate plus 2%. Since the U.S. buy block was removed (1.5.69) there is no option to verify a separate U.S. pool,
+so no scenario passes a U.S. buy by a regime the app never has. The harness gives the automation the U.S. quotes it
+needs (`usQuotes`) and the conditional-entry path for U.S. symbols (`tests/us-auto-buy-flow.test.cjs`).
 No test reads a credential file, places a real order or makes a paid AI request (docs/TESTING.md:22).
 
 ## 6. The release process, as the code and the practised checks show it

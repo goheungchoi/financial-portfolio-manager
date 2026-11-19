@@ -1,5 +1,5 @@
 {
- "name": "P36 three U.S. buys in one answer (separate funding), then all three fill in one reading: nothing is left open",
+ "name": "P36 three U.S. buys in one answer, counted against won cash (₩986,556 of ₩1,000,000 at the last), then all three fill in one reading: nothing is left open",
  "account": {
   "kr": {
    "cash": 1000000,
@@ -16,8 +16,7 @@
  },
  "config": {
   "ordersPerReview": 3,
-  "scope": "us",
-  "usFunding": "separate"
+  "scope": "us"
  },
  "steps": [
   {

@@ -9,9 +9,9 @@
 //   account        {kr:{cash, settledCash?, holdings?:[{symbol, quantity, price}]}, us?:{cash, holdings?, fx?},
 //                  prices:{symbol: price}}: Korean symbols are six digits, U.S. ones EXCH:TICKER (NASD:AAPL).
 //   config         {ordersPerReview: 1-22, scope?: "kr" (default) | "us" | "both", severalOpenOrders?: true (default) |
-//                  false, usFunding?: "unknown" (default, as the app runs today: automatic U.S. buys are blocked,
-//                  INTEGRATED_MARGIN_AUTOMATION_BLOCKED) | "separate" (a verified separate U.S. pool), lossAction?,
-//                  maxAutoOrdersPerDay?}. On OpenAI every model's ceiling is 1, so the runner sets n
+//                  false, lossAction?, maxAutoOrdersPerDay?}. The funding regime is always the app's (unknown): a U.S.
+//                  buy is counted against Korean won cash at the rate plus 2% (the usFunding option was removed with
+//                  the U.S. buy block, 2026-11-19). On OpenAI every model's ceiling is 1, so the runner sets n
 //                  from ordersPerReview (1 when the switch is off); the ceiling is tested in more-orders-format and
 //                  orders-setting.
 //   broker         [{op, call, fault}] (optional): the mock KIS fails the call-th call (1 = the first, counted over the
@@ -57,7 +57,7 @@ const {MockKis}=require('./mock-kis.cjs');const {appHarness}=require('./app-harn
 const EXPECT=['requests','sent','first','orders','withheld','reviewFailed','followUps','pending','journalTitle','openOrders','counted','deferred','forms','maxItems'];
 const MODELS=['gpt','claude-opus-5-5'];
 const KEYS={top:['name','description','account','config','answers','broker','marketClosed','expect','steps'],account:['kr','us','prices'],market:['cash','settledCash','holdings','fx'],
-  config:['ordersPerReview','model','scope','severalOpenOrders','usFunding','lossAction','maxAutoOrdersPerDay'],broker:['op','call','fault'],expect:EXPECT,first:['action','symbol','withheldKind','notePrefix'],
+  config:['ordersPerReview','model','scope','severalOpenOrders','lossAction','maxAutoOrdersPerDay'],broker:['op','call','fault'],expect:EXPECT,first:['action','symbol','withheldKind','notePrefix'],
   order:['item','class','code','notePrefix','sent'],withheld:['item','kind'],step:['review','fill','fills','userOrder','marketClosed','wait','check'],review:['answers','during','expect'],during:['before','event'],
   fill:['symbol','quantity','price'],userOrder:['symbol','side','quantity','price'],wait:['minutes'],check:['expect'],open:['symbol','side','status','quantity','filled'],counted:['symbol','side','quantity','fullQuantity']};
 const OPS=['prepare-order','place-order','revise-order','orders'],FAULTS=['lost','lost-unplaced','not-sent','session-closed'],EVENTS=['severalOpenOff','settingSaved','batchLimitPassed','lossBreach'],SCOPES={kr:'kis',us:'us',both:'both'};
@@ -70,7 +70,6 @@ function validate(s){strict(s,KEYS.top,'scenario');if(typeof s.name!=='string'||
   strict(s.account,KEYS.account,'account');strict(s.account.kr,KEYS.market,'account.kr');if(s.account.us)strict(s.account.us,KEYS.market,'account.us');
   strict(s.config,KEYS.config,'config');if(!Number.isInteger(s.config.ordersPerReview)||s.config.ordersPerReview<1||s.config.ordersPerReview>22)throw new Error('config.ordersPerReview: 1 to 22');
   if('scope' in s.config&&!(s.config.scope in SCOPES))throw new Error('config.scope: one of kr, us, both');
-  if('usFunding' in s.config&&!['unknown','separate'].includes(s.config.usFunding))throw new Error('config.usFunding: unknown or separate');
   if('model' in s.config&&!MODELS.includes(s.config.model))throw new Error(`config.model: one of ${MODELS.join(', ')}`);
   for(const [i,b] of (s.broker??[]).entries()){strict(b,KEYS.broker,`broker[${i}]`);if(!OPS.includes(b.op))throw new Error(`broker[${i}].op: one of ${OPS.join(', ')}`);if(!Number.isInteger(b.call)||b.call<1)throw new Error(`broker[${i}].call: 1 or more`);
     if(!(FAULTS.includes(b.fault)||b.fault&&typeof b.fault==='object'&&(Object.keys(b.fault).join()==='reject'||Object.keys(b.fault).join()==='fail')))throw new Error(`broker[${i}].fault: one of ${FAULTS.join(', ')}, {reject}, {fail}`);}
@@ -91,11 +90,8 @@ function setup(s){const {AiClient}=require('../../electron/ai-client.cjs');
   const byOp={};for(const b of s.broker??[])(byOp[b.op]??=[]).push(b);
   for(const [op,list] of Object.entries(byOp)){const last=Math.max(...list.map(b=>b.call));for(let c=1;c<=last;c++){const b=list.find(x=>x.call===c);m.fault(op,b?b.fault:null);}}
   if(s.marketClosed)m.sessionOpen.KR=false;
-  const h=appHarness({mock:m}).enable();const {ordersPerReview,model='gpt',severalOpenOrders=true,scope='kr',usFunding='unknown',...rest}=s.config;const a=h.automation({...rest,scope:SCOPES[scope]});
+  const h=appHarness({mock:m}).enable();const {ordersPerReview,model='gpt',severalOpenOrders=true,scope='kr',...rest}=s.config;const a=h.automation({...rest,scope:SCOPES[scope]});
   const claude=model==='claude-opus-5-5';
-  // The funding regime: unknown (as the app runs today: automatic U.S. buys are blocked, INTEGRATED_MARGIN_AUTOMATION_
-  // BLOCKED) or separate (a verified separate U.S. pool, where they are allowed).
-  if(usFunding==='separate')h.ledger.verifiedRegime='separate';
   // The U.S. quotes the review gets: every U.S. symbol the scenario prices (main.cjs: holdings and the watchlist).
   a.refreshUS=async()=>m.request('US','context',{symbols:Object.keys(s.account.prices).filter(x=>x.includes(':'))});
   if(severalOpenOrders===false){for(const e of [h.kr,h.us]){e.severalOpenFixed=false;e.severalOpenSetting=()=>a.config.severalOpenOrders===true;}a.config={...a.config,severalOpenOrders:false};}

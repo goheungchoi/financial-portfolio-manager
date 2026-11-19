@@ -1,5 +1,5 @@
 {
- "name": "P21 a Korean buy and a U.S. buy in one answer, the U.S. account funded separately: both are sent",
+ "name": "P21 a Korean buy and a U.S. buy in one answer, both counted against won cash: both are sent",
  "account": {
   "kr": {
    "cash": 10000000,
@@ -15,8 +15,7 @@
  },
  "config": {
   "ordersPerReview": 2,
-  "scope": "both",
-  "usFunding": "separate"
+  "scope": "both"
  },
  "answers": [
   {

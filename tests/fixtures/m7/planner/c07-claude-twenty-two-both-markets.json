@@ -1,5 +1,5 @@
 {
- "name": "C07 Claude, both markets, separate U.S. funding: 22 orders (11 Korean, 11 U.S.) in one answer, the model's ceiling: all are sent",
+ "name": "C07 Claude, both markets: 22 orders (11 Korean, 11 U.S.) in one answer, the model's ceiling: all are sent (the U.S. buys fit the won rule)",
  "account": {
   "kr": {
    "cash": 50000000,
@@ -36,8 +36,7 @@
  "config": {
   "ordersPerReview": 22,
   "model": "claude-opus-5-5",
-  "scope": "both",
-  "usFunding": "separate"
+  "scope": "both"
  },
  "answers": [
   {
