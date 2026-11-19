@@ -86,7 +86,8 @@ The first matching row is shown; only **Monitoring** lets automatic reviews star
 | Starting auto trading | `this.launching` (Start is checking the account) |
 | Review in progress | `this.busy` |
 | Manual reviews only | `enabled` is false in the saved settings |
-| **Paused after restart** | `enabled` is true but `sessionArmed` is false (see 1.9) |
+| **Paused after restart** | `enabled` is true but `sessionArmed` is false, and no Start since the app started (`pausedByRestart`; see 1.9) |
+| **Paused** — "Press Start auto trading to resume." | `enabled` is true but `sessionArmed` is false after a Start this run: "Scheduled reviews" turned off and on again (1.5.69) |
 | Waiting for external agent | `provider==='external'` |
 | API key required | the trading model's vendor key is not connected (`missingKey`, `:1003`) |
 | Paper account paused | paper scope and the paper account is paused |
@@ -193,8 +194,8 @@ A fourth, optional: `maxConsecutiveFailures` (0 = off): that many failed reviews
 **What Start does.** `start(a, token)` (`auto-launch.cjs:10-43`), called from `runtime:start` (`main.cjs:718`). It
 refreshes the U.S. account when in scope, re-applies each selected engine's saved limits and switches the engine on
 with automatic orders (`e.configure(policy, 'ENABLE LIVE|MOCK')`, `e.enableAuto(...)`, `:25`), un-pauses the paper
-account in paper scope, then saves `enabled:true, autoSubmit:true` (`:27`). Saving `enabled` sets `sessionArmed`
-(`automation.cjs:212`). It does **not** run a review: the schedule resumes from the saved clock, and the reply says
+account in paper scope, then saves `enabled:true, autoSubmit:true` (`:27`) and arms the session (`a.sessionArmed=true`): Start is the only
+thing that arms one (audit item 15, 1.5.69). It does **not** run a review: the schedule resumes from the saved clock, and the reply says
 when the next review is due (`:35-42`).
 
 **Every condition that refuses Start**, in the order checked:
@@ -237,8 +238,10 @@ Stop is never refused: a save that only turns these two off skips the Claude con
 **Paused after restart.** The app never resumes automatic trading by itself. On every app start `sessionArmed` is
 false (`automation.cjs:123`), whatever `enabled` says in the saved settings. With `enabled` still true the scheduler
 reads "Paused after restart" (`:222`): no automatic review starts, armed conditional orders and trailing stops are not
-watched, and the user's own review still works. Only a settings save that carries `enabled` (Start, or Stop) changes
-`sessionArmed` (`:212`). The start notice (`start-notice.cjs:2-4`) tells the user on launch that auto trading is
+watched, and the user's own review still works. Only Start arms the session (`auto-launch.cjs` `start`). A save never
+arms it, including turning "Scheduled reviews" on, which saves the switch for the next Start. Stop, the guardrail's
+auto-stopped trip (which calls Stop) and a save with `enabled` off disarm it (`automation.cjs` `configure`). Until
+1.5.69 every Engine settings save carried the saved `enabled:true` and re-armed a paused session without Start. The start notice (`start-notice.cjs:2-4`) tells the user on launch that auto trading is
 paused, how many stop orders are not being watched and how the app last stopped. The app updater refuses to install
 while `enabled && sessionArmed` (`main.cjs:638`, `AUTO_TRADING_ARMED`).
 

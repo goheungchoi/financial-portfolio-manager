@@ -25,6 +25,8 @@ async function start(a,token){
     for(const e of selected){const saved=e.policy()??{symbols:[],lossLimit:{mode:'off',value:0}};const policy=Object.fromEntries(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','maxDailyLossKRW','lossLimit'].filter(k=>saved[k]!==undefined).map(k=>[k,saved[k]]));const env=e.getState().environment==='live'?'LIVE':'MOCK';e.configure(policy,`ENABLE ${env}`);e.enableAuto(`ENABLE AUTO ${env}`);}
     if(!selected.length)a.paper.setPaused(false);
     a.configure({enabled:true,autoSubmit:true});
+    // Start is what arms the session (audit item 15): a settings save never does.
+    a.sessionArmed=true;a.pausedByRestart=false;
   }catch(error){if(generation===(a.launchGeneration??0))for(const row of prior){row.e.enabled=row.enabled;row.e.autoEnabled=row.autoEnabled;}throw error;}
   finally{a.launching=false;}
   // Starting resumes the schedule: no review runs because of the button. The last review time is kept across restarts

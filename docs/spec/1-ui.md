@@ -1957,7 +1957,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 - **Saved state**: the automation config, saved by `automation.configure` into the table `automation_settings` row 1 as JSON (electron/automation.cjs:171 `saveConfig`, :212). The draft, the dirty flag and the changed-key set are session memory only (src/useDraftState.ts:2 "Session memory only: navigation retains drafts; reload/exit discards them").
 - **Notes**:
   - The save error table is `SAVE_ERRORS` (src/RuntimeSettings.tsx:28-30), listed in full under "Error-code-to-text tables" below.
-  - Every save in settings mode carries `enabled` (src/RuntimeSettings.tsx:49), and `configure` sets `sessionArmed=next.enabled` whenever the value has an `enabled` key (electron/automation.cjs:212). So any settings save re-arms or disarms the session to match the "Scheduled reviews" switch. After an app start `sessionArmed` is false (electron/automation.cjs:123 "this.sessionArmed=false").
+  - A save in settings mode sends only the keys changed (src/RuntimeSettings.tsx:49). A save never arms the session: only Start auto trading does (audit item 15, 1.5.69). Turning "Scheduled reviews" off disarms it; turning it on saves the switch, and the schedule runs from the next Start. After an app start `sessionArmed` is false (electron/automation.cjs:123 "this.sessionArmed=false"). Until 1.5.69 every save carried the saved `enabled` and re-armed a session paused after a restart.
   - A value the engine refuses for range or type reasons comes back as `INVALID_SETTINGS` (electron/main.cjs:722). `SAVE_ERRORS` has no entry for it, so the notice shows the raw code "INVALID_SETTINGS" and the toast "Not saved: INVALID_SETTINGS" (src/RuntimeSettings.tsx:50; inferred from the fallback chain `reply.message??reply.error`).
   - `SAVE_ERRORS` has an `INVALID_MODEL_SETTINGS` text, but the handler at electron/main.cjs:722 does not pass that code through (it maps it to `INVALID_SETTINGS`), so that text cannot appear from a save (inferred from the handler's allow-list).
   - Unknown keys are refused: any key not in `DEFAULTS` (other than `claudeTradingConfirmed`) throws `INVALID_SETTINGS`; keys in `LEGACY_SETTINGS` are silently dropped (electron/automation.cjs:173-175, :20).
@@ -1985,7 +1985,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   2. Card "Trading" (src/EngineSettings.tsx:83-93) with rows:
      - "Portfolio", hint "Which account the AI manages" (:84).
      - "Decision maker" (:85).
-     - "Scheduled reviews", hint "Review on a timer and when prices move" (:86).
+     - "Scheduled reviews", hint "Review on a timer and when prices move" while auto trading runs (`state.launch.running`), otherwise "Takes effect when you press Start auto trading." (:86).
      - "Place orders automatically", hint "Orders that pass your limits are sent without asking" when on, "Every AI order waits for your approval" when off (:87).
      - "Risk per trade", hint "Largest loss at the stop, as a share of equity. Sets the AI's position-size ceiling." (:88).
      - "Stop distance", hint "Multiple of the daily average true range (ATR)." (:89).
@@ -2524,7 +2524,7 @@ All keys below are in the automation config (`automation.config`, table `automat
 | Engine · Trading · Agent guidelines | "Agent guidelines" | textarea (maxLength 6000) | `guidelines` | `''` | string, at most 6000 characters | automation.cjs configure:177 |
 | Engine · Trading · Trading | "Portfolio" | select | `scope` | `'paper'` | `paper`, `kis`, `us`, `both` | automation.cjs configure:180 |
 | Engine · Trading · Trading | "Decision maker" | select | `provider` | `'local'` | `local`, `openai`, `external` (UI disables `local` unless scope is paper; the engine's `configure` does not, and `start` refuses non-`openai` for a broker scope, auto-launch.cjs:16) | automation.cjs configure:177; auto-launch.cjs `start` :14-16 |
-| Engine · Trading · Trading | "Scheduled reviews" | switch | `enabled` | `false` | boolean (also sets `sessionArmed`, configure:212) | automation.cjs configure:179 |
+| Engine · Trading · Trading | "Scheduled reviews" | switch | `enabled` | `false` | boolean (off disarms the session; on never arms it, Start does) | automation.cjs configure:179 |
 | Engine · Trading · Trading | "Place orders automatically" | switch | `autoSubmit` | `false` | boolean | automation.cjs configure:179 |
 | Engine · Trading · Trading | "Risk per trade" | number, % | `sizingRiskPct` | `1` | 0.1–20 (finite number) | automation.cjs configure:202 |
 | Engine · Trading · Trading | "Stop distance" | number, × ATR | `sizingAtrMultiple` | `2` | 0.5–5 (finite number) | automation.cjs configure:202 |

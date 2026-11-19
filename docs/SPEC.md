@@ -176,7 +176,6 @@ From the user, with the day they were set:
 
 | Change | State | Spec text that follows it |
 |---|---|---|
-| Only Start and Stop arm or disarm a session; a settings save never does | found 2026-11-19, fix not designed | P3 §1.9, P1 Engine settings |
 | Release of a cancelled buy's unfilled remainder from the funding ledger | design wanted, question for the user drafted | P2 §4.1 |
 | A longer window for anything held for approval | question for the user drafted | P2 §3.6 |
 | Dry-run demand narrowed to changes that can fail a review | designed 2026-11-18, not built | P3 §3.7 |
@@ -188,8 +187,7 @@ a cancelled or expired buy keeps its unfilled amount committed for good; the ove
 anything held for approval expires after 120 seconds; an unclassified product is held with its reason not shown; all
 four Korean credit order types can never be sent although their switches exist; the instructions rule out U.S.
 leveraged ETFs although the switch exists; the fixed order constants (last order 10 minutes before the close, the
-2% price check, the 2% cash cushion, the $1 U.S. minimum) are not told to the model; saving an Engine setting
-re-arms a paused session; no backup and no migration runner; nothing is watched while the app is closed.
+2% price check, the 2% cash cushion, the $1 U.S. minimum) are not told to the model; no backup and no migration runner; nothing is watched while the app is closed.
 
 **Verification.** The four parts were written by read-only helpers from the code. The reviewer read in the code:
 the order path's send and autoSubmit, the funding ledger's check and commitment states, the worker's code mapping,
