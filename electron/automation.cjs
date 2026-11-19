@@ -911,6 +911,9 @@ class Automation {
   }
   // B1: whether KIS data may go to the provider of this model, and the message when not.
   vendorOf(model){try{return require('./ai-models.cjs').vendorOf(model);}catch{return 'openai';}}
+  // Audit item 16: a call that sends KIS data to a model needs that model's vendor's key and sharing switch. Throws
+  // AI_NOT_CONNECTED or DATA_SHARING_NOT_ENABLED before any request.
+  vendorAllowed(model){if(this.missingKey(model))throw new Error('AI_NOT_CONNECTED');if(!this.consentFor(model))throw new Error('DATA_SHARING_NOT_ENABLED');}
   consentFor(model){return this.vendorOf(model)==='anthropic'?this.config.shareKisWithAnthropic===true:this.config.shareKisWithOpenAI===true;}
   consentMessage(model){return `Allow sharing KIS data with ${VENDOR_NAMES[this.vendorOf(model)]} in Connections.`;}
   // Today's usage of one provider. On the first day of B1 the per-provider table has no row while ai_usage already has the
@@ -1025,9 +1028,12 @@ class Automation {
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){
     const modelConfig=this.agentModel('compacting');const models=require('./ai-models.cjs');
-    // B3: condensing on Claude needs the Anthropic key and its sharing switch (research results can carry order and holding
-    // details). Refused before any request; the review then carries the result by reference, as on any condensing failure.
-    if(this.vendorOf(modelConfig.openaiModel)==='anthropic'){if(this.claudeGateClosed('compacting'))throw new Error('CLAUDE_DRY_RUN_REQUIRED');if(this.missingKey(modelConfig.openaiModel))throw new Error('AI_NOT_CONNECTED');if(!this.consentFor(modelConfig.openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');}
+    // B3: condensing on Claude needs a completed dry run. Audit item 16 (2026-11-19): every vendor's condensing needs that
+    // vendor's key and its sharing switch (research results can carry order and holding details); before, only Claude's
+    // were checked, so an OpenAI compacting model under a Claude review was sent them with OpenAI sharing off. Refused
+    // before any request; the review then carries the result by reference, as on any condensing failure.
+    if(this.vendorOf(modelConfig.openaiModel)==='anthropic'&&this.claudeGateClosed('compacting'))throw new Error('CLAUDE_DRY_RUN_REQUIRED');
+    this.vendorAllowed(modelConfig.openaiModel);
     // Claude trading D-2: no call while the compacting model's vendor has a provider wait (an OpenAI account without
     // credit would otherwise be called, and its wait re-armed, during every Claude review). The review then carries the
     // results by reference, as on any condensing failure (context-fit.cjs).
@@ -1677,8 +1683,13 @@ class Automation {
     // A model change: the variant runs on another model and effort, the baseline on the configured one.
     let model=null;if(options.model&&typeof options.model==='object'){const m={openaiModel:String(options.model.openaiModel??''),reasoningEffort:String(options.model.reasoningEffort??'')};
       let vendor=null;try{models.settings(m);vendor=models.vendorOf(m.openaiModel);if(vendor==='anthropic'?m.openaiModel!=='claude-opus-5-5'||m.reasoningEffort!=='medium':vendor!=='openai')throw 0;}catch{throw new Error('INVALID_MODEL_SETTINGS');}
-      if(vendor==='anthropic'){if(!this.completedClaudeDryRun())throw new Error('CLAUDE_DRY_RUN_REQUIRED');if(this.missingKey(m.openaiModel))throw new Error('AI_NOT_CONNECTED');if(!this.consentFor(m.openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');}
+      if(vendor==='anthropic'&&!this.completedClaudeDryRun())throw new Error('CLAUDE_DRY_RUN_REQUIRED');
+      // Audit item 16: the variant's own vendor's key and sharing switch, whichever vendor (before: Claude's only).
+      this.vendorAllowed(m.openaiModel);
       if(m.openaiModel!==modelConfig.openaiModel||m.reasoningEffort!==modelConfig.reasoningEffort)model=m;}
+    // Audit item 16: the baseline runs on the trading model with saved reviews' KIS data: its vendor's key and sharing
+    // switch (before: only the narrative model's key was checked, by replay's narrativeAvailable).
+    this.vendorAllowed(modelConfig.openaiModel);
     // Instruction rewrite step 3: the change may be the proposed built-in text (the baseline keeps the current one).
     const variant={instructions,withoutNarrative:options.withoutNarrative===true,withoutEpisodes:options.withoutEpisodes===true,withoutRegime:options.withoutRegime===true,...(model?{model}:{}),...(options.proposedText===true?{proposedText:true}:{})};
     if(!variant.instructions&&!variant.withoutNarrative&&!variant.withoutEpisodes&&!variant.withoutRegime&&!variant.model&&!variant.proposedText)throw new Error('REPLAY_NO_CHANGE');

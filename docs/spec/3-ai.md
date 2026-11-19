@@ -1086,14 +1086,17 @@ call's share after release is an open item (project memory "Review cost").
   keeps its single switch as the OpenAI one; Anthropic starts off (`providerConsent`, `automation.cjs:57-60`).
 - **Checked** (`consentFor(model)`, `automation.cjs:908`): the scheduler status (`:226`); Start
   (`auto-launch.cjs:18`); every review on a KIS scope (`DATA_SHARING_NOT_ENABLED`, `:566`); dry-run reviews (`dryRun`,
-  the line after "B1: the provider the dry run's model sends to"); the scout (`scoutAvailable`, `:1803`); compacting on Claude (`:1024`); reflection on broker
-  evidence (`shareKisAllowed`, `:1931`, `reflection.cjs:23`); replay on Claude (`:1674`); saving a Claude trading
-  model (`CLAUDE_TRADING_CONSENT`).
+  the line after "B1: the provider the dry run's model sends to"); the scout (`scoutAvailable`); compacting, for its own model's vendor whichever it is (`compactResearch`,
+  `vendorAllowed`); reflection on broker evidence (`shareKisAllowed`, `reflection.cjs:23`); replay, for the trading
+  model (the baseline) and for the variant's own model whichever vendor (`replayPlan`, `vendorAllowed`); saving a
+  Claude trading model (`CLAUDE_TRADING_CONSENT`). **The rule** (audit item 16, 1.5.69): every call that sends KIS
+  data checks the key and the sharing switch of the vendor of the model actually called; an agent on "same" follows
+  the trading model, an agent with its own model its own vendor (`tests/agent-consent.test.cjs`, the two vendors
+  crossed for each agent).
 - **Not needed**: paper scope; the market narrative (no account data); reflection on paper evidence.
-- Compacting on an OpenAI model has no consent check of its own (inferred from `compactResearch`, `:1024`, which
-  checks only the Anthropic case); it runs only inside a review that already passed the trading model's consent, so
-  a Claude review with an OpenAI compacting model sends tool results to OpenAI under the Anthropic consent alone
-  (inferred; flag for the planner).
+- Until 1.5.69, compacting checked only the Anthropic case, so a Claude review with an OpenAI compacting model sent
+  research results to OpenAI under the Anthropic consent alone; a replay checked neither the trading model's switch
+  nor the key of an OpenAI variant. Both now check as above.
 - **Keys**: read from one "provider file" the user picks (JSON, ≤65,536 bytes, only the keys `openaiApiKey`,
   `anthropicApiKey`, `dartApiKey`, `pushWebhookURL`, `ecosApiKey`, `fredApiKey`, `secContactEmail`; any unknown key or
   malformed value rejects the whole file, nothing is half-applied; `ai-router.cjs:17`, `:40-49`;
