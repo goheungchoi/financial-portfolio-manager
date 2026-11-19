@@ -725,7 +725,7 @@ class Automation {
     // this.triggerEvidence, and a review that fails before its context is built (account data) still puts it back.
     // Review of 8ef1be1, P1: an agent trigger followed by INCOMPLETE_BALANCE was used up with no decision.
     const entryEvidence=EVIDENCE_TRIGGERS.includes(trigger)?this.triggerEvidence??null:null;
-    if(this.busy){if(entryEvidence)this.restoreEvents(this.watchScope(),entryEvidence);throw new Error('REVIEW_BUSY');}const startedAt=Date.now();this.restoreClock();this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();if(this.trialRunning())try{this.alertTrial.attempt({now:startedAt,trigger,reviewId:id,shadowFired:trigger==='Price movement trigger'&&this.lastShadow&&startedAt-this.lastShadow.at<15000?this.lastShadow.fired:null});}catch{}let context,decided=false,firstRequest=null;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
+    if(this.busy){if(entryEvidence)this.restoreEvents(this.watchScope(),entryEvidence);throw new Error('REVIEW_BUSY');}const startedAt=Date.now();this.restoreClock();this.busy=true;this.reviewSessionKey=this.sessionKey();const id=randomUUID();this.reviewTraded=new Map();if(this.trialRunning())try{this.alertTrial.attempt({now:startedAt,trigger,reviewId:id,shadowFired:trigger==='Price movement trigger'&&this.lastShadow&&startedAt-this.lastShadow.at<15000?this.lastShadow.fired:null});}catch{}let context,decided=false,firstRequest=null;let stage='Account data';if(this.config.scope!=='paper'&&!externalDecision)try{this.scheduleObserver.noteEventReview(trigger,this.scheduleState());}catch{}const revision=this.revision;const watchScope=this.watchScope();let costRevision=null;
     try {
       costRevision=this.costSnapshot();
       let emergency,usValue,execution,lessonIds;({context,emergency,usValue,execution,lessonIds}=await this.assembleReviewContext({watchScope,trigger,externalDecision,setStage:value=>{stage=value;},evidence:entryEvidence}));
@@ -865,7 +865,7 @@ class Automation {
       if(gateMode!=='off'||this.config.routineReviews==='focused')try{this.reviewGate.settle(watchScope,require('./review-gate.cjs').decisionState(context),{decision:{action:result.decision?.action,symbol:result.decision?.symbol,orderId:order?.id??proposal?.id??null,...(batchRows?{placed:batchRows.filter(r=>r.item>0&&(r.order?.id||r.proposal?.id)).map(r=>({symbol:r.symbol,action:r.action}))}:{})},contextAt:startedAt,events:(gateMode!=='off'?gateEvents:this.newsEvents.list(300)).filter(e=>e.firstSeenAt<=startedAt)});}catch{}
       // D-3: the first completed review on Claude ends the wait; automatic reviews continue.
       if(this.vendorOf(this.agentModel('trading').openaiModel)==='anthropic'&&this.claudeFirstReview()?.state==='pending'){const fr=this.claudeFirstReview();this.setClaudeFirstReview({...fr,state:'done',doneAt:Date.now()});this.claudeFirstShown=false;this.log(randomUUID(),'System','First Claude review completed','Automatic reviews on Claude Opus 5.5 continue at your interval.');}
-      this.noteReviewOutcome(null);this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;this.lastPrices=new Map(context.quotes.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,context.quotes);this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
+      this.noteReviewOutcome(null);this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;{const base=this.tradedBaselineQuotes(context.quotes);this.lastPrices=new Map(base.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,base);this.tradedBaselines=new Map(this.reviewTraded??[]);}this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
     }catch(error){this.lastRun=Date.now();this.lastErrorAt=this.lastRun;this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+require('./ai-errors.cjs').sizeDetail(error);
       // B(2), 2026-11-19: a failure from a KIS request names its code, KIS's own code and the request, whatever the review's
       // code shows (01:22 read only "REVIEW_FAILED · Stage: Account data"). App codes only; no reply text.
@@ -1187,6 +1187,9 @@ class Automation {
         onProposal?.(proposal);
         // The order carries its bounds for the tracker, saved before it can be submitted.
         // and where it came from (madeBy, order-origin.cjs: a review's order, the first or a further one).
+        // The price-alert baseline of a stock this review trades is the price its order was placed at, then its fill
+        // (found in live use: a review-time quote well away from the order book started a false price review).
+        if(context.environment!=='local-paper'&&proposal?.id&&proposal.status!=='Rejected'&&placement?.price>0)this.reviewTraded?.set(d.symbol,{price:placement.price,id:proposal.id,market:execution.market??(/:/.test(d.symbol)?'US':'KR')});
         if(context.environment!=='local-paper')execution.annotate?.(proposal.id,{madeBy:'review',reviewId:id,...(bounds?{tracking:bounds}:{})});
         this.log(id,'Risk','Proposal result',proposal.reason??'Paper risk checks passed.');
         if(d.action==='Buy'&&(d.credit??'none')==='none'&&d.plan&&context.environment!=='local-paper')this.followPlan(watchScope,d,id,{proposalId:proposal.id,market:execution.market??null,positions:(()=>{try{const bal=execution.riskBalance??execution.getConnection?.()?.snapshot;return Object.fromEntries((bal?.holdings??[]).map(h=>[h.symbol,{quantity:h.quantity}]));}catch{return {};}})(),quotes:context.quotes??[],placedAt:placement?.price??null});
@@ -1589,6 +1592,13 @@ class Automation {
       if(!accepted&&s.regularSince!=null&&now-base>300000&&!t.notTrackedSince)patch={...(patch??{}),trail:{...t,notTrackedSince:base}};
       else if(accepted&&t.notTrackedSince){const {notTrackedSince,...rest}=t;patch={...(patch??{}),trail:rest};}
       if(!patch)continue;this.desk.update(o,patch);for(const e of r?.events??[])this.log(o.id,'System',e.title,e.body);}catch{}}}
+  // The review's quotes with each traded stock's price set to the price its order was placed at: the baseline the price
+  // trigger and the watches measure moves from (found in live use).
+  tradedBaselineQuotes(quotes=[]){const t=this.reviewTraded;if(!t?.size)return quotes;return quotes.map(q=>{const x=t.get(q.symbol);return x?.price>0?{...q,price:x.price}:q;});}
+  // Once a traded stock's order fills, its baseline becomes the fill price; an order that ended without one drops out.
+  // Never throws.
+  applyFillBaselines(scope){try{for(const [symbol,t] of this.tradedBaselines??[]){const lp=this.linkedPurchase({symbol,linkedBuy:{id:t.id,market:t.market}});if(!lp)continue;
+      const fill=Number(lp.record?.fillPrice);if(lp.filled>=1&&fill>0){this.lastPrices.set(symbol,fill);this.watches.rebase(scope,[{symbol,price:fill}]);this.tradedBaselines.delete(symbol);}else if(lp.ended)this.tradedBaselines.delete(symbol);}}catch{}}
   // A plan stop armed without its planned trail (trailWanted): once its purchase has filled, the trail is added from the
   // fill price; a purchase that ended without a fill price, or a trail that still fails its checks, keeps the fixed stop,
   // and the reason replaces the old one (Home's "Needs you" goes on listing it). Never throws.
@@ -2022,6 +2032,7 @@ class Automation {
     if(elapsed<60000)return;
     const quotes=this.config.scope==='both'?[...(this.usQuotes??[]),...(this.marketQuotes?.()??[])]:this.config.scope==='us'?(this.usQuotes??[]):this.config.scope==='kis'?(this.marketQuotes?.()??[]):this.paper.getState().quotes;
     const scope=this.watchScope();if(this.lastWatchScope!==scope){this.lastPrices.clear();this.watchAlerts.clear();this.entryLevels.clear();this.lastWatchScope=scope;}
+    this.applyFillBaselines(scope);
     let drift=this.priceTrigger(scope,quotes,Date.now(),{skipLevels:this.heldEvents(scope)});
     const sizeFailed=this.failedInput?.scope===scope?this.failedInput:null;
     if(drift&&sizeFailed&&!require('./size-retry.cjs').priceTriggerMoved(sizeFailed,drift,{tolerance:this.config.eventTolerancePct??3})){this.restoreEvents(scope,drift);if(!sizeFailed.priceHeld){sizeFailed.priceHeld=true;this.log(randomUUID(),'System','Price trigger held · size failure',`A price trigger (${drift.symbol??(drift.alerts??[]).map(a=>a.symbol).join(', ')}) was not rebuilt into a review: since the size failure at ${new Date(sizeFailed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST its price has not moved past the review gate's limit. Logged once.`);}drift=null;}
