@@ -44,12 +44,17 @@ function addMinimumPositions(context){
   return context;
 }
 // Verdict quality the decision format cannot enforce on its own: logged as incomplete, never used to fail a review.
-function verdictIssues(context,decision){
+// earlier: the plan verdicts of this account's earlier reviews the same Seoul day (plan verdicts step 2, 2026-11-19). A
+// comparison given there for the same symbol, verdict and condition (kind, waitReason, recheck) still counts, so an
+// unchanged wait is not asked for it again every review. It is not copied into this decision.
+const sameCondition=(a,b)=>String(a?.kind??'')===String(b?.kind??'')&&String(a?.waitReason??'')===String(b?.waitReason??'')&&String(a?.recheck??'').trim()===String(b?.recheck??'').trim();
+function comparedToday(v,earlier){return (earlier??[]).some(e=>e&&e.symbol===v.symbol&&e.verdict===v.verdict&&e.minimumPosition&&sameCondition(e.condition,v.condition));}
+function verdictIssues(context,decision,{earlier=[]}={}){
   const issues=[];const targets=new Map((context?.planGap?.targets??[]).map(t=>[t.symbol,t]));const vague=/^(stronger evidence|more evidence|sustained stabili[sz]ation|better (entry|after-cost case)|improvement|stabili[sz]ation)\.?$/i;
   for(const v of decision?.planVerdicts??[]){const c=v.condition;
     if(v.verdict==='waiting'){if(!c||!c.unresolved||!c.evidence||!c.recheck||c.kind==='none')issues.push(`${v.symbol}: waiting without a specific condition, resolving evidence and recheck`);else if(vague.test(c.evidence.trim()))issues.push(`${v.symbol}: the resolving evidence is vague`);
       if(c?.kind==='data'&&!v.dataGap)issues.push(`${v.symbol}: missing data without a data-gap assessment`);}
-    if(['waiting','passed'].includes(v.verdict)&&targets.get(v.symbol)?.minimumPosition?.feasible&&!v.minimumPosition)issues.push(`${v.symbol}: no comparison of the minimum feasible position with cash`);}
+    if(['waiting','passed'].includes(v.verdict)&&targets.get(v.symbol)?.minimumPosition?.feasible&&!v.minimumPosition&&!comparedToday(v,earlier))issues.push(`${v.symbol}: no comparison of buying one share with staying in cash (market open, none given today)`);}
   if(decision?.action==='Hold'&&!String(decision.plan?.invalidation??'').trim())issues.push('Hold without a reconsideration condition (plan.invalidation)');
   // A gap at its retry limit should not produce the same data wait again.
   // A wait on the same gap (the same identity) is another exhausted wait; a wait on different evidence starts afresh,

@@ -822,7 +822,7 @@ class Automation {
       // without them), get the same checks after them, one by one, and the open-order rule (D8).
       if(furtherPart)result={...result,decision:this.furtherAtDecision(id,furtherPart,result,context)};
       // The brief rides on the decision; it is saved for the scout and never affects the trade.
-      {const PG=require('./plan-gap.cjs');const missing=PG.missingVerdicts(context,result.decision);const issues=PG.verdictIssues(context,result.decision);if(missing.length||issues.length)this.log(id,'System','Plan verdicts incomplete',[missing.length?`No verdict on ${missing.join(', ')}.`:'',...issues].filter(Boolean).join(' '));}
+      {const PG=require('./plan-gap.cjs');const missing=PG.missingVerdicts(context,result.decision);const issues=PG.verdictIssues(context,result.decision,{earlier:this.verdictsToday()});if(missing.length||issues.length)this.log(id,'System','Plan verdicts incomplete',[missing.length?`No verdict on ${missing.join(', ')}.`:'',...issues].filter(Boolean).join(' '));}
       if(result.decision.scoutBrief){const {scoutBrief,...decision}=result.decision;result={...result,decision};if(context.scoutBrief){const value=this.briefScout(watchScope,scoutBrief,id);this.log(id,'Tool','Scout brief',JSON.stringify({brief:scoutBrief,result:value}));}}
       const contextEvidence={guidelines:this.config.guidelines,environment:context.environment,marketSession:context.marketSession??null,quote:context.quotes.find(q=>q.symbol===result.decision.symbol)??null,position:context.positions?.[result.decision.symbol]??null,emergency:context.emergency.active,reviewedLessons:context.reviewedLessons,lessonIds};
       const recorded={model:result.model??null,contextEvidence,id,timestamp:Date.now(),scope:this.config.scope,account:this.accountTag(),trigger,provider:result.provider,...(result.provider==='openai'?(v=>v?{vendor:v}:{})(['openai','anthropic'].includes(result.vendor)?result.vendor:(()=>{try{return require('./ai-models.cjs').vendorOf(result.model);}catch{return null;}})()):{}),...(result.provider==='openai'?{instructions:require('./ai-client.cjs').instructions(context)}:{}),...(context.reviewScope?{reviewScope:context.reviewScope.kind}:{}),alerts:this.alertTag(),...reviewSymbols(context,result.decision),decision:result.decision,proposalId:null,orderId:null,usage:result.usage??null,research:result.metrics??null,...((u=>u?{formulaUse:u}:{})((()=>{try{return formulaUse?.summary(result.decision)??null;}catch{return null;}})()))};
@@ -1592,6 +1592,11 @@ class Automation {
       if(!accepted&&s.regularSince!=null&&now-base>300000&&!t.notTrackedSince)patch={...(patch??{}),trail:{...t,notTrackedSince:base}};
       else if(accepted&&t.notTrackedSince){const {notTrackedSince,...rest}=t;patch={...(patch??{}),trail:rest};}
       if(!patch)continue;this.desk.update(o,patch);for(const e of r?.events??[])this.log(o.id,'System',e.title,e.body);}catch{}}}
+  // The plan verdicts of this account's reviews since Seoul midnight, oldest first, for the verdict check (plan-gap.cjs
+  // verdictIssues): verdict rows only, read with json_extract, no whole payloads. Empty on any failure.
+  verdictsToday(now=Date.now()){try{const day=require('./kis-activity.cjs').seoulDate(now);const since=Date.parse(day+'T00:00:00+09:00');const key=this.accountTag()?.key??null;
+    return this.db.prepare("SELECT json_extract(payload,'$.decision.planVerdicts') v,json_extract(payload,'$.scope') s,json_extract(payload,'$.account.key') k FROM (SELECT rowid r,payload FROM reviews ORDER BY rowid DESC LIMIT 120) WHERE json_extract(payload,'$.timestamp')>=? ORDER BY r").all(since)
+      .filter(r=>r.s===this.config.scope&&(r.k??null)===key&&r.v).flatMap(r=>{try{const v=JSON.parse(r.v);return Array.isArray(v)?v:[];}catch{return [];}});}catch{return [];}}
   // The review's quotes with each traded stock's price set to the price its order was placed at: the baseline the price
   // trigger and the watches measure moves from (found in live use).
   tradedBaselineQuotes(quotes=[]){const t=this.reviewTraded;if(!t?.size)return quotes;return quotes.map(q=>{const x=t.get(q.symbol);return x?.price>0?{...q,price:x.price}:q;});}

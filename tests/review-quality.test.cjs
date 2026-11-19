@@ -41,6 +41,28 @@ test('the minimum position is feasible only while its market takes the app order
   assert.equal(krOnly.planGap.targets[0].minimumPosition.checks.marketOpen,false);assert.equal(krOnly.planGap.targets[0].minimumPosition.feasible,false);
   const none=ctx({marketSession:undefined});none.planGap=PG.planGap(none);PG.addMinimumPositions(none);assert.equal(none.planGap.targets[1].minimumPosition.checks.marketOpen,null);assert.equal(none.planGap.targets[1].minimumPosition.feasible,true);
 });
+// Plan verdicts step 2: a comparison an earlier review gave the same day, for the same symbol, verdict and condition,
+// still counts; a changed condition or verdict asks again. Made-up values.
+test('verdict issues: a comparison given earlier today for the same verdict and condition counts; a change asks again',()=>{
+  const c=ctx();c.planGap=PG.planGap(c);PG.addMinimumPositions(c);
+  const cond={kind:'price',waitReason:'entry_condition',unresolved:'u',evidence:'a close above the level',recheck:'next session'};
+  const v=(extra={})=>({symbol:'360750',verdict:'waiting',reason:'r',condition:cond,dataGap:null,minimumPosition:null,...extra});
+  const compared=v({minimumPosition:{bull:'b',base:'b',bear:'b',conclusion:'c'}});const issue=(d,earlier)=>PG.verdictIssues(c,{action:'Hold',plan:{invalidation:'x'},planVerdicts:[d]},{earlier}).filter(i=>/no comparison/.test(i));
+  assert.equal(issue(v(),[]).length,1,'none earlier: an issue');assert.deepEqual(issue(v(),[compared]),[],'given earlier today, same condition: counts');
+  assert.equal(issue(v(),[{...compared,condition:{...cond,recheck:'after the earnings'}}]).length,1,'a changed recheck asks again');
+  assert.equal(issue(v(),[{...compared,condition:{...cond,waitReason:'publication_pending'}}]).length,1,'a changed wait reason asks again');
+  assert.equal(issue(v(),[{...compared,verdict:'passed'}]).length,1,'a different verdict asks again');
+  assert.equal(issue(v(),[{...compared,symbol:'005930'}]).length,1,'another symbol does not count');
+  assert.equal(issue(v(),[v()]).length,1,'an earlier verdict without a comparison does not count');
+});
+test('verdictsToday reads this account\'s verdicts since Seoul midnight only',()=>{
+  const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
+  const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),{request:async()=>({})},()=>{});a.configure({scope:'paper'});const key=a.accountTag()?.key??null;
+  db.exec('CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL)');const now=Date.parse('2026-11-19T06:00:00Z');// 15:00 KST
+  const put=(id,timestamp,extra={})=>db.prepare('INSERT INTO reviews VALUES(?,?)').run(id,JSON.stringify({id,timestamp,scope:'paper',account:{key},decision:{planVerdicts:[{symbol:id,verdict:'waiting'}]},...extra}));
+  put('A',Date.parse('2026-11-18T14:59:00Z'));put('B',Date.parse('2026-11-18T15:01:00Z'));put('C',now-60000,{scope:'kis'});put('D',now-60000,{account:{key:'other'}});
+  assert.deepEqual(a.verdictsToday(now).map(v=>v.symbol),['B'],'after 00:00 KST, this scope and account');
+});
 test('verdict issues: untestable waiting, vague evidence, unassessed data gaps, missing comparisons, Hold without reconsideration',()=>{
   const c=ctx();c.planGap=PG.planGap(c);PG.addMinimumPositions(c);
   const good={action:'Hold',plan:{invalidation:'Reconsider if preliminary figures show margin recovery.'},planVerdicts:[
@@ -49,7 +71,7 @@ test('verdict issues: untestable waiting, vague evidence, unassessed data gaps, 
   assert.deepEqual(PG.verdictIssues(c,good),[]);
   const bad={action:'Hold',plan:{invalidation:''},planVerdicts:[{symbol:'005930',verdict:'waiting',reason:'r',condition:{kind:'data',unresolved:'x',evidence:'stronger evidence',recheck:'later'},dataGap:null,minimumPosition:null},{symbol:'360750',verdict:'waiting',reason:'r'}]};
   const issues=PG.verdictIssues(c,bad).join(' | ');
-  for(const re of [/005930: the resolving evidence is vague/,/005930: missing data without a data-gap assessment/,/005930: no comparison of the minimum feasible position/,/360750: waiting without a specific condition/,/Hold without a reconsideration condition/])assert.match(issues,re);
+  for(const re of [/005930: the resolving evidence is vague/,/005930: missing data without a data-gap assessment/,/005930: no comparison of buying one share with staying in cash \(market open, none given today\)/,/360750: waiting without a specific condition/,/Hold without a reconsideration condition/])assert.match(issues,re);
 });
 test('the decision format: testable verdict fields survive validation, and every object is strict',()=>{
   const d=validateDecision({action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'x',plan:{thesis:'',invalidation:'i',stopPrice:null,targetPrice:null,horizonDays:null,confidence:'low'},complexity:{score:10,reason:'r'},
