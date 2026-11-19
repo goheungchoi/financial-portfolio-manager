@@ -510,9 +510,10 @@ not be read is `status:'unavailable'`), `sectorLeads`, `opportunitySet`, `watchl
 markets, a Korean account that cannot be read is left out unless the run focuses on Korea, in which case the run
 fails (`scoutAccount`, `:1858-1873`).
 
-*In flux:* `scout()` still builds the "U.S. listings are not bought automatically now" note from
-`buyingPower.automaticPurchases` (`automation.cjs:1861`, `:1888-1890`, identifier `usAutoOff`); the implementer's
-deltas remove both (`implementer-deltas.md` item 3). The spec must not describe that note as current.
+Each scout account carries `automaticExecutionEnabled` and, for the U.S., `wonRule` (`scoutAccount` `pick`). The
+opportunity note (`opportunityNote`, `automation.cjs`) says which listings can be bought, that a U.S. buy is also counted
+against Korean won cash, and names any market whose automatic switch is off ("a buy there is proposed to the user,
+not sent").
 
 **The run** (`runScout`, `scout.cjs:114`): three rounds of at most six tool requests — two research rounds, then the
 plan. Results are bounded to 12 KB each and stay readable through `get_context_detail`.
@@ -806,9 +807,9 @@ named.
 | `detailAvailable` | names of sections given as summaries | `review-context.cjs` `shape` | when any | — |
 | `paperVersion` | paper account version | `context()` `:366` | paper | M |
 
-In flux (implementer-deltas item 3): the U.S. fact `buyingPower.automaticPurchases` and the `AUTO_US_BUY_OFF` text are
-being removed; the single fact is `automaticExecutionEnabled` per market. `live-engine.cjs` in the working tree no
-longer contains `automaticPurchases` (grep, 2026-11-19); `automation.cjs` `scout()` still reads it.
+Whether a market's orders go out automatically is the single fact `automaticExecutionEnabled`. The U.S. account's
+`buyingPower.wonRule {rule, roomUSD, asOf}` states the shared won rule and the room it leaves (Part 2 §3.13), and the
+combined objective adds that every U.S. buy must also fit it. Context only: the instruction fingerprints did not change.
 
 What the context does **not** contain: credentials, account numbers (the account appears only as a hash in records),
 and the items Part 2 §3.13 lists as absent.
@@ -1335,8 +1336,7 @@ them through `guardrails.failed()/succeeded()/record()`.
 7. Whether a `pending` `ai_calls` record left by a crash is ever settled (none found; marked inferred in 4.3).
 8. Whether `complexity.cjs` and the `routing_eval` table are still used.
 9. Why replay is gated by `narrativeAvailable()`.
-10. `live-engine.cjs` `context()` in the working tree after the in-flight change: the replacement for
-    `automaticPurchases` (the deltas say "the U.S. account fact states the won-cash rule", step 2/3 "not built").
+10. (Resolved in 1.5.69: `automaticPurchases` was replaced by `buyingPower.wonRule`; see the context table.)
 11. The OpenAI clients for scout, narrative, compact and reflection (`ai-client.cjs:232-297`) were not read line by
     line: their timeouts, output caps per call and prompt-cache keys.
 12. `tests/instructions-version.test.cjs` (the pinned fingerprints) and the current fingerprint values.

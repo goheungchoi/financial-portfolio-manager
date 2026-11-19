@@ -272,6 +272,8 @@ app.whenReady().then(async () => {
   // M-6: several open orders, the user's saved switch (default off), read by both engines at every use.
   live.severalOpenSetting=usLive.severalOpenSetting=()=>automation.config.severalOpenOrders===true;
   usLive.buyingPower=balance=>require('./buying-power.cjs').usBuyingPower({usdCash:balance?.cash??0,broker:balance?.brokerBuyingPower??null,krwCash:kisState.snapshot?(Number.isFinite(kisState.snapshot.settledCash)?kisState.snapshot.settledCash:kisState.snapshot.cash):null,usdKRW:balance?.fx?.usdKRW??automation?.fx?.()?.usdKRW??null});usLive.costs=costs;usLive.exposure=exposure;automation.usLive=usLive;
+  // The Korean balance the app holds, for the won-rule room the reviews read (live-engine wonRule; no KIS request).
+  usLive.krReading=()=>kisState.snapshot??null;
   // One funding ledger for both markets' buys (electron/funding-ledger.cjs): checked under one lock against balances read
   // fresh for the check, with the rate read within two minutes; no funding regime is verified, so the shared-pool rule applies.
   const fundingLedger=new (require('./funding-ledger.cjs').FundingLedger)(store.db,{fresh:async market=>{if(market==='KR'){await refreshKisBalance();return kisState.snapshot??null;}try{await automation.refreshUS?.();}catch{}const u=usHeldReading??usSnapshot;return kisState.snapshot&&u?.accountKey===kisState.snapshot.accountKey+':US'?u:null;},

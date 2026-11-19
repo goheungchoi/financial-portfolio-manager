@@ -71,7 +71,7 @@ Each row: the feature, where the user meets it, the settings that govern it, and
 | Feature | Screens | Governed by | Detail |
 |---|---|---|---|
 | The user's own order ticket | Korea, U.S. | "Activate for this session", limits | P1 Korea/U.S., P2 §3.4–3.5 |
-| Automatic sending of AI orders | Korea, U.S., Home Start | **"Allow automatic … orders" per market** (turned on by Start auto trading), "Place orders automatically" | P2 §3.6 |
+| Automatic sending of AI orders | Korea, U.S., Home Start | **"Allow automatic … orders" per market** (turned on by Start auto trading; buys and sales alike, U.S. buys included), "Place orders automatically" | P2 §3.6, §9.1 |
 | Limits ("policy"): stocks allowed, max order, daily turnover, per-company share, daily loss limit | Korea, U.S. | the fields on each tab (blank = none) | P2 §3.12 |
 | Cash rules: KIS buying power and the shared funding ledger | not shown today | none (fixed) | P2 §4 |
 | Several open orders, several orders per review | Engine → Trading | "Several open orders", "Orders per review" | P2 §3.11 |
@@ -176,7 +176,6 @@ From the user, with the day they were set:
 
 | Change | State | Spec text that follows it |
 |---|---|---|
-| Automatic U.S. buys are no longer blocked; the U.S. "Allow automatic … orders" switch covers buys and sales; the ledger's won rule and KIS buying power are the checks; the model and the U.S. tab are told U.S. buys are counted against won cash | being built for 1.5.69 | §3.2 row "Automatic sending", §4 step 4, P2 §9.1 |
 | Only Start and Stop arm or disarm a session; a settings save never does | found 2026-11-19, fix not designed | P3 §1.9, P1 Engine settings |
 | Release of a cancelled buy's unfilled remainder from the funding ledger | design wanted, question for the user drafted | P2 §4.1 |
 | A longer window for anything held for approval | question for the user drafted | P2 §3.6 |

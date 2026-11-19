@@ -32,7 +32,7 @@ function appHarness({mock,severalOpen=true,db=new DatabaseSync(':memory:'),clock
     // The Korean stocks the app watches beyond those held (main.cjs: the watchlist and candidates), so their quotes come.
     kr.extraSymbols=async()=>Object.keys(mock.prices).filter(s=>/^[0-9]{6}$/.test(s));
     us.buyingPower=b=>usBuyingPower({usdCash:b?.cash??0,broker:b?.brokerBuyingPower??null,krwCash:h.state.kr?(Number.isFinite(h.state.kr.settledCash)?h.state.kr.settledCash:h.state.kr.cash):null,usdKRW:b?.fx?.usdKRW??h.rate()});
-    h.kr=kr;h.us=us;return h;};
+    us.krReading=()=>h.state.kr;h.kr=kr;h.us=us;return h;};
   refresh();h.build();
   // Trading on in both markets, with automatic orders, and no loss limit unless a test sets one.
   h.enable=(limits={})=>{for(const e of [h.kr,h.us]){e.configure({symbols:[],lossLimit:{mode:'off',value:0},...limits},'ENABLE MOCK');e.enableAuto('ENABLE AUTO MOCK');}return h;};

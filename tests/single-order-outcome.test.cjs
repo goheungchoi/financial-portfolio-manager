@@ -56,8 +56,8 @@ for(const code of ['AUTH_FAILED','BROKER_UNAVAILABLE','ACCOUNT_CHANGED','SOMETHI
 
 async function nextReviewSees(a){let seen=null;a.provider={request:async(op,p)=>{seen=p.context.previousReview;return {provider:'openai',decision:{action:'Hold',symbol:'',quantity:0,credit:'none',loanDate:'',explanation:'Hold.'}};}};await a.review().catch(()=>{});return seen;}
 test('the next review is told its last order was not placed, and why: not sent, or rejected by KIS',async()=>{
-  const n=await review('INTEGRATED_MARGIN_AUTOMATION_BLOCKED',{decide:{...decision,action:'Buy'}});const p=await nextReviewSees(n.a);
-  assert.equal(p.action,'Buy');assert.equal(p.sent,false);assert.equal(p.notPlaced,n.record.executionNote);assert.match(p.notPlaced,/^Not sent: .*automatic U\.S\. purchases are off/);
+  const n=await review('DAILY_TURNOVER_LIMIT',{decide:{...decision,action:'Buy'}});const p=await nextReviewSees(n.a);
+  assert.equal(p.action,'Buy');assert.equal(p.sent,false);assert.equal(p.notPlaced,n.record.executionNote);assert.equal(p.notPlaced,"Not sent: Buy 1 NASD:GOOGL: the day's turnover limit is reached.");
   const k=await review(null,{returned:{status:'Rejected',reason:'BROKER_REJECTED',brokerCode:'APBK0919'}});const q=await nextReviewSees(k.a);
   assert.equal(q.sent,false);assert.equal(q.notPlaced,'Rejected by KIS: Sell 1 NASD:GOOGL (KIS APBK0919).');
   const ok=await review(null);const r=await nextReviewSees(ok.a);assert.equal(r.sent,true);assert.equal('notPlaced' in r,false);});

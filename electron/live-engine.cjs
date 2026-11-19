@@ -1,8 +1,9 @@
 const {randomUUID}=require('node:crypto');const {seoulDate}=require('./kis-activity.cjs');
 const {validateLoss,lossStatus}=require('./loss-policy.cjs');const {FundingLedger}=require('./funding-ledger.cjs');
-// What the reviews and the scout are told while automatic U.S. purchases are off (automaticPurchases), and the reason a
-// refused one carries.
-const AUTO_US_BUY_OFF='Automatic U.S. purchases are off: the app has not verified that Korean won cannot fund them (integrated margin), so a U.S. buy is not sent automatically. U.S. sales still go out automatically.';
+// The cash rule every U.S. buy is checked against, as the reviews and the scout read it (2026-11-19, decision.md step 3:
+// the model sizes from the figure that will be applied). R17 is buyingPower.usd; R3 is the shared ledger under the
+// unknown regime.
+const WON_RULE='The app checks every U.S. buy, automatic or yours, twice before it is sent: it must fit buyingPower.usd (KIS\'s figure, capped at real cash), and it must fit Korean won cash at the exchange rate plus 2%, together with open Korean buys and unsettled U.S. buys (the shared cash rule; U.S. dollar cash adds no room under it). A U.S. buy larger than the smaller of buyingPower.usd and buyingPower.wonRule.roomUSD, fees included, is not sent.';
 // The editable limits of a policy; everything else on it (the day's baseline and its identity) is the loss basis.
 // An order request refused before it left the app by the KIS request limit (M-1a, M-1.5a).
 const notSentError=e=>e?.message==='ORDER_NOT_SENT'||e?.message==='RATE_LIMITED'&&e?.notSent===true;
@@ -51,11 +52,14 @@ class LiveEngine {
   // as none (1.5.48 audit, A4).
   takeBaseline(key,policy){try{this.baselineTaken?.(policy);}catch(error){this.writePolicy(key,{...policy,baselineSnapshot:{error:/^[A-Z_]{3,40}$/.test(error?.message??'')?error.message:'SNAPSHOT_FAILED',at:Date.now()}});}}
   // A U.S. account that holds nothing can still buy with KRW through integrated margin.
-  // Whether this account's purchases can be sent automatically, as a fact for the reviews and the scout (2026-11-19: the
-  // review decided a U.S. buy twice that autoSubmit refuses). A U.S. buy is sent automatically only once the funding
-  // regime is verified separate (autoSubmit, Stage 1 of the 2026-11-05 settlement design); sales are not affected.
-  automaticPurchases(){if(this.market!=='US'||!this.funding)return {};
-    return this.funding.regime()==='separate'?{automaticPurchases:{available:true}}:{automaticPurchases:{available:false,reason:AUTO_US_BUY_OFF}};}
+  // The shared cash rule a U.S. buy must fit (WON_RULE), with the room it leaves now: the ledger's U.S. capacity worked
+  // from readings already held (krReading: the app's Korean balance; this U.S. balance and its rate), with no KIS
+  // request. An estimate as of those readings: the check at the send reads fresh balances. No room is given when a
+  // reading or the rate is missing. Whether orders go out automatically is automaticExecutionEnabled, for buys and
+  // sales alike (R15 removed, 2026-11-19).
+  wonRule(balance){if(this.market!=='US'||!this.funding)return {};let room=null;
+    try{const kr=this.krReading?.()??null,rate=balance?.fx?.usdKRW>0?balance.fx.usdKRW:null;if(kr&&rate)room=this.funding.capacityFrom({account:this.identity(),market:'US',kr,us:balance,rate});}catch{room=null;}
+    return {wonRule:{rule:WON_RULE,...(Number.isFinite(room)?{roomUSD:Math.floor(room*100)/100,asOf:balance?.timestamp??null}:{roomUSD:null})}};}
   integratedFunding(snapshot){if(this.market!=='US'||!this.buyingPower)return 0;try{return this.buyingPower(snapshot)?.fromKRWUSD||0;}catch{return 0;}}
   funded(snapshot){return (Number.isFinite(snapshot?.reportedTotal)&&snapshot.reportedTotal>0)||this.integratedFunding(snapshot)>0;}
   stop(){this.enabled=false;this.autoEnabled=false;return this.getState();}
@@ -88,7 +92,7 @@ class LiveEngine {
     if(value.balance.settlementHeld||value.balance.settlementProvisional){const {settlementHeld:_h,settlementProvisional:_p,...shown}=value.balance;value={...value,balance:shown};}
     // D4: the review sees the last consistent Korean reading while KIS moves last night's settlement (settlement-check.cjs).
     if(this.balanceHold){const use=this.balanceHold.accept(value.balance);if(use.held)value={...value,balance:use.balance};}
-    return {...(this.market==='US'&&this.buyingPower?{buyingPower:{...this.buyingPower(value.balance),...this.automaticPurchases()}}:{}),...(this.market==='US'?(s=>({unsettledKRW:s.unsettledKRW,...(s.uncertainKRW?{unsettledUncertainKRW:s.uncertainKRW}:{})}))(require('./integrated-settlement.cjs').settlement(value.balance)):{}),environment:'kis',executionEnabled:executionEnabled&&this.enabled,automaticExecutionEnabled:this.autoEnabled,market:this.market,currency:this.market==='US'?'USD':'KRW',marketSession:value.marketSession??{open:false,status:'unverified'},equity:value.balance.reportedTotal,cash:Number.isFinite(value.balance.settledCash)?value.balance.settledCash:value.balance.cash,depositCash:value.balance.cash,...(value.balance.pendingSaleProceeds>0?{pendingSaleProceeds:value.balance.pendingSaleProceeds}:{}),positions:Object.fromEntries(value.balance.holdings.map(row=>[row.symbol,{quantity:row.quantity,costTotal:row.cost*row.quantity}])),universe:value.quotes.map(quote=>({symbol:quote.symbol,name:value.balance.holdings.find(row=>row.symbol===quote.symbol)?.name??this.nameOf?.(quote.symbol)??quote.symbol,price:quote.price})),quotes:value.quotes.map(quote=>({...quote,timestamp:quote.retrievedAt,stale:value.marketSession?.open!==true})),orders:this.orders().filter(row=>['Accepted','Uncertain','Submitting','Partially filled'].includes(row.status)).map(({symbol,side,quantity,filled,status,brokerOrderId,createdAt,reconciledAt})=>({symbol,side,quantity,filled,status,orderId:brokerOrderId??null,placedAt:createdAt?new Date(createdAt).toISOString():null,lastConfirmedAt:reconciledAt?new Date(reconciledAt).toISOString():null})),...(this.orderReconciliation()?{orderReconciliation:this.orderReconciliation()}:{}),risk:(policy=>policy?{...policy,baseline:this.adjustedBaseline(policy),...(this.adjustedBaseline(policy)!==policy.baseline?{baselineIncludesFlows:this.adjustedBaseline(policy)-policy.baseline}:{})}:null)(this.policy())??{symbols:[],anyStock:true,maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,baseline:value.balance.reportedTotal,dayPeakEquity:value.balance.reportedTotal,lossLimit:{mode:'off',value:0},readOnly:true},...this.productRisk(value)};
+    return {...(this.market==='US'&&this.buyingPower?{buyingPower:{...this.buyingPower(value.balance),...this.wonRule(value.balance)}}:{}),...(this.market==='US'?(s=>({unsettledKRW:s.unsettledKRW,...(s.uncertainKRW?{unsettledUncertainKRW:s.uncertainKRW}:{})}))(require('./integrated-settlement.cjs').settlement(value.balance)):{}),environment:'kis',executionEnabled:executionEnabled&&this.enabled,automaticExecutionEnabled:this.autoEnabled,market:this.market,currency:this.market==='US'?'USD':'KRW',marketSession:value.marketSession??{open:false,status:'unverified'},equity:value.balance.reportedTotal,cash:Number.isFinite(value.balance.settledCash)?value.balance.settledCash:value.balance.cash,depositCash:value.balance.cash,...(value.balance.pendingSaleProceeds>0?{pendingSaleProceeds:value.balance.pendingSaleProceeds}:{}),positions:Object.fromEntries(value.balance.holdings.map(row=>[row.symbol,{quantity:row.quantity,costTotal:row.cost*row.quantity}])),universe:value.quotes.map(quote=>({symbol:quote.symbol,name:value.balance.holdings.find(row=>row.symbol===quote.symbol)?.name??this.nameOf?.(quote.symbol)??quote.symbol,price:quote.price})),quotes:value.quotes.map(quote=>({...quote,timestamp:quote.retrievedAt,stale:value.marketSession?.open!==true})),orders:this.orders().filter(row=>['Accepted','Uncertain','Submitting','Partially filled'].includes(row.status)).map(({symbol,side,quantity,filled,status,brokerOrderId,createdAt,reconciledAt})=>({symbol,side,quantity,filled,status,orderId:brokerOrderId??null,placedAt:createdAt?new Date(createdAt).toISOString():null,lastConfirmedAt:reconciledAt?new Date(reconciledAt).toISOString():null})),...(this.orderReconciliation()?{orderReconciliation:this.orderReconciliation()}:{}),risk:(policy=>policy?{...policy,baseline:this.adjustedBaseline(policy),...(this.adjustedBaseline(policy)!==policy.baseline?{baselineIncludesFlows:this.adjustedBaseline(policy)-policy.baseline}:{})}:null)(this.policy())??{symbols:[],anyStock:true,maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,baseline:value.balance.reportedTotal,dayPeakEquity:value.balance.reportedTotal,lossLimit:{mode:'off',value:0},readOnly:true},...this.productRisk(value)};
   }
   // First app purchase of a held symbol, for holding-period warnings on daily-reset products.
   firstBought(symbol){const buys=this.orders().filter(o=>o.symbol===symbol&&o.side==='Buy'&&o.filled>0).map(o=>o.createdAt);return buys.length?Math.min(...buys):null;}
@@ -563,9 +567,11 @@ class LiveEngine {
     if(this.exposure)try{if(this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings,pending:pending.map(o=>({...o,notional:o.fullQuantity*o.price}))}).requiresApproval)return 'APPROVAL_REQUIRED';}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
     return null;}
   async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);
-    // Automatic U.S. buys can draw on the KRW pool through integrated margin: blocked unless a separate-pool regime is
-    // verified (Stage 1 of the 2026-11-05 settlement design). Sales and manual orders are unaffected.
-    if(this.market==='US'&&order?.side==='Buy'&&this.funding&&this.funding.regime()!=='separate')throw new Error('INTEGRATED_MARGIN_AUTOMATION_BLOCKED');if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};try{return await this.send(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER',{automatic:true});}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};if(error.message==='PRODUCT_APPROVAL_REQUIRED')return this.orders().find(row=>row.id===id)??{...order,requiresApproval:true,reason:'APPROVAL_REQUIRED'};throw error;}}
+    // 2026-11-19, the user's decision (artifacts/reviews/2026-11-19-us-auto-buys/decision.md): automatic U.S. buys are
+    // no longer blocked (R15 removed). This market's automatic switch (autoEnabled) governs buys and sales alike. A U.S.
+    // buy is checked as a manual one is: KIS's buying power capped at real cash (R17) and the shared ledger under the
+    // unknown regime, which counts it against won cash at the rate plus 2% with Korean buys (R3). U6–U9 stay off.
+    if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};try{return await this.send(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER',{automatic:true});}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};if(error.message==='PRODUCT_APPROVAL_REQUIRED')return this.orders().find(row=>row.id===id)??{...order,requiresApproval:true,reason:'APPROVAL_REQUIRED'};throw error;}}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');
     const report=await this.broker.request('orders',{startDate:order.day,endDate:order.day});const match=report.orders.find(row=>row.orderId===brokerOrderId);
@@ -573,4 +579,4 @@ class LiveEngine {
     this.save({...order,brokerOrderId:match.orderId,status:'Accepted',reason:null});return this.reconcile();
   }
 }
-module.exports={LiveEngine,AUTO_US_BUY_OFF};
+module.exports={LiveEngine,WON_RULE};

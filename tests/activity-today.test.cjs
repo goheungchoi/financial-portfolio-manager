@@ -93,6 +93,6 @@ test('origin marks are not passed to a model: the order views reviews are given 
   assert.ok(auto.includes('openOrders:(c.orders??[]).map(({symbol,side,quantity,filled,status,orderId,placedAt,lastConfirmedAt})=>'),'compact context: named fields');
   assert.ok(auto.includes("this.triggerEvidence={kind:'order',orders:list.map(o=>({id:o.id,symbol:o.symbol,"),'order-update evidence: named fields');});
 // 2026-11-19 A(c): a U.S. buy the automatic send refused reads as not sent, in plain words.
-test('a purchase refused by the U.S. block reads "automatic U.S. purchases are off"',()=>{
+test('a purchase refused by the old U.S. block (before 1.5.69) reads "automatic U.S. purchases were off then"',()=>{
   assert.deepEqual(stateOf({id:'u',symbol:'NASD:NVDA',side:'Buy',quantity:2,filled:0,status:'Rejected',reason:'INTEGRATED_MARGIN_AUTOMATION_BLOCKED',createdAt:Date.now()},Date.now()),
-    {kind:'notSent',label:'Not sent',reason:'automatic U.S. purchases are off (integrated margin not verified)'});});
+    {kind:'notSent',label:'Not sent',reason:'automatic U.S. purchases were off then (integrated margin not verified)'});});

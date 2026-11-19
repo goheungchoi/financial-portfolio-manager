@@ -9,3 +9,13 @@ test('with markets closed, starting auto trading waits for the pre-open review i
   const f=fixture();f.a.marketHours=()=>({open:false,markets:[],preOpen:null,next:{market:'KR',at:Date.now()+3600000}});f.a.configure({scope:'kis'});
   const message=await start(f.a,launchState(f.a).token);assert.match(message,/Markets are closed/);assert.equal(f.reviews(),0,'no review ran');assert.equal(launchState(f.a).running,true);
 });
+// R15 removed (2026-11-19, decision.md): with U.S. automatic orders on, Start says that U.S. buys and sales go out
+// automatically, counted against won cash, and lists the U.S. limits as saved, each set or not set.
+test('Start with the U.S. market: one line names automatic U.S. buys and sales and each U.S. limit, set or not set',async()=>{
+  const f=fixture();try{f.a.marketHours=()=>({open:false,markets:[],preOpen:null,next:{market:'KR',at:Date.now()+3600000}});f.a.configure({scope:'us'});
+    const message=await start(f.a,launchState(f.a).token);
+    assert.match(message,/ U\.S\.: buys and sales are sent automatically, each counted against your won cash; limits: maximum order not set, daily turnover not set, per company not set, daily loss off\.$/);
+    stop(f.a);f.a.usLive.configure({symbols:[],maxOrderKRW:500,lossLimit:{mode:'percent',value:3}},'ENABLE MOCK');f.a.usLive.stop();
+    assert.match(await start(f.a,launchState(f.a).token),/limits: maximum order \$500, daily turnover not set, per company not set, daily loss 3%\.$/);
+    stop(f.a);f.a.configure({scope:'kis'});assert.doesNotMatch(await start(f.a,launchState(f.a).token),/U\.S\.:/,'Korea only: no U.S. line');
+  }finally{f.db.close();}});

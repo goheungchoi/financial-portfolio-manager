@@ -32,6 +32,14 @@ async function start(a,token){
   // seconds from the scheduler, and with every market in scope closed the pre-open review comes first (unless set otherwise).
   // The message says what the scheduler will do: the near-budget slowdown and a pre-open review that already ran are in
   // nextReviewAt. With markets closed no review is due now, so none is named after Start.
+  const said=startMessage(a);const us=usLine(a);return us?`${said} ${us}`:said;
+}
+// With U.S. automatic orders on (R15 removed, 2026-11-19): what goes out, and the U.S. limits as saved, each set or not.
+function usLine(a){const e=a.usLive;if(!e||!engines(a).includes(e)||!e.autoEnabled)return '';let p=null;try{p=e.policy?.();}catch{}
+  const usd=v=>Number.isFinite(v)?`$${Number(v).toLocaleString('en-US')}`:'not set';
+  const loss=p?.lossLimit?.mode==='percent'?`${p.lossLimit.value}%`:p?.lossLimit?.mode==='amount'?usd(p.lossLimit.value):'off';
+  return `U.S.: buys and sales are sent automatically, each counted against your won cash; limits: maximum order ${usd(p?.maxOrderKRW)}, daily turnover ${usd(p?.maxDailyTurnoverKRW)}, per company ${Number.isFinite(p?.maxCompanyPct)?p.maxCompanyPct+'%':'not set'}, daily loss ${loss}.`;}
+function startMessage(a){
   a.restoreClock?.();const next=a.nextReviewAt?.()??Date.now();a.firstAfterStart=next<=Date.now()+5000;
   const at=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})+' KST';
   const hours=a.marketHours?.();if(hours&&!hours.open&&a.config.closedMarketReviews!=='keep'&&!a.emergencyState?.().active){a.firstAfterStart=false;

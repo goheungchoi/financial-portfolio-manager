@@ -2,11 +2,10 @@
 
 Read from the code on 2026-11-19. Read-only: nothing was run, no KIS call, no database read.
 
-**Which code this describes.** The last commit is `9c89338`. Line numbers for `electron/live-engine.cjs` are those of
-that commit (`git show 9c89338:electron/live-engine.cjs`). While this was written, the working tree had uncommitted
-changes in `live-engine.cjs`, `funding-ledger.cjs` and `main.cjs` (the removal of the automatic U.S. buy block). They
-shift `live-engine.cjs` lines by +1 from line 5, +4 from about line 60 and +6 after `autoSubmit`. Every citation also
-names a searchable identifier, so use that when a line has moved. Sections 9.1 and 9.2 say what is in flux.
+**Which code this describes.** Written from `9c89338` and amended with the removal of the automatic U.S. buy block
+(9.1). Line numbers are those of `9c89338`; the removal moved `live-engine.cjs` lines by +1 from line 5, +4 from
+about line 60 and +6 after `autoSubmit`. Every citation also names a searchable identifier, so use that when a line
+has moved.
 
 Conventions: "(inferred)" marks a conclusion not read from one line. "Not determined" means I did not find or read it.
 "Audit" is `artifacts/reviews/2026-11-19-order-rule-audit/audit.md`; "implementer note" is `implementer-note.md` beside
@@ -378,9 +377,8 @@ Sales are never held back by the funding ledger, the loss restriction or the com
 `autoSubmit(id)` (`live-engine.cjs:565` at `9c89338`):
 
 - automatic switch off → `AUTO_KIS_DISABLED`;
-- **at `9c89338`**: a U.S. buy while the funding regime is not `separate` → `INTEGRATED_MARGIN_AUTOMATION_BLOCKED`
-  (`:568`). The regime is never `separate` in the app (4.1), so this blocked every automatic U.S. buy. **Being removed —
-  see 9.1**;
+- a U.S. buy is treated as any other order: the market's automatic switch governs buys and sales alike (the block on
+  automatic U.S. buys, `INTEGRATED_MARGIN_AUTOMATION_BLOCKED`, was removed in 1.5.69; see 9.1);
 - the proposal already needs approval → returned with reason `APPROVAL_REQUIRED`, nothing sent;
 - otherwise `send(..., {automatic:true})`. `EXTENDED_APPROVAL_REQUIRED` and `PRODUCT_APPROVAL_REQUIRED` are caught and
   returned as an order waiting for approval; every other error is thrown to the caller.
@@ -517,8 +515,10 @@ Per market: `environment:'kis'`, `executionEnabled`, `automaticExecutionEnabled`
 switches and exposure; for Korea the credit paths' real state, `:95-102`).
 
 U.S. only: `buyingPower` (`usd`, `integratedMargin`, `fromKRWUSD`, `brokerUSD`, `basis`), `unsettledKRW`,
-`unsettledUncertainKRW`. At `9c89338` it also carries `buyingPower.automaticPurchases {available, reason}` (`:57-58`,
-`:91`) — **in flux, see 9.1**.
+`unsettledUncertainKRW`, and `buyingPower.wonRule {rule, roomUSD, asOf}` (`wonRule`, text `WON_RULE`): the shared won
+rule a U.S. buy must fit, in words, and the room it leaves, the ledger's U.S. capacity worked from readings already held
+(`FundingLedger.capacityFrom`, no KIS request; `roomUSD` null without a Korean reading or a rate). Whether orders go out
+automatically is `automaticExecutionEnabled`, for buys and sales alike.
 
 The balance the AI sees is the *accepted* one: while KIS is moving a settlement, the last consistent reading stands in
 (`:84-90`; `settlement-check.cjs`).
@@ -888,12 +888,7 @@ schedule reviews and carry context but never trade (`agent-desk.cjs:8-9`).
 Steps 1–5 are the same with the U.S. engine (`usLive`), U.S. prices in cents and the New York trading day.
 
 6. **Automatic?** Same conditions with the U.S. engine's automatic switch.
-7. **At `9c89338`: refused.** `autoSubmit` throws `INTEGRATED_MARGIN_AUTOMATION_BLOCKED` (`live-engine.cjs:568`).
-   `placeOrder` releases the slot, `endUnsent` marks the proposal `Rejected` with that code and the linked stop is
-   cancelled at once (`automation.cjs:1180-1184`, `:1599`). The code is in ORDER, so the review completes with "Not
-   sent: Buy 3 NASD:NVDA: automatic U.S. purchases are off (integrated margin not verified)."
-   (`activity-today.cjs:9`). The user could still buy with their own ticket.
-7′. **With the block removed (decided, uncommitted — 9.1):** `send` runs as for Korea, with these U.S. specifics:
+7. **Sending:** `send` runs as for Korea, with these U.S. specifics:
    - the **Korean** balance is read first for the ledger;
    - KIS check: regular session open (or an enabled extended session), limit within 2% of the quote, KIS's buying
      power (integrated when KIS shows it) with a 2% cushion, no open order (of that stock);
@@ -901,6 +896,10 @@ Steps 1–5 are the same with the U.S. engine (`usLive`), U.S. prices in cents a
    - ledger, `unknown` regime: won commitments + (U.S. commitments + reported unsettled U.S. buys + this buy) × rate ×
      1.02 must fit **Korean won cash**;
    - a pre- or after-market order stops here and waits for approval.
+
+   A refusal at any of these is "Not sent" with its reason (for example `INSUFFICIENT_CAPACITY`, "there was not enough
+   buying power"), and the review completes. (Before 1.5.69 every automatic U.S. buy was refused here with
+   `INTEGRATED_MARGIN_AUTOMATION_BLOCKED`.)
 8. **Placement** on the `order` endpoint → `Accepted`.
 9. **Tracking** only while the U.S. regular session is open (KIS revises only then).
 10. **Fill** found by reconcile from U.S. order history (`fillPrice` from `ft_ccld_unpr3`).
@@ -958,7 +957,7 @@ batch is not sent; the review fails), per `order-outcomes.cjs`. "Words" are from
 | `FUNDING_OVERCOMMITTED` | S | KIS once reported more shares filled than committed; never clears | `funding-ledger.cjs:157,169` | none; no screen to clear it | "KIS reported more shares filled than the app held funds for, so new buys stop until that is reviewed" |
 | `DAILY_LOSS_RESTRICTED` | O | An automatic opening while the loss check is unavailable or the day's baseline was late | `:218`, `:291-293`, `:550` | applies only with a loss limit set | "the daily loss limit restricts new purchases" |
 | `AUTO_KIS_DISABLED` | S | `autoSubmit` with the market's automatic switch off | `:565` | the market's automatic switch | "automatic orders are off for this market". `placeOrder` does not call `autoSubmit` when the switch is off (`automation.cjs:1174`), so this is a backstop |
-| `INTEGRATED_MARGIN_AUTOMATION_BLOCKED` | O | **At `9c89338`:** every automatic U.S. buy | `:568` | **none** | "automatic U.S. purchases are off (integrated margin not verified)". Being removed (9.1) |
+| `INTEGRATED_MARGIN_AUTOMATION_BLOCKED` | O | No longer thrown (removed in 1.5.69); old records carry it | — | — | "automatic U.S. purchases were off then (integrated margin not verified)" |
 | `BROKER_REJECTED` | O | KIS refused the placement | `kis-client.cjs:315`; `kis-overseas.cjs:137` | — | "Rejected by KIS: … (KIS code)" |
 | `ORDER_NOT_SENT` / `TICKET_EXPIRED` / `RATE_LIMITED` | O | The request limit refused the placement before it left; the ticket was over 15 s old | `:232`; `order-tickets.cjs:9` | fixed | "the KIS request limit was reached" / "the check with KIS expired before it was sent". A review follows after `retryAt` |
 | `ORDER_UNCERTAIN` | O (but the review fails) | Placement reply unclear | `:233` | — | "KIS's reply was unclear, so it is not confirmed" |
@@ -991,36 +990,31 @@ of the proposal's creation or it reads "Not sent: it expired unapproved".
 
 ---
 
-## 9. Recent decisions and code in flux
+## 9. Recent decisions
 
 ### 9.1 Automatic U.S. buys
 
-**At the last commit (`9c89338`).** `autoSubmit` refuses every automatic U.S. buy while the funding regime is not
-`separate` (`live-engine.cjs:568`), and the regime is always `unknown`. The reviews are told
-`buyingPower.automaticPurchases {available:false, reason: AUTO_US_BUY_OFF}` (`:5`, `:57-58`, `:91`).
+**Decided 2026-11-19** (`artifacts/reviews/2026-11-19-us-auto-buys/decision.md`; the user: "Yes"), **in 1.5.69.** The
+block on automatic U.S. buys (spec R15, `INTEGRATED_MARGIN_AUTOMATION_BLOCKED` in `autoSubmit`, since 1.5.48) is
+removed. The existing U.S. automatic switch, turned on by Start auto trading (`auto-launch.cjs`), governs buys and
+sales alike. There is no separate setting, so automatic U.S. sales cannot be had without automatic U.S. buys.
 
-**Decided (2026-11-19, `artifacts/reviews/2026-11-19-us-auto-buys/decision.md`; the user: "Yes").** The block is
-removed. The existing U.S. automatic switch — turned on by Start auto trading (`auto-launch.cjs:25`) — governs buys and
-sales alike. No new setting. A U.S. buy is checked as a manual one is: KIS's buying power capped at real cash, and the
-shared ledger under the `unknown` regime (won cash at the rate plus 2%, together with Korean buys). The user was told
-that none of their own limits is set, so those two checks are the only brakes.
-
-**In the working tree while this was written (uncommitted; lines may still move):**
-
-- `live-engine.cjs` `autoSubmit`: the block line is gone; a comment cites the decision. (Staged.)
-- `live-engine.cjs`: `AUTO_US_BUY_OFF` and `automaticPurchases()` are replaced by `WON_RULE` and `wonRule(balance)`,
-  which put `buyingPower.wonRule {rule, roomUSD, asOf}` in the U.S. context: the rule in words and the room it leaves
-  now, an estimate from readings already held. (Unstaged.)
-- `funding-ledger.cjs`: new `capacityFrom({account, market, kr, us, rate})`, the same capacity rule without reads or
-  freshness checks. (Unstaged.)
-- `main.cjs`: `usLive.krReading=()=>kisState.snapshot` feeds it. (Unstaged.)
-
-**Not yet built** (per `artifacts/reviews/2026-11-19-spec/implementer-deltas.md`): the screen text on the U.S. switch
-and card, the Start message, and the scout's note. `INTEGRATED_MARGIN_AUTOMATION_BLOCKED` stays in
-`order-outcomes.cjs` and keeps its words for old records.
-
-Unchanged by the decision: automatic U.S. pre- and after-market buys still wait for approval; the regime stays
-`unknown`; a U.S. conditional entry buy goes through the same `autoSubmit` (`automation.cjs:1516`).
+- **The checks on a U.S. buy, automatic or manual:** KIS's buying power capped at real cash (R17,
+  `buying-power.cjs`), then the shared ledger under the `unknown` regime (R3): Korean won cash at the rate plus 2%, together
+  with Korean buys and unsettled U.S. buys. Dollar cash adds no ledger room. No regime is ever verified, and U6–U9 stay
+  disabled. Pre- and after-market buys still wait for approval. A U.S. conditional entry goes through the same
+  `autoSubmit`.
+- **What the AI reads:** `automaticExecutionEnabled` per market (the one fact for whether orders go out), and on the
+  U.S. account `buyingPower.wonRule {rule, roomUSD, asOf}` (3.13). The combined context's objective adds that every
+  U.S. buy must also fit the won rule. The scout's accounts carry both, and its note (`opportunityNote`) names any
+  market whose automatic switch is off. `automaticPurchases` and `AUTO_US_BUY_OFF` are gone.
+- **What the user sees:**
+  - The U.S. switch reads "Allow automatic … orders: buys and sales the AI decides are sent without asking you". When
+    on, it reads "Automatic orders are on: buys and sales".
+  - Under it: "U.S. buys are counted against your won cash. Limits: …", each U.S. limit as set or not set, with More.
+  - Start adds "U.S.: buys and sales are sent automatically, each counted against your won cash; limits: …".
+- **Old records:** `INTEGRATED_MARGIN_AUTOMATION_BLOCKED` stays in ORDER and reads "automatic U.S. purchases were off
+  then (integrated margin not verified)".
 
 ### 9.2 Committed in `9c89338` and its parents (confirmed in the code)
 

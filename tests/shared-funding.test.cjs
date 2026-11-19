@@ -132,10 +132,37 @@ test('first start: orders already recorded enter the ledger by the same rules; a
   const events=db.prepare('SELECT count(*) AS n FROM funding_events').get().n,rows=JSON.stringify(db.prepare('SELECT * FROM funding_commitments ORDER BY orderId').all());
   new FundingLedger(db).init();assert.equal(db.prepare('SELECT count(*) AS n FROM funding_events').get().n,events);assert.equal(JSON.stringify(db.prepare('SELECT * FROM funding_commitments ORDER BY orderId').all()),rows);
 });
-test('automatic U.S. buys are blocked; automatic sales and Korean buys still go through the ledger',async()=>{
-  const a=account();a.us.autoEnabled=true;a.kr.autoEnabled=true;const o=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:100});
-  await assert.rejects(a.us.autoSubmit(o.id),/INTEGRATED_MARGIN_AUTOMATION_BLOCKED/);assert.equal(a.s.posts.length,0);
+// R15 removed (2026-11-12, the user's decision, artifacts/reviews/2026-11-19-us-auto-buys/decision.md): an automatic
+// U.S. buy is sent under the unknown regime when it fits R17 and R3, and refused before KIS when it does not.
+test('an automatic U.S. buy under the unknown regime: sent when it fits; Korean buys still share the won',async()=>{
+  const a=account();a.us.autoEnabled=true;a.kr.autoEnabled=true;assert.equal(a.ledger.regime(),'unknown');
+  const o=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:100});const sent=await a.us.autoSubmit(o.id);
+  assert.equal(sent.status,'Accepted');assert.equal(sent.sentBy,'auto');assert.deepEqual(a.s.posts,['US']);near(a.committed().usd,100.25,0.01);
   const k=a.kr.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:1000});assert.equal((await a.kr.autoSubmit(k.id)).status,'Accepted');
+});
+test('an automatic U.S. buy over the won left under R3 is refused before KIS (INSUFFICIENT_CAPACITY), the order Ready',async()=>{
+  // ₩1,000,000 at ρ 1,326 holds $754.15 with fees. $760 + 0.25% = $761.90 passes the buying-power check (KIS's
+  // integrated $769, real cash $769.23) but not R3 (₩1,010,279 needed); $750 + 0.25% = $751.88 fits (₩996,986).
+  const a=account();a.us.autoEnabled=true;const o=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:760});
+  await assert.rejects(a.us.autoSubmit(o.id),e=>e.message==='INSUFFICIENT_CAPACITY'&&/\(unknown regime\)$/.test(e.detail),'refused by the ledger, not the buying-power check');
+  assert.equal(a.s.posts.length,0);assert.equal(a.us.orders().find(r=>r.id===o.id).status,'Ready');
+  const fit=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:750});assert.equal((await a.us.autoSubmit(fit.id)).status,'Accepted','$751.88 fits');
+});
+test('integrated margin off: an automatic U.S. buy above USD cash is refused at the buying-power check (R17), before the ledger',async()=>{
+  // KIS's integrated figure equals the foreign one: won does not fund U.S. buys, so only the $50 counts.
+  const a=account({usd:50,integratedUSD:50});a.us.autoEnabled=true;const o=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:100});
+  await assert.rejects(a.us.autoSubmit(o.id),e=>e.message==='INSUFFICIENT_CAPACITY'&&e.detail===undefined,'the buying-power check, not the ledger');assert.equal(a.s.posts.length,0);
+  assert.equal(a.db.prepare("SELECT count(*) n FROM funding_events WHERE orderId=?").get(o.id).n,0,'refused before the ledger reserved anything');
+});
+test('the U.S. automatic switch off: a U.S. buy is not sent automatically (AUTO_KIS_DISABLED), as for a sale',async()=>{
+  const a=account();a.us.autoEnabled=false;const o=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:100});
+  await assert.rejects(a.us.autoSubmit(o.id),/AUTO_KIS_DISABLED/);assert.equal(a.s.posts.length,0);assert.equal(a.us.orders().find(r=>r.id===o.id).status,'Ready');
+});
+test('an automatic U.S. buy in an extended session still waits for your approval',async()=>{
+  const a=account();a.us.autoEnabled=true;const prepare=a.us.broker.request;
+  a.us.broker={...a.us.broker,request:async(op,p)=>{const r=await prepare(op,p);return op==='prepare-order'?{...r,session:{id:'us-pre',regular:false,approval:true}}:r;}};
+  const o=a.us.propose({symbol:'NASD:AAPL',side:'Buy',quantity:1,limitPrice:100});const held=await a.us.autoSubmit(o.id);
+  assert.equal(held.reason,'APPROVAL_REQUIRED');assert.equal(a.s.posts.length,0);
 });
 test('order POSTs are never retried by the transport; reads are',async()=>{
   const {KisReadOnlyClient}=require('../electron/kis-client.cjs');let orders=0,reads=0;

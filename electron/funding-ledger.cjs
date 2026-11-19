@@ -191,6 +191,11 @@ class FundingLedger {
     if(z.have<z.commitmentsKRW)return 0;
     if(r==='integrated-usd-first')return Math.max(0,inputs.uCash-z.commitmentsUSD+(z.have-z.commitmentsKRW)/z.rho);
     return Math.max(0,(z.have-z.need)/z.rho);}
+  // The same capacity from readings already held, for what the reviews read (2026-11-19, decision.md step 3): no read,
+  // no freshness or account checks (those belong to the send), so it is an estimate as of the readings. kr, us: the
+  // balances; rate: USD/KRW. Null when Korean cash or the rate is unknown.
+  capacityFrom({account,market,kr,us=null,rate}){const kCash=Math.min(kr?.cash,Number.isFinite(kr?.settledCash)?kr.settledCash:kr?.cash);if(!Number.isFinite(kCash)||!(rate>0))return null;
+    return this.capacity({account,market,inputs:{kCash,uCash:us&&Number.isFinite(us.cash)?us.cash:0,reportedKRW:Math.max(0,Number(us?.unsettled?.buyKRW)||0),rate}});}
   summary(account){const c=this.commitments(account);return {regime:this.regime(),commitments:{USD:c.usd,KRW:c.krw},overCommitted:c.overCommitted,rows:c.rows.map(({orderId,market,symbol,state,amount,currency,reason,pretracking,releasedUSD})=>({orderId,market,symbol,state,amount,currency,reason,pretracking,...(releasedUSD?{releasedUSD}:{})}))};}
 }
 module.exports={FundingLedger,FX_FRESH_MS,BALANCE_FRESH_MS,BUFFER,REGIMES};

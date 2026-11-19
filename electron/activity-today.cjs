@@ -6,7 +6,7 @@ const {originOf}=require('./order-origin.cjs');
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 // Why an order did not reach KIS, in words.
 const NOT_SENT={'ticket-expired':'the check with KIS expired before it was sent','rate-limit':'the KIS request limit was reached',SESSION_CLOSED:'the market was closed',
-  CREDIT_PATH_UNVERIFIED:'its credit path is not verified',INTEGRATED_MARGIN_AUTOMATION_BLOCKED:'automatic U.S. purchases are off (integrated margin not verified)',APPROVAL_REQUIRED:'it needed your approval',SUPERSEDED:'a newer order replaced it',EXPIRED:'it expired unapproved',
+  CREDIT_PATH_UNVERIFIED:'its credit path is not verified',INTEGRATED_MARGIN_AUTOMATION_BLOCKED:'automatic U.S. purchases were off then (integrated margin not verified)',APPROVAL_REQUIRED:'it needed your approval',SUPERSEDED:'a newer order replaced it',EXPIRED:'it expired unapproved',
   // A(b) 1, 2026-11-19: the order codes a refused send can carry (order-outcomes.cjs ORDER), in words.
   PRODUCT_APPROVAL_REQUIRED:'this product needs your approval',EXTENDED_APPROVAL_REQUIRED:'an extended-session order needs your approval',EXTENDED_SIZE_LIMIT:'it is above the extended-session size limit',
   BROKER_ORDER_MISMATCH:'KIS reported a different order',BROKER_REJECTED:'KIS rejected it',CONCENTRATION_LIMIT:'it would go over the per-company limit',DAILY_TURNOVER_LIMIT:'the day\'s turnover limit is reached',

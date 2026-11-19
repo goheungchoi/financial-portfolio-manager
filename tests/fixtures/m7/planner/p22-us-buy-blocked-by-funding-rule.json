@@ -1,8 +1,8 @@
 {
- "name": "P22 as the app runs today (U.S. funding not verified): the U.S. buy is refused for itself, the Korean buy is sent",
+ "name": "P22 U.S. funding not verified (regime unknown): a U.S. buy is counted against won cash; with won short it is refused for itself, even with dollars in the U.S. account, and the Korean buy is sent",
  "account": {
   "kr": {
-   "cash": 10000000,
+   "cash": 200000,
    "holdings": []
   },
   "us": {
