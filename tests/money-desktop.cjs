@@ -47,7 +47,7 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   // A digit typed in the middle (after the "5"): the caret stays after it.
   await type(A,'9',1);await tick();f=await field(A);assert.equal(f.value,'39,000,000');assert.equal(f.caret,2,'the caret stays where the user types');
   // Backspace beside a comma removes the digit before it (keydown, then the browser's own Backspace is prevented).
-  await run(`(()=>{const e=${q(A)};e.focus();e.setSelectionRange(3,3);e.dispatchEvent(new KeyboardEvent('keydown',{key:'Backspace',bubbles:true,cancelable:true}));})()`);await tick();f=await field(A);assert.equal(f.value,'3,000,000','"59,|000,000" Backspace: the 9 goes');
+  await run(`(()=>{const e=${q(A)};e.focus();e.setSelectionRange(3,3);e.dispatchEvent(new KeyboardEvent('keydown',{key:'Backspace',bubbles:true,cancelable:true}));})()`);await tick();f=await field(A);assert.equal(f.value,'3,000,000','"39,|000,000" Backspace: the 9 goes');
   // A letter and a "." are refused: the field keeps its text, and the line says why.
   await type(A,'a');await tick();f=await field(A);assert.equal(f.value,'3,000,000');assert.equal(f.line,'Couldn’t read “a”: numbers only');assert.equal(f.invalid,'true');
   await type(A,'s');await tick();f=await field(A);assert.equal(f.value,'3,000,000');assert.equal(f.line,'Couldn’t read “s”: numbers only','F2: the letter s is quoted alone');
@@ -63,10 +63,10 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   const flows=()=>run('window.portfolio.getPerformance().then(r=>r.state.flows.map(f=>f.amount))');assert.deepEqual(await flows(),[3000000]);
   await pick('Flow type','withdrawal');await paste(A,'3,000,000');await tick();await run(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Record withdrawal').click()`);
   await until(`window.portfolio.getPerformance().then(r=>r.state.flows.length===2)`,'the recorded withdrawal');assert.deepEqual((await flows()).sort((a,b)=>a-b),[-3000000,3000000]);
-  // Item 9 quick buttons: +100만 on 3,000,000 gives 6,000,000 and its read-back; the field's undo takes it back.
+  // Item 9 quick buttons: +100만 on 3,000,000 gives 4,000,000 and its read-back; the field's undo takes it back.
   await pick('Flow type','deposit');await paste(A,'3,000,000');await tick();
   assert.deepEqual(await run(`Array.from(document.querySelectorAll('[role=group][aria-label="Flow amount: quick amounts"] button')).map(b=>[b.textContent,b.getAttribute('aria-label')])`),[['+10만','Add ₩100,000'],['+100만','Add ₩1,000,000'],['+1,000만','Add ₩10,000,000']]);
-  await run(`document.querySelector('[aria-label="Add ₩1,000,000"]').click()`);await tick();f=await field(A);assert.equal(f.value,'6,000,000');assert.equal(f.line,'₩6,000,000 · 600만 원');await capture('money-deposit-quick');
+  await run(`document.querySelector('[aria-label="Add ₩1,000,000"]').click()`);await tick();f=await field(A);assert.equal(f.value,'4,000,000');assert.equal(f.line,'₩4,000,000 · 400만 원');await capture('money-deposit-quick');
   await run(`(()=>{const e=${q(A)};e.focus();e.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true}));})()`);await tick();f=await field(A);assert.equal(f.value,'3,000,000','the press is one undo step');
   assert.equal(await run(`document.querySelectorAll('[aria-label$=": quick amounts"]').length`),1,'quick buttons on the deposit amount only');
   // Over 10x the account: a note in the line, never a block.
