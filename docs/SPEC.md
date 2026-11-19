@@ -158,6 +158,15 @@ From the user, with the day they were set:
 7. **Commit, push, publish, install, database writes, opening or closing the app: the user's word**, local commits
    under their standing approval after review.
 8. **Settings screens follow the approved card and row style**: short text, details behind More.
+9. **Public repository: no personal or account information in any tracked file, commit message or release
+   note.** None of the owner's holdings or trades tied to their account, order numbers, ids, amounts, cash figures,
+   share counts, prices, limits, nor the dates of their account's events; no key, credential or personal e-mail.
+   A test built from a real case uses made-up symbols, values and dates; the real case is written only in
+   `artifacts/` (git-ignored). Release notes describe what changed in general terms, never the owner's case. Every
+   commit carries the GitHub no-reply address (the repository's `user.email`). `tests/no-personal-data.test.cjs`
+   enforces the general rules in `npm test`; `npm run privacy:scan` checks the commits to push, the tracked files
+   and the notes before a release, against the owner's values too (Part 4 §6). The owner's values are never
+   listed in a tracked file, not even hashed. (2026-11-19, after the history was rewritten to remove them.)
 
 ## 7. Does a new feature fit? Five questions
 
@@ -202,4 +211,5 @@ typed by the user anywhere: each button sends its phrase and the engine checks i
 In the commit that changes the feature: update the row in section 3, the step in section 4 or 5 if the flow
 changes, section 8 (remove the row once the code matches), section 9 (a limit added or removed), and the part's
 section with file and identifier. A handoff names the sections to amend; a review does not clear a commit whose
-spec amendment is missing.
+spec amendment is missing. An amendment follows principle 9 like everything else in the repository: a feature is
+described without the owner's data.

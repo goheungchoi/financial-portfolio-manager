@@ -634,6 +634,14 @@ in the `check-report.md` files of 1.5.66, 1.5.68 and 1.5.69. Steps 9-14 are what
    this step: not determined (not in the reports read).
 6. **Release notes**: a draft `release-notes-<version>.md` beside the report, in plain words, saying what changes
    in what the model is given and in the order path (check.md:31-34).
+6b. **Privacy scan**: `npm run privacy:scan -- --notes <release-notes file>` (scripts/privacy-scan.cjs), with
+   `PRIVACY_VALUES_FILE` naming a values file the reviewer writes from the live database and deletes afterwards.
+   It checks every commit to be pushed (its message, and that author and committer are the GitHub no-reply
+   address), every tracked file and the notes for key shapes, personal e-mail domains, dated account events, the
+   owner's known values (a git-ignored list in `artifacts/`) and the live values in plain, comma-grouped and unit
+   forms. Hits print locations only; a release is not pushed or published with a hit. The report records
+   "privacy scan: 0 hits" (SPEC.md principle 9; tests/no-personal-data.test.cjs runs the general rules in
+   `npm test`).
 7. **Unverified list**: what cannot be proved before it runs for real (real KIS, a real model, the user's install)
    is listed (check.md:35-37; every report's last section).
 8. **Report and approval**: counts, failures with output, screenshots and the notes go to the reviewer, who reports
