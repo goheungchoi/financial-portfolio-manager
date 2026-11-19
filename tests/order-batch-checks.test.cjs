@@ -67,7 +67,7 @@ test('9 the lot check for a closing order: a sale larger than the shares free is
 test('10 the engine\'s checks with the reservations of the orders before: a buy the remaining cash cannot cover is refused; the next is sent',async()=>{
   // 1,000,000 KRW: order 1 (70,000) fits, order 2 (100 x 50,000) does not, order 3 (100,000) does.
   const {sent,note}=await batch(o(1,'035720',{quantity:100}),{cash:1000000});
-  assert.deepEqual(sent,['Buy 005930','Buy 000099']);assert.match(note(1),/INSUFFICIENT_CAPACITY/);
+  assert.deepEqual(sent,['Buy 005930','Buy 000099']);assert.equal(note(1),'Not sent: Buy 100 035720: there was not enough buying power.','the reason in words, as a single order');
 });
 test('11 the daily automatic-order cap: one slot each; past it the order waits for approval, the record says so',async()=>{
   const {sent,note,r}=await batch(o(1,'035720'),{config:{maxAutoOrdersPerDay:2}});

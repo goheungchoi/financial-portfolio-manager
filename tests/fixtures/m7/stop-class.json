@@ -163,7 +163,7 @@
         "item": 2,
         "class": "stop",
         "code": "KIS_NOT_CONNECTED",
-        "notePrefix": "Not sent: Buy 1 000099: an earlier order in this review failed (KIS_NOT_CONNECTED).",
+        "notePrefix": "Not sent: Buy 1 000099: an earlier order in this review failed (KIS is not connected).",
         "sent": false
       }
     ],

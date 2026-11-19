@@ -27,12 +27,16 @@ test('a refusal of order 2 (every code of the ORDER class): that order only; ord
     assert.deepEqual(sent,['005930','990060'],code);assert.equal(error,null,code);assert.notEqual(a.lastError,'REVIEW_FAILED',code);
     // Thrown from the send, the order is named as not sent. PRODUCT_ and EXTENDED_APPROVAL_REQUIRED are turned by the
     // engine's autoSubmit into the order awaiting approval, returned: still this order only.
-    if(!['PRODUCT_APPROVAL_REQUIRED','EXTENDED_APPROVAL_REQUIRED'].includes(code))assert.ok(h.logs.some(x=>x[2]==='Order not sent'&&x[3]===`Not sent: Buy 1 035720: ${code}.`),code);}
+    // The same words as a single refused order (refusedNote): the reason in words, "Rejected by KIS", or "Not confirmed"
+    // for an order whose state at KIS is unknown; never the raw code.
+    const T=require('../electron/activity-today.cjs');const [title,note]=code==='BROKER_REJECTED'?['Order rejected by KIS','Rejected by KIS: Buy 1 035720.']:['ORDER_UNCERTAIN','BROKER_ORDER_MISMATCH'].includes(code)?['Order not confirmed',`Not confirmed: Buy 1 035720: ${T.reasonText(code)}.`]:['Order not sent',`Not sent: Buy 1 035720: ${T.reasonText(code)}.`];
+    assert.ok(T.NOT_SENT[code],code+' has words');
+    if(!['PRODUCT_APPROVAL_REQUIRED','EXTENDED_APPROVAL_REQUIRED'].includes(code))assert.ok(h.logs.some(x=>x[2]===title&&x[3]===note),code+': '+JSON.stringify(h.logs.filter(x=>/^Order (not|rejected)/.test(x[2])).map(x=>x.slice(2))));}
 });
 test('a STOP outcome on order 2 (every code of the class): order 1 stands, order 3 is not sent; the review is not failed; one follow-up review',async()=>{
   for(const code of O.STOP){const {sent,h,reviews,error}=await three({prepare:{fail:code}});
     assert.deepEqual(sent,['005930'],code);assert.equal(error,null,code);
-    assert.ok(h.logs.some(x=>x[2]==='Order not sent · batch'&&x[3]===`Not sent: Buy 1 990060: an earlier order in this review failed (${code}).`),code);
+    assert.ok(h.logs.some(x=>x[2]==='Order not sent · batch'&&x[3]===`Not sent: Buy 1 990060: an earlier order in this review failed (${require('../electron/activity-today.cjs').reasonText(code)}).`),code);
     assert.equal(reviews.length,1,code);assert.match(reviews[0][1],new RegExp(`Buy 035720 \\(${code}\\); Buy 990060`),code);}
 });
 test('an error the app does not know on order 2: order 1 stands, order 3 is not sent, and the review fails with every outcome',async()=>{

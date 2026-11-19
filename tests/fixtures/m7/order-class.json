@@ -162,7 +162,7 @@
         "item": 1,
         "class": "order",
         "code": "INSUFFICIENT_CAPACITY",
-        "notePrefix": "Not sent: Buy 2 035720: INSUFFICIENT_CAPACITY",
+        "notePrefix": "Not sent: Buy 2 035720: there was not enough buying power",
         "sent": false
       },
       {

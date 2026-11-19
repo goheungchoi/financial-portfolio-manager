@@ -1107,9 +1107,16 @@ class Automation {
       try{const r=await this.placeOrder(o,{id,context,watchScope,revision,base,onProposal:item===0?onProposal:null,price:args=>feed.price(k,args)});
         done.set(o,{...r,outcome:{class:'order',code:r.order?.reason??r.order?.status??(r.proposal?(r.proposal.reason?'BLOCKED':'PROPOSED'):'NOT_PROPOSED')}});}
       catch(error){const code=O.codeOf(error),cls=O.classOf(code);
-        const note=`Not sent: ${o.action} ${o.quantity} ${o.symbol}: ${code??'an error the app does not know'}${cls==='order'?'':'; the orders after it in this review were not sent'}.`;
-        this.log(id,'System',cls==='order'?'Order not sent':'Order not sent · batch stopped',note);done.set(o,{proposal:error?.proposal??null,order:null,executionNote:note,outcome:{class:cls,code}});
-        if(cls!=='order'){stopped={code:code??'UNKNOWN',text:`an earlier order in this review failed (${code??'an error the app does not know'})`};feed.missed.push(`${o.action} ${o.symbol} (${code??'unknown error'})`);if(cls==='unknown')failure=error;}}}
+        // The same words as a single refused order (refusedNote, activity-today reasonText; planner 2026-11-19): "Not
+        // sent: …: <reason>", or "Rejected by KIS: … (KIS code)"; an order whose state at KIS is unknown is "Not
+        // confirmed", never "Not sent". The follow-up review's list (feed.missed) keeps the codes.
+        const words=c=>c?require('./activity-today.cjs').reasonText(c):'an error the app does not know';
+        let note,title;
+        if(cls==='order'&&UNKNOWN_AT_KIS.includes(code)){note=`Not confirmed: ${o.action} ${o.quantity} ${o.symbol}: ${words(code)}.`;title='Order not confirmed';}
+        else if(cls==='order'){note=refusedNote(o,code,error);title=code==='BROKER_REJECTED'?'Order rejected by KIS':'Order not sent';}
+        else{note=`Not sent: ${o.action} ${o.quantity} ${o.symbol}: ${words(code)}; the orders after it in this review were not sent.`;title='Order not sent · batch stopped';}
+        this.log(id,'System',title,note);done.set(o,{proposal:error?.proposal??null,order:null,executionNote:note,outcome:{class:cls,code}});
+        if(cls!=='order'){stopped={code:code??'UNKNOWN',text:`an earlier order in this review failed (${words(code)})`};feed.missed.push(`${o.action} ${o.symbol} (${code??'unknown error'})`);if(cls==='unknown')failure=error;}}}
     const missed=feed.missed;if(missed.length)this.requestReview('Orders not placed',`${missed.join('; ')}: not placed from this review; decide again.`,seq[0]?.symbol??null);
     const rows=orders.map(o=>({item:o.item??0,symbol:o.symbol,action:o.action,quantity:o.quantity,...done.get(o)}));
     if(failure)throw Object.assign(failure,{batch:rows});

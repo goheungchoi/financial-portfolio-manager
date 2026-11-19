@@ -48,7 +48,7 @@ test('F3: a further order without an order id: PROPOSED reads "Proposal created"
   assert.equal(J.orderPill({proposalId:null,orderId:null,executionNote:'Not proposed: …',outcome:{class:'order',code:'NOT_PROPOSED'}}),'No order','the engine made no proposal');
   assert.equal(J.orderPill({proposalId:null,orderId:null,executionNote:'Not sent: Buy 1 005930: the batch limit.',outcome:{class:'stop',code:'BATCH_LIMIT'}}),'Not sent','a stopped order');
   // The first order and older records have no outcome: the note's start, then the proposal.
-  assert.equal(row(null,{executionNote:'Not sent: Buy 2 035720: INSUFFICIENT_CAPACITY.'}),'Not sent');assert.equal(row(null),'Proposal created');assert.equal(J.orderPill({}),'No order');
+  assert.equal(row(null,{executionNote:'Not sent: Buy 2 035720: there was not enough buying power.'}),'Not sent');assert.equal(row(null),'Proposal created');assert.equal(J.orderPill({}),'No order');
   // An order id: the order's own status, as before (the outcome does not override it).
   assert.equal(J.orderPill({orderId:'o',orderOutcome:{status:'Accepted'},outcome:{class:'order',code:'Accepted'}}),'Order sent');
 });

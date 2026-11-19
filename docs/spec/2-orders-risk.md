@@ -477,6 +477,12 @@ decision (`BATCH_LIMIT`; `BATCH_LIMIT_MS`, `:13`).
 - **STOP** (`:17-21`): the account, settings, engine or broker is in question. The rest of the batch is not sent and
   the review fails; its failure line names the code in words (`automation.cjs:867`).
 - A code in neither set stops the batch and fails the review as unknown (`classOf`, `:23`).
+- **A batch uses the same words as a single order** (since 1.5.69): an order refused for itself reads "Not sent: …:
+  <reason>" or "Rejected by KIS: … (KIS code)" (`refusedNote`); one whose state at KIS is unknown reads "Not
+  confirmed: …: <reason>"; a STOP reads "Not sent: …: <reason>; the orders after it in this review were not sent",
+  and each later order "…: an earlier order in this review failed (<reason>)". The Console titles are "Order not
+  sent", "Order rejected by KIS", "Order not confirmed" and "Order not sent · batch stopped". Only the follow-up
+  review's request keeps the codes. `tests/order-outcomes.test.cjs` pins the words for every ORDER and STOP code.
 
 After a failed batch or an unpriced order, one follow-up review is requested, at most one per symbol every 15 minutes
 (`automation.cjs:1101`, `:1260`).
