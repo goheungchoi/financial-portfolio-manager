@@ -27,6 +27,11 @@ function addMinimumPositions(context){
   // The account value the order checks use: the U.S. side adds the KRW that funds its buys through integrated margin.
   const marketEquity=m=>{const x=Array.isArray(context.markets)&&context.markets.length?context.markets.find(r=>r.market===m):context;const equity=x?.equity;
     return Number.isFinite(equity)?equity+(m==='US'?Number(x.buyingPower?.fromKRWUSD)||0:0):null;};
+  // Whether the target's market takes the app's orders now (plan verdicts, 2026-11-19): the marketSession the engine
+  // reported for this review, the app's order window (the regular session, or an extended one switched on), as the
+  // automatic send checks it. A market this context does not cover is closed to it; no session reported is unknown.
+  const sessionOf=m=>Array.isArray(context.markets)&&context.markets.length?context.markets.find(x=>x.market===m)?.marketSession:(context.market??'KR')===m?context.marketSession:{open:false};
+  const marketOpen=m=>{const s=sessionOf(m);return s&&typeof s.open==='boolean'?s.open:null;};
   for(const t of gap.targets){const m=marketOf(t.symbol);const p=price(t.symbol);const value=p>0?(m==='US'?(fx?p*fx:null):p):null;
     if(value==null||!(equity>0)){t.minimumPosition={shares:1,unavailable:'price or equity unknown'};continue;}
     const cash=cashKRW(m);const row=sizing.get(t.symbol);const policy=policyOf(m);
@@ -34,7 +39,7 @@ function addMinimumPositions(context){
     // shares already held plus one, against that market's account value (an account with nothing fails it).
     const held=context.positions?.[t.symbol]?.quantity??0;const base=marketEquity(m);
     const checks={cash:cash==null?null:cash>=value,sizing:row?row.maxShares>=1:null,
-      companyCap:Number.isFinite(policy.maxCompanyPct)?base>0&&(held+1)*p/base*100<=policy.maxCompanyPct:null,orderCap:Number.isFinite(policy.maxOrderKRW)?p<=policy.maxOrderKRW:null};
+      companyCap:Number.isFinite(policy.maxCompanyPct)?base>0&&(held+1)*p/base*100<=policy.maxCompanyPct:null,orderCap:Number.isFinite(policy.maxOrderKRW)?p<=policy.maxOrderKRW:null,marketOpen:marketOpen(m)};
     t.minimumPosition={shares:1,valueKRW:Math.round(value),weightPct:Math.round(value/equity*1000)/10,checks,feasible:Object.values(checks).every(v=>v!==false)&&checks.cash===true};}
   return context;
 }
