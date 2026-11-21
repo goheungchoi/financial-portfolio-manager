@@ -9,8 +9,15 @@ const subsets=list=>list.reduce((all,id)=>all.flatMap(s=>[s,[...s,id]]),[[]]);
 test('step 1: today\'s texts, whatever parts apply',()=>{
   assert.deepEqual(ids,['two-markets','extended','leveraged','credit','discovery','scout-plan','scout-brief','interval','conditional','desk']);
   // Step 2: the 1.5.57 text (31,533 characters, b0afae298315cefb) without its complexity sentence (530 characters).
-  assert.equal(RI.REVIEW_CORE.length,31003);assert.equal(sha(RI.REVIEW_CORE),'137131132eea8ab3');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
-  assert.equal(RI.SCOUT_CORE.length,9322);assert.equal(sha(RI.SCOUT_CORE),'ed636750c54c3942');
+  // A ('review 2026-11-21'): the leveraged sentence changed; with the earlier text put back, the core is the step-2 text.
+  {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');let core=RI.REVIEW_CORE;for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
+    assert.equal(core.length,31003);assert.equal(sha(core),'137131132eea8ab3');}
+  assert.equal(RI.REVIEW_CORE.length,31317);assert.equal(sha(RI.REVIEW_CORE),'e98aa2a71a73dd7a');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
+  // A: the scout core's leveraged sentence (a defined view held up to maxHoldingDays, or a hedge) and the single-stock
+  // clause; with both put back, the earlier core is ed636750c54c3942.
+  assert.equal(RI.SCOUT_CORE.length,9499);assert.equal(sha(RI.SCOUT_CORE),'7d1654b0af466ec4');
+  {const {SCOUT_PIECE:[before,after]}=require('./fixtures/leveraged-text-a.cjs');assert.equal(RI.SCOUT_CORE.split(after).length,2);
+    assert.equal(sha(RI.SCOUT_CORE.replace(' Single-stock ones only when products.leveragedOrInverseEtps.singleStockAllowed is true.','').replace(after,before)),'ed636750c54c3942');}
   for(const s of subsets(ids))assert.equal(RI.reviewText(s),RI.REVIEW_CORE);
   for(const s of subsets(RI.SCOUT_PARTS.map(p=>p.id)))assert.equal(RI.scoutText(s),RI.SCOUT_CORE);
   assert.equal(C.REVIEW_INSTRUCTIONS,RI.REVIEW_CORE);assert.equal(require('../electron/scout.cjs').INSTRUCTIONS,RI.SCOUT_CORE);

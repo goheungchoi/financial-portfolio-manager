@@ -6,7 +6,7 @@ const US_KNOWN={TQQQ:3,SQQQ:-3,QLD:2,QID:-2,PSQ:-1,UPRO:3,SPXU:-3,SPXL:3,SPXS:-3
 // Short: stock loan source (자기대주 / 유통대주); feePct is the annual borrowing fee used for estimates.
 // leveragedEtps.brokerEligible: whether the user confirmed that KIS lets this account buy leveraged and inverse products
 // (true, false, or null = not confirmed). The app cannot read it from KIS (fact check X2, 2026-11-11).
-const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10,brokerEligible:null},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5}};
+const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10,brokerEligible:null,singleStock:false},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5}};
 const CREDIT_TYPES={'margin-buy':{self:'21',distribution:'23'},'margin-sell':{self:'25',distribution:'27'},short:{self:'24',distribution:'22'},cover:{self:'28',distribution:'26'}};
 // Whether the AI may consider leveraged and inverse products for this account, with the reason when not: the switch
 // is on and the user confirmed the broker allows the account to buy them.
@@ -29,13 +29,27 @@ function classifyName(symbol,name='',englishName=''){
   const inverse=/\b(inverse|bear|ultrashort)\b/.test(e)||/\bshort\b/.test(e)&&!/short[- ](term|treasury|duration|maturity|dated|bond)/.test(e);
   if(inverse)return -(factor??1);if(factor&&factor>1)return factor;return 1;
 }
+// Single-stock leveraged or inverse products (Korean-listed ETF/ETN on one company): their own switch, off by default
+// (leveragedEtps.singleStock). Recognized by name: the word 단일종목, or a name that, with spaces, the product words, the
+// multiple and an issuer's brand taken away, is a listed stock's name in the security master. A name the rule cannot
+// place is an index or sector product: sector and index names (반도체, 코스닥150) are no company's name, and refusing
+// every unplaced name would refuse them all. The user's setting (product_kinds) wins either way.
+const PRODUCT_WORDS=/레버리지|인버스|선물|합성|ETF|ETN|\(H\)|\d(?:\.\d+)?X/gi;
+const BRANDS=['KODEX','TIGER','ACE','SOL','RISE','PLUS','HANARO','KIWOOM','KOACT','TIMEFOLIO','TIME','KBSTAR','ARIRANG','KOSEF','WOORI','BNK','UNICORN','에셋플러스','마이티','파워','신한','미래에셋','삼성','한국투자','한투','NH','KB','하나','키움','메리츠','대신','유안타','IBK','교보'];
+function singleStockName(name,isStock){const n=String(name??'').replace(/\s+/g,'');if(!n)return false;if(n.includes('단일종목'))return true;
+  const core=n.replace(PRODUCT_WORDS,'');if(core.length<2)return false;const cands=[core,...BRANDS.filter(b=>core.toUpperCase().startsWith(b.toUpperCase())).map(b=>core.slice(b.length))].filter(c=>c.length>=2);
+  return cands.some(c=>{try{return isStock(c);}catch{return false;}});}
 function kindOf(factor){return factor===1?'standard':factor<0?(factor<-1?'leveraged-inverse':'inverse'):'leveraged';}
 class Exposure {
-  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS product_overrides(symbol TEXT PRIMARY KEY,factor REAL NOT NULL);CREATE TABLE IF NOT EXISTS exposure_policy(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
+  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS product_overrides(symbol TEXT PRIMARY KEY,factor REAL NOT NULL);CREATE TABLE IF NOT EXISTS product_kinds(symbol TEXT PRIMARY KEY,single_stock INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS exposure_policy(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   security(symbol){try{return this.db.prepare('SELECT name,englishName,type FROM securities WHERE symbol=?').get(symbol)??null;}catch{return null;}}
   // {factor, kind, source}; only ETFs/ETNs (or overrides / known tickers) are treated as leveraged or inverse.
   // known: {englishName, type} from the security master, used when the securities table has no row for the symbol.
-  classify(symbol,name=null,known=null){
+  classify(symbol,name=null,known=null){const p=this.classifyFactor(symbol,name,known);if(p.kind==='standard'||symbol.includes(':'))return p;
+    const set=this.db.prepare('SELECT single_stock FROM product_kinds WHERE symbol=?').get(symbol);if(set)return {...p,singleStock:set.single_stock===1,singleStockSource:'Your setting'};
+    const row=this.security(symbol);const single=singleStockName(row?.name??name??'',c=>{try{return Boolean(this.db.prepare("SELECT 1 FROM securities WHERE type='stock' AND replace(name,' ','')=? LIMIT 1").get(c));}catch{return false;}});
+    return {...p,singleStock:single,singleStockSource:'Product name'};}
+  classifyFactor(symbol,name=null,known=null){
     const override=this.db.prepare('SELECT factor FROM product_overrides WHERE symbol=?').get(symbol);if(override)return {factor:override.factor,kind:kindOf(override.factor),source:'Your setting'};
     // A master row without a type is classified by its name, never assumed standard.
     const stored=this.security(symbol),row=stored??(known?{name,englishName:known.englishName??'',type:known.type??null}:null);const ticker=symbol.includes(':')?symbol.split(':')[1]:symbol;
@@ -50,13 +64,17 @@ class Exposure {
     if(!Number.isFinite(factor)||factor===0||Math.abs(factor)>5)throw new Error('INVALID_REQUEST');this.db.prepare('INSERT INTO product_overrides VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET factor=excluded.factor').run(symbol,factor);
   }
   overrides(){return this.db.prepare('SELECT symbol,factor FROM product_overrides ORDER BY symbol').all().map(r=>({...r}));}
+  // The user's own call on a Korean product: single-stock (true), not (false), or the name rule again (null).
+  setSingleStock(symbol,value){if(typeof symbol!=='string'||!/^\d{6}$/.test(symbol)||![true,false,null].includes(value))throw new Error('INVALID_REQUEST');
+    if(value==null){this.db.prepare('DELETE FROM product_kinds WHERE symbol=?').run(symbol);return;}this.db.prepare('INSERT INTO product_kinds VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET single_stock=excluded.single_stock').run(symbol,value?1:0);}
+  kindOverrides(){try{return this.db.prepare('SELECT symbol,single_stock FROM product_kinds ORDER BY symbol').all().map(r=>({symbol:r.symbol,singleStock:r.single_stock===1}));}catch{return [];}}
   policy(account){const row=this.db.prepare('SELECT payload FROM exposure_policy WHERE account=?').get(account);const saved=row?JSON.parse(row.payload):{};return Object.fromEntries(Object.entries(DEFAULT_POLICY).map(([k,v])=>[k,{...v,...(saved[k]??{})}]));}
   savePolicy(account,value){
     if(typeof account!=='string'||!account||!value||typeof value!=='object'||Object.keys(value).some(k=>!DEFAULT_POLICY[k]))throw new Error('INVALID_SETTINGS');
     const next=this.policy(account);
     for(const [section,fields] of Object.entries(value)){if(!fields||typeof fields!=='object')throw new Error('INVALID_SETTINGS');for(const [key,v] of Object.entries(fields)){
       if(!Object.hasOwn(DEFAULT_POLICY[section],key))throw new Error('INVALID_SETTINGS');
-      if(key==='brokerEligible'?![true,false,null].includes(v):key==='source'?!['self','distribution'].includes(v):['enabled','auto'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
+      if(key==='brokerEligible'?![true,false,null].includes(v):key==='source'?!['self','distribution'].includes(v):['enabled','auto','singleStock'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
       next[section][key]=v;}}
     for(const section of Object.keys(next))if(!next[section].enabled)next[section].auto=false;
     this.db.prepare('INSERT INTO exposure_policy VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify(next));return next;
@@ -78,6 +96,8 @@ class Exposure {
     if(side!=='Sell'&&product.source==='Unknown product')return {product:{...product,kind:'unclassified'},requiresApproval:true};
     if(product.kind==='standard'||side==='Sell')return {product,requiresApproval:false};
     const p=policy.leveragedEtps;if(!p.enabled)throw new Error('LEVERAGED_NOT_ENABLED');
+    // Single-stock products only with their own switch on; then the same rules as the others. Sales passed above.
+    if(product.singleStock&&p.singleStock!==true)throw new Error('SINGLE_STOCK_LEVERAGED');
     const current=this.summary(holdings,equity).leveragedValue+this.pendingLeveraged(pending);
     if(equity>0&&(current+notional)/equity*100>p.maxPctOfEquity)throw new Error('LEVERAGED_EXPOSURE_LIMIT');
     return {product,requiresApproval:!p.auto};
@@ -119,10 +139,10 @@ class Exposure {
   // AI context: product flags for the review universe and held positions, policy switches and holding-period warnings.
   context(account,universe,holdings,equity,firstSeen){
     const policy=this.policy(account),summary=this.summary(holdings,equity,Date.now(),firstSeen);
-    const products=[...new Set([...(universe??[]).map(u=>u.symbol),...(holdings??[]).map(h=>h.symbol)])].map(symbol=>({symbol,...this.classify(symbol,(universe??[]).find(u=>u.symbol===symbol)?.name)})).filter(p=>p.kind!=='standard').map(({symbol,factor,kind})=>({symbol,factor,kind}));
-    const warnings=summary.positions.filter(r=>r.kind!=='standard'&&r.heldDays!=null&&r.heldDays>policy.leveragedEtps.maxHoldingDays).map(r=>`${r.symbol} (${r.factor}x daily) held ${r.heldDays} days; daily-reset products drift from the index over longer holds.`);
+    const products=[...new Set([...(universe??[]).map(u=>u.symbol),...(holdings??[]).map(h=>h.symbol)])].map(symbol=>({symbol,...this.classify(symbol,(universe??[]).find(u=>u.symbol===symbol)?.name)})).filter(p=>p.kind!=='standard').map(({symbol,factor,kind,singleStock})=>({symbol,factor,kind,...(singleStock?{singleStock:true,allowed:policy.leveragedEtps.singleStock===true,...(policy.leveragedEtps.singleStock===true?{}:{reason:'Single-stock products are turned off in Short & leverage.'})}:{})}));
+    const max=policy.leveragedEtps.maxHoldingDays;const warnings=summary.positions.filter(r=>r.kind!=='standard'&&r.heldDays!=null&&r.heldDays>=max).map(r=>`${r.symbol} (${r.factor}x daily) held ${r.heldDays} of ${max} days; daily-reset products drift from the index over longer holds.`);
     const access=leveragedAccess(policy.leveragedEtps);
-    return {leveragedEtps:{allowed:access.allowed,...(access.reason?{reason:access.reason}:{}),automatic:policy.leveragedEtps.auto,maxPctOfEquity:policy.leveragedEtps.maxPctOfEquity,maxHoldingDays:policy.leveragedEtps.maxHoldingDays},products,exposure:{leveragedPct:summary.leveragedPct==null?null:Math.round(summary.leveragedPct*10)/10,effectivePct:summary.effectivePct==null?null:Math.round(summary.effectivePct*10)/10},warnings};
+    return {leveragedEtps:{allowed:access.allowed,...(access.reason?{reason:access.reason}:{}),automatic:policy.leveragedEtps.auto,maxPctOfEquity:policy.leveragedEtps.maxPctOfEquity,maxHoldingDays:policy.leveragedEtps.maxHoldingDays,singleStockAllowed:policy.leveragedEtps.singleStock===true,...(summary.leveragedPct==null?{}:{roomPctOfEquity:Math.max(0,Math.round((policy.leveragedEtps.maxPctOfEquity-summary.leveragedPct)*10)/10)})},products,exposure:{leveragedPct:summary.leveragedPct==null?null:Math.round(summary.leveragedPct*10)/10,effectivePct:summary.effectivePct==null?null:Math.round(summary.effectivePct*10)/10},warnings};
   }
 }
-module.exports={Exposure,classifyName,leveragedAccess,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};
+module.exports={Exposure,classifyName,singleStockName,leveragedAccess,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};

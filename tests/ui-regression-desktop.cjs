@@ -827,6 +827,19 @@ app.once('browser-window-created',(_event,created)=>{win=created;win.webContents
       await click('Set multiple');await until('document.querySelector(`[aria-label="Product overrides"]`)?.textContent.includes("2x inverse")','Override not shown');
       assert.ok(await run('document.querySelector(`[aria-label="Korea Margin buying (신용매수)"]`).textContent.includes("KIS does not offer credit orders on mock accounts")'),'margin section explains the live-account requirement');
       assert.ok(await run('Boolean(document.querySelector(`[aria-label="Korea Short selling (대주매도)"]`))')&&!(await run('Boolean(document.querySelector(`[aria-label="U.S. Short selling (대주매도)"]`))')),'short selling is offered for Korea only');
+      // A: single-stock products have their own switch (Korea only), off by default, needing the main switch; saved per account.
+      const single='[aria-label="Korea allow single-stock products"]';
+      assert.equal(await run(`document.querySelector('${single}').checked`),false,'single-stock: off by default');assert.ok(!(await run('Boolean(document.querySelector(`[aria-label="U.S. allow single-stock products"]`))')),'Korea only');
+      assert.match(await run(`document.querySelector('${single}').closest('.exposure-section').textContent`),/Allow single-stock products.*Off by default\. ETFs on one company \(단일종목\) are not bought\./);
+      await run(`document.querySelector('${single}').click()`);await wait(100);await click('Save Korea settings');
+      await until('window.portfolio.getExposure().then(r=>r.state.markets.KR.policy?.leveragedEtps.singleStock===true)','single-stock switch not saved');
+      await run(`document.querySelector('${single}').scrollIntoView({block:"center"})`);await wait(150);await capture('single-stock-switch-on');
+      await run(`document.querySelector('${single}').click()`);await wait(100);await click('Save Korea settings');
+      await until('window.portfolio.getExposure().then(r=>r.state.markets.KR.policy?.leveragedEtps.singleStock===false)','single-stock switch not turned off');
+      await run('(()=>{const el=document.querySelector(`[aria-label="Single-stock symbol"]`);Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,"990101");el.dispatchEvent(new Event("input",{bubbles:true}));})()');
+      await click('Set');await until('document.querySelector(`[aria-label="Single-stock settings"]`)?.textContent.includes("990101")','single-stock setting not shown');
+      assert.match(await run('document.querySelector(`[aria-label="Single-stock settings"]`).textContent'),/Single-stock/);
+      await run('Array.from(document.querySelectorAll(`[aria-label="Single-stock settings"] button`)).find(b=>b.textContent==="Remove").click()');await until('!document.querySelector(`[aria-label="Single-stock settings"]`)','single-stock setting not removed');
       await run("document.querySelector(`[aria-label=\"Korea short and leverage\"]`).scrollIntoView({block:\"start\"})");await wait(150);await capture("short-leverage-settings");
       await run('document.querySelector(`[aria-label="Korea allow leveraged and inverse ETFs"]`).click()');await wait(100);await click('Save Korea settings');await until('document.querySelector(`[aria-label="Korea short and leverage"] .state-pill`)?.textContent==="off"','Policy not reset');
     });

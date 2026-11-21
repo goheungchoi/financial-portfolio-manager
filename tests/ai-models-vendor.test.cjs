@@ -30,6 +30,8 @@ test('pin: the OpenAI decide request body is byte-identical to 1.5.49',async()=>
     assert.ok(!body.includes('complexity'),name+': no complexity is sent');
     for(const [at,put] of [['positionSizing gives, per symbol',sentence+'positionSizing gives, per symbol'],['"strategyCheck":{"type":"array"','"complexity":{"type":"object","properties":{"score":{"type":"integer"},"reason":{"type":"string"}},"required":["score","reason"],"additionalProperties":false},"strategyCheck":{"type":"array"'],['"plan","strategyCheck"','"plan","complexity","strategyCheck"']]){
       assert.equal(body.split(at).length,2,name+': once: '+at.slice(0,30));body=body.replace(at,put);}
+    // Leveraged products held up to maxHoldingDays (A): the earlier leveraged text is put back the same way.
+    body=require('./fixtures/leveraged-text-a.cjs').earlierLeveragedText(body);
     assert.deepEqual({sha256:crypto.createHash('sha256').update(body).digest('hex'),length:body.length},PIN[name],name);
   }
 });

@@ -20,15 +20,15 @@ function onClaude(){const a=harness();a.completedClaudeDryRun=()=>record(RI.fing
 
 test('fix 2: the several-orders fingerprint counts as well as the single-order one; an older one does not',()=>{
   const a=harness();const use=r=>{a.completedClaudeDryRun=()=>r;return a.claudeTradingDryRun();};
-  assert.equal(RI.fingerprint(undefined,{orders:true}),'d3b7deb7b551a025');assert.equal(RI.fingerprint(),'36fe9b8abbd1bbea');
-  assert.ok(use(record('d3b7deb7b551a025')),'the user\'s 11-10 20:41 record (review 2026-11-10 orders)');
-  assert.ok(use(record('36fe9b8abbd1bbea')),'a single-order dry run');
+  assert.equal(RI.fingerprint(undefined,{orders:true}),'a5bc46e95c6a5a98');assert.equal(RI.fingerprint(),'56da3eb8fe72bacc');
+  assert.ok(use(record('a5bc46e95c6a5a98')),'the user\'s 11-10 20:41 record (review 2026-11-10 orders)');
+  assert.ok(use(record('56da3eb8fe72bacc')),'a single-order dry run');
   assert.equal(use(record('d50342a570a47586')),null,'an older fingerprint: a new dry run is needed');
   assert.equal(use(record(RI.fingerprint('proposed',{orders:true}))),null,'the proposed set does not count');
   assert.equal(use(null),null);});
 
 test('fix 2: the switch to Claude saves with a several-orders dry run on record; the advice uses the same check',()=>{
-  M.setClaudeTradingForTests(true);try{const a=harness();a.completedClaudeDryRun=()=>record('d3b7deb7b551a025');
+  M.setClaudeTradingForTests(true);try{const a=harness();a.completedClaudeDryRun=()=>record('a5bc46e95c6a5a98');
     a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});assert.equal(a.config.openaiModel,'claude-opus-5-5');
     a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'Start\'s save goes through');}finally{M.setClaudeTradingForTests(false);}
   // automation.cjs: the Review F1 advice is shown when claudeTradingDryRun() is null, so it follows fix 2.

@@ -1,0 +1,14 @@
+// Leveraged and inverse products held up to maxHoldingDays (A, 'review 2026-11-21'): the two pieces of the review core
+// that changed, the text before and after. Request-body pins put the earlier text back, so every other byte is still
+// compared with the body they pin, as earlier instruction steps did.
+const PIECES=[
+  [' A leveraged or inverse ETF trade (a short-term horizon on a leveraged or inverse instrument) is for a sector move expected in this or the next session, only when productRisk.leveragedEtps.allowed is true: it needs observable evidence that the move is likely',
+   ' A leveraged or inverse ETF trade (a leveraged or inverse instrument, held for any horizon up to maxHoldingDays) is allowed only when productRisk.leveragedEtps.allowed is true: it needs observable evidence that the move is likely'],
+  ['a size within productRisk.leveragedEtps.maxPctOfEquity, horizonDays within maxHoldingDays with an exit and a stop, and a comparison with the unleveraged ETF; daily-reset leverage decays over longer holds.',
+   'a size within productRisk.leveragedEtps.maxPctOfEquity, horizonDays within maxHoldingDays with an exit and a stop, and a comparison with the unleveraged ETF. Daily-reset leverage decays over longer and sideways holds. An inverse index ETF may also hedge the portfolio’s own holdings, within the same cap and days: the plan names the holdings it hedges and the condition that ends the hedge. Single-stock leveraged or inverse products (singleStock in productRisk.products) are allowed only when productRisk.leveragedEtps.singleStockAllowed is true.']];
+// The body with the earlier text in place of the new, each piece once (JSON-escaped as in a request body); unchanged
+// when the body does not carry the review core.
+function earlierLeveragedText(body){let out=body;for(const [before,after] of PIECES){const b=JSON.stringify(before).slice(1,-1),a=JSON.stringify(after).slice(1,-1);const n=out.split(a).length-1;if(n>1)throw new Error('a leveraged piece is sent more than once');if(n===1)out=out.split(a).join(b);}return out;}
+// The scout core's leveraged sentence, before and after (the scout may propose what a review may now hold).
+const SCOUT_PIECE=["Leveraged or inverse ETFs are only for accounts whose products.leveragedOrInverseEtps.allowed is true, within its caps, and only for a defined short-term tactical view with an exit; never pick one only because a stock is unaffordable, because daily-reset leverage drifts from the multiple over longer holds.","Leveraged or inverse ETFs are only for accounts whose products.leveragedOrInverseEtps.allowed is true, within its caps: for a defined view with an exit, held up to maxHoldingDays, or as a hedge of the portfolio’s own holdings, naming them and the condition that ends it; never pick one only because a stock is unaffordable, because daily-reset leverage drifts from the multiple over longer holds."];
+module.exports={PIECES,SCOUT_PIECE,earlierLeveragedText};

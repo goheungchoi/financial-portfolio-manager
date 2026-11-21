@@ -666,11 +666,24 @@ determined here.
   (`check`, `:78`). `propose` passes no name (`live-engine.cjs:117`), so any symbol missing from the security master is
   held (audit item 8; confirmed).
 - **Policy per account** (`DEFAULT_POLICY`, `:9`; table `exposure_policy`): leveraged products off; automatic off; cap
-  20% of equity; holding-period warning after 10 days; `brokerEligible` not confirmed.
-- **At an order** (`check`, `:73-84`): switch off → `LEVERAGED_NOT_ENABLED`; held leveraged value + open leveraged buys
+  20% of equity; holding-period warning after 10 days; `brokerEligible` not confirmed; single-stock products off
+  (`singleStock`).
+- **Single-stock products** (since 1.5.72): a Korean leveraged or inverse ETF or ETN on one company. Recognized by
+  name (`singleStockName`): the word 단일종목, or a name that, with spaces, the product words (레버리지, 인버스, 선물,
+  합성, ETF, ETN, (H), the multiple) and an issuer's brand removed, is a listed stock's name in the security master. A
+  name the rule cannot place counts as an index or sector product, since sector and index names are no company's
+  name. The user's setting (`product_kinds`, Product classification → "Single-stock product") wins either way.
+- **Holding period**: products may be held up to the user's `maxHoldingDays`. It stays a warning (the user's
+  choice): `productRisk.warnings` names each product held for the limit or longer ("held N of M days"). The app
+  sells nothing at the limit.
+- **At an order** (`check`, `:73-84`): switch off → `LEVERAGED_NOT_ENABLED`; a single-stock product with its own switch
+  off → `SINGLE_STOCK_LEVERAGED` ("single-stock leveraged or inverse products are turned off in Short & leverage");
+  held leveraged value + open leveraged buys
   + this order above the cap → `LEVERAGED_EXPOSURE_LIMIT`; automatic off → the order needs approval. Sales always pass.
 - **For the AI** (`leveragedAccess`, `:13-14`): allowed only when the switch is on **and** the user confirmed that KIS
-  lets the account buy them. Conditional buy orders are refused otherwise, when armed and again when fired
+  lets the account buy them. `productRisk.leveragedEtps` also carries `singleStockAllowed` and `roomPctOfEquity`
+  (the cap less the leveraged share held); a single-stock row in `products` carries `singleStock`, `allowed` and,
+  when not allowed, its reason. The scout's `products.leveragedOrInverseEtps` carries `singleStockAllowed`. Conditional buy orders are refused otherwise, when armed and again when fired
   (`automation.cjs:1392-1394`, `:1413`, `:1505`).
 - U.S.-listed leveraged funds: the review instructions tell the AI they "cannot meet this standard here"
   (`review-instructions.cjs:8`, `:192`), so the U.S. switch has no effect on AI orders (audit item 6, not re-read).

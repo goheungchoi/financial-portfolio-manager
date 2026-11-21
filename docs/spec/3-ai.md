@@ -685,8 +685,8 @@ built-in defaults only fill gaps where the guidelines are silent (`REVIEW_CORE`,
 
 | Set | Version | Used by | Shape |
 |---|---|---|---|
-| `current` | `'review 2026-11-15'` (`INSTRUCTIONS_VERSION`); several-orders `'review 2026-11-17 orders'` | every live request, dry run and replay baseline | **One core of about 31,000 characters** (`REVIEW_CORE`, `:8`); the ten parts exist as ids and conditions but their text is empty (`REVIEW_PARTS`, `:33-43`). Only the more-orders part has text. |
-| `proposed` | `'proposed 2026-11-15'`; `'proposed 2026-11-17 orders'` | **only** the replay option "Built-in text: proposed" (`:66-69`) | A structured core with headed sections, and real text in each part |
+| `current` | `'review 2026-11-21'` (`INSTRUCTIONS_VERSION`); several-orders `'review 2026-11-21 orders'`; scout `'scout 2026-11-21'` | every live request, dry run and replay baseline | **One core of about 31,000 characters** (`REVIEW_CORE`, `:8`); the ten parts exist as ids and conditions but their text is empty (`REVIEW_PARTS`, `:33-43`). Only the more-orders part has text. |
+| `proposed` | `'proposed 2026-11-21'`; `'proposed 2026-11-21 orders'` | **only** the replay option "Built-in text: proposed" (`:66-69`) | A structured core with headed sections, and real text in each part |
 
 The parts, their conditions (`factsOf`, `:14-25`) and what the *proposed* text of each tells the model:
 
@@ -694,7 +694,7 @@ The parts, their conditions (`factsOf`, `:14-25`) and what the *proposed* text o
 |---|---|---|
 | `two-markets` | `environment==='kis-combined'` | examine both markets, one bounded trade, native currency; the integrated-margin exception |
 | `extended` | `extendedSessions` non-empty (absent counts as on) | what an extended session is and its limits |
-| `leveraged` | some `productRisk.leveragedEtps.allowed` | what a trade in a leveraged/inverse product needs |
+| `leveraged` | some `productRisk.leveragedEtps.allowed` | what a trade in a leveraged/inverse product needs. Since 'review 2026-11-21' the current core says it may be held for any horizon up to `maxHoldingDays` (the session rule is gone), keeps the decay fact, allows an inverse index ETF as a hedge of the portfolio's own holdings within the same cap and days, and allows single-stock products only when `singleStockAllowed` is true; the proposed part and the scout say the same |
 | `credit` | some `productRisk.credit` present | margin and short rules, `credit` and `loanDate` |
 | `discovery` | `discovery.enabled` | the discovery and research tools |
 | `scout-plan` | `scoutPlan.targets` non-empty | reading the plan, `planGap`, `planVerdicts`, waits, data gaps, `minimumPosition` |
