@@ -231,3 +231,53 @@ test('generated sequences (C1d-2b): no detected flow, explained = booked + obser
     assert.ok(Math.abs(cur.explained.US-usExpected)<=0.02,`kind ${kind} ${k}: explained US ${cur.explained.US} vs booked and observed ${usExpected}`);
     for(const r of rows)assert.ok(r.state==='booked'&&r.via||(r.state==='none'||r.state==='unmatched')&&r.reason,`kind ${kind} ${k}: ${r.key} ends ${r.state} ${r.reason??r.via??''}`);}
 });
+
+
+// Found in live use, the first reading after the upgrade: state written under the old rule (KIS's unsettled
+// buys less its unsettled sales: 0 while a buy beside larger sales is reported) meets the new rule (the buys in full).
+// Made-up values, rate 1,400: Korean 1.5m; U.S. holdings, cash 300; a U.S. buy of 300 reported, then sales of 100 and
+// 250; then KIS settles the buy from U.S. cash. Two states the old rule left:
+// - 'parts': the sales reported in two readings, so the report's falls matched no group and the buy's group
+//   stayed reported while the stored figures went to 0. Written here as the old version left them.
+// - 'one': both sales in one reading, the fall matching the group, which the old rule took as settled before its payment
+//   (awaiting-krw). Produced by feeding the old rule's netted amount, as it handed every reader.
+const UPG={fx:1400,KRH:[{symbol:'990020',quantity:1,price:500000}],A:{symbol:'NASD:AAA',quantity:1,price:60},B:{symbol:'NASD:BBB',quantity:1,price:100},C:{symbol:'NASD:CCC',quantity:1,price:300},D:{symbol:'NASD:DDD',quantity:1,price:250}};
+const RIGHT=1500000+(60+300+300+350-300)*1400;// Korean 1.5m + U.S. holdings A and C, cash 300, sales 350, less the buy 300
+function upgrade(state){const {fx,KRH,A:A1,B:B1,C:C1,D:D1}=UPG;const at=(s,us,orders)=>({at:K(s),fx,kr:{settled:1000000,holdings:KRH},us,orders});
+  const buy=usBuy('CCC',300,K('2026-11-02T23:40:00')),b=usSell('BBB',100,K('2026-11-03T23:50:00')),d=usSell('DDD',250,K(state==='one'?'2026-11-03T23:50:00':'2026-11-04T00:30:00'));
+  const w=world();const json=(t,k)=>{const r=w.db.prepare(`SELECT payload FROM ${t} WHERE account=?${k?' AND key=?':''}`).get(...(k?[A,k]:[A+(t==='settlement_funding'?':US':'')]));return r?JSON.parse(r.payload):null;};
+  w.step(at('2026-11-02T23:00:00',{cash:300,holdings:[A1,B1,D1]},[]));
+  w.step(at('2026-11-02T23:45:00',{cash:300,holdings:[A1,B1,C1,D1],buyKRW:420000},[buy]));
+  const put=(t,k,v)=>w.db.prepare(`UPDATE ${t} SET payload=? WHERE account=?${k?' AND key=?':''}`).run(JSON.stringify(v),...(k?[A,k]:[A+(t==='settlement_funding'?':US':'')]));
+  if(state==='one'){w.step(at('2026-11-03T23:55:00',{cash:300,pending:350,holdings:[A1,C1],buyKRW:0},[buy,b,d]));// old rule: 420,000 less 490,000
+    const {rule:_r,...meta}=json('funding_transfers','#meta');put('funding_transfers','#meta',meta);}// the old version wrote no rule mark
+  else{w.step(at('2026-11-03T23:55:00',{cash:300,pending:100,holdings:[A1,C1,D1],buyKRW:420000},[buy,b]));
+    w.step(at('2026-11-04T00:35:00',{cash:300,pending:350,holdings:[A1,C1],buyKRW:420000},[buy,b,d]));
+    // What the old version stored at that reading: the group still reported, every netted
+    // figure 0, and no rule mark.
+    const {rule:_r,...meta}=json('funding_transfers','#meta');put('funding_transfers','#meta',{...meta,reportedKRW:0,provisionalKRW:0});
+    put('settlement_funding',null,{...json('settlement_funding'),unsettledKRW:0,krwFundedKRW:0});put('flow_watch',null,{...json('flow_watch'),unsettledKRW:0,provisionalKRW:0});}
+  const row=()=>json('funding_transfers','CCC'),stateBefore=row().state;
+  w.step(at('2026-11-04T09:00:00',{cash:300,pending:350,holdings:[A1,C1],buyKRW:420000},[buy,b,d]));// the fixed version's first reading
+  const up=w.out.at(-1),afterUp={row:row(),meta:json('funding_transfers','#meta'),tracker:json('settlement_funding')};
+  const end=at('2026-11-05T23:55:00',{cash:350,holdings:[A1,C1],buyKRW:0},[buy,b,d]);w.step(end);const cleared=w.out.at(-1);// KIS settles: 300 + 350 − 300
+  for(const h of [3,8,30])w.step({...end,at:end.at+h*3600000});
+  return {w,stateBefore,up,afterUp,cleared,last:w.out.at(-1),rowEnd:row()};}
+for(const state of ['parts','one'])test(`the upgrade step (${state}): the full buy is matched to its group, deducted once, and KIS clearing it ends exact`,()=>{
+  const u=upgrade(state);assert.equal(u.stateBefore,state==='one'?'awaiting-krw':'us','the state the old rule left');
+  // (a) the recorder: the group reported again (or still), no provisional amount, no second deduction.
+  assert.equal(u.afterUp.row.state,'us');assert.equal(u.afterUp.meta.provisionalKRW,0,'no unexplained reported amount');assert.equal(u.afterUp.meta.rule,'gross');
+  assert.equal(Math.round(u.up.low),RIGHT,'the buy deducted once, in the low');
+  // (c) the funding tracker: the jump is unknown funding (the U.S. cash rule: the previous reading is not fresh): 0.
+  assert.equal(u.afterUp.tracker.krwFundedKRW,0);assert.equal(u.afterUp.tracker.unsettledKRW,420000);
+  // (b) and the reverse step: no flow, no note; after KIS settles, exact, nothing left owed.
+  assert.deepEqual(flowList(u.w),[],'no transfer, no detected flow');assert.deepEqual(u.w.notes,[],'no held change');
+  assert.equal(Math.round(u.cleared.low),RIGHT);assert.equal(Math.round(u.cleared.high),RIGHT);assert.equal(Math.round(u.last.low),RIGHT);
+  assert.equal(u.rowEnd.state,'booked');assert.equal(u.rowEnd.via,'usd');
+});
+test('the upgrade step does not run again: a later rise no new buy explains stays provisional, as before',()=>{
+  const u=upgrade('parts');assert.equal(u.afterUp.meta.rule,'gross');
+  // The group is booked; a new report with no buy to explain it is provisional (the rule mark keeps the step to one reading).
+  const {fx,KRH,A:A1,C:C1}=UPG;u.w.step({at:K('2026-11-06T23:55:00'),fx,kr:{settled:1000000,holdings:KRH},us:{cash:350,holdings:[A1,C1],buyKRW:140000},orders:[]});
+  assert.equal(u.w.out.at(-1).split.provisionalKRW,140000);
+});

@@ -154,7 +154,7 @@ class FundingTransfers {
   // batch path may take them (a unique set never does, as before).
   readUS(account,{us,orders=[],fx=null,openOrderIds=new Set(),openBuysUSD=0,reportedOpenIds=new Set()}){
     if(typeof account!=='string'||!account||!us)return this.current(account);
-    const now=this.clock(),day=seoulDate(now),R=won(Math.max(0,(Number(us.unsettled?.buyKRW)||0)-(Number(us.unsettled?.sellKRW)||0))),cash=Number(us.cash)||0,pending=Number(us.pendingSaleProceeds)||0;
+    const now=this.clock(),day=seoulDate(now),R=won(Math.max(0,Number(us.unsettled?.buyKRW)||0)),cash=Number(us.cash)||0,pending=Number(us.pendingSaleProceeds)||0;
     // F3: only sales move U.S. cash plus pending at their fill (the proceeds); KIS takes a buy's cash at settlement, so a
     // buy filling in between is not part of what a settlement took.
     const m=this.meta(account);const buys=orders.filter(isBuy);const effects=Object.fromEntries(orders.filter(o=>Number(o.filled)>0&&o.side==='Sell').map(o=>[String(o.id),netUSD(o)]));
@@ -176,6 +176,17 @@ class FundingTransfers {
     // and the Korean figure's (the later of the previous U.S. and Korean readings); none at the first reading.
     const prevUS=Number.isFinite(m?.usAt)?m.usAt:null,krAfter=prevUS==null?null:Math.max(prevUS,Number.isFinite(m?.kr?.at)?m.kr.at:-Infinity),window={US:prevUS,KR:krAfter};
     const prevR=m?m.reportedKRW??0:0;let dR=R-prevR;
+    // Found in live use, the upgrade step: until then R was KIS's unsettled buys less its unsettled sales, so a
+    // reported buy beside a larger sale read as a report falling to 0. Where that fall matched the buy's group the group was
+    // taken as settled by KIS before its payment (awaiting-krw); where it did not (sales reported in parts) the group stayed
+    // reported and only the meta's R fell. At the first reading under the full amount (no rule mark yet), a rise in R is
+    // first matched to awaiting groups nothing has paid: each is restored to its reported state, with no booking, flow or
+    // line; what is left is a rise as usual. Groups still reported need nothing: they already count in the split.
+    if(m&&m.rule!=='gross'&&dR>0){const stale=[...rows.values()].filter(r=>r.state==='awaiting-krw'&&!r.lateDebit&&!(Number(r.paidUSD)>0.005)&&Number(r.reportedKRW)>0);
+      const set=uniqueSet(stale,dR,r=>r.reportedKRW)??(stale.length&&Math.abs(stale.reduce((n,r)=>n+r.reportedKRW,0)-dR)<=BAND*dR?stale:null);
+      if(set){for(const r of set){const {paidUSD:_p,shortfallUSD,fx:_f,settledAt:_s,window:_w,deferred,zeroSettled:_z,...kept}=r;const next={...kept,state:'us'};delete next.key;
+          this.put(account,r.key,next);rows.set(r.key,{key:r.key,...next});if(!deferred)meta.explainedUS-=Number(shortfallUSD)||0;dR-=r.reportedKRW;}
+        if(Math.abs(dR)<=BAND*R)dR=0;}}
     // The U.S. cash change since the previous reading less the fills seen meanwhile: what the settlement itself took.
     const prevFx=m?.effects??{},fillMove=Object.entries(effects).reduce((n,[id,e])=>n+e-(prevFx[id]??0),0);
     const cashMove=m?cash+pending-(m.cash??0)-(m.pending??0)-fillMove:0;
@@ -334,7 +345,7 @@ class FundingTransfers {
         if(k>=PROV_MIN){const owedUS=cash>0.01?Math.min(k/fx,money):0,kr=won(k-owedUS*fx);
           if(owedUS>0.005)meta.provOwedUS=[...(meta.provOwedUS??[]),{usd:usd(owedUS),at:now}];
           if(kr>=PROV_MIN)meta.provSettled=[...(meta.provSettled??[]),{krw:kr,at:now,fx}];}}}
-    Object.assign(meta,{reportedKRW:R,cash,pending,effects,usAt:now});this.put(account,'#meta',meta);return this.current(account);}
+    Object.assign(meta,{reportedKRW:R,cash,pending,effects,usAt:now,rule:'gross'});this.put(account,'#meta',meta);return this.current(account);}
   // One Korean reading: the change in D+2 cash less the Korean fills seen meanwhile pays any shortfall awaiting it.
   observeKR(account,input){return this.tx(()=>this.readKR(account,input));}
   readKR(account,{korea,orders=[]}){

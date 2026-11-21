@@ -6,9 +6,13 @@
 //   part may be used to explain cash movements, so deposits, withdrawals and transfers are never inferred from a guess.
 // - uncertainKRW: the rest, until settlement reconciles it. Valuation still subtracts the full unsettled amount (the
 //   lower, conservative figure) and reports that equity may be understated by up to the uncertain part.
+// The amount is the unsettled buys in full. It was netted against the unsettled sales (ustl_sll_amt_smtl) from 2026-10-24,
+// when the sales were counted nowhere; since 2026-10-30 the valuation counts them as the U.S. receivable
+// (pendingSaleProceeds), so the netting counted them twice and a buy beside a larger sale was deducted nowhere
+// (found in live use). A reader that needs the single net payment derives it from both, named as such.
 function settlement(us){
   const u=us?.unsettled;if(!u)return {unsettledKRW:0,confirmedKRW:0,uncertainKRW:0};
-  const total=Math.max(0,(Number(u.buyKRW)||0)-(Number(u.sellKRW)||0));const known=Math.min(total,Math.max(0,Number(u.krwFundedKRW)||0));
+  const total=Math.max(0,Number(u.buyKRW)||0);const known=Math.min(total,Math.max(0,Number(u.krwFundedKRW)||0));
   return {unsettledKRW:total,confirmedKRW:known,uncertainKRW:total-known};
 }
 const confirmedKRW=us=>settlement(us).confirmedKRW;
@@ -34,7 +38,7 @@ class FundingTracker {
   // Adds unsettled.krwFundedKRW to a U.S. balance read from KIS, in place, and returns it.
   annotate(balance,fx){
     if(typeof balance?.accountKey!=='string'||!balance.unsettled)return balance;
-    const total=Math.max(0,(Number(balance.unsettled.buyKRW)||0)-(Number(balance.unsettled.sellKRW)||0));
+    const total=Math.max(0,Number(balance.unsettled.buyKRW)||0);
     const row=this.db.prepare('SELECT payload FROM settlement_funding WHERE account=?').get(balance.accountKey);
     const next=fundingStep(row?JSON.parse(row.payload):null,{at:this.clock(),usCash:Number.isFinite(balance.cash)?balance.cash:null,unsettledKRW:total},fx);
     this.db.prepare('INSERT INTO settlement_funding VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(balance.accountKey,JSON.stringify(next));

@@ -8,7 +8,29 @@ test('KRW committed to unsettled U.S. buys is not counted twice (regression)',()
   const p=combinePortfolio(kr,us,fx);assert.equal(p.committedKRW,728915);assert.equal(p.cash.KRW,1342560-728915);
   assert.ok(Math.abs(p.totals.equityKRW-1482211)<2,`equity ${p.totals.equityKRW} ≈ ₩1,482,211, not ₩2.2m`);
   const before=combinePortfolio(kr,{...us,unsettled:undefined},fx);assert.ok(before.totals.equityKRW>2200000,'without the KIS figure it double counts');
-  assert.equal(settlement({...us,cash:50}).unsettledKRW,728915,'USD cash on hand: the full amount is still subtracted (uncertainty is reported separately)');assert.equal(settlement({...us,unsettled:{buyKRW:728915,sellKRW:800000}}).unsettledKRW,0);
+  assert.equal(settlement({...us,cash:50}).unsettledKRW,728915,'USD cash on hand: the full amount is still subtracted (uncertainty is reported separately)');assert.equal(settlement({...us,unsettled:{buyKRW:728915,sellKRW:800000}}).unsettledKRW,728915,'a larger unsettled sale does not cancel the buy: the sale is counted once, as the receivable');
+});
+// Found in live use: unsettled sales were netted against unsettled buys while the valuation also counted the
+// same sales as the receivable, so a buy beside a larger sale was deducted nowhere. Made-up values; rate 1,400.
+test('a U.S. buy and a U.S. sale both awaiting settlement: the buy is deducted in full, the sale counted once',()=>{
+  const V=require('../electron/valuation.cjs');const now=Date.parse('2026-11-04T03:00:00Z');const rate={usdKRW:1400,at:now};
+  const korea={timestamp:now,cash:1000000,settledCash:1000000,holdings:[]};
+  const usOf=(saleUSD,buyUSD=300)=>({timestamp:now,cash:300,pendingSaleProceeds:saleUSD,holdings:[{symbol:'NASD:A',quantity:1,price:60}],unsettled:{buyKRW:buyUSD*1400,sellKRW:saleUSD*1400}});
+  const low=u=>Math.round(V.value({korea,us:u,fx:rate,now}).combined.low);
+  // equity = Korean cash + (holdings + U.S. cash + sales − buy) at the rate, whatever the sale's size.
+  assert.equal(low(usOf(350)),1000000+(60+300+350-300)*1400,'a larger sale');
+  assert.equal(low(usOf(100)),1000000+(60+300+100-300)*1400,'a smaller sale');
+  assert.equal(low(usOf(0)),1000000+(60+300-300)*1400,'a buy alone: unchanged');
+  assert.equal(low({...usOf(350,0),unsettled:{buyKRW:0,sellKRW:350*1400}}),1000000+(60+300+350)*1400,'a sale alone: unchanged');
+  // The night a held stock is sold at its price: the value does not move when KIS reports the sale beside the buy.
+  const before={...usOf(0),holdings:[{symbol:'NASD:A',quantity:1,price:60},{symbol:'NASD:B',quantity:1,price:350}]};
+  assert.equal(low(usOf(350)),low(before),'no gain from the sale being reported');
+  // The readers: settlement() for the engine's unsettledKRW and the review context, the portfolio view, the recorder.
+  assert.equal(settlement(usOf(350)).unsettledKRW,420000);
+  const view=combinePortfolio(korea,usOf(350),{usdKRW:1400});assert.equal(view.committedKRW,420000);assert.equal(view.cash.KRW,1000000-420000);
+  const ctx=combinedContext({market:'KR',currency:'KRW',equity:1000000,cash:1000000,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:false}},
+    {market:'US',currency:'USD',equity:710,cash:300,unsettledKRW:settlement(usOf(350)).unsettledKRW,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:false}},{usdKRW:1400});
+  const kr=ctx.markets.find(m=>m.market==='KR');assert.equal(kr.cash,580000,'the review sizes from Korean cash net of the buy');assert.equal(kr.unsettledUSBuysKRW,420000);
 });
 test('reviews see Korean cash and equity net of the committed KRW, with a note',()=>{
   const korea={market:'KR',currency:'KRW',equity:1523470,cash:1342560,universe:[],positions:{},quotes:[],orders:[],risk:{},marketSession:{open:false}};

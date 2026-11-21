@@ -641,12 +641,12 @@ reads their values, and the tracker's "settled" event releases ledger commitment
 
 | Module | Purpose | Tables |
 |---|---|---|
-| `integrated-settlement.cjs` | How much of KIS's "U.S. buys awaiting settlement" (reported in won) is known to be won-funded (`FundingTracker`, `fundingStep`); whether a U.S. buy may be awaiting settlement while the U.S. balance cannot be read | `settlement_funding` |
+| `integrated-settlement.cjs` | How much of KIS's "U.S. buys awaiting settlement" (reported in won) is known to be won-funded (`FundingTracker`, `fundingStep`). The amount is KIS's unsettled U.S. buys in full (`ustl_buy_amt_smtl`), never less the unsettled sales: the sales are counted once, as the U.S. receivable (`pendingSaleProceeds`). Until 1.5.71 the buys were netted against the sales, so a buy beside a larger unsettled sale was deducted nowhere; whether a U.S. buy may be awaiting settlement while the U.S. balance cannot be read | `settlement_funding` |
 | `settlement-check.cjs` | Detects a Korean balance read while KIS is moving last night's settlement; holds the last consistent reading for up to 3 hours. "Order checks never read the held value" (`:16-17`) | none found in the lines read |
 | `valuation.cjs` (`InFlight`) | U.S. fills KIS's balance does not reflect yet; each leaves on KIS evidence or after 3 U.S. business days | `inflight_settlement` |
 | `settlement-evidence.cjs` | The append-only evidence ledger behind `InFlight` | `settlement_events`, `settlement_evidence`, `settlement_allocations`, `settlement_k_groups` |
 | `settlement-baseline.cjs` | A snapshot of the tracker with each U.S. day's loss baseline, so a cash-free settlement change moves baseline and value together | `settlement_baselines` |
-| `funding-transfers.cjs` | Books the won part of each U.S. buy once, as a transfer between the markets, when KIS's figures show it. "the funding check before an order never reads this" (`:16-17`) | `funding_transfers` |
+| `funding-transfers.cjs` | Books the won part of each U.S. buy once, as a transfer between the markets, when KIS's figures show it. Its reported amount is KIS's unsettled U.S. buys in full since 1.5.71; its stored state carries the rule mark `rule: 'gross'`. At the first reading without that mark, a rise in the reported amount is first matched to groups the old rule ended by a report fall (awaiting-krw, nothing paid): each goes back to its reported state, with no booking, flow or System line. "the funding check before an order never reads this" (`:16-17`) | `funding_transfers` |
 | `broker-raw.cjs` | KIS's own figures as reported: balances (stored when a figure changed; 30 days / 3,000 rows) and its orderable answer at each order check | `broker_balances`, `broker_capacity` |
 
 I read only the header comments and table definitions of `valuation.cjs`, `settlement-evidence.cjs`,
