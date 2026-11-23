@@ -20,7 +20,7 @@ async function readCapped(response){const reader=response.body?.getReader?.();if
   return Buffer.concat(chunks.map(c=>Buffer.from(c))).toString('utf8');}
 async function getJSON(fetcher,url){const response=await fetcher(url,{headers:HEADERS,redirect:'error',signal:AbortSignal.timeout(20000)});if(!response.ok)throw new Error('NASDAQ_UNAVAILABLE');return JSON.parse(await readCapped(response));}
 class UsSizeOrder{
-  constructor(db,clock=Date.now){this.db=db;this.clock=clock;this.failedAt={};
+  constructor(db,clock=Date.now,{readOnly=false}={}){this.db=db;this.clock=clock;this.failedAt={};if(readOnly)return;
     db.exec('CREATE TABLE IF NOT EXISTS us_size(exchange TEXT NOT NULL,rank INTEGER NOT NULL,symbol TEXT NOT NULL,marketCapUSD REAL NOT NULL,PRIMARY KEY(exchange,rank));CREATE TABLE IF NOT EXISTS us_size_meta(exchange TEXT PRIMARY KEY,at INTEGER NOT NULL,count INTEGER NOT NULL)');}
   // The largest n stocks of an exchange (or all three, by market value), with the copy's age; null when there is none.
   top(exchange,n){const list=exchange==='US'?Object.keys(EXCHANGES):[exchange];const metas=list.map(e=>this.db.prepare('SELECT at FROM us_size_meta WHERE exchange=?').get(e));

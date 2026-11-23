@@ -2001,7 +2001,9 @@ class Automation {
   lastScoutRun(scope,opts=this.scoutSessionOpts()){const p=this.scoutStore.latest(scope);if(!p)return null;return {finishedAt:p.timestamp,focus:Array.isArray(p.focus)?p.focus:require('./scout.cjs').researchFocus(this.scoutMarkets(),p.timestamp,opts).markets};}
   scoutMarkets(){return this.config.scope==='kis'?['KR']:this.config.scope==='us'?['US']:['KR','US'];}
   scoutSessionOpts(){return {closedDays:new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])])};}
-  scoutState(){const scope=this.watchScope();const timing=require('./scout-timing.cjs');const due=timing.dueSlot(this.config,this.scoutMarkets(),Date.now(),this.scoutSessionOpts());return {enabled:this.config.scoutEnabled,times:timing.nextTimes(this.config,this.scoutMarkets(),Date.now(),this.scoutSessionOpts()).map(x=>x.text),busy:Boolean(this.scouting),blocked:this.scoutAvailable(),lastError:this.scoutError??null,lastErrorDetail:this.scoutErrorDetail??null,failedAfter:this.scoutStore.failedAfter(scope),lastSlot:this.scoutStore.lastSlot(scope),dueSlot:due?.id??null,latest:this.scoutStore.latest(scope),briefs:this.briefs.open(scope).map(({id,timestamp,request,asked})=>({id,timestamp,request,asked})),scorecard:this.scoutScorecardState(scope)};}
+  // The screens of the latest run (a failure newer than the plan keeps its own), for the Scout panel when it opens them.
+  scoutScreens(){return this.scoutStore.latestScreens(this.watchScope())??{runId:null,failed:false,at:null,screens:[]};}
+  scoutState(){const scope=this.watchScope();const timing=require('./scout-timing.cjs');const due=timing.dueSlot(this.config,this.scoutMarkets(),Date.now(),this.scoutSessionOpts());return {enabled:this.config.scoutEnabled,times:timing.nextTimes(this.config,this.scoutMarkets(),Date.now(),this.scoutSessionOpts()).map(x=>x.text),busy:Boolean(this.scouting),blocked:this.scoutAvailable(),lastError:this.scoutError??null,lastErrorDetail:this.scoutErrorDetail??null,failedAfter:this.scoutStore.failedAfter(scope),lastSlot:this.scoutStore.lastSlot(scope),dueSlot:due?.id??null,latest:this.scoutStore.latest(scope),screenRun:this.scoutStore.screensSummary(scope),screens:(()=>{try{return this.screenStatus?.()??null;}catch{return null;}})(),briefs:this.briefs.open(scope).map(({id,timestamp,request,asked})=>({id,timestamp,request,asked})),scorecard:this.scoutScorecardState(scope)};}
   scoutScorecardState(scope){return this.stateCached('scoutScorecard:'+scope,()=>this.scoutScorecardUncached(scope));}
   scoutScorecardUncached(scope){try{const board=this.scoutScorecard.build(scope,this.briefs.feedback(scope,0));return {summary:board.summary,minSample:board.minSample,picks:board.picks.slice(0,20).map(({symbol,name,role,pickedAt,endedAt,benchmark,horizons,acted,feedback})=>({symbol,name,role,pickedAt,endedAt,benchmark,horizons,acted,feedback}))};}catch{return null;}}
   // focus: the markets this run focuses on (researchFocus over every market of the scope, before any account is read).
@@ -2026,6 +2028,8 @@ class Automation {
     // The provider wait (fix R2): an automatic scout run does not call a waiting provider; your own run still does.
     if(trigger!=='User request'&&this.providerWaitFor(this.agentModel('scout').openaiModel))throw new Error('PROVIDER_WAIT');
     this.scouting=true;const id=randomUUID();const scope=this.watchScope();
+    // The run's screens: kept with its plan, or with its failure, so the panel shows what happened either way.
+    const screens=[];
     try{
       const previous=this.scoutStore.latest(scope);
       // The run's focus before any account is read: which markets it must read (scoutAccount).
@@ -2056,7 +2060,10 @@ class Automation {
         try{const response=await this.provider.request('scout',{context,options:{final,continuation,...modelConfig}});require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,response,'completed');this.noteAnswerForm(response,'scout');return response;}
         catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');throw error;}
       };
-      const tools=scoutLib.focusTools(this.discovery,focus,{reassess:(context.carriedNeedingReassessment??[]).map(s=>s.symbol),guard:()=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');}});
+      // One screen run per scout run (its live-price bound is the run's); each script and what it printed is kept for the panel.
+      const stale=()=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');};
+      let screenRun=null;try{screenRun=typeof this.openScreenRun==='function'?this.openScreenRun({guard:stale}):null;}catch{screenRun=null;}
+      const tools=scoutLib.focusTools(this.discovery,focus,{reassess:(context.carriedNeedingReassessment??[]).map(s=>s.symbol),guard:()=>{if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');},screen:screenRun,screens});
       // An answer that says nothing (no summary or focus, or no target for a focused market you hold stocks in) is refused
       // and asked for once more; a second refusal fails the run and the previous plan stays (2026-11-18).
       const heldMarkets=accounts.filter(a=>a.status!=='unavailable'&&(a.positions?.length??0)>0).map(a=>a.market);
@@ -2064,10 +2071,10 @@ class Automation {
         check:plan=>scoutLib.planProblem(plan,{focus:focus.markets,heldMarkets})});
       if(this.disposed||scope!==this.watchScope())throw new Error('STALE_DECISION');
       const answered=this.briefs.answer(scope,result.plan.briefAnswers);const plan=scoutLib.carryForward(this.priceTargets(result.plan),previous,focus.deferred,Date.now(),{reassessed:(context.carriedNeedingReassessment??[]).map(x=>x.symbol)});
-      const saved=this.scoutStore.save(scope,plan,{runId:id,trigger,focus:focus.markets,instructions:require('./review-instructions.cjs').scoutRecord(context),model:result.model??modelConfig.openaiModel,usage:result.usage,research:result.metrics??null,rounds:result.rounds,...(result.retried?{retried:true}:{}),answered});this.scoutScorecard.record(scope,result.plan,saved.timestamp);
+      const saved=this.scoutStore.save(scope,plan,{runId:id,trigger,focus:focus.markets,instructions:require('./review-instructions.cjs').scoutRecord(context),model:result.model??modelConfig.openaiModel,usage:result.usage,research:result.metrics??null,rounds:result.rounds,...(result.retried?{retried:true}:{}),answered});try{this.scoutStore.saveScreens(scope,{runId:id,failed:false,screens});}catch{}this.scoutScorecard.record(scope,result.plan,saved.timestamp);
       this.log(id,'Agent','Scout plan',JSON.stringify(plan,null,2));this.log(id,'System','Review completed',JSON.stringify(result.usage));if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));
       this.scoutError=null;return saved;
-    }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?' · KIS '+error.brokerCode:'')+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));try{this.scoutStore.noteFailure(scope,{reason:this.scoutError,trigger});}catch{}if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));throw error;}
+    }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?' · KIS '+error.brokerCode:'')+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));try{this.scoutStore.noteFailure(scope,{reason:this.scoutError,trigger});try{this.scoutStore.saveScreens(scope,{runId:id,failed:true,screens});}catch{}}catch{}if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));throw error;}
     finally{this.scouting=false;}
   }
   syncLearning(){try{if(!this.learningSynced||this.stateCacheOff||this.learningSynced!==this.learningKey()){this.outcomes.sync();this.memory.sync();this.reflections.sync();this.learningSynced=this.learningKey();}this.trials.observe(this.paper.getState().quotes,'paper');

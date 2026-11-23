@@ -48,7 +48,8 @@ function windowOpen(now,{sessionsOf,lateWindow}){
       if(!s.regular&&s.tradable!=='app')continue;if(s.startAt-MARGIN_MS<=now&&now<s.endAt+MARGIN_MS)return false;}}
   return true;}
 class HistoryStore{
-  constructor(db){this.db=db;
+  // readOnly: the screening engine's own connection (screen-worker.cjs) creates and alters nothing.
+  constructor(db,{readOnly=false}={}){this.db=db;if(readOnly)return;
     db.exec('CREATE TABLE IF NOT EXISTS screen_closes(symbol TEXT NOT NULL,date TEXT NOT NULL,close REAL NOT NULL,high REAL,low REAL,volume REAL,value REAL,PRIMARY KEY(symbol,date)) WITHOUT ROWID;'
       +'CREATE TABLE IF NOT EXISTS screen_progress(symbol TEXT PRIMARY KEY,newest TEXT,oldest TEXT,depth INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,readAt INTEGER,failures INTEGER NOT NULL DEFAULT 0,failedAt INTEGER);'
       +'CREATE TABLE IF NOT EXISTS screen_requests(symbol TEXT PRIMARY KEY,at INTEGER NOT NULL);');
@@ -57,6 +58,9 @@ class HistoryStore{
     for(const [name,type] of [['triedNewest','TEXT'],['triedDeeper','TEXT'],['resets','INTEGER NOT NULL DEFAULT 0'],['resetDay','TEXT'],['resetNights','INTEGER NOT NULL DEFAULT 0'],['stopped','TEXT']])
       if(!have.has(name))db.exec(`ALTER TABLE screen_progress ADD COLUMN ${name} ${type}`);}
   progress(symbol){return this.db.prepare('SELECT * FROM screen_progress WHERE symbol=?').get(symbol)??null;}
+  // A stock that stopped deepening tries again 30 days after its last reset.
+  retryStopped(now=Date.now()){const day=new Date(now-30*86400000).toISOString().slice(0,10);return this.db.prepare('UPDATE screen_progress SET stopped=NULL,resetNights=0 WHERE stopped IS NOT NULL AND (resetDay IS NULL OR resetDay<?)').run(day).changes;}
+  stoppedCount(){const rows=this.db.prepare('SELECT stopped,COUNT(*) AS n FROM screen_progress WHERE stopped IS NOT NULL GROUP BY stopped').all();return {count:rows.reduce((a,r)=>a+r.n,0),reasons:rows.map(r=>r.stopped)};}
   progressAll(){const out=new Map();for(const r of this.db.prepare('SELECT * FROM screen_progress').all())out.set(r.symbol,r);return out;}
   closes(symbol){return this.db.prepare('SELECT date,close,high,low,volume,value FROM screen_closes WHERE symbol=? ORDER BY date').all(symbol).map(r=>({...r}));}
   // Where a deeper page ends: the fifth-oldest stored day, so the page overlaps up to five stored rows.
@@ -115,7 +119,7 @@ class HistoryRefresher{
   constructor(deps){this.deps=deps;this.reading=null;this.lastStart=0;this.pauseUntil=0;this.inRow=0;this.plan=null;this.planAt=0;this.progressed=false;this.rateStopUntil=0;this.status={state:'idle',read:0,failed:0,resets:0,why:null};}
   clock(){return (this.deps.clock??Date.now)();}
   // The work list: each stock's newest page when it lacks the readable day and was not tried for it, then deeper pages.
-  buildPlan(now){const {store,set}=this.deps;const closed=this.deps.closedDays?.()??new Set();const want={KR:readableDay('KR',now,closed),US:readableDay('US',now,closed)};const all=store.progressAll();
+  buildPlan(now){const {store,set}=this.deps;try{store.retryStopped?.(now);}catch{}const closed=this.deps.closedDays?.()??new Set();const want={KR:readableDay('KR',now,closed),US:readableDay('US',now,closed)};const all=store.progressAll();
     const newest=[],deeper=[];for(const s of set()){const p=all.get(s);if(p&&p.failures>=STOCK_TRIES&&p.failedAt>now-12*3600000)continue;const day=want[marketOf(s)];if(!day)continue;
       if((!p?.newest||p.newest<day)&&p?.triedNewest!==day)newest.push({symbol:s,kind:'newest',end:day,day});
       else if(p?.newest&&!p.complete&&!p.stopped&&p.depth<KEEP&&p.triedDeeper!==day)deeper.push({symbol:s,kind:'deeper',day});}

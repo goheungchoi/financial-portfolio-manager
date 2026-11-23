@@ -185,7 +185,7 @@ test('B: one data shape: closes exclude the current day, so a slope means the sa
   const after={data:{closes:()=>rows(61),price:()=>160,previousClose:()=>160},today:day(60)};
   const t='print(sma("111110",20) - at(sma("111110",20),5), at(close("111110",0),1), ret("111110",20), change("111110"), close("111110",0))';
   const a=run(t,before),b=run(t,after);assert.equal(a.stopped,undefined);assert.deepEqual(b.lines,a.lines);assert.equal(a.lines[0].split(' ')[1],'158','at(x,1) is the close before the last completed one, at any hour');
-  assert.match(HELP,/price\(\) is refused in scripts/);assert.match(HELP,/live\(S\) is the live quote/);assert.doesNotMatch(HELP,/price\(sym\)|price\(\) is the latest quote/);assert.match(HELP,/"the latest price" is the last completed close/);
+  assert.match(HELP,/price\(\) is refused in scripts/);assert.match(HELP,/live\(S\) is the live quote/);assert.doesNotMatch(HELP,/price\(sym\)|price\(\) is the latest quote/);assert.match(HELP,/ret, change, zscore and ratio_z take that close as "the latest price"/);
 });
 test('C: one in-bounds ranking always prints, cut with "… N more not shown" when long',()=>{
   const c=big({names:s=>'N'.repeat(BOUNDS.name+10)+s});const r=run('u = universe(market="BIG")\nprint(top(u, ret(S,20), 50))',c);

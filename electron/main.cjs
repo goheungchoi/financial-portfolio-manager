@@ -477,7 +477,20 @@ app.whenReady().then(async () => {
   const liveAllowed=()=>{if(orderSending()||kisService.isBusy)return false;try{const now=Date.now();return ![...live.orders(),...usLive.orders()].some(o=>['Submitting','Cancellation uncertain'].includes(o?.status)&&now<W.activeUntil(o));}catch{return false;}};
   automation.screenLive=require('./screen-run.cjs').makeLiveReader({request:(op,p)=>kisService.request(op,p),allowed:liveAllowed,orderSending,sessionOpen:(m,t)=>automation.sessionOpen(m,t)});
   // A run of screens (a scout run; a review in S4) owns its live bound: 120 Korean and 40 U.S. stocks across its scripts.
-  automation.openScreenRun=()=>require('./screen-run.cjs').openRun({readLive:automation.screenLive,context:()=>require('./screen-universe.cjs').screenContext(automation.screens)});
+  // What the Scout panel shows about the screening history: the as-of day per market, the store's depth, why it is behind,
+  // and the stocks that stopped deepening. Worked out at most once a minute.
+  let screenStatusAt=0,screenStatusValue=null;
+  automation.screenStatus=()=>{const now=Date.now();if(screenStatusAt&&now-screenStatusAt<60000)return screenStatusValue;screenStatusAt=now;
+    try{screenStatusValue=require('./screen-status.cjs').screenStatus({deps:automation.screens,refresher:screenRefresher,enabled:automation.config.scoutEnabled});}catch{screenStatusValue={error:true};}return screenStatusValue;};
+  // The screening engine runs scripts in its own process (screen-worker.cjs), never here; each pass gets the lists,
+  // settings, calendar and time from here and reads the database itself, read-only.
+  const screenEngine=new (require('./screen-engine.cjs').ScreenEngine)({spawn:()=>{const child=require('electron').utilityProcess.fork(path.join(__dirname,'screen-worker.cjs'),[],{stdio:'ignore',serviceName:'Screening scripts'});
+    return {postMessage:m=>child.postMessage(m),on:(event,fn)=>child.on(event,fn),kill:()=>{try{child.kill();}catch{}}};}});
+  const screenEnv=()=>({dbPath:path.join(app.getPath('userData'),'portfolio.sqlite'),now:Date.now(),settings:automation.screens.settings(),closedDays:[...automation.screens.closedDays()],
+    own:Object.fromEntries(require('./screen-universe.cjs').OWN.map(k=>{try{return [k,screenOwn(k)??[]];}catch{return [k,[]];}}))});
+  // guard(): the scout run's account check; symbols are recorded for the next night only while the run's account is current.
+  automation.openScreenRun=({guard}={})=>require('./screen-run.cjs').openRun({readLive:automation.screenLive,exec:(kind,payload)=>screenEngine.exec(kind,payload,screenEnv()),
+    finish:missing=>{guard?.();require('./screen-universe.cjs').recordMissing(automation.screens,missing);},orderSending,cancelled:()=>closing||Boolean(automation.disposed)});
   if(!process.env.PORTFOLIO_SMOKE_DATA){
     setInterval(()=>{try{screenRefresher.tick();}catch{}},1000).unref();
     let usSizeBusy=false;const refreshUsSize=async()=>{if(usSizeBusy||closing||!usSize.due().length)return;usSizeBusy=true;try{await usSize.refresh({fetcher:fetch,known:s=>master.get(s)?.type==='stock'});}catch{}finally{usSizeBusy=false;}};
@@ -823,6 +836,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
+  ipcMain.handle('scout:screens',event=>{authorize(event);try{return automation.scoutScreens();}catch{return {failed:false,at:null,screens:[]};}});
   ipcMain.handle('scout:run',async event=>{authorize(event);try{await automation.scout();return {ok:true,state:runtimeState()};}catch{return {ok:false,error:automation.scoutError??'SCOUT_FAILED',state:runtimeState()};}});
   ipcMain.handle('runtime:dry-run-estimate',(event,options)=>{authorize(event);return automation.dryRunEstimate({model:options?.model==='claude-opus-5-5'?'claude-opus-5-5':null});});
   ipcMain.handle('runtime:dry-run',async(event,mode,options)=>{authorize(event);const started=Date.now();try{const record=await automation.dryRun(mode,options&&typeof options==='object'?{model:options.model??null}:{});return {ok:true,record,state:runtimeState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DRY_RUN_FAILED',failure:automation.dryRunFailure(started),state:runtimeState()};}});

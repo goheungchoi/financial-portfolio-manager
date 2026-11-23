@@ -76,6 +76,11 @@ class ScoutStore {
   markSlot(scope,slot){this.db.prepare('INSERT INTO scout_slots VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET slot=excluded.slot').run(scope,slot);}
   // The latest failed scout run of a scope (2026-11-18): {at, reason, trigger}. Kept until a later failure replaces it;
   // it matters only while it is newer than the latest plan (failedAfter).
+  // The latest run's screens, plan or failure, in their own row: the panel asks for them; nothing else reads them.
+  saveScreens(scope,{runId,at=Date.now(),failed=false,screens=[]}){this.db.exec('CREATE TABLE IF NOT EXISTS scout_screens(scope TEXT PRIMARY KEY,runId TEXT,at INTEGER NOT NULL,failed INTEGER NOT NULL,count INTEGER NOT NULL,payload TEXT NOT NULL)');
+    const kept=(Array.isArray(screens)?screens:[]).slice(0,SCREENS_KEPT);this.db.prepare('INSERT INTO scout_screens VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET runId=excluded.runId,at=excluded.at,failed=excluded.failed,count=excluded.count,payload=excluded.payload').run(scope,runId??null,at,failed?1:0,kept.length,JSON.stringify(kept));}
+  screensSummary(scope){try{const r=this.db.prepare('SELECT runId,at,failed,count FROM scout_screens WHERE scope=?').get(scope);return r?{runId:r.runId,at:r.at,failed:Boolean(r.failed),count:r.count}:null;}catch{return null;}}
+  latestScreens(scope){try{const r=this.db.prepare('SELECT runId,at,failed,payload FROM scout_screens WHERE scope=?').get(scope);return r?{runId:r.runId,at:r.at,failed:Boolean(r.failed),screens:JSON.parse(r.payload)}:null;}catch{return null;}}
   noteFailure(scope,{at=Date.now(),reason,trigger=null}){this.db.exec('CREATE TABLE IF NOT EXISTS scout_failures(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');
     this.db.prepare('INSERT INTO scout_failures VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({at,reason:String(reason??'SCOUT_FAILED').slice(0,60),trigger:trigger==null?null:String(trigger).slice(0,40)}));}
   lastFailure(scope){try{const row=this.db.prepare('SELECT payload FROM scout_failures WHERE scope=?').get(scope);return row?JSON.parse(row.payload):null;}catch{return null;}}
@@ -135,6 +140,9 @@ async function runScout({request,tools,log,maxRounds=3,maxCalls=6,maxBytes=SCOUT
     continuation=result.continuation;const keepFrom=continuation.length;lastFrom=keepFrom;
     // Every call needs an answer; requests beyond the per-round limit are told to wait for the next round.
     for(const call of result.toolCalls.slice(maxCalls))continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify({status:'skipped',reason:`At most ${maxCalls} tool requests per round; ask again in the next round if still needed.`})});
+    // The scripts are read from the calls; in the conversation each is a stand-in from now on (skipped calls keep no
+    // arguments), so the room for this round's results is counted without them.
+    {const replace=new Map();result.toolCalls.forEach((call,i)=>{if(call.name==='run_screen')replace.set(call.callId,screenStandIn(call.args,{skipped:i>=maxCalls}));});shrinkCalls(continuation,replace);}
     // Older results give way first, so this round's results get at least 4 KB each.
     const calls=Math.max(1,Math.min(maxCalls,result.toolCalls.length));await fitted(keepFrom,room-calls*4000);
     const perCall=Math.max(1500,Math.min(12000,Math.floor((room-cf.size(continuation))/calls)-200));
@@ -143,7 +151,9 @@ async function runScout({request,tools,log,maxRounds=3,maxCalls=6,maxBytes=SCOUT
       if(call.name==='get_context_detail'){const value=store.read(call.args,Math.min(8000,perCall),call.callId),sent=rc.bound(value,perCall);meter.call(call.name,call.args,value,sent);
         log('Tool','Context detail · '+String(call.args?.section??'')+(call.args?.part?' · '+call.args.part:''),value.status??(value.complete?'complete':'partial'));continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(sent)});continue;}
       const tool=tools[call.name];const key=call.name==='update_watchlist'?null:call.name+JSON.stringify(call.args);let value=key?cache.get(key):undefined;const reused=value!==undefined;
-      if(!value){if(!tool)value={status:'unavailable',reason:'UNKNOWN_TOOL'};else{try{value=await tool(call.args);}catch(error){value={status:'unavailable',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DATA_SOURCE_UNAVAILABLE'};}}if(key)cache.set(key,value);}
+      // A screen whose result would leave no room for the plan round is answered, not run.
+      const noRoom=!value&&call.name==='run_screen'&&tool&&cf.size(continuation)+perCall>room;
+      if(!value){if(!tool)value={status:'unavailable',reason:'UNKNOWN_TOOL'};else{try{value=await tool(call.args,noRoom?{noRoom:true}:undefined);}catch(error){value={status:'unavailable',reason:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'DATA_SOURCE_UNAVAILABLE'};}}if(key&&!noRoom)cache.set(key,value);}
       log('Tool','Scout result · '+call.name,JSON.stringify(value));
       const sent=store.keep(call.callId,value,perCall);meter.call(call.name,call.args,value,sent,{runCache:reused});
       continuation.push({type:'function_call_output',call_id:call.callId,output:JSON.stringify(sent)});
@@ -174,9 +184,42 @@ const marketOf=symbol=>/^\d{6}$/.test(symbol)?'KR':'US';
 // refused, but a few company reads are answered for next-session candidates (for example the fund details, holdings and
 // leverage of a sector ETF on a lead), marked as last-session data awaiting the open, and a watchlist entry added for
 // that market is labeled the same way. Nothing here trades; plan targets for deferred markets still carry forward.
+const SCREENS_KEPT=12;
 const NEXT_SESSION_READS=3,NEXT_SESSION_LABEL='Next session, confirm at the open: ';
+// The screening tool (note 5, S3): one script a call, run by formula-script.cjs through the scout run's own screen run
+// (main.cjs openScreenRun: one live-price bound per scout run). Its description is the language's own help: what it
+// computes, its functions, bounds and universes, with no suggested screen or strategy.
+const SCREEN_TOOL={type:'function',name:'run_screen',strict:true,description:'Runs one screening script over universes you choose and returns its printed lines, with the coverage of each screen (how many stocks were evaluated, had no history, were stale, could not be computed or had no live price) and the day each market\'s closes are as of. '+require('./formula-script.cjs').HELP,
+  parameters:{type:'object',properties:{script:{type:'string',description:'The script, as lines separated by line breaks.'}},required:['script'],additionalProperties:false}};
+// A run_screen request as the model sent it (a JSON text from OpenAI, an object from Claude), read without ever failing
+// the run: anything over SCREEN_REQUEST_BYTES or not of the form {"script": "..."} becomes {invalid: words}, which the
+// tool answers as an error the model can correct.
+const SCREEN_REQUEST_BYTES=6000;
+function screenArgs(raw){let obj=raw;
+  if(typeof raw==='string'){const n=Buffer.byteLength(raw);if(n>SCREEN_REQUEST_BYTES)return {invalid:`the request is ${n} bytes; at most ${SCREEN_REQUEST_BYTES}`};try{obj=JSON.parse(raw);}catch{return {invalid:'the request was not valid JSON'};}}
+  if(!obj||typeof obj!=='object'||Array.isArray(obj))return {invalid:'the request was not an object with a script'};
+  let n=0;try{n=Buffer.byteLength(JSON.stringify(obj));}catch{return {invalid:'the request could not be read'};}if(n>SCREEN_REQUEST_BYTES)return {invalid:`the request is ${n} bytes; at most ${SCREEN_REQUEST_BYTES}`};
+  if(typeof obj.script!=='string')return {invalid:'the request had no script text'};return {script:obj.script};}
+// The script as kept for the panel: control, direction and other invisible characters replaced as in printed text, line
+// breaks kept, cut on whole characters at 4,000 with "… cut".
+function keptScript(script){const {clean}=require('./formula-script.cjs');const lines=String(script??'').replace(/\r\n?/g,'\n').split('\n').map(l=>clean(l,400));
+  const chars=Array.from(lines.join('\n'));return chars.length>4000?chars.slice(0,4000).join('')+'\n… cut':chars.join('');}
+// Once a screen is answered, its script in the conversation is replaced by a short stand-in on both continuation shapes
+// (OpenAI function_call arguments, Claude tool_use input), so a long script costs its bytes once; the result keeps what
+// it printed. A request answered as skipped keeps no arguments.
+function screenStandIn(args,{skipped=false}={}){const s=typeof args?.script==='string'?args.script:'';
+  if(!s)return {script:`# not run: ${String(args?.invalid??'no script').slice(0,80)}`};
+  const first=(s.split('\n').find(l=>l.trim())??'').slice(0,60);return {script:`# ${skipped?'not run (over this round\'s tool limit)':'answered above'}: ${first} (${Buffer.byteLength(s)} bytes, sha256 ${require('node:crypto').createHash('sha256').update(s).digest('hex').slice(0,8)})`};}
+function shrinkCalls(items,replace){if(!replace.size)return;for(const it of items){
+  if(it?.type==='function_call'&&replace.has(it.call_id))it.arguments=JSON.stringify(replace.get(it.call_id));
+  else if(it?.type==='anthropic_turn'&&Array.isArray(it.content))it.content=it.content.map(b=>b?.type==='tool_use'&&replace.has(b.id)?{...b,input:replace.get(b.id)}:b);}}
+// What the scout gets back from a script: facts only, in a fixed order (status, the stop, the lines, the coverage, the days).
+function screenFacts(r){const out={status:r?.stopped?'stopped':'ok'};if(r?.stopped)out.stopped={line:r.stopped.line??null,words:String(r.stopped.words??'')};
+  out.lines=Array.isArray(r?.lines)?r.lines:[];out.coverage=(Array.isArray(r?.coverage)?r.coverage:[]).map(c=>({line:c.line,universe:c.universe,size:c.size,evaluated:c.evaluated,noHistory:c.noHistory,stale:c.stale,errors:c.errors,noLive:c.noLive??0}));
+  if(r?.asOf)out.asOf=r.asOf;if(r?.live)out.live={asked:r.live.asked,read:r.live.read,...(r.live.stopped?{stopped:r.live.stopped.words}:{})};return out;}
 // reassess: symbols of carried targets that need reassessment; reading them in a closed market spends no next-session read.
-function focusTools(discovery,focus,{reads=NEXT_SESSION_READS,guard=()=>{},reassess=[]}={}){
+// screen(script): the scout run's screen runner (null when screens are not wired); screens: the run's record of them.
+function focusTools(discovery,focus,{reads=NEXT_SESSION_READS,guard=()=>{},reassess=[],screen=null,screens=null}={}){
   const deferred=market=>focus.deferred.includes(market),name=market=>market==='KR'?'Korea':'The U.S.';
   const skip=market=>({status:'skipped',reason:`${name(market)} is outside this run's research focus (closed); its targets carry forward from the previous plan.`});
   let left=reads;
@@ -194,6 +237,18 @@ function focusTools(discovery,focus,{reads=NEXT_SESSION_READS,guard=()=>{},reass
       left--;let result;try{result=await discovery.research(args);}catch(error){left++;throw error;}if(result?.status==='unavailable'){left++;return result;}
       return {nextSession:{market,awaitingOpen:true,readsLeft:left,note:`${name(market)} is closed: read for a next-session candidate only. Prices are from the last session; the candidate awaits fresh prices and confirmation at the open and gets no target in this plan.`},...result};},
     get_market_overview:()=>deferred('KR')?skip('KR'):discovery.marketOverview?discovery.marketOverview():{status:'unavailable',reason:'MARKET_OVERVIEW_UNAVAILABLE'},
+    // Every failure of a script comes back as a result with words; the run goes on. The account guard is the same as
+    // update_watchlist's.
+    run_screen:async(args,{noRoom=false}={})=>{const usage=' (a script is at most 40 lines and 4,000 characters, sent as {"script": "..."})';
+      const record=(facts,script)=>{if(Array.isArray(screens)&&screens.length<SCREENS_KEPT)screens.push({at:Date.now(),script:keptScript(script),...facts});return facts;};
+      const stale=()=>{try{guard();return false;}catch{return true;}};const STALE='the script was not run: the account or scope changed during this run';
+      if(stale())return record({status:'error',words:STALE},typeof args?.script==='string'?args.script:'');
+      if(noRoom)return record({status:'error',words:'the script was not run: this run has no room left for another screen result; write the plan with what you have'},typeof args?.script==='string'?args.script:'');
+      if(args?.invalid)return record({status:'error',words:`the script was not run: ${args.invalid}${usage}`},'');
+      if(typeof args?.script!=='string')return record({status:'error',words:`the script was not run: the request had no script text${usage}`},'');
+      if(typeof screen!=='function')return record({status:'error',words:'the script was not run: screens are not available in this run'},args.script);
+      let r;try{r=await screen(args.script);}catch(error){const code=/^[A-Z_]{3,40}$/.test(String(error?.code??error?.message??''))?(error.code??error.message):'SCREEN_FAILED';return record({status:'error',words:`the script could not be run (${code})`},args.script);}
+      if(stale())return record({status:'error',words:STALE},args.script);return record(screenFacts(r),args.script);},
     update_watchlist:args=>{guard();return discovery.update_watchlist(args?.action==='add'&&Array.isArray(args.entries)?{...args,entries:args.entries.map(label)}:args);},
   };
 }
@@ -223,4 +278,4 @@ function staleCarried(targets,{reviews=[],price=()=>null,movePct=6}={}){
     if(then>0&&last>0){const m=(last/then-1)*100;if(Math.abs(m)>=movePct)reasons.push(`The price moved ${m>0?'+':''}${m.toFixed(1)}% since the target was written (${then} at ${day(t.priceWhenSetAt)}).`);}
     return reasons.length?[{symbol:t.symbol,role:t.role,setAt:t.carriedFrom,reasons}]:[];});
 }
-module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout};
+module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout,SCREEN_TOOL,screenFacts,SCREENS_KEPT,screenArgs,keptScript,screenStandIn,shrinkCalls,SCREEN_REQUEST_BYTES};

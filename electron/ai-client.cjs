@@ -62,7 +62,7 @@ function trimExplanation(text){
 // Desk tools are offered when the review has a desk (KIS accounts); conditional orders only when the user allowed them.
 // The scout's fixed request parts: its tools (discovery, company research, market overview and the detail reader for
 // results it was given shortened), instructions and plan schema. Their size counts against the scout's request limit.
-function scoutTools(){const scout=require('./scout.cjs');return [...require('./discovery.cjs').TOOLS,scout.RESEARCH_TOOL,scout.MARKET_TOOL,require('./review-context.cjs').DETAIL_TOOL];}
+function scoutTools(){const scout=require('./scout.cjs');return [...require('./discovery.cjs').TOOLS,scout.RESEARCH_TOOL,scout.MARKET_TOOL,require('./review-context.cjs').DETAIL_TOOL,scout.SCREEN_TOOL];}
 function scoutFixed(){const scout=require('./scout.cjs');return {tools:scoutTools(),instructions:scout.INSTRUCTIONS,text:{format:{type:'json_schema',name:'portfolio_plan',strict:true,schema:scout.SCHEMA}}};}
 // Bytes the fixed parts add to every scout request, with the request's own fields (model, effort, flags) allowed for.
 function scoutOverheadBytes(){return Buffer.byteLength(JSON.stringify(scoutFixed()))+400;}
@@ -286,8 +286,9 @@ class AiClient {
         const invalid=detail=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail});
         if(options.final)throw invalid('the model asked for a tool on the final round');
         if(calls.length>12)throw invalid(`the model asked for ${calls.length} tools at once`);
-        if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>2000))throw invalid('a tool request was malformed');
-        let toolCalls;try{toolCalls=calls.map(call=>({name:names.includes(call.name)?call.name:'unknown:'+String(call.name).slice(0,40),callId:call.call_id,args:JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments were not valid JSON');}
+        // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never treated as a failed run.
+        if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||call.name!=='run_screen'&&(typeof call.arguments!=='string'||call.arguments.length>2000)))throw invalid('a tool request was malformed');
+        let toolCalls;try{toolCalls=calls.map(call=>({name:names.includes(call.name)?call.name:'unknown:'+String(call.name).slice(0,40),callId:call.call_id,args:call.name==='run_screen'?require('./scout.cjs').screenArgs(call.arguments):JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments were not valid JSON');}
         return {toolCalls,continuation:[...input,...body.output],usage:reportedUsage,provider:'openai',model:returnedModel};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');

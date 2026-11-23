@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   getRuntimeHistory: () => ipcRenderer.invoke('runtime:history'),
   dryRunEstimate: model => ipcRenderer.invoke('runtime:dry-run-estimate', model === 'claude-opus-5-5' ? { model } : undefined),
   runScout: () => ipcRenderer.invoke('scout:run'),
+  getScoutScreens: () => ipcRenderer.invoke('scout:screens'),
   importProviders: () => ipcRenderer.invoke('runtime:providers'),
   refreshNews: () => ipcRenderer.invoke('runtime:news'),
   resetReviewWatches: () => ipcRenderer.invoke('runtime:reset-watches'),

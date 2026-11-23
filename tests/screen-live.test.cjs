@@ -34,10 +34,10 @@ test('item 1: the planning pass covers the second by construction: short cuts, e
 test('the bounds: more live stocks than a script may read stops before any read; a run shares one bound across its scripts',async()=>{
   const many=Array.from({length:61},(_,i)=>String(500000+i));const big={...ctx(),universe:()=>({name:'big',symbols:many}),data:{closes:()=>series(100,1)}};
   let reads=0;const r=await runScreen('u = universe(market="X")\nprint(count(u, live(S) > 0))',big,{readLive:async()=>{reads++;return new Map();}});
-  assert.equal(r.stopped.code,'LIVE_TOO_MANY');assert.equal(reads,0);assert.match(r.stopped.words,/at most 60 Korean and 20 U\.S\. a script: narrow the universe first with close-based values/);
-  const sixty={...big,universe:()=>({name:'b',symbols:many.slice(0,60)})};const one=openRun({readLive:async()=>new Map(),context:()=>({ctx:sixty})});const t='u = universe(market="X")\nprint(count(u, live(S) > 0))';
+  assert.equal(r.stopped.code,'LIVE_TOO_MANY');assert.equal(reads,0);assert.match(r.stopped.words,/at most 60 Korean and 20 U\.S\. a script: a universe can be reduced with filter, top or bottom before live\(S\) is used/);
+  const sixty={...big,universe:()=>({name:'b',symbols:many.slice(0,60)})};const {localExec}=require('../electron/screen-run.cjs');const one=openRun({readLive:async()=>new Map(),exec:localExec(sixty)});const t='u = universe(market="X")\nprint(count(u, live(S) > 0))';
   assert.equal((await one(t)).stopped,undefined);assert.equal((await one(t)).stopped,undefined);const third=await one(t);assert.equal(third.stopped.code,'LIVE_TOO_MANY');assert.match(third.stopped.words,/0 Korean and 40 U\.S\. left in this run/);
-  assert.equal((await openRun({readLive:async()=>new Map(),context:()=>({ctx:sixty})})(t)).stopped,undefined,'a new run has its own bound');
+  assert.equal((await openRun({readLive:async()=>new Map(),exec:localExec(sixty)})(t)).stopped,undefined,'a new run has its own bound');
   assert.equal(LIVE_LIMITS.run.KR,120);assert.equal(LIVE_LIMITS.script.US,20);
   assert.doesNotMatch(require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8'),/runScreen\(/,'main opens runs; it never runs a script with a state of its own making');
 });

@@ -37,8 +37,11 @@ function screenContext(deps){const now=deps.clock();const closed=deps.closedDays
   const names=s=>{try{return deps.db.prepare('SELECT name FROM securities WHERE symbol=?').get(s)?.name??null;}catch{return null;}};
   const universe=spec=>universeFor(deps,spec,now);
   // Only codes the security master lists are asked for, so an unknown code never reaches the nightly reads.
-  const finish=()=>{const outside=new Set(nightlySet(deps));const ask=[...missing].filter(s=>!outside.has(s)&&listed(deps.db,s)).slice(0,100);if(ask.length)deps.store.request(ask,now);return ask.length;};
-  return {ctx:{data,isStale,names,universe,asOf},asOf,depth:symbols=>deps.store.depth(symbols),finish,keep:KEEP};}
+  const finish=()=>recordMissing(deps,[...missing],now);
+  return {ctx:{data,isStale,names,universe,asOf},asOf,depth:symbols=>deps.store.depth(symbols),finish,missingList:()=>[...missing].slice(0,400),keep:KEEP};}
+// The symbols a script named with no history, recorded for the next night: only codes the security master lists and that
+// the nightly set does not already hold, at most 100.
+function recordMissing(deps,missing,now=deps.clock()){const outside=new Set(nightlySet(deps));const ask=(Array.isArray(missing)?missing:[]).filter(s=>typeof s==='string'&&SYMBOL.test(s)&&!outside.has(s)&&listed(deps.db,s)).slice(0,100);if(ask.length)deps.store.request(ask,now);return ask.length;}
 function universeFor(deps,spec,now){const n=Math.min(MAX,spec.top_cap??deps.settings().perExchange);const type=spec.type??'stock';
   if(!['stock','etf','any'].includes(type))return {refused:'UNKNOWN_UNIVERSE'};
   // Your own lists, optionally by market and type; cut to top_cap (default the setting) with a note saying so.
@@ -57,4 +60,4 @@ function universeFor(deps,spec,now){const n=Math.min(MAX,spec.top_cap??deps.sett
 function krMarket(db,s){try{return db.prepare('SELECT market FROM securities WHERE symbol=?').get(s)?.market??null;}catch{return null;}}
 function typeOf(db,s){try{return db.prepare('SELECT type FROM securities WHERE symbol=?').get(s)?.type??null;}catch{return null;}}
 const listed=(db,s)=>{try{return Boolean(db.prepare('SELECT 1 FROM securities WHERE symbol=?').get(s));}catch{return false;}};
-module.exports={nightlySet,screenContext,universeFor,krTop,OWN};
+module.exports={nightlySet,screenContext,universeFor,recordMissing,krTop,OWN};

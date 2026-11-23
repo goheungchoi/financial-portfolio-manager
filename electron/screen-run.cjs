@@ -23,42 +23,66 @@ const LIVE_LIMITS=Object.freeze({script:Object.freeze({KR:60,US:20}),run:Object.
 const READ_MS=30000,CACHE_MS=60000,BATCH=30,WAIT_STEP_MS=200;
 const marketOf=s=>/:/.test(s)?'US':'KR';
 const KR_CODE=/^\d{6}$/,US_CODE=/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/;
-const STOPPED={ORDER:'live reads stopped: an order was being sent',RATE_LIMITED:'live reads stopped: KIS asked the app to slow down',FAILURES:'live reads stopped: three requests in a row failed'};
+const STOPPED={CANCELLED:'live reads stopped: the run was stopped',WAIT:'live reads stopped: this run spent its waiting time',ORDER:'live reads stopped: an order was being sent',RATE_LIMITED:'live reads stopped: KIS asked the app to slow down',FAILURES:'live reads stopped: three requests in a row failed'};
 // The KIS queue's own bound on a request (kis-service.cjs: the worker request is dropped after 90 seconds).
 const QUEUE_TIMEOUT_MS=90000;
 // The run's state across its scripts: the live stocks left and why the reads stopped, if they did.
-const newRun=()=>({left:{...LIVE_LIMITS.run},stoppedBy:null,failedInRow:0});
+// A run waits at most RUN_WAIT_MS in all for orders and live reads, across its scripts.
+const RUN_WAIT_MS=60000;
+const newRun=()=>({left:{...LIVE_LIMITS.run},stoppedBy:null,failedInRow:0,waitLeft:RUN_WAIT_MS,cancelled:()=>false});
 // Every live("code") written in the text, so a short cut in pass 1 can never leave one out.
 function writtenCodes(statements){const out=[];const walk=n=>{if(!n||typeof n!=='object')return;
   if(n.t==='call'){if(n.fn==='live'&&n.args[0]?.t==='str')out.push(n.args[0].v.trim().toUpperCase());n.args.forEach(walk);n.named.forEach(([,v])=>walk(v));}
   else if(n.t==='op'){walk(n.a);walk(n.b);}else if(n.t==='list')n.items.forEach(walk);};
   for(const st of statements)walk(st.expr);return out.filter(s=>KR_CODE.test(s)||US_CODE.test(s));}
 function usesLive(statements){let found=false;const walk=n=>{if(found||!n||typeof n!=='object')return;if(n.t==='call'){if(n.fn==='live'){found=true;return;}n.args.forEach(walk);n.named.forEach(([,v])=>walk(v));}else if(n.t==='op'){walk(n.a);walk(n.b);}else if(n.t==='list')n.items.forEach(walk);};for(const st of statements)walk(st.expr);return found;}
-async function runScreen(text,ctx,{readLive,runState=newRun()}={}){const base=ctx&&typeof ctx==='object'?ctx:{};
+// The two passes as pure, synchronous steps, so they run where the caller chooses: in a worker thread in the app
+// (screen-worker.cjs; the Electron main process never runs a model's script), or in process in tests.
+function planStep(text,ctx){const base=ctx&&typeof ctx==='object'?ctx:{};
   // A script that cannot be parsed is not run and reads nothing: its error is the answer.
-  let statements;try{statements=parseScript(text);}catch(error){return {lines:[],coverage:[],stopped:stopFor(error,null),live:null};}
+  let statements;try{statements=parseScript(text);}catch(error){return {parseStop:stopFor(error,null)};}
+  const uses=usesLive(statements);if(!uses)return {uses:false,asked:[],assumed:false,planStop:null};
   const asked=[],seen=new Set();const note=s=>{if(!seen.has(s)){seen.add(s);asked.push(s);}};
-  let assumedAll=false;const plan=run(text,{...base,livePlan:note,livePlanAssumed:()=>{assumedAll=true;}});for(const s of writtenCodes(statements))note(s);
+  let assumed=false;const plan=run(text,{...base,livePlan:note,livePlanAssumed:()=>{assumed=true;}});for(const s of writtenCodes(statements))note(s);
+  return {uses:true,asked,assumed,planStop:plan.stopped??null};}
+function finalStep(text,ctx,{quotes=[],why=null}={}){const base=ctx&&typeof ctx==='object'?ctx:{};const map=new Map(Array.isArray(quotes)?quotes:[]);
+  const quoteOf=s=>{const q=map.get(s);return q&&!q.missing?q:null;};
+  return run(text,{...base,live:quoteOf,liveWhy:s=>map.get(s)?.missing??why??null,...(why?{liveStopped:why}:{})});}
+// exec(kind, payload) for a context built in this process (tests; the worker builds its own).
+const localExec=ctx=>async(kind,payload)=>kind==='plan'?planStep(payload.text,ctx):finalStep(payload.text,ctx,payload);
+const CODES={ORDER:'LIVE_STOPPED_BY_ORDER',RATE_LIMITED:'LIVE_RATE_LIMITED',FAILURES:'LIVE_READS_FAILED',CANCELLED:'LIVE_CANCELLED',WAIT:'LIVE_WAIT_SPENT'};
+// One script: the plan, the bounds, the reads (within the run's wait budget), the final pass. orderSending(): while an
+// order is being sent a script waits before each pass, within the same budget.
+async function runWith(text,exec,{readLive,runState=newRun(),orderSending=()=>false,clock=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms))}={}){
+  const pause=async()=>{const start=clock();while(orderSending()&&clock()-start<runState.waitLeft&&!runState.cancelled?.())await sleep(WAIT_STEP_MS);runState.waitLeft-=clock()-start;};
+  await pause();const p=await exec('plan',{text});
+  if(p.parseStop)return {lines:[],coverage:[],stopped:p.parseStop,live:null};
   // Pass 2 never runs on an incomplete plan: a first pass that stopped (a bound, which it has twice of, or an error) is the
   // script's answer, with no reads.
-  if(plan.stopped&&usesLive(statements))return {lines:[],coverage:[],live:{asked:asked.length,read:0},stopped:{code:'PLAN_FAILED',line:plan.stopped.line,detail:plan.stopped.words,
-    words:`${plan.stopped.line?`line ${plan.stopped.line}: `:''}the live prices could not be planned, so none were read (${plan.stopped.words})`}};
-  if(!asked.length)return {...run(text,{...base,live:()=>null}),live:null};
-  const count={KR:asked.filter(s=>marketOf(s)==='KR').length,US:asked.filter(s=>marketOf(s)==='US').length};
+  if(p.planStop)return {lines:[],coverage:[],live:{asked:p.asked.length,read:0},stopped:{code:'PLAN_FAILED',line:p.planStop.line,detail:p.planStop.words,
+    words:`${p.planStop.line?`line ${p.planStop.line}: `:''}the live prices could not be planned, so none were read (${p.planStop.words})`}};
+  if(!p.asked.length){await pause();const r=await exec('final',{text,quotes:[],why:null});return {...r,live:null};}
+  const asked=p.asked;const count={KR:asked.filter(s=>marketOf(s)==='KR').length,US:asked.filter(s=>marketOf(s)==='US').length};
   const limit={KR:Math.min(LIVE_LIMITS.script.KR,runState.left.KR),US:Math.min(LIVE_LIMITS.script.US,runState.left.US)};
   if(count.KR>limit.KR||count.US>limit.US){const left=runState.left.KR<LIVE_LIMITS.script.KR||runState.left.US<LIVE_LIMITS.script.US?` (${runState.left.KR} Korean and ${runState.left.US} U.S. left in this run)`:'';
     return {lines:[],coverage:[],live:{asked:asked.length,read:0},stopped:{code:'LIVE_TOO_MANY',line:null,detail:null,
-      words:`live(S) for ${count.KR} Korean and ${count.US} U.S. stocks${assumedAll?' (the plan assumed every candidate, because n or top_cap depends on a live price)':''}; at most ${LIVE_LIMITS.script.KR} Korean and ${LIVE_LIMITS.script.US} U.S. a script${left}: narrow the universe first with close-based values (for example filter on sma or avgvalue), then use live(S) on the result`}};}
+      words:`live(S) for ${count.KR} Korean and ${count.US} U.S. stocks${p.assumed?' (the plan assumed every candidate, because n or top_cap depends on a live price)':''}; at most ${LIVE_LIMITS.script.KR} Korean and ${LIVE_LIMITS.script.US} U.S. a script${left}: a universe can be reduced with filter, top or bottom before live(S) is used`}};}
   runState.left.KR-=count.KR;runState.left.US-=count.US;
-  let quotes=new Map();try{const got=typeof readLive==='function'?await readLive(asked,{runState}):null;if(got instanceof Map)quotes=got;}catch{quotes=new Map();}
+  if(runState.cancelled?.())runState.stoppedBy??='CANCELLED';if(runState.waitLeft<=0)runState.stoppedBy??='WAIT';
+  let quotes=new Map();if(!runState.stoppedBy){const start=clock();
+    try{const got=typeof readLive==='function'?await readLive(asked,{runState,deadline:clock()+Math.min(READ_MS,runState.waitLeft)}):null;if(got instanceof Map)quotes=got;}catch{quotes=new Map();}
+    runState.waitLeft-=clock()-start;}
   const why=runState.stoppedBy?STOPPED[runState.stoppedBy]??null:null;
-  const quoteOf=s=>{const q=quotes.get(s);return q&&!q.missing?q:null;};
-  const second=run(text,{...base,live:quoteOf,liveWhy:s=>quotes.get(s)?.missing??why??null,...(why?{liveStopped:why}:{})});
-  return {...second,live:{asked:asked.length,read:asked.filter(s=>quoteOf(s)).length,...(why?{stopped:{code:{ORDER:'LIVE_STOPPED_BY_ORDER',RATE_LIMITED:'LIVE_RATE_LIMITED',FAILURES:'LIVE_READS_FAILED'}[runState.stoppedBy],words:why}}:{})}};}
-// A run of several scripts sharing one bound (a scout run, a review): the caller opens it; no caller passes a state.
-// context() builds each script's context (screen-universe screenContext); the result carries what it returns besides ctx.
-function openRun({readLive,context}){const runState=newRun();
-  return async text=>{const c=context()??{};const r=await runScreen(text,c.ctx??{},{readLive,runState});return {...r,asOf:c.asOf??null,finish:c.finish??(()=>0),depth:c.depth??(()=>({}))};};}
+  await pause();const r=await exec('final',{text,quotes:[...quotes.entries()],why});
+  return {...r,live:{asked:asked.length,read:asked.filter(s=>{const q=quotes.get(s);return q&&!q.missing;}).length,...(why?{stopped:{code:CODES[runState.stoppedBy],words:why}}:{})}};}
+async function runScreen(text,ctx,opts={}){return runWith(text,localExec(ctx),opts);}
+// A run of several scripts sharing one live bound and one wait budget (a scout run, a review): the caller opens it; no
+// caller passes a state. exec runs the two passes (the app's is the worker); finish(missing) records the symbols named
+// without history for the next night.
+function openRun({readLive,exec,finish=null,orderSending,cancelled}){const runState=newRun();if(typeof cancelled==='function')runState.cancelled=cancelled;
+  // An engine that fails or takes too long is the script's answer, in the app's own words; the run goes on.
+  return async text=>{const r=await runWith(text,exec,{readLive,runState,orderSending}).catch(error=>({lines:[],coverage:[],live:null,stopped:{code:error?.code==='SCREEN_ENGINE_TIMEOUT'?'SCREEN_ENGINE_TIMEOUT':'SCREEN_ENGINE_FAILED',line:null,detail:null,
+      words:error?.code==='SCREEN_ENGINE_TIMEOUT'?'the script could not be run: the screening engine took too long':'the script could not be run: the screening engine did not answer'}}));if(Array.isArray(r.missing)&&typeof finish==='function'){try{finish(r.missing);}catch{}}const {missing:_,...rest}=r;return rest;};}
 // deps: {request(operation, payload): Promise, allowed(): no order being sent or cancelled and nothing queued,
 // orderSending(): an engine is sending, sessionOpen(market, t), clock, sleep(ms)}.
 function makeLiveReader({request,allowed,orderSending,sessionOpen,clock=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){const cache=new Map();let inflight=null,inflightAt=0;
@@ -76,7 +100,7 @@ function makeLiveReader({request,allowed,orderSending,sessionOpen,clock=Date.now
     const batches=[];for(let i=0;i<kr.length;i+=BATCH)batches.push({op:'quotes-multi',payload:{symbols:kr.slice(i,i+BATCH)}});for(const s of us)batches.push({op:'us-quote',payload:{symbol:s}});
     for(const b of batches){
       if(runState.stoppedBy)break;
-      let go=false;for(;;){if(orderSending()){runState.stoppedBy='ORDER';break;}if(clock()>=deadline)break;if(allowed()){go=true;break;}await sleep(WAIT_STEP_MS);}
+      let go=false;for(;;){if(runState.cancelled?.()){runState.stoppedBy='CANCELLED';break;}if(orderSending()){runState.stoppedBy='ORDER';break;}if(clock()>=deadline)break;if(allowed()){go=true;break;}await sleep(WAIT_STEP_MS);}
       if(!go)break;
       const sent=Promise.resolve().then(()=>request(b.op,b.payload));const tracked=sent.then(()=>{},()=>{}).finally(()=>{if(inflight===tracked)inflight=null;});inflight=tracked;inflightAt=clock();
       let res;try{res=await Promise.race([sent,new Promise((_,reject)=>setTimeout(()=>reject(new Error('TIMEOUT')),Math.max(0,deadline-clock())).unref?.())]);}
@@ -87,4 +111,4 @@ function makeLiveReader({request,allowed,orderSending,sessionOpen,clock=Date.now
       if(b.op==='quotes-multi'){for(const r of Array.isArray(res)?res:[]){if(!b.payload.symbols.includes(r?.symbol))continue;const q=quoteOf('KR',r.price,readTime(r.readAt),r.volume);if(q?.missing)out.set(r.symbol,q);else if(q)out.set(r.symbol,keep(r.symbol,q));}}
       else{const s=b.payload.symbol;const q=res&&res.symbol===s?quoteOf('US',res.price,readTime(res.retrievedAt),null):null;if(q)out.set(s,keep(s,q));}}
     return out;};}
-module.exports={runScreen,openRun,makeLiveReader,newRun,writtenCodes,usesLive,LIVE_LIMITS,READ_MS,CACHE_MS,BATCH,STOPPED,QUEUE_TIMEOUT_MS};
+module.exports={runScreen,runWith,planStep,finalStep,localExec,openRun,RUN_WAIT_MS,makeLiveReader,newRun,writtenCodes,usesLive,LIVE_LIMITS,READ_MS,CACHE_MS,BATCH,STOPPED,QUEUE_TIMEOUT_MS};

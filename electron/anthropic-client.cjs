@@ -285,9 +285,10 @@ class AnthropicClient {
         const names=calls.map(c=>String(c.name).slice(0,40)),invalid=rule=>fail(rule,{toolCount:calls.length,tools:[...new Set(names)].slice(0,8),status:'tool_use'});
         if(!tools)throw invalid(`a tool request from the ${kind}, which has no tools`);if(final)throw invalid('a tool request on the final round');
         if(calls.length>12)throw invalid(`${calls.length} tool requests at once`);
-        if(calls.some(c=>typeof c.id!=='string'||c.id.length>200||!c.input||typeof c.input!=='object'||Array.isArray(c.input)||JSON.stringify(c.input).length>2000))throw invalid('a malformed or oversized tool request');
+        // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never treated as a failed run.
+        if(calls.some(c=>typeof c.id!=='string'||c.id.length>200||c.name!=='run_screen'&&(!c.input||typeof c.input!=='object'||Array.isArray(c.input)||JSON.stringify(c.input).length>2000)))throw invalid('a malformed or oversized tool request');
         const offered=tools.map(t=>t.name);
-        return {...base,toolCalls:calls.map(c=>({name:offered.includes(c.name)?c.name:'unknown:'+String(c.name).slice(0,40),callId:c.id,args:c.input})),continuation:[...input,{type:'anthropic_turn',content:blocks},...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};}
+        return {...base,toolCalls:calls.map(c=>({name:offered.includes(c.name)?c.name:'unknown:'+String(c.name).slice(0,40),callId:c.id,args:c.name==='run_screen'?require('./scout.cjs').screenArgs(c.input):c.input})),continuation:[...input,{type:'anthropic_turn',content:blocks},...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};}
       if(reply.stop_reason!=='end_turn')throw fail(`a response that stopped with ${String(reply.stop_reason??'no reason').replace(/[^a-z_ ]/g,'').slice(0,30)}`,{status:String(reply.stop_reason??'missing').slice(0,30)});
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');
       let parsed;if(textFormat)parsed=onlyObject(output,{empty:`no ${kind} answer`,invalid:`a ${kind} answer that is not one JSON object`});
@@ -299,7 +300,7 @@ class AnthropicClient {
   async compact(payload,options={}){const f=require('./context-fit.cjs');const {parsed,...r}=await this.structured({kind:'compact',system:f.COMPACT_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(payload)}],schema:f.COMPACT_SCHEMA,options,maxBytes:400000});return {...parsed,...r};}
   async reflect(context,options={}){const {parsed,...r}=await this.structured({kind:'reflect',system:require('./ai-client.cjs').REFLECTION_INSTRUCTIONS,input:[{role:'user',content:JSON.stringify(context)}],schema:require('./reflection.cjs').SCHEMA,options,maxBytes:70000});return {...r,reflection:require('./reflection.cjs').validate(parsed)};}
   async scout(context,options={}){const scout=require('./scout.cjs'),RI=require('./review-instructions.cjs');const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];
-    // The scout's own schema counts 28 with its 6 tools: enforced as it is, with the same fallback (enforced-form design 6).
+    // The scout's own schema counts 28 with its tools: enforced as it is, with the same fallback (enforced-form design 6).
     const r=await this.withFallback('scout',form=>this.structured({kind:'scout',system:RI.scoutText(RI.scoutPartsFor(context)),input,schema:scout.SCHEMA,options,maxBytes:options.maxBytes??scout.SCOUT_REQUEST_BYTES,tools:require('./ai-client.cjs').scoutTools(),final:Boolean(options.final),textFormat:form==='text'}));
     if(r.toolCalls)return r;const {parsed,...rest}=r;
     // answer and skippedTargets (2026-11-18): the plan as the model wrote it and the targets the check left out, so a refused

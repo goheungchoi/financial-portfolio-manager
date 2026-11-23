@@ -10,3 +10,9 @@
 .scout-retro b{margin-right:4px}
 .scout-panel .note{margin-top:10px}
 .scout-score td:first-child,.scout-score th:first-child{text-align:left}
+.scout-screen{margin-top:8px}
+.scout-screen summary{cursor:pointer;font-size:.85rem}
+.scout-script,.scout-output{font-size:.78rem;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0;padding:6px 8px;background:var(--surface-2,rgba(127,127,127,.08));border-radius:6px;max-height:16rem;overflow:auto}
+.scout-coverage td,.scout-coverage th{text-align:right}
+.scout-coverage td:nth-child(2),.scout-coverage th:nth-child(2){text-align:left}
+.scout-screen-status p{margin:2px 0;font-size:.85rem}

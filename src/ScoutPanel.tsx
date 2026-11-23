@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import type {ScoutState} from './RuntimeSettings';
 import {Note} from './Note';
+import {ScoutScreens} from './ScoutScreens';
 import './scout.css';
 const ROLE:Record<string,string>={hold:'Hold',add:'Add',candidate:'Candidate',trim:'Trim',exit:'Exit'};
 const ago=(t:number)=>{const m=Math.round((Date.now()-t)/60000);return m<1?'just now':m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:new Date(t).toLocaleDateString();};
@@ -44,6 +45,7 @@ export function ScoutPanel({onOpenChart,onNavigate}:{onOpenChart(symbol:string):
       </ul></div>:null}
       {plan.retrospective&&<p className="scout-retro"><b>Self-review</b> {plan.retrospective}</p>}
     </>}
+    <ScoutScreens key={scout.screenRun?.runId??'none'} run={scout.screenRun} status={scout.screens}/>
     {scout.scorecard&&scout.scorecard.picks.length>0&&<Note summary={scoreLine(scout.scorecard)}>
       <table className="compact-table scout-score" aria-label="Scout pick results"><thead><tr><th>Pick</th><th>Picked</th><th>5 days</th><th>20 days</th><th>Trading</th></tr></thead><tbody>{scout.scorecard.picks.map(p=><tr key={p.symbol+p.pickedAt}><td>{p.name||p.symbol}{p.endedAt?<small> dropped</small>:null}</td><td>{new Date(p.pickedAt).toLocaleDateString()}</td><td>{pct(p.horizons['5']?.excess)}</td><td>{pct(p.horizons['20']?.excess)}</td><td title={p.feedback?.reason}>{p.feedback?`${p.feedback.verdict[0].toUpperCase()+p.feedback.verdict.slice(1)}`:ACTED[p.acted]??p.acted}</td></tr>)}</tbody></table>
       <p className="muted">{'Return minus KOSPI or the S&P 500, from the close on the pick day. The scout reads this before each run.'}</p>

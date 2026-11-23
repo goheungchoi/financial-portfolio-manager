@@ -62,7 +62,7 @@ test('a failed run is recorded; the trading review sees lastRunFailed only while
   const later=store.save('kis:a',S.validatePlan(full));later.timestamp=f.at+1;db.prepare('UPDATE scout_plans SET timestamp=?,payload=? WHERE id=?').run(later.timestamp,JSON.stringify(later),later.id);assert.equal(store.failedAfter('kis:a'),null,'a newer plan clears it');
   const main=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/automation.cjs'),'utf8');
   assert.ok(main.includes("failed:(()=>{const f=this.scoutStore.failedAfter(watchScope,latestPlan);return f&&f.trigger!=='User request'?f:null;})()"),'the review passes automatic failures only');
-  assert.ok(main.includes("try{this.scoutStore.noteFailure(scope,{reason:this.scoutError,trigger});}catch{}"),'every failed run is recorded');});
+  assert.ok(main.includes("try{this.scoutStore.noteFailure(scope,{reason:this.scoutError,trigger});"),'every failed run is recorded (its screens are kept apart, S3)');});
 test('through the app: an empty answer twice keeps the previous plan, records the failure, and the card state carries it',async()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const {LiveEngine}=require('../electron/live-engine.cjs');
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]);
