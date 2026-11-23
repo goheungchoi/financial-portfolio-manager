@@ -17,6 +17,12 @@ const cases=[
   ['Home Holdings card: every holding, 15 rows scroll inside the card','home-holdings-desktop.cjs',['--count','15'],data('home-holdings-15')],
   ['Claude trading with several orders: Start, Stop with a dry run that no longer counts, and the refusal sentence','claude-start-stop-desktop.cjs',[],data('claude-start-stop')],
   ['Activity: opens with rows, totals with a corrected order, Today and not-sent, From, a failed refresh keeps rows, both themes','activity-desktop.cjs',[],data('activity')],
+  ["Scripts: the Scout panel's Screens section with a partly read history and a failed run's scripts",'s5-desktop.cjs',['--mode=screens'],data('s5-screens')],
+  ["Scripts: the Screens section with nothing stored yet",'s5-desktop.cjs',['--mode=screens-empty'],data('s5-screens-empty')],
+  ["Scripts: the Journal's Scripts section of a review",'s5-desktop.cjs',['--mode=journal'],data('s5-journal')],
+  ["Stops not watched: the Home line and the words Stop returns",'s5-desktop.cjs',['--mode=stops'],data('s5-stops')],
+  ["Buy-back blocked: the Activity list, the ticket line and Remove",'s5-desktop.cjs',['--mode=buyback'],data('s5-buyback')],
+  ["Buy-back: Home's App buys wait line while the order history cannot be read",'s5-desktop.cjs',['--mode=buyback-wait'],data('s5-buyback-wait')],
   ['In-app updates against a local release server','update-desktop.cjs',[],data('updates')]
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};
