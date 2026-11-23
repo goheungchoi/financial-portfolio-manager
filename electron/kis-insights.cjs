@@ -246,4 +246,19 @@ async function financials(client,symbol){
   if(Object.values(parts).every(v=>!v))throw new Error('DATA_SOURCE_UNAVAILABLE');
   return {periods:statements(parts),annualRatios:ratios(parts.ratio),units:'KRW amounts; ratios in %. Periods not ending in December are year to date.'};
 }
-module.exports={usMarketOverview,US_INDEX_ETFS,US_SECTOR_ETFS,overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
+// One page of daily closes for the screening history store (note 6, S2): the days up to `end` (YYYY-MM-DD; the store
+// also refuses any row after its market's readable day). Korea: FHKST03010100 over 135 calendar days, at most about 97
+// sessions, so the whole window fits under KIS's 100 rows whichever end it keeps; the U.S.: HHDFS76240000 from BYMD.
+// Rows {date, high, low, close, volume, value}, oldest first, adjusted for splits as KIS gives them. Public quotations.
+async function historyPage(client,symbol,end,today){
+  if(end!=null&&!/^\d{4}-\d{2}-\d{2}$/.test(end))throw new Error('INVALID_REQUEST');
+  const us=US.exec(symbol);
+  if(us){const {body}=await client.overseasRequest('/uapi/overseas-price/v1/quotations/dailyprice','HHDFS76240000',{AUTH:'',EXCD:{NASD:'NAS',NYSE:'NYS',AMEX:'AMS'}[us[1]],SYMB:us[2],GUBN:'0',BYMD:end?compact(end):'',MODP:'1'});
+    if(!Array.isArray(body?.output2))throw new Error('INVALID_RESPONSE');const seen=new Set();
+    return body.output2.slice(0,120).map(r=>{const date=isoDay(r?.xymd),close=positive(r?.clos),volume=num(r?.tvol);return {date,high:positive(r?.high),low:positive(r?.low),close,volume,value:close!=null&&volume!=null?close*volume:null};})
+      .filter(r=>r.date&&r.close&&(!end||r.date<=end)&&!seen.has(r.date)&&seen.add(r.date)).sort((a,b)=>a.date.localeCompare(b.date));}
+  if(!/^\d{6}$/.test(symbol))throw new Error('INVALID_INSTRUMENT');const last=end??today;
+  const body=await client.quotation('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(last,135)),FID_INPUT_DATE_2:compact(last),FID_PERIOD_DIV_CODE:'D',FID_ORG_ADJ_PRC:'0'});
+  return closes(body?.output2).map(({date,high,low,close,volume,value})=>({date,high,low,close,volume,value}));
+}
+module.exports={historyPage,usMarketOverview,US_INDEX_ETFS,US_SECTOR_ETFS,overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};

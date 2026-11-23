@@ -453,6 +453,29 @@ app.whenReady().then(async () => {
   automation.relevantSecurities=()=>{const symbols=new Set([...(kisState.snapshot?.holdings??[]).map(row=>row.symbol),...(usSnapshot?.holdings??[]).map(row=>row.symbol),...automation.discovery.list().map(row=>row.symbol),...(live.getState().policy?.symbols??[]),...(usLive.getState().policy?.symbols??[]),...automation.watches.list(automation.watchScope()).map(row=>row.symbol),...(automation.config.scope==='paper'?paper.getState().universe.map(row=>row.symbol):[])]);
     return [...symbols].map(symbol=>{const known=master.get(symbol);const held=[...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].find(row=>row.symbol===symbol);return {symbol,name:known?.name??held?.name??'',englishName:known?.englishName??''};});};
   if(masterFetch){void master.refresh().catch(()=>{});setInterval(()=>void master.refresh().catch(()=>{}),3600000).unref();}
+  // Screening history (note 6, S2): the U.S. size order from Nasdaq's public screener and the nightly read-only KIS
+  // reads of daily closes for the screening set. Public market data only.
+  const screenStore=new (require('./history-store.cjs').HistoryStore)(store.db),usSize=new (require('./us-size.cjs').UsSizeOrder)(store.db);
+  const screenOwn=kind=>{if(kind==='holdings')return [...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].map(r=>r.symbol);if(kind==='watchlist')return automation.discovery.list().map(r=>r.symbol);
+    if(kind==='plan')return [...scoutTargets('KR'),...scoutTargets('US')];if(kind==='allowlist'){const out=[];try{out.push(...(live.policy()?.symbols??[]));}catch{}try{out.push(...(usLive.getState().policy?.symbols??[]));}catch{}return out;}return [];};
+  automation.screens={db:store.db,store:screenStore,usSize,own:screenOwn,settings:()=>({perExchange:automation.config.screenStocksPerExchange,etfs:automation.config.screenEtfs}),
+    closedDays:()=>new Set([...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])]),clock:Date.now};
+  // When the reads may run (screen-wiring.cjs): no app order active in either market, the read window (real session
+  // times, 15 minutes' margin, extended sessions you switched on), the KIS queue idle and not cooling down.
+  const W=require('./screen-wiring.cjs'),MS=require('./market-sessions.cjs');
+  const ordersActive=W.makeOrdersActive({engines:()=>[live,usLive],today:(market,now)=>market==='US'?require('./kis-overseas.cjs').localDate(new Date(now)):require('./kis-activity.cjs').seoulDate(now)});
+  const screenAllowed=W.makeAllowed({closing:()=>closing,scoutOn:()=>automation.config.scoutEnabled,connected:()=>Boolean(kisState.snapshot),
+    sessionsOf:(market,day)=>MS.sessionsOn(market,day,{closedDays:automation.screens.closedDays(),environment:kisState.snapshot?.environment??'mock',enabled:automation.sessionOptions()}),
+    lateWindow:require('./outside-fills.cjs').lateWindow,queueBusy:()=>kisService.isBusy,cooldownUntil:()=>kisService.cooldownUntil,ordersActive});
+  const screenRefresher=new (require('./history-store.cjs').HistoryRefresher)({store:screenStore,set:()=>require('./screen-universe.cjs').nightlySet(automation.screens),
+    request:(symbol,end)=>kisService.request('history-page',{symbol,end}),allowed:screenAllowed,closedDays:automation.screens.closedDays,clock:Date.now});
+  automation.screenRefresher=screenRefresher;
+  if(!process.env.PORTFOLIO_SMOKE_DATA){
+    setInterval(()=>{try{screenRefresher.tick();}catch{}},1000).unref();
+    let usSizeBusy=false;const refreshUsSize=async()=>{if(usSizeBusy||closing||!usSize.due().length)return;usSizeBusy=true;try{await usSize.refresh({fetcher:fetch,known:s=>master.get(s)?.type==='stock'});}catch{}finally{usSizeBusy=false;}};
+    setTimeout(()=>void refreshUsSize(),60000).unref();setInterval(()=>void refreshUsSize(),3600000).unref();
+    // Pruning waits for a connection, so your holdings are known and kept.
+    setInterval(()=>{try{if(kisState.snapshot)screenStore.prune(require('./screen-universe.cjs').nightlySet(automation.screens));}catch{}},6*3600000).unref();}
   // Performance history: daily account values, recorded cash flows and benchmark closes.
   const {PerformanceHistory,benchmarkFor}=require('./performance.cjs');const performance=new PerformanceHistory(store.db);let benchmarkTask=null,benchmarkAt=0,benchmarkError=null;
   // A skipped damaged record (release gate 1.5.52, R2): one System line per run and table, naming the days.

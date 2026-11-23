@@ -191,6 +191,8 @@ function ScheduleTab({state,config,busy,edit}:Props){
         {SCOUT_SLOTS.map(([key,title,hint])=><Row key={key} title={title} hint={hint}><Switch label={title} disabled={busy} checked={config[key]} onChange={v=>edit(key,v)}/></Row>)}
         <details className="inline-help"><summary>More</summary>
           <Row title="After Korea opens: minutes after the open" hint="Default 60. The investor-flow lists are empty until about 09:20; the institution list fills by about 10:00."><NumberField label="Minutes after the Korean open" min={10} max={240} unit="min" disabled={busy} value={config.scoutAfterOpenMinutes} onChange={v=>edit('scoutAfterOpenMinutes',v)}/></Row>
+          <Row title="Stocks per exchange for screens" hint="The largest by market value on each exchange get their daily history read each night, outside market hours. Default 300."><NumberField label="Stocks per exchange for screens" min={50} max={400} step={50} disabled={busy} value={config.screenStocksPerExchange} onChange={v=>edit('screenStocksPerExchange',v)}/></Row>
+          <Row title="Include ETFs in screens" hint="Korean ETFs, by size. U.S. ETFs have no size list."><Switch label="Include ETFs in screens" disabled={busy} checked={config.screenEtfs} onChange={v=>edit('screenEtfs',v)}/></Row>
           <p className="muted">Times follow each exchange's calendar, including daylight saving and holidays. A run the app misses by more than 30 minutes is dropped, except that After Korea opens and Korea midday still run until the Korean close. A run within an hour of another scout run that researched the same market is skipped unless that market opened in between. The console says why.</p>
         </details>
       </>}

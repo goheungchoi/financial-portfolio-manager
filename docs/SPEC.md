@@ -61,6 +61,7 @@ Each row: the feature, where the user meets it, the settings that govern it, and
 | Company view, candles, indicators, research panel | Charts, pop-out window | — | P1 Charts, P4 §3.6 |
 | Performance against benchmarks, drawdown, corrections | Performance | — | P4 §3.3 |
 | Cash-flow detection ("cash checks"); Korean orders made outside the app counted as trades | Home "Needs you" line | — | P4 §3.3 |
+| Screening history for scripts: the nightly read-only store of daily closes, the U.S. size order, universes and the data a screen sees | Engine → AI scout runs (More); Scout panel (S3) | "Stocks per exchange for screens", "Include ETFs in screens" | P4 §3.11, §2.4; P3 (script row) |
 | Order history, Today strip, origin of each order | Activity | period on screen | P1 Activity, P4 §3.4 |
 | Buy-back block (30 days after a sale made outside the app) | Activity → Buy-back blocked; the order ticket line | Remove | P2 §8.1, P1 Activity |
 | Realized P&L (KIS's Korean report) | Performance | — | P4 §3.4 |

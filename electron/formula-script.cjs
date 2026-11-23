@@ -10,8 +10,9 @@
 // throws out of run. A run that passes a bound stops at that line, says which bound, and returns what it printed so far.
 // The existing single formulas (conditions, triggers, compute) are unchanged: this module only calls formula.cjs.
 // The data contract (S2 builds the data and must honour it): closes are completed daily closes, oldest first, and never
-// include the current trading day until it is rolled; price is the live quote, or the last quote when the market is
-// closed. So at(x, 1) is the last completed close at any hour. If ctx.today (the current trading day, in the closes'
+// include the current trading day until it is rolled; price is the close of the day the data is as of (in a screen, each
+// market's last completed close: screen-universe.cjs), never a live quote (a live function is a later stage). So at(x, 1)
+// is the close before that day at any hour. If ctx.today (the current trading day, in the closes'
 // date form) is given, closes dated on or after it are left out here as well. The module expects at most 311 closes a
 // stock (the engine's 250-day window, the 60-day offset and one more) and keeps the last HISTORY of them.
 const F=require('./formula.cjs');
@@ -45,6 +46,8 @@ const bytes=s=>Buffer.byteLength(s,'utf8');
 const fmt=v=>{if(v===0)return '0';if(Number.isInteger(v)&&Math.abs(v)<1e15)return String(v);const r=Number(v.toPrecision(8));const a=Math.abs(r);
   return a>=1e-6&&a<1e8?String(r):r.toExponential(7).replace(/\.?0+e/,'e');};
 const CMP=['>','<','>=','<=','==','!='];
+// The app's fixed refusals for a universe (screen-universe.cjs), in this module's words.
+const REFUSALS=Object.freeze(Object.assign(Object.create(null),{SIZE_ORDER_UNAVAILABLE:'no size order is available for that market or type',UNKNOWN_UNIVERSE:'no such universe'}));
 // Tokens: numbers, text, names, and the operators of the language.
 function tokenize(text,line){const out=[];let i=0;
   while(i<text.length){const c=text[i];
@@ -167,7 +170,10 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
     return Object.freeze({universe:true,name:'list',symbols});};
   const fromApp=(spec,line)=>{countUniverse(line);let fn=null;try{fn=ctx.universe;}catch{}if(typeof fn!=='function')throw new ScriptError('BAD_UNIVERSE','no universes here',line);
     let u;try{u=fn.call(ctx,Object.freeze(spec));}catch{throw new ScriptError('BAD_UNIVERSE','the app could not list it',line);}
-    let symbols,name;try{const list=u!==null&&typeof u==='object'?u.symbols:null;if(!Array.isArray(list))throw new ScriptError('BAD_UNIVERSE','no such universe',line);
+    // The app may refuse with one of its fixed codes (said in this module's own words) or add a note to the line.
+    let symbols,name;try{const refused=u!==null&&typeof u==='object'?u.refused:null;if(typeof refused==='string')throw new ScriptError('BAD_UNIVERSE',own(REFUSALS,refused)?REFUSALS[refused]:'no such universe',line);
+      const note=u!==null&&typeof u==='object'?u.note:null;if(typeof note==='string'&&note.trim())notes.add(clean(note.trim(),80));
+      const list=u!==null&&typeof u==='object'?u.symbols:null;if(!Array.isArray(list))throw new ScriptError('BAD_UNIVERSE','no such universe',line);
       if(list.length>BOUNDS.universeSize)throw new ScriptError('UNIVERSE_TOO_LARGE',`at most ${BOUNDS.universeSize} stocks`,line);
       symbols=[...new Set(list)];if(!symbols.every(s=>typeof s==='string'&&SYMBOL.test(s)))throw new ScriptError('BAD_UNIVERSE','a listed code is not a stock code',line);
       name=typeof u.name==='string'&&u.name.trim()?clean(u.name.trim(),BOUNDS.name):'universe';}
@@ -273,11 +279,11 @@ const WORDS=Object.freeze(Object.assign(Object.create(null),{EMPTY_SCRIPT:'the s
   OUTPUT_TOO_LONG:'the output is too long',NO_DATA:'no history for that stock',NOT_ENOUGH_HISTORY:'not enough history',NO_PRICE:'no price',BAD_WINDOW:'the window is out of range',
   BAD_CHARACTER:'a character the language does not use',BAD_NUMBER:'a malformed number',UNCLOSED_TEXT:'unclosed text',TOO_DEEP:'nested too deeply',SCRIPT_ERROR:'the script could not be run'}));
 const HELP='Screening scripts: up to 40 lines (300 characters each, 4,000 in all) of name = expression, print(value, …) or log(value, …) with 1 to 8 values, in order; # starts a comment. '
-  +'Data: closes are completed days only (today is not among them until it is rolled); price() is the live quote, or the last quote when the market is closed. '
+  +'Data: a screen is as of each market\'s last completed close: price() is that close, not a live quote, and the history is the closes before it; the result names the day per market. Closes are adjusted for splits as KIS gives them. A stock whose history is shorter than a function\'s window is counted as no history, never given a shorter window. '
   +'Expressions: numbers, "text", + - * / ^ (minus binds looser than ^, so -2^2 is -4), > >= < <= (numbers), == != (two numbers, two texts or two conditions), and, or, not, and the formula functions below with a stock argument (S or a code in quotes). '
   +'at(expression, k): the expression as of the close k completed days ago (that close is the price, the closes before it the history); k is a whole number, at most 60 in all. '
   +'Universes: universe(market=…, type=…, top_cap=…, own=…), universe(list=[…]), list("code", …) or ["code", …], union(u1, u2, …). With S as each stock of a universe: rank(u, expression, "highest" or "lowest"[, n]), top(u, expression[, n]), bottom(u, expression[, n]) (n from 1 to 50, default 10), filter(u, condition), count(u[, condition]); the expression must use S, and none of these may be used inside it or inside at(). '
   +'A stale stock, one without enough history and one whose value cannot be computed are counted in the coverage, never ranked; when no stock of a screen was evaluated the printed value says "0 of N evaluated" with the reasons; a line that read a stale stock by its code is marked. A constant window out of range is an error naming the line. '
   +'Bounds: 3 universes of 400 stocks (lists included), 20 screens, 20,000 evaluations (each stock of a screen is one, plus one per value of its expression: over 400 stocks a 4-value expression uses 2,000), 2 seconds, 4,000 output bytes with the coverage (a long ranking is cut with "… N more not shown"); a run past a bound stops at that line and returns what it printed. '
-  +'Numbers: whole numbers below 10^15 print in full; any other is rounded to 8 significant digits, in plain decimal from 1e-6 up to 1e8 (0.33333333) and in exponent form outside it (1.2345679e+11). '+F.HELP;
+  +'Numbers: whole numbers below 10^15 print in full; any other is rounded to 8 significant digits, in plain decimal from 1e-6 up to 1e8 (0.33333333) and in exponent form outside it (1.2345679e+11). '+F.HELP+' In a screen, "the latest price" is the last completed close (see Data).';
 module.exports={run,parseScript,BOUNDS,ScriptError,HELP};

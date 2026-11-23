@@ -83,6 +83,10 @@ process.parentPort.on('message',async ({data})=>{
       if(typeof data.symbol!=='string'||typeof data.section!=='string')throw 0;
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-insights.cjs').fetchSection(client,data.symbol,data.section,require('./kis-activity.cjs').seoulDate(),data.context??{})});return;
     }
+    if(operation==='history-page') {
+      if(typeof data.symbol!=='string'||!/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(data.symbol)||typeof data.end!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(data.end))throw new Error('INVALID_REQUEST');
+      process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-insights.cjs').historyPage(client,data.symbol,data.end,require('./kis-activity.cjs').seoulDate())});return;
+    }
     if(operation==='screen') {
       process.parentPort.postMessage({id,ok:true,snapshot:await require('./kis-rankings.cjs').rankings(client,data.request)});return;
     }

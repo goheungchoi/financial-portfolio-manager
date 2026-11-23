@@ -179,7 +179,7 @@ test('B: one data shape: closes exclude the current day, so a slope means the sa
   const after={data:{closes:()=>rows(61),price:()=>160,previousClose:()=>160},today:day(60)};
   const t='print(sma("111110",20) - at(sma("111110",20),5), at(price("111110"),1), ret("111110",20), change("111110"), close("111110",0))';
   const a=run(t,before),b=run(t,after);assert.equal(a.stopped,undefined);assert.deepEqual(b.lines,a.lines);assert.equal(a.lines[0].split(' ')[1],'159','at(x,1) is the last completed close at any hour');
-  assert.match(HELP,/closes are completed days only/);
+  assert.match(HELP,/price\(\) is that close, not a live quote/);assert.match(HELP,/"the latest price" is the last completed close/);
 });
 test('C: one in-bounds ranking always prints, cut with "… N more not shown" when long',()=>{
   const c=big({names:s=>'N'.repeat(BOUNDS.name+10)+s});const r=run('u = universe(market="BIG")\nprint(top(u, ret(S,20), 50))',c);
