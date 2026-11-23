@@ -77,15 +77,18 @@ test('the history is read with Order tracking off, through the tick itself',asyn
   const {a,engine,calls}=reads();a.config.orderTracking=false;a.sessionOpen=()=>true;engine.clock=Date.now();try{a.tick();}catch{}
   await new Promise(r=>setTimeout(r,30));assert.ok(calls.includes('history'),'read although tracking is off');
 });
-test('the missed days: wait for the account; none when the detector has no reading; the newest 10; a failing day retried later',async()=>{
+test('the missed days: wait for the account; the last 31 days; progress kept per day; a failing day retried later, named after 3 tries',async()=>{
   const {LiveEngine}=require('../electron/live-engine.cjs');const db=new DatabaseSync(':memory:');const asked=[];let fail=null;
   const e=new LiveEngine(db,{request:async(op,d)=>{if(op==='orders'){asked.push(d.startDate);if(d.startDate===fail)throw new Error('X');return {orders:[]};}return {};}},()=>({status:'connected',snapshot:{accountKey:'acct',environment:'mock'}}));
-  e.identity=()=>'acct';e.day=()=>'2026-10-30';
+  e.identity=()=>'acct';e.day=()=>'2026-10-30';e.missedSpacing=0;const fresh=()=>{e.missedRead=false;e.missedDone=new Set();e.missedRetryAt=0;asked.length=0;};
   e.backfillFrom=()=>undefined;await e.syncMissed();assert.equal(e.missedRead,undefined,'the account is not known yet: wait');
-  e.backfillFrom=()=>null;await e.syncMissed();assert.equal(e.missedRead,true,'no reading: nothing to read');
-  e.missedRead=false;e.backfillFrom=()=>'2026-10-01';await e.syncMissed();assert.equal(asked.length,10);assert.equal(asked[0],'2026-10-16');assert.equal(asked.at(-1),'2026-10-29','the newest 10 business days');
-  e.missedRead=false;asked.length=0;fail='2026-10-20';await assert.rejects(()=>e.syncMissed(Date.now()));assert.equal(e.missedRead,false);await e.syncMissed(Date.now()+1000);assert.ok(asked.length<=10,'not retried at once');
-  e.resetHistoryFor('other');assert.equal(e.historyReadAt,undefined);assert.equal(e.missedRead,false,'another account starts again');
+  fresh();e.backfillFrom=()=>'2026-10-01';await e.syncMissed();assert.equal(asked.length,21);assert.equal(asked[0],'2026-10-01','the day the app was closed on included');assert.equal(asked.at(-1),'2026-10-29');
+  fresh();e.backfillFrom=()=>'2026-08-01';await e.syncMissed();assert.equal(asked[0],'2026-09-29','never more than 31 days back');
+  fresh();e.backfillFrom=()=>'2026-10-01';fail='2026-10-20';await assert.rejects(()=>e.syncMissed(Date.now()));assert.equal(e.missedRead,false);const tried=asked.length;await e.syncMissed(Date.now()+1000);assert.equal(asked.length,tried,'not retried at once');
+  e.missedRetryAt=0;asked.length=0;await assert.rejects(()=>e.syncMissed(Date.now()));assert.equal(asked[0],'2026-10-20','progress kept: it starts at the failing day');
+  e.missedRetryAt=0;await assert.rejects(()=>e.syncMissed(Date.now()));assert.deepEqual({day:e.missedFailure.day,tries:e.missedFailure.tries},{day:'2026-10-20',tries:3},'named for Home after 3 tries');
+  fail=null;e.missedRetryAt=0;await e.syncMissed(Date.now());assert.equal(e.missedRead,true);assert.equal(e.missedFailure,null);
+  e.resetHistoryFor('other');assert.equal(e.historyReadAt,undefined);assert.equal(e.missedRead,false,'another account starts again');assert.equal(e.missedDone.size,0);
   assert.equal(await e.refreshOutsideCharges(),0,'no rows today or yesterday: nothing read');
 });
 test('stopping auto trading says armed orders are the app\'s and not watched until it starts again',()=>{

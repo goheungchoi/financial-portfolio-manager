@@ -107,13 +107,18 @@ class LiveEngine {
   get severalOpen(){if(this.severalOpenFixed)return true;try{return this.severalOpenSetting?.()===true;}catch{return false;}}
   // Whether several open orders are allowed now (M-6: the review asks for several orders only then).
   allowsSeveralOpen(){return this.severalOpen;}
-  propose(command) {
+  // ticket: your own order ticket in the app (live:propose, us:propose), which the buy-back block never refuses.
+  propose(command,{ticket=false}={}) {
     // Optional credit: {kind:'margin-buy'|'margin-sell'|'short'|'cover', loanDate} for Korean margin and short orders (live accounts).
     const credit=command?.credit??null;if(command&&'credit' in command){const {credit:_,...rest}=command;command=rest;}
     if(credit!=null&&(this.market!=='KR'||typeof credit!=='object'||Object.keys(credit).some(k=>!['kind','loanDate'].includes(k))||!({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]||({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]!==command.side))throw new Error('INVALID_ORDER');
     if(credit&&this.getConnection().snapshot?.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
     if(!command || Object.keys(command).sort().join(',')!=='limitPrice,quantity,side,symbol' || !['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!this.validPrice(command.limitPrice)||!this.validSymbol(command.symbol))throw new Error('INVALID_ORDER');
-    if(!this.enabled)throw new Error('KIS_TRADING_DISABLED');const policy=this.policy();if(!policy?.anyStock&&!policy?.symbols.includes(command.symbol))throw new Error('INSTRUMENT_NOT_ALLOWED');
+    if(!this.enabled)throw new Error('KIS_TRADING_DISABLED');
+    // The buy-back block (buyback.cjs): an app buy of a stock you sold outside the app, a cover excepted.
+    // While the list cannot be known (BUYBACK_UNKNOWN) the app's own buys wait: fail closed, the user's rule.
+    if(require('./buyback.cjs').appliesTo({side:command.side,credit:credit?.kind??null,ticket})){const refused=require('./buyback.cjs').refusalFor(this,command.symbol,this.market);if(refused)throw refused;}
+    const policy=this.policy();if(!policy?.anyStock&&!policy?.symbols.includes(command.symbol))throw new Error('INSTRUMENT_NOT_ALLOWED');
     const notional=command.quantity*command.limitPrice;if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)throw new Error('ORDER_SIZE_LIMIT');
     const current=this.getConnection().snapshot;const balance=this.riskBalance?.accountKey===current.accountKey?this.riskBalance:current;const costPerShare=balance.holdings.find(row=>row.symbol===command.symbol)?.cost??null;const costSettings=this.costs?.get();const costEstimate=this.costs?require('./trading-costs.cjs').estimateCosts({market:this.market,side:command.side,quantity:command.quantity,price:command.limitPrice,symbol:command.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(command.symbol)??null}):null;
     // Leveraged and inverse products need their own opt-in and cap; without automatic mode they wait for manual approval.
@@ -143,6 +148,8 @@ class LiveEngine {
       const environment=this.getConnection().snapshot.environment;
       if(confirmation!==(environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER'))throw new Error('APPROVAL_REQUIRED');
       if(!this.enabled||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
+      // The buy-back block again at sending (a proposal made before the stock was blocked), your own ticket excepted.
+      if(require('./buyback.cjs').appliesTo({side:order.side,credit:order.credit?.kind??null,ticket:order.madeBy==='ticket'})){const refused=require('./buyback.cjs').refusalFor(this,order.symbol,this.market);if(refused)throw refused;}
       if(this.severalOpen){const stop=this.openBlock(order);if(stop)throw Object.assign(new Error('RECONCILIATION_REQUIRED'),{detail:stop});}
       else if(this.orders().some(row=>['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'].includes(row.status)) || this.db.prepare("SELECT id FROM live_intents WHERE json_extract(payload,'$.status') IN ('Uncertain','Submitting') LIMIT 1").get())throw new Error('RECONCILIATION_REQUIRED');
       let policy=this.policy();if(!policy.anyStock&&!policy.symbols.includes(order.symbol)||policy.maxOrderKRW!=null&&order.notional>policy.maxOrderKRW)throw new Error('LIMIT_CHANGED');
@@ -440,22 +447,28 @@ class LiveEngine {
   // Every order KIS lists for the account on a day, whoever placed it (the app or you in KIS), kept with its revision
   // and cancellation links.
   recordHistory(report,day){let key;try{key=this.identity();}catch{return;}const st=this.db.prepare('INSERT INTO broker_orders VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET seenAt=excluded.seenAt,payload=excluded.payload');
-    for(const r of report?.orders??[])st.run(`${key}|${day}|${r.orderId}`,key,day,Date.now(),JSON.stringify({...r,market:this.market}));}
+    for(const r of report?.orders??[])st.run(`${key}|${day}|${r.orderId}`,key,day,Date.now(),JSON.stringify({...r,market:this.market}));try{this.onHistory?.();}catch{}}
   history(day=this.day()){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT payload FROM broker_orders WHERE accountKey=? AND day=? ORDER BY rowid').all(key,day).map(r=>JSON.parse(r.payload));}
   // Every recorded KIS order row from a day on, each with its day (for orders made outside the app, outside-fills.cjs).
   historyRange(fromDay){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT day,payload FROM broker_orders WHERE accountKey=? AND day>=? ORDER BY day,rowid').all(key,fromDay).map(r=>({...JSON.parse(r.payload),day:r.day}));}
   // historyReadAt: when today's history was last read whole (the flow detector's ordersThrough). historyKey: the account it
   // was read for; another account starts again (nothing read yet, the missed days not read).
-  resetHistoryFor(key){if(this.historyKey!==key){this.historyKey=key;this.historyReadAt=undefined;this.missedRead=false;this.missedRetryAt=0;}}
+  resetHistoryFor(key){if(this.historyKey!==key){this.historyKey=key;this.historyReadAt=undefined;this.missedRead=false;this.missedRetryAt=0;this.missedDone=new Set();this.missedFailure=null;}}
   async syncHistory(day=this.day()){let key=null;try{key=this.identity();}catch{}if(key)this.resetHistoryFor(key);
     const report=await this.broker.request('orders',{startDate:day,endDate:day});this.recordHistory(report,day);if(day===this.day())this.historyReadAt=Date.now();return report;}
-  // The Korean business days the app did not read, once per account and start: from backfillFrom() (the day of the flow
-  // detector's last reading; null when it has none, undefined while the account is not known yet) to yesterday, the newest
-  // 10 at most. A day that fails stops the run, retried after 5 minutes; until all are read, missedRead stays false.
-  async syncMissed(now=Date.now()){if(this.missedRead||now<(this.missedRetryAt??0))return;const from=this.backfillFrom?.();if(from===undefined)return;const today=this.day();
+  // The business days the app did not read, once per account and start: from backfillFrom() (the day the app was last
+  // reading, that day included, in this market's own days; undefined while the account is not known yet) to yesterday,
+  // within the last 31 calendar days (the buy-back block reaches 30). Read one at a time, a second apart, off the tick:
+  // progress is kept per day (missedDone), so a day that fails is retried after 5 minutes without reading the others
+  // again; after 3 failures it is named (missedFailure) for Home. Until all are read, missedRead stays false.
+  async syncMissed(now=Date.now()){if(this.missedRead||this.missedRunning||now<(this.missedRetryAt??0))return;const from=this.backfillFrom?.();if(from===undefined)return;const today=this.day();
     if(typeof from!=='string'||from>=today){this.missedRead=true;return;}
-    const {isBusinessDay}=require('./business-days.cjs');const days=[];for(let t=Date.parse(from+'T00:00:00Z');;t+=86400000){const d=new Date(t).toISOString().slice(0,10);if(d>=today)break;if(isBusinessDay('KR',d))days.push(d);}
-    try{for(const d of days.slice(-10))await this.syncHistory(d);}catch(error){this.missedRetryAt=now+300000;throw error;}this.missedRead=true;}
+    const {isBusinessDay}=require('./business-days.cjs');const days=[],first=new Date(Date.parse(today+'T00:00:00Z')-31*86400000).toISOString().slice(0,10);for(let t=Date.parse((from>first?from:first)+'T00:00:00Z');;t+=86400000){const d=new Date(t).toISOString().slice(0,10);if(d>=today)break;if(isBusinessDay(this.market==='US'?'US':'KR',d))days.push(d);}
+    this.missedRunning=true;this.missedDone??=new Set();
+    try{for(const d of days){if(this.missedDone.has(d))continue;try{await this.syncHistory(d);this.missedDone.add(d);if(this.missedFailure?.day===d)this.missedFailure=null;}
+        catch(error){const tries=(this.missedFailure?.day===d?this.missedFailure.tries:0)+1;this.missedFailure={day:d,tries,error:String(error?.message??error).slice(0,40)};this.missedRetryAt=Date.now()+300000;throw error;}
+        if(this.missedSpacing!==0)await new Promise(r=>setTimeout(r,this.missedSpacing??1000));}
+      this.missedRead=true;}finally{this.missedRunning=false;}}
   // KIS's fee-and-tax figure for Korean orders made outside the app (the order inquiry, as for the app's own orders), by
   // "<day>|<number>": {charges, filled} once read for that fill, {failed:true} after 6 failed attempts. Read soon after the
   // fill and again every 5 minutes, 3 orders per call, for today's and yesterday's rows; a fill that grows is read again.
@@ -534,10 +547,12 @@ class LiveEngine {
   // a revision joins the order's own chain (brokerOrderIds), so history follows it as the app's. One KIS order action at
   // a time (busy). Refused for an order you took over in KIS (handsOff). An unclear reply stops tracking the order
   // until history shows what happened.
-  async revise(id,{price=null,cancel=false}={}){
+  // block: the buy-back block's cancel (automation.cancelBlockedBuys), which cancels an app buy also after you took it
+  // over in KIS or tracking stopped on it.
+  async revise(id,{price=null,cancel=false,block=false}={}){
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;let order=null;
     try{order=this.orders().find(row=>row.id===id);if(!order)throw new Error('UNKNOWN_ORDER');
-      if(!['Accepted','Partially filled'].includes(order.status)||!order.brokerOrderId)throw new Error('ORDER_NOT_OPEN');if(order.handsOff)throw new Error('ORDER_TAKEN_OVER');if(order.trackingStopped)throw new Error('TRACKING_STOPPED');
+      if(!['Accepted','Partially filled'].includes(order.status)||!order.brokerOrderId)throw new Error('ORDER_NOT_OPEN');if(order.handsOff&&!(cancel&&block))throw new Error('ORDER_TAKEN_OVER');if(order.trackingStopped&&!(cancel&&block))throw new Error('TRACKING_STOPPED');
       if(order.session&&!/regular/.test(order.session))throw new Error('FEATURE_UNAVAILABLE');
       if(!cancel&&!this.validPrice(price))throw new Error('INVALID_ORDER');
       const remaining=order.quantity-(order.filled??0);if(remaining<1)throw new Error('ORDER_NOT_OPEN');const from=order.currentBrokerOrderId??order.brokerOrderId;

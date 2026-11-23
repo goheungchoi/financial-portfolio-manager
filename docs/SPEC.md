@@ -62,6 +62,7 @@ Each row: the feature, where the user meets it, the settings that govern it, and
 | Performance against benchmarks, drawdown, corrections | Performance | — | P4 §3.3 |
 | Cash-flow detection ("cash checks"); Korean orders made outside the app counted as trades | Home "Needs you" line | — | P4 §3.3 |
 | Order history, Today strip, origin of each order | Activity | period on screen | P1 Activity, P4 §3.4 |
+| Buy-back block (30 days after a sale made outside the app) | Activity → Buy-back blocked; the order ticket line | Remove | P2 §8.1, P1 Activity |
 | Realized P&L (KIS's Korean report) | Performance | — | P4 §3.4 |
 | Fees, taxes, income | Fees & taxes | cost and tax profile | P4 §3.5 |
 | Market sessions and calendars, dated exceptions | Home Markets strip | extended-session switches | P2 §2.8, P4 §3.8 |

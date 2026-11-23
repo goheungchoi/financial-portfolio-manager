@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('portfolio', {
   configurePaperLoss: value => ipcRenderer.invoke('paper:loss',value),
   configurePaperCaps: value => ipcRenderer.invoke('paper:caps',value),
   proposePaper: command => ipcRenderer.invoke('paper:propose',command),
+  getBuyback:()=>ipcRenderer.invoke('activity:buyback'),removeBuyback:(market,symbol)=>ipcRenderer.invoke('activity:buyback-remove',market,symbol),
   submitPaper: id => ipcRenderer.invoke('paper:submit',id),
   pausePaper: paused => ipcRenderer.invoke('paper:pause',paused),
   cancelPaper: id => ipcRenderer.invoke('paper:cancel',id),

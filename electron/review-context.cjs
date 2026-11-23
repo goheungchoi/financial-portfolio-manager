@@ -117,12 +117,15 @@ const TYPES={environment:'string',market:'string',currency:'string',baseCurrency
   agentDesk:'object',orderFollowUp:'object',pendingDecisions:'array',waits:'array',reviewWatches:'array',researchGaps:'array',
   sectorLeads:'object',discovery:'object',topStories:'array',similarEpisodes:'array',eventCalendar:'array',macro:'object|array',marketRegime:'object',portfolioExposure:'object',marketNarrative:'object',
   decisionScoreboard:'object',reviewInterval:'object',extendedSessions:'array',performance:'object',scoutBrief:'object',news:'array',scoutPlan:'object',planGap:'object',positionSizing:'object',previousReview:'object',reviewedLessons:'array',
-  lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object',ordersPerReview:'number',notHeldPriceReviews:'string'};
+  lessonConflicts:'array',assessments:'array',positionMemory:'array',orderBooks:'object',reviewScope:'object',ordersPerReview:'number',notHeldPriceReviews:'string',
+  ordersMadeOutsideApp:'object',buybackBlocked:'object',openOrdersOutsideApp:'array',appBuysWait:'object'};
 const EXTRA_MANDATORY=['depositCash','pendingSaleProceeds','unsettledKRW','unsettledUncertainKRW','unsettledUSBuysKRW','paperVersion','extendedSessions','notHeldPriceReviews'];
-const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps'];
+// Orders made outside the app (outside-context.cjs): the block and the open orders are kept whole (bounded at 20 rows);
+// the trades are background.
+const PROTECTIVE=['agentDesk','orderFollowUp','pendingDecisions','waits','reviewWatches','researchGaps','buybackBlocked','openOrdersOutsideApp','appBuysWait'];
 const REFERENCE_ORDER=['sectorLeads','discovery','topStories','similarEpisodes','eventCalendar','macro','marketRegime','portfolioExposure','marketNarrative','decisionScoreboard','reviewInterval','performance',
-  'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','positionMemory','orderBooks','reviewScope','waits','pendingDecisions',
-  'orderFollowUp','agentDesk'];
+  'researchGaps','scoutBrief','news','scoutPlan','planGap','positionSizing','reviewWatches','previousReview','reviewedLessons','lessonConflicts','assessments','ordersMadeOutsideApp','positionMemory','orderBooks','reviewScope','waits','pendingDecisions',
+  'appBuysWait','openOrdersOutsideApp','buybackBlocked','orderFollowUp','agentDesk'];
 const UNREGISTERED_BYTES=2000;
 // The version of these rules, saved with every size-failure record (electron/context-failures.cjs).
 const SCHEMA='review-context 2026-11-04';

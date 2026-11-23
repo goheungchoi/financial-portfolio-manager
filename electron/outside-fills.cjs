@@ -23,8 +23,8 @@ const dayOf=r=>typeof r?.day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(r.day)?r.day
 const keyOf=(day,orderId)=>`${day}|${norm(orderId)}`;
 // The app's own orders in these rows, as day|number: each number an app order was given on its day, and every revision
 // linked to one through the original-order number on the same day (as the Activity tab joins them, activity-origin.cjs).
-function appOrderIds(rows,intents){const ids=new Set();
-  for(const intent of Array.isArray(intents)?intents:[]){if((intent?.market??'KR')!=='KR'||!intent.day)continue;for(const id of [intent.brokerOrderId,...(intent.brokerOrderIds??[])])if(norm(id))ids.add(keyOf(intent.day,id));}
+function appOrderIds(rows,intents,market='KR'){const ids=new Set();
+  for(const intent of Array.isArray(intents)?intents:[]){if((intent?.market??'KR')!==market||!intent.day)continue;for(const id of [intent.brokerOrderId,...(intent.brokerOrderIds??[])])if(norm(id))ids.add(keyOf(intent.day,id));}
   let grew=true;while(grew){grew=false;for(const r of rows){const d=dayOf(r);if(!d||!norm(r.originalOrderId))continue;const k=keyOf(d,r.orderId);if(!ids.has(k)&&ids.has(keyOf(d,r.originalOrderId))){ids.add(k);grew=true;}}}
   return ids;}
 // rows: KIS order rows of the days compared (kis-activity normalizeOrders records, each with its day); intents: the app's
@@ -62,6 +62,9 @@ function afterLastFill(now){const day=seoul(now).slice(0,10),last=Date.parse(day
 // day's last fill (20:00 KST) or on a day with no session, until the next session can fill an order (08:00 KST of the
 // next business day). ready: today's history and the missed days were read for this account.
 function historyThrough({readAt,ready,now=Date.now()}){if(!ready||!Number.isFinite(readAt))return null;const day=seoul(readAt).slice(0,10);
+  // A read before 08:00 KST on a business day (after midnight, or a start before the morning) covers until 08:00: no
+  // Korean order fills before then, and the days before were read (the missed days, the day-change read).
+  if(isBusinessDay('KR',day)&&readAt<Date.parse(day+'T08:00:00+09:00'))return Math.min(now,Date.parse(day+'T08:00:00+09:00'));
   if(isBusinessDay('KR',day)&&readAt<Date.parse(day+'T20:00:00+09:00'))return readAt;
   let t=Date.parse(day+'T00:00:00Z')+86400000,d=new Date(t).toISOString().slice(0,10);while(!isBusinessDay('KR',d)){t+=86400000;d=new Date(t).toISOString().slice(0,10);}
   return Math.min(now,Date.parse(d+'T08:00:00+09:00'));}

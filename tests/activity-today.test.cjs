@@ -39,11 +39,13 @@ test('each path that creates an order marks it: review (first and further orders
   const auto=fs.readFileSync(path.join(__dirname,'../electron/automation.cjs'),'utf8'),main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');
   assert.ok(auto.includes("execution.annotate?.(proposal.id,{madeBy:'review',reviewId:id,...(bounds?{tracking:bounds}:{})});"),'placeOrder, which a batch calls for each order');
   assert.ok(auto.includes("engine.annotate?.(proposal.id,{madeBy:'conditional',conditionalId:order.id"),'fireConditional');
-  assert.ok(main.includes("ipcMain.handle('live:propose',liveAction(command=>{const p=live.propose(command);return (p?.id&&live.annotate(p.id,{madeBy:'ticket'}))||p;}));"));
+  // The ticket is the user's own order: the buy-back block does not refuse it ({ticket:true}).
+  assert.ok(main.includes("ipcMain.handle('live:propose',liveAction(command=>{const p=live.propose(command,{ticket:true});return (p?.id&&live.annotate(p.id,{madeBy:'ticket'}))||p;}));"));
   assert.ok(main.includes("if(name==='propose'&&data?.id)data=usLive.annotate(data.id,{madeBy:'ticket'})??data;"));
   // Every live order creation in electron/: these four, no other (paper and the agent bridge make no live order).
   const callers=fs.readdirSync(path.join(__dirname,'../electron')).filter(f=>f.endsWith('.cjs')).flatMap(f=>(fs.readFileSync(path.join(__dirname,'../electron',f),'utf8').match(/\b(?:live|usLive|execution|engine)\.propose\(|usLive\[name\]/g)??[]).map(m=>f+' '+m)).sort();
-  assert.deepEqual(callers,['automation.cjs engine.propose(','automation.cjs execution.propose(','main.cjs live.propose(','main.cjs usLive[name]']);});
+  // The U.S. ticket calls usLive.propose itself (with {ticket:true}); the other U.S. actions go through usLive[name].
+  assert.deepEqual(callers,['automation.cjs engine.propose(','automation.cjs execution.propose(','main.cjs live.propose(','main.cjs usLive.propose(','main.cjs usLive[name]']);});
 
 test('the review ids for origin are read in SQL, cached, and still match the first and a further order',()=>{
   const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL)');

@@ -15,6 +15,8 @@ const NOT_SENT={'ticket-expired':'the check with KIS expired before it was sent'
   KIS_ORDER_BUSY:'another order was being sent',LEVERAGED_EXPOSURE_LIMIT:'it would go over the leveraged-product limit',LEVERAGED_NOT_ENABLED:'leveraged and inverse products are off',SINGLE_STOCK_LEVERAGED:'single-stock leveraged or inverse products are turned off in Short & leverage',LIMIT_CHANGED:'its limits changed while it was being sent',
   MARGIN_LIMIT:'it would go over the margin limit',MARGIN_NOT_ENABLED:'margin trading is off',SHORT_LIMIT:'it would go over the short-selling limit',SHORT_NOT_ENABLED:'short selling is off',
   OPEN_BROKER_ORDERS:'another order for it is open at KIS',ORDER_NOT_SENT:'it could not be sent',TICKET_EXPIRED:'the check with KIS expired before it was sent',RATE_LIMITED:'the KIS request limit was reached',
+  BUYBACK_UNKNOWN:'the app has not yet read the orders you made outside the app, so its own buys wait',
+  BUYBACK_BLOCKED:'you sold this stock outside the app, so app buys of it are blocked for 30 days or until you remove it in Activity',
   ORDER_SIZE_LIMIT:'it is above the order size limit',ORDER_UNCERTAIN:'KIS\'s reply was unclear, so it is not confirmed',PRICE_MOVED:'the price moved past its limit',RECONCILIATION_REQUIRED:'open orders must be confirmed with KIS first',
   FX_STALE:'the exchange rate was too old',FUNDING_BALANCE_STALE:'the cash reading was too old to check its funding',
   // Order-rule audit item 13, 2026-11-19: the STOP codes (order-outcomes.cjs STOP), in words. They stop the rest of a
