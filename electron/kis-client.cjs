@@ -280,8 +280,11 @@ class KisReadOnlyClient {
     const price=amount(output?.stck_prpr),unit=amount(output?.aspr_unit);
     if(price<=0||unit<=0||command.limitPrice%unit!==0||output.temp_stop_yn!=='N')throw new KisError('INVALID_ORDER');
     if(Math.abs(command.limitPrice/price-1)>.02)throw new KisError('PRICE_MOVED');
+    // Short selling B3d-1: a short sale's price at or above the uptick floor from the price read now (the last trade; in
+    // the opening auction KIS's current price is the previous close).
+    if(command.credit?.kind==='short'){const floor=require('./short-rules.cjs').floorPrice(price);if(floor==null||command.limitPrice<floor)throw new KisError('SHORT_BELOW_UPTICK');}
     // capacity (M-1.5b): KIS's orderable answer for this order, numeric fields only, for broker_capacity (broker-raw.cjs).
-    const balance=await this.getBalance();let availableQuantity;let capacity=null;const numeric=require('./broker-raw.cjs').numericFields;
+    const balance=await this.getBalance();let availableQuantity;let capacity=null,shortCash=null;const numeric=require('./broker-raw.cjs').numericFields;
     if(command.credit) {
       // New margin loans and short sales: the broker's credit capacity. Repayments: the matching loan or short position.
       const {kind,type,loanDate}=command.credit;
@@ -296,12 +299,17 @@ class KisReadOnlyClient {
       if(availableQuantity==null||command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');
     } else if(command.side==='Buy') {
       const body=await this.tradingQuery('inquire-psbl-order',this.#credentials.environment==='live'?'TTTC8908R':'VTTC8908R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'01',CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});
-      const cash=amount(body.output?.nrcvb_buy_amt),quantity=amount(body.output?.nrcvb_buy_qty);capacity={tr:'TTTC8908R',fields:numeric(body.output)};
+      // Short selling B3d-1: while the balance shows an open short, an orderable figure that cannot be read makes the buy
+      // wait (KIS may hold cash against the short); with no short, as before.
+      // Your own order ticket (yours) keeps today's check and codes, short or not; it only carries the fact for its screen.
+      const shortOpen=(balance.shorts??[]).length>0,yours=command.yours===true;
+      let cash,quantity;try{cash=amount(body.output?.nrcvb_buy_amt);quantity=amount(body.output?.nrcvb_buy_qty);}catch(error){if(shortOpen&&!yours)throw new KisError('SHORT_OPEN_CASH_UNKNOWN');throw error;}capacity={tr:'TTTC8908R',fields:numeric(body.output)};
+      if(shortOpen&&yours)shortCash={orderableCash:cash};
       if(command.quantity>quantity || command.limitPrice*command.quantity*1.02>cash)throw new KisError('INSUFFICIENT_CAPACITY');availableQuantity=quantity;
     } else {{const held=balance.holdings.find(row=>row.symbol===command.symbol);capacity={tr:'balance',fields:{ord_psbl_qty:held?.availableQuantity,hldg_qty:held?.quantity}};}availableQuantity=balance.holdings.find(row=>row.symbol===command.symbol)?.availableQuantity;if(availableQuantity==null || command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');}
     const {orders}=await this.getActivity('orders',today,today);
     const open=require('./broker-open-orders.cjs').openGuard(orders,command,{severalOpen,fail:()=>new KisError('OPEN_BROKER_ORDERS')});
-    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{})};
+    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{}),...(shortCash?{shortCash}:{})};
   }
   // B3c: KIS's lending list for one stock (CTSC2702R, lendable-by-company), read just before a short: the row for this
   // stock as short-rules reads it, or one that is not open when the stock is not listed (not lendable now).

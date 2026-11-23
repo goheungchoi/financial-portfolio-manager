@@ -7,7 +7,9 @@ const KR_ALLOWED=['INVALID_CREDENTIAL_FILE','CREDIT_ACCOUNT_REQUIRED','INVALID_R
   // engine records the order as not placed (live-engine send) instead of Uncertain from REQUEST_FAILED.
   'CREDIT_PATH_UNVERIFIED',
   // Short selling B3c: the borrowable check at preparation (short-rules.cjs).
-  'SHORT_NOT_LENDABLE','SHORT_BORROW_SHORT','SHORT_BORROW_STALE','SHORT_BORROW_UNKNOWN','SHORT_BORROW_OTHER_STOCK','SHORT_BORROW_OTHER_MARKET','SHORT_MARKET_UNSUPPORTED'];
+  'SHORT_NOT_LENDABLE','SHORT_BORROW_SHORT','SHORT_BORROW_STALE','SHORT_BORROW_UNKNOWN','SHORT_BORROW_OTHER_STOCK','SHORT_BORROW_OTHER_MARKET','SHORT_MARKET_UNSUPPORTED',
+  // B3d-1.
+  'SHORT_BELOW_UPTICK','SHORT_OPEN_CASH_UNKNOWN'];
 const SENDS=['place-order','us-place-order','revise-order','us-revise-order'];
 // M-1a: an order request refused before it left the app (the request-limit window, including the sign-in that may
 // precede it) is not at KIS. An expired or missing ticket (M-1c) keeps its own code: also not sent, for another reason

@@ -37,3 +37,5 @@ export function capacityLine(state){const d=state?.desk,o=d?.outsidePolls;if(!d|
 // done. Running or stopped.
 export function heldStopsLine(state){const u=(state?.desk?.unprotected??[]).filter(x=>x?.held);if(!u.length)return null;
   return u.map(x=>`${x.symbol} has no working stop loss: its stop was hit and is waiting (${x.waiting}).`).join(' ');}
+// Short selling B3d-1: a conditional buy waits because a short is open and KIS's orderable cash could not be read.
+export function shortCashWaitLine(state){const n=(state?.desk?.orders??[]).filter(o=>typeof o?.waiting==='string'&&o.waiting.startsWith('a short is open')).length;return n?`Buys wait: a short is open and KIS's orderable cash could not be read (${n} ${n===1?'order':'orders'}).`:null;}

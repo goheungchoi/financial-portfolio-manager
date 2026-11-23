@@ -14,6 +14,12 @@ const NOT_SENT={'ticket-expired':'the check with KIS expired before it was sent'
   INSTRUMENT_NOT_ALLOWED:'this stock is not allowed for automatic orders',INSUFFICIENT_CAPACITY:'there was not enough buying power',INVALID_INSTRUMENT:'the stock code was not valid',INVALID_ORDER:'the order was not valid',
   KIS_ORDER_BUSY:'another order was being sent',LEVERAGED_EXPOSURE_LIMIT:'it would go over the leveraged-product limit',LEVERAGED_NOT_ENABLED:'leveraged and inverse products are off',SINGLE_STOCK_LEVERAGED:'single-stock leveraged or inverse products are turned off in Short & leverage',LIMIT_CHANGED:'its limits changed while it was being sent',
   MARGIN_LIMIT:'it would go over the margin limit',MARGIN_NOT_ENABLED:'margin trading is off',SHORT_LIMIT:'it would go over the short-selling limit',SHORT_NOT_ENABLED:'short selling is off',
+  // Short selling B3d-1.
+  SHORT_CAP_UNKNOWN:'an open short\'s value or the account value cannot be read, so no new short is sent',SHORT_SESSION_CLOSED:'short sales are sent in the regular session or the opening auction only',
+  SHORT_BELOW_UPTICK:'its price was not above the last trade (the uptick rule)',SHORT_ETF_NOT_ENABLED:'ETF short sales are not yet enabled',SHORT_INSTRUMENT_UNKNOWN:'whether it is a stock or an ETF is not known',
+  SHORT_MARKET_UNSUPPORTED:'short sales are for KOSPI and KOSDAQ stocks only',SHORT_NOT_LENDABLE:'KIS is not lending this stock now',SHORT_BORROW_SHORT:'KIS is lending fewer shares of it than the order',
+  SHORT_BORROW_STALE:'KIS\'s lending list could not be read fresh',SHORT_BORROW_UNKNOWN:'KIS\'s lending list could not be read',SHORT_BORROW_OTHER_STOCK:'KIS\'s lending list answered for another stock',
+  SHORT_BORROW_OTHER_MARKET:'KIS\'s lending list answered for another market',SHORT_OPEN_CASH_UNKNOWN:'a short is open and KIS\'s orderable cash could not be read, so buys wait',SHORT_AUCTION_NO_CLOSE:'in the opening auction the previous close is not known, so the short waits for the regular session',
   OPEN_BROKER_ORDERS:'another order for it is open at KIS',ORDER_NOT_SENT:'it could not be sent',TICKET_EXPIRED:'the check with KIS expired before it was sent',RATE_LIMITED:'the KIS request limit was reached',
   BUYBACK_UNKNOWN:'the app has not yet read the orders you made outside the app, so its own buys wait',
   BUYBACK_BLOCKED:'you sold this stock outside the app, so app buys of it are blocked for 30 days or until you remove it in Activity',

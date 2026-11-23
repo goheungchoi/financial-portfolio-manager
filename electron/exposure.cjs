@@ -108,7 +108,11 @@ class Exposure {
   // classify (counted as leveraged: they could be); their notional.
   pendingLeveraged(pending){return (pending??[]).filter(o=>o.side==='Buy'&&o.credit!=='cover').reduce((n,o)=>{const p=this.classify(o.symbol,o.name??null);return n+(p.kind!=='standard'||p.source==='Unknown product'?Math.abs(Number(o.notional)||0):0);},0);}
   // pending: as for check; open margin buys count toward the loan cap, open short sales toward the short cap.
-  checkCredit({account,kind,symbol,notional,equity,balance,loanDate=null,pending=[]}){
+  // lagging (short selling B3d-1): filled shorts the balance does not show yet (short-rules laggingShorts).
+  // openShorts: the app's open short orders, counted whatever pending holds (the several-open switch may leave it empty);
+  // from pending only short orders made outside the app (yours) are then added, so each open order counts once (without
+  // openShorts, every short order in pending counts, as before).
+  checkCredit({account,kind,symbol,notional,equity,balance,loanDate=null,pending=[],lagging=[],openShorts=null}){
     const sumOf=k=>(pending??[]).filter(o=>o.credit===k).reduce((n,o)=>n+Math.abs(Number(o.notional)||0),0);
     const policy=this.policy(account);if(!CREDIT_TYPES[kind])throw new Error('INVALID_ORDER');
     if(kind==='margin-sell'){const loan=balance.holdings?.find(h=>h.symbol===symbol)?.loans?.find(l=>l.loanDate===loanDate);if(!loan)throw new Error('INSUFFICIENT_CAPACITY');return {type:CREDIT_TYPES[kind][loan.source],requiresApproval:false};}
@@ -120,8 +124,10 @@ class Exposure {
       return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto||leveraged.requiresApproval};
     }
     const p=policy.short;if(!p.enabled)throw new Error('SHORT_NOT_ENABLED');
-    const gross=(balance.shorts??[]).reduce((n,s)=>n+s.quantity*s.price,0);
-    if(!(equity>0)||(gross+sumOf('short')+notional)/equity*100>p.maxGrossPctOfEquity)throw new Error('SHORT_LIMIT');
+    // B3d-1: all shorts together through short-rules capCheck: open shorts by their obligation (loanAmount), open and
+    // lagging short orders, this one; at most the cap of the account value; an amount that cannot be read refuses.
+    const cap=require('./short-rules.cjs').capCheck({value:{low:equity},shorts:balance.shorts??[],waiting:[...(openShorts??[]),...(pending??[]).filter(o=>o.credit==='short'&&(openShorts==null||o.yours===true))].map(o=>({notional:o.notional})).concat(lagging??[]),notional,maxPct:p.maxGrossPctOfEquity});
+    if(!cap.ok)throw new Error(cap.code==='SHORT_CAP_REACHED'?'SHORT_LIMIT':cap.code==='INVALID_ORDER'?'INVALID_ORDER':'SHORT_CAP_UNKNOWN');
     return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto};
   }
   // Margin loans and short positions: estimated interest/fees so far, expiry and collateral warnings, short stop levels.

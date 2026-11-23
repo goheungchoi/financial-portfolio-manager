@@ -362,6 +362,8 @@ app.whenReady().then(async () => {
   const masterDir=process.env.PORTFOLIO_SMOKE_DATA?process.env.PORTFOLIO_MASTER_DIR:null;
   const masterFetch=process.env.PORTFOLIO_SMOKE_DATA?(masterDir?async url=>{try{const buffer=require('node:fs').readFileSync(path.join(masterDir,path.basename(new URL(url).pathname)));return {ok:true,arrayBuffer:async()=>buffer.buffer.slice(buffer.byteOffset,buffer.byteOffset+buffer.length)};}catch{return {ok:false};}}:null):globalThis.fetch;
   const master=new (require('./security-master.cjs').SecurityMaster)(store.db,masterFetch??(async()=>({ok:false})));
+  // Short selling B3d-1: a short's market and kind from the master, and the session from the app's Korean hours.
+  live.instrumentOf=symbol=>{const row=master.get(symbol);return row?{market:row.market,type:row.type}:null;};live.shortSession=()=>automation?automation.krShortSession():'other';
   const {Watchlist,Screener}=require('./discovery.cjs');const watchlist=new Watchlist(store.db,master);
   const screener=new Screener(async request=>{const generation=kisGeneration;const rows=await kisService.request('screen',{request});if(generation!==kisGeneration)throw new Error('ACCOUNT_CHANGED');return rows;},master);
   const watchScope=()=>kisState.snapshot?.accountKey??null;

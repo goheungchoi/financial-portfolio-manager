@@ -748,6 +748,29 @@ determined here.
     it, and an unknown time or lot keeps every fill; after 10 minutes unseen the lot says "waiting for KIS's balance to show the cover";
   - reconcile: KIS's order-row names and loan date for the app's short or cover are checked against its record, and a
     mismatch is kept on the order in words (`creditCheck`), naming only KIS's known kinds ("an unknown kind" otherwise).
+- **Before a short is proposed and sent** (B3d-1; still behind the path):
+  - the engine (`propose`): the stock must be a KOSPI or KOSDAQ stock in the security master (`instrumentOf`; ETF short
+    sales refused, an unknown kind or a stock not in the master refused); its market is the master's (one given must
+    match); the session must be the regular session or the opening auction (`shortSession`, the app's Korean hours and
+    calendar; refused `SHORT_SESSION_CLOSED` otherwise or when it cannot be read);
+  - the cap (`exposure.checkCredit`, through `capCheck`): open shorts by their obligation, every open short order of the
+    app whatever the several-open switch (`openShortOrders`), filled shorts the balance does not show yet
+    (`laggingShorts`), this one, at most 20% of the account value's low bound (`shortCapBase`, never KIS's total); an
+    amount or value that cannot be read refuses (`SHORT_CAP_UNKNOWN`);
+  - the price: a review's short goes at its placement price raised to the uptick floor from the polled last trade
+    (`shortLimit`); in the opening auction without the previous close it is not priced or sent
+    (`SHORT_AUCTION_NO_CLOSE`, it waits for the regular session); at the send, KIS's price read then sets the floor again and a lower limit is refused
+    (`SHORT_BELOW_UPTICK`);
+  - buys while a short is open: every Korean cash buy is checked against KIS's orderable cash (`nrcvb_buy_amt`, the
+    lower figure applies, as before); while the balance shows an open short and that figure cannot be read, the buy
+    waits (`SHORT_OPEN_CASH_UNKNOWN`; a conditional buy stays armed, "a short is open and KIS's orderable cash could not
+    be read", with one line per episode and Home's "Buys wait: …"; while a buy of that market waited on it within 5
+    minutes and a short is open, a cash buy waits before any pricing, proposal or request, and is tried once each 5
+    minutes, without an "Order priced" line); with no short open, exactly as before. It holds a review's buy and a
+    conditional buy (sent by themselves or approved by you); your own order ticket keeps today's check and codes with
+    a short open (above KIS's figure INSUFFICIENT_CAPACITY, unreadable INVALID_RESPONSE), and its record carries the
+    fact for its screen ("a short is open; KIS's orderable cash is N").
+  - Each refusal has words in Activity (`activity-today.cjs`).
 
 ### 5.3 The daily loss limit and its responses
 

@@ -11,7 +11,7 @@ test('balance merges cash and margin rows per symbol, lists shorts separately an
   assert.equal(normalizeBalance([row()],{dnca_tot_amt:'1',tot_evlu_amt:'720001'},'mock').reportedTotal,720001,'cash accounts are unchanged');
   assert.throws(()=>normalizeBalance([row(),row()],{dnca_tot_amt:'1',tot_evlu_amt:'1'},'live'),/INVALID_RESPONSE/,'duplicate cash rows are still rejected');
 });
-const balance={environment:'live',reportedTotal:10000000,cash:2000000,loanTotal:1000000,holdings:[{symbol:'005930',name:'Samsung',quantity:20,price:72000,marketValue:1440000,loans:[{quantity:10,amount:700000,loanDate:'2026-08-25',expiry:'2026-10-13',source:'distribution'}]}],shorts:[{symbol:'000660',quantity:3,price:200000,entryPrice:180000,proceeds:540000,loanDate:'2026-09-24',expiry:null,source:'self'}]};
+const balance={environment:'live',reportedTotal:10000000,cash:2000000,loanTotal:1000000,holdings:[{symbol:'005930',name:'Samsung',quantity:20,price:72000,marketValue:1440000,loans:[{quantity:10,amount:700000,loanDate:'2026-08-25',expiry:'2026-10-13',source:'distribution'}]}],shorts:[{symbol:'000660',quantity:3,price:200000,loanAmount:600000,entryPrice:180000,proceeds:540000,loanDate:'2026-09-24',expiry:null,source:'self'}]};
 test('credit checks: switches, caps, KIS credit types by source, repayments always allowed',()=>{
   const e=new Exposure(new DatabaseSync(':memory:'));const base={account:'a',symbol:'005930',equity:10000000,balance};
   assert.throws(()=>e.checkCredit({...base,kind:'margin-buy',notional:100000}),/MARGIN_NOT_ENABLED/);assert.throws(()=>e.checkCredit({...base,kind:'short',notional:100000}),/SHORT_NOT_ENABLED/);

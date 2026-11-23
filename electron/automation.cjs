@@ -14,6 +14,7 @@ function refusedNote(d,code,error=null){const what=`${d.action} ${d.quantity} ${
   return `Not sent: ${what}: ${require('./activity-today.cjs').reasonText(code)}.`;}
 const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_ORDER=['Accepted','Partially filled'],ORDER_BACKSTOP_MS=120*60000,EVENT_RETRY_MS=5*60000,BATCH_LIMIT_MS=5*60000,ORDERS_PER_REVIEW_MAX=22,NEW_ORDER_WAIT_MS=30*60000,UNIVERSE_PER_MARKET=20,EVIDENCE_TRIGGERS=['Price movement trigger','News event trigger','Agent trigger','Order update'];const {seoulDate}=require('./kis-activity.cjs');
 // creditProtectionApproved: the user approved Stage 3 (audit 2026-11-04); until then no credit close is automatic.
+const SHORT_CASH_WAIT='a short is open and KIS\'s orderable cash could not be read';
 const DEFAULTS={alertTrial:'off',notHeldPriceReviews:'default',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithOpenAI:false,shareKisWithAnthropic:false,anthropicCallsPerDay:10,anthropicUSDPerDay:1,anthropicUnlimitedCalls:false,anthropicUnlimitedBudget:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,orderUpdateReviews:false,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutAiRequests:true,screenStocksPerExchange:300,screenEtfs:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,ordersPerReview:1,severalOpenOrders:false,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS,...require('./scout-timing.cjs').TIMING_DEFAULTS};
 // Settings that no longer exist: accepted from a saved profile or the window and ignored. sessionKrxSingle switched on
 // the KRX after-hours single-price auction, which KRX ended on 2026-09-14 (fact check X1).
@@ -646,6 +647,14 @@ class Automation {
   unprotectedNow(scope){const positions=this.brokerPositions();const listed=this.desk.unprotected(scope,positions);const seen=new Set(listed.map(u=>u.symbol));
     let held=[];try{held=this.desk.orders(scope).filter(o=>positions?.[o.symbol]?.quantity>0&&!seen.has(o.symbol)).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h);}catch{held=[];}
     return [...listed,...held.map(([o,h])=>({symbol:o.symbol,orderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,coveredQuantity:0,held:true,waiting:h.why}))];}
+  // Short selling B3d-1: a short's limit, its placement price raised to the uptick floor from the polled last trade (the
+  // send checks it again against the price read then). No fresh last trade: the placement price, which the send refuses
+  // if it is below the floor.
+  shortLimit(symbol,placementPrice,now=Date.now()){const R=require('./short-rules.cjs');const q=(this.marketQuotes?.()??[]).find(x=>x?.symbol===symbol);
+    const session=this.krShortSession(now),floor=R.floorNow({session,last:q?.price,lastAt:require('./armed-quotes.cjs').quoteTime(q),previousClose:q?.previousClose??null,now});
+    // The opening auction needs the previous close; without it the short is not priced or sent (it waits for the regular session).
+    if(session==='auction'&&floor==null)throw Object.assign(new Error('SHORT_AUCTION_NO_CLOSE'),{detail:'In the opening auction the previous close is not known, so the short waits for the regular session.'});
+    return R.shortPrice(placementPrice,floor)??placementPrice;}
   // Short selling B3c: the Korean session a short is priced in now: 'auction' (the 30 minutes before the open), 'regular'
   // (the open to the app's last order time, krWindow, special days included), else 'other' (no short).
   krShortSession(now=Date.now()){const day=new Date(now+9*3600000).toISOString().slice(0,10),m=Math.floor(((now+9*3600000)%86400000)/60000);const w=require('./kr-hours.cjs').krWindow(day);
@@ -1356,7 +1365,7 @@ class Automation {
           const r=require('./credit-paths.cjs').remaining(bal,{symbol:d.symbol,side:d.action,credit},execution.orders?.()??[]);return r&&d.quantity>r.available?`${r.available} free in its lot${r.reserved?` (${r.reserved} already in waiting orders)`:''}`:null;}catch(e){return e.message==='NO_SUCH_LOT'?'no lot with that loan date':null;}})())){
           executionNote=`Not proposed: ${d.action} ${d.quantity} ${d.symbol} is more than the shares it can close: ${lotIssue}. No order proposal was made.`;this.log(id,'System','Not proposed · lot',executionNote);}
         else{
-        proposal=context.environment!=='local-paper'?execution.propose({...(d.credit&&d.credit!=='none'?{credit:{kind:d.credit,...(d.loanDate?{loanDate:d.loanDate}:{})}}:{}),symbol:d.symbol,side:d.action,quantity:d.quantity,limitPrice:placement.price}):this.paper.propose({symbol:d.symbol,side:d.action,quantity:d.quantity});
+        proposal=context.environment!=='local-paper'?execution.propose({...(d.credit&&d.credit!=='none'?{credit:{kind:d.credit,...(d.loanDate?{loanDate:d.loanDate}:{})}}:{}),symbol:d.symbol,side:d.action,quantity:d.quantity,limitPrice:d.credit==='short'?this.shortLimit(d.symbol,placement.price):placement.price}):this.paper.propose({symbol:d.symbol,side:d.action,quantity:d.quantity});
         onProposal?.(proposal);
         // The order carries its bounds for the tracker, saved before it can be submitted.
         // and where it came from (madeBy, order-origin.cjs: a review's order, the first or a further one).
@@ -1390,10 +1399,11 @@ class Automation {
 
         return {proposal,order,executionNote};
   }
-  async placementPrice({symbol,side,bound=null,id,still=()=>true}){const P=require('./order-pricing.cjs');const market=/:/.test(symbol)?'US':'KR';let why=null;
+  // quiet: no "Order priced" line (a buy re-checking KIS's orderable cash while a short is open).
+  async placementPrice({symbol,side,bound=null,id,still=()=>true,quiet=false}){const P=require('./order-pricing.cjs');const market=/:/.test(symbol)?'US':'KR';let why=null;
     // 21 reads 3 seconds apart: 0, 3, ... 60 seconds.
     for(let attempt=0;;attempt++){let reply=null;try{reply=await this.orderBook?.(symbol);}catch(error){reply={status:'unavailable',reason:error.message};}
-      const book=P.usableBook(reply);if(book){const t=P.target({side,book,bound,market});this.log(id,'System','Order priced',`${side} ${symbol} at ${t.price}: ${side==='Sell'?'best bid':'best ask'} ${t.best}${t.atBound?`, held at your bound ${bound}`:''} (book read ${new Date(book.retrievedAt).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST).`);return {...t,book};}
+      const book=P.usableBook(reply);if(book){const t=P.target({side,book,bound,market});if(!quiet)this.log(id,'System','Order priced',`${side} ${symbol} at ${t.price}: ${side==='Sell'?'best bid':'best ask'} ${t.best}${t.atBound?`, held at your bound ${bound}`:''} (book read ${new Date(book.retrievedAt).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST).`);return {...t,book};}
       if(!why){why=reply?.reason??(reply?.status==='available'?'stale or one-sided book':'no order book');this.log(id,'System','Order waits for the order book',`${side} ${symbol}: ${why}. Trying again every 3 seconds for up to a minute.`);}
       if(attempt>=20||!still()){if(still())this.requestReview('Order not placed',`${side} ${symbol} could not be priced for a minute (${why}); decide again.`,symbol);return null;}
       await this.wait(3000);}}
@@ -1746,6 +1756,10 @@ class Automation {
     const closed=()=>this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
+      // Short selling B3d-1: while a cash buy of this market waits on KIS's orderable cash (a short open, the figure unread
+      // within 5 minutes), a cash buy waits here: no pricing, proposal or line; re-checked once the 5 minutes pass.
+      if(order.side==='Buy'&&!order.credit){let who=null;try{who=engine.identity();}catch{}const w0=this.shortCashWait?.[market];if(w0&&w0.account!==who)delete this.shortCashWait[market];const since=this.shortCashWait?.[market]?.at;let shortOpen=false;try{shortOpen=((engine.riskBalance??engine.getConnection?.()?.snapshot)?.shorts??[]).length>0;}catch{}
+        if(Number.isFinite(since)&&shortOpen&&Date.now()-since<300000){const w=SHORT_CASH_WAIT;if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w}; buys wait and it is checked again in 5 minutes.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:since+300000});return;}}
       // One open order at a time: an unclear or open order in this market holds this one, kept armed (1.5.73 closed it).
       // Checked from the engine's own records before any KIS request, so a waiting order costs none (B-4 review).
       // A sale of a stock an open or unclear sale already sells, with none of its shares left free, goes on to the shares
@@ -1787,7 +1801,7 @@ class Automation {
       // its market's trading is stopped waits while the limit is reached (checked again every 5 minutes, within its expiry).
       {const e=order.credit?{}:this.emergencyState();if(order.side==='Buy'&&this.config.lossAction==='stop'&&engine.enabled===false&&this.watchingWhileStopped()&&(e.activeMarkets??(e.active?[market]:[])).includes(market)){const w='the daily loss limit is reached';
         if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w} and auto trading stopped; it stays armed and is checked again while the limit applies.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:Date.now()+300000});return;}}
-      const placement=await this.placementPrice({symbol:order.symbol,side:order.side,bound:order.limitPrice??null,id:order.id,still:()=>this.watchScope()===scope});
+      const placement=await this.placementPrice({symbol:order.symbol,side:order.side,bound:order.limitPrice??null,id:order.id,still:()=>this.watchScope()===scope,quiet:order.waiting===SHORT_CASH_WAIT});
       if(!placement){this.desk.update(order,{status:'armed',waiting:'no order book',nextCheckAt:Date.now()+60000});return;}const limit=placement.price;
       const drift=Math.abs(limit/quote.price-1)*100;if(drift>this.config.conditionalMaxSlippagePct)return note('rejected',`Limit ${limit} is ${drift.toFixed(2)}% from the price ${quote.price}, above the ${this.config.conditionalMaxSlippagePct}% limit.`,{results:check.results});
       // Another order for this market is being sent (the engine sends one at a time): the order stays armed and is checked
@@ -1853,6 +1867,8 @@ class Automation {
       // Activity line, not one per check. Only a known block rejects it.
       // Another order opened between the check above and the send: the same wait.
       if(error?.message==='RECONCILIATION_REQUIRED'&&unsent){retire();const why=this.oneOpenWait(engine,market)??`another order in ${market==='US'?'the U.S.':'Korea'} is open`;if(order.waiting!==why)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${why}; it stays armed and is checked again in 30 seconds.`);this.desk.update(order,{status:'armed',waiting:why,nextCheckAt:Date.now()+30000});return;}
+      // Short selling B3d-1: a short is open and KIS's orderable cash could not be read: the buy waits, armed.
+      if(error?.message==='SHORT_OPEN_CASH_UNKNOWN'&&unsent){retire();let who=null;try{who=engine.identity();}catch{}(this.shortCashWait??={})[market]={account:who,at:Date.now()};const w=SHORT_CASH_WAIT;if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w}; buys wait and it is checked again in 5 minutes.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:Date.now()+300000});return;}
       if(error?.message==='BUYBACK_UNKNOWN'){retire();const w='the orders you made outside the app are not read yet';if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w}; it stays armed and fires once they are.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:Date.now()+60000});return;}
       if(f.kind==='temporary'&&unsent)return f.code==='SESSION_CLOSED'?(retire(),closed()):retry(f.code);
       const left=proposal?` Proposal ${proposal.id} was not sent${at==='Ready'?'':` (its status: ${at??'unknown'})`}.`:' Nothing was proposed.';

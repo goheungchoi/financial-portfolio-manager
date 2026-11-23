@@ -140,10 +140,17 @@ class LiveEngine {
     // orders already waiting on it, so it can never flip the position (electron/credit-paths.cjs).
     const CP=require('./credit-paths.cjs');const path=CP.pathStatus(credit?.kind,{approved:this.creditApproved?.()===true});if(!path.executable)throw Object.assign(new Error('CREDIT_PATH_UNVERIFIED'),{detail:path.reason});
     CP.check(balance,{symbol:command.symbol,side:command.side,quantity:command.quantity,credit},this.orders());
-    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null,pending});}
+    // Short selling B3d-1: a short is for a KOSPI or KOSDAQ stock (the security master, instrumentOf; ETF short sales not
+    // yet), in the regular session or the opening auction (shortSession, the app's Korean hours and calendar); its market
+    // comes from the master and must match one given. Without either source it is refused.
+    let shortMarket=null;if(credit?.kind==='short'){const R=require('./short-rules.cjs');let inst=null;try{inst=this.instrumentOf?.(command.symbol)??null;}catch{inst=null;}
+      const allowed=R.instrumentAllowed({market:inst?.market,type:inst?.type});if(!allowed.ok)throw Object.assign(new Error(allowed.code),{detail:allowed.words});
+      if(credit.market!=null&&credit.market!==inst.market)throw new Error('INVALID_ORDER');shortMarket=inst.market;
+      let session='other';try{session=this.shortSession?.()??'other';}catch{session='other';}if(!R.sessionAllowed(session))throw Object.assign(new Error('SHORT_SESSION_CLOSED'),{detail:'Short sales are sent in the regular session or the opening auction only.'});}
+    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:credit.kind==='short'?this.shortCapBase(balance):this.exposureBase(balance),balance,loanDate:credit.loanDate??null,...(credit.kind==='short'?{lagging:require('./short-rules.cjs').laggingShorts(this.orders(),balance),openShorts:this.openShortOrders()}:{}),pending});}
     // A short cover reduces exposure: the product approval of a buy does not apply to it (1.5.48 review, R2).
     const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
-    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null,...(credit.kind==='short'&&credit.market?{market:credit.market}:{})},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null,...(conditional===true?{madeBy:'conditional'}:{})};this.save(intent);return intent;
+    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null,...(shortMarket?{market:shortMarket}:{})},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null,...(conditional===true?{madeBy:'conditional'}:{})};this.save(intent);return intent;
   }
   // Your submission (the confirmation phrase is your approval). Automatic submissions go through autoSubmit; whether a
   // submission is automatic belongs to that call alone (1.5.48 review, R4): a competing call refused as busy cannot
@@ -177,10 +184,12 @@ class LiveEngine {
       const held=fn=>typeof this.broker.hold==='function'?this.broker.hold(fn,{label:`${order.side} ${order.quantity} ${order.symbol}`}):fn({waitedMs:0,released:()=>false});
       return await held(async hold=>{timings.holdWaitMs=hold.waitedMs;const stamp=o=>({...o,timings:{...timings,...(hold.released()?{holdReleasedByLimit:true}:{})}});
       let t=Date.now();
-      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{})},...(this.severalOpen?{severalOpen:true}:{})});
+      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{}),...(order.madeBy==='ticket'?{yours:true}:{})},...(this.severalOpen?{severalOpen:true}:{})});
       timings.checkMs=since(t);t=Date.now();
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
+      // Short selling B3d-1: your own buy while a short is open carries the fact on its record (checked as before).
+      if(prepared.shortCash)order={...order,shortCashFact:Number.isFinite(prepared.shortCash.orderableCash)?`a short is open; KIS's orderable cash is ${prepared.shortCash.orderableCash.toLocaleString('en-US')}`:'a short is open; KIS\'s orderable cash could not be read'};
       // B3c: the lot as read now, so a fill is released only once a later balance shows it (short-rules balanceShows).
       if(order.credit?.kind==='cover'){const l=prepared.balance.shorts?.find(s=>s.symbol===order.symbol&&s.loanDate===order.credit.loanDate);order={...order,lotAtSend:Number.isFinite(l?.quantity)?l.quantity:null,lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};}
       else if(order.credit?.kind==='short')order={...order,lotAtSend:require('./short-rules.cjs').shortQuantity(prepared.balance,order.symbol),lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};
@@ -434,6 +443,12 @@ class LiveEngine {
   // liabilities KIS's total does not, such as KRW committed to U.S. buys). Not delayed to a day boundary.
   // With the valuation configured but unreadable, a buy's base is unavailable (RISK_DATA_UNAVAILABLE), never KIS's total,
   // which can be higher (1.5.48 audit, A4); a sale or cover keeps KIS's total, so protective orders are not held back.
+  // Short selling B3d-1: the cap's base is the valuation's low bound only (never KIS's total); 0 when it cannot be read
+  // (the cap then refuses as unknown).
+  shortCapBase(balance){let v=null;try{v=this.netEquityOf?.(balance)??null;}catch{v=null;}return Number.isFinite(v?.low)&&v.low>0?v.low:0;}
+  // The app's open short orders, every one whatever the several-open switch: unexpired proposals and orders at KIS, by
+  // their unfilled notional.
+  openShortOrders(){const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];return this.orders().filter(o=>o.side==='Sell'&&o.credit?.kind==='short'&&OPEN.includes(o.status)&&!(o.status==='Ready'&&o.expiresAt<Date.now())).map(o=>({id:o.id,credit:'short',notional:Math.max(0,(o.quantity??0)-(o.filled??0))*(Number(o.currentPrice??o.limitPrice)||0)}));}
   exposureBase(balance,{buy=false}={}){if(!this.netEquityOf)return balance.reportedTotal;let v=null;try{v=this.netEquityOf(balance)??null;}catch{}
     if(Number.isFinite(v?.low))return Math.min(balance.reportedTotal,v.low);if(buy)throw new Error('RISK_DATA_UNAVAILABLE');return balance.reportedTotal;}
   // An app order brought up to date from KIS history, following revisions and cancellations (electron/order-chain.cjs).
