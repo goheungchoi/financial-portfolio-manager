@@ -44,7 +44,7 @@ test('orders it must leave alone: taken over, paused, cancelling, extended sessi
     const t=setup();t.add(extra);await t.a.trackOrders();assert.deepEqual(t.revisions(),[],JSON.stringify(extra));}
   // Closed: no history read once the day's history was read after the session (found in live use: orders made outside the
   // app need it whole, so a start on a closed market reads it once).
-  const closed=setup();closed.a.sessionOpen=()=>false;closed.add();closed.engine.historyReadAt=Date.now();await closed.a.trackOrders();assert.deepEqual(closed.revisions(),[]);assert.equal(closed.sent.filter(s=>s[0]==='orders').length,0,'no history read while closed');
+  const closed=setup();closed.a.sessionOpen=()=>false;closed.add();closed.engine.historyReadAt=Date.now();closed.engine.historyKey=closed.engine.identity();await closed.a.trackOrders();assert.deepEqual(closed.revisions(),[]);assert.equal(closed.sent.filter(s=>s[0]==='orders').length,0,'no history read while closed');
   const start=setup();start.a.sessionOpen=()=>false;await start.a.trackOrders();assert.equal(start.sent.filter(s=>s[0]==='orders').length,1,'once at a start on a closed market');
   start.a.lastHistorySync={};await start.a.trackOrders();assert.equal(start.sent.filter(s=>s[0]==='orders').length,1,'and not again');
   const busy=setup();busy.add();busy.engine.busy=true;await busy.a.trackOrders();assert.deepEqual(busy.revisions(),[]);

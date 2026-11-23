@@ -1251,9 +1251,11 @@ class Automation {
       (this.lastOpenAt??={});if(open)this.lastOpenAt[market]=now;const readAt=engine.historyReadAt,h=((this.historyState??={})[market]??={});
       let day=null;try{day=engine.day();}catch{}if(day&&!h.day)h.day=day;const newDay=Boolean(day&&h.day&&h.day!==day);
       // Another account: read at once (not at the next due read), with no wait left from the old one.
-      {let key=null;try{key=engine.identity();}catch{}if(key&&h.key!==key){if(h.key)(this.lastHistorySync??={})[market]=0;h.key=key;h.failures=0;h.retryAt=0;}}
+      let key=null;try{key=engine.identity();}catch{}if(key&&h.key!==key){if(h.key)(this.lastHistorySync??={})[market]=0;h.key=key;h.failures=0;h.retryAt=0;}
       const late=market==='KR'&&lateWindow(now),final=market==='KR'&&afterLastFill(now)&&!(readAt>=afterLastFill(now));
-      const due=open||late||final||newDay||!Number.isFinite(readAt)||readAt<(this.lastOpenAt[market]??0),gap=open?60000:late?300000:60000;
+      // A read not recorded for the known account (made before the account was known; found in live use) is due again.
+      const unkeyed=Boolean(key&&engine.historyKey!==key);
+      const due=open||late||final||newDay||unkeyed||!Number.isFinite(readAt)||readAt<(this.lastOpenAt[market]??0),gap=open?60000:late?300000:60000;
       // The missed days, until read: tried again whenever due by their own wait (syncMissed: 5 minutes after a failure; no
       // call while the account is not known), also at night after a day change.
       if(engine.missedRead===false&&!due)void Promise.resolve(engine.syncMissed?.(now)).catch(()=>{});

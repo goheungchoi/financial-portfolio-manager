@@ -58,8 +58,10 @@ test('left alone: an app order on the stock, a credit lot, a plan stop waiting, 
   for(const id of [...ids,app.id])assert.equal(find(id).status,'armed');
   a.config.scope='paper';assert.deepEqual(a.closeStopsNotHeld(read('10:20',0),now,f),[]);
 });
+// The fake engine records whose history it read (historyKey), as LiveEngine.syncHistory does; a read for no account is due
+// again (history-key.test.cjs).
 function reads(){const {a}=setup();const calls=[];const engine={identity:()=>'acct',orders:()=>[],getState:()=>({}),getConnection:()=>({snapshot:null}),historyReadAt:undefined,dayValue:'2026-10-05',day(){return this.dayValue;},
-  async syncHistory(day){calls.push('history'+(day?':'+day:''));if(engine.fail)throw new Error('X');if(!day)this.historyReadAt=engine.clock;},async syncMissed(){calls.push('missed');},async refreshOutsideCharges(){calls.push('charges');}};
+  async syncHistory(day){calls.push('history'+(day?':'+day:''));if(engine.fail)throw new Error('X');this.historyKey='acct';if(!day)this.historyReadAt=engine.clock;},async syncMissed(){calls.push('missed');},async refreshOutsideCharges(){calls.push('charges');}};
   a.live=engine;a.usLive=null;return {a,engine,calls};}
 test('the history is read after the app\'s session until KIS\'s last fill (20:00), once after it, and yesterday\'s at a new day; a failing read backs off',async()=>{
   const {a,engine,calls}=reads();a.sessionOpen=()=>false;

@@ -455,21 +455,33 @@ class LiveEngine {
   // historyReadAt: when today's history was last read whole (the flow detector's ordersThrough). historyKey: the account it
   // was read for; another account starts again (nothing read yet, the missed days not read).
   resetHistoryFor(key){if(this.historyKey!==key){this.historyKey=key;this.historyReadAt=undefined;this.missedRead=false;this.missedRetryAt=0;this.missedDone=new Set();this.missedFailure=null;}}
-  async syncHistory(day=this.day()){let key=null;try{key=this.identity();}catch{}if(key)this.resetHistoryFor(key);
-    const report=await this.broker.request('orders',{startDate:day,endDate:day});this.recordHistory(report,day);if(day===this.day())this.historyReadAt=Date.now();return report;}
+  // The account is taken again once KIS answers (found in live use: at launch the first read is asked for before the
+  // account is known and answered after the connection, so historyKey was never set and, on closed markets, the history
+  // never counted as read). Still unknown: nothing is recorded as read (the next tick reads again). Known only now: the
+  // reset is made for it before recording. Another account than when asked (a switch during the read): nothing is
+  // recorded, so the old account's orders are never written under the new one's key.
+  async syncHistory(day=this.day()){return (await this.readHistory(day)).report;}
+  // {report, recorded, key}: recorded only when the account was known when KIS answered and was the one asked for.
+  async readHistory(day=this.day()){let key=null;try{key=this.identity();}catch{}if(key)this.resetHistoryFor(key);
+    const report=await this.broker.request('orders',{startDate:day,endDate:day});let after=null;try{after=this.identity();}catch{}
+    if(!after||key&&after!==key)return {report,recorded:false,key:after};if(!key)this.resetHistoryFor(after);
+    this.recordHistory(report,day);if(day===this.day())this.historyReadAt=Date.now();return {report,recorded:true,key:after};}
   // The business days the app did not read, once per account and start: from backfillFrom() (the day the app was last
   // reading, that day included, in this market's own days; undefined while the account is not known yet) to yesterday,
   // within the last 31 calendar days (the buy-back block reaches 30). Read one at a time, a second apart, off the tick:
   // progress is kept per day (missedDone), so a day that fails is retried after 5 minutes without reading the others
-  // again; after 3 failures it is named (missedFailure) for Home. Until all are read, missedRead stays false.
+  // again; after 3 failures it is named (missedFailure) for Home. Until all are read, missedRead stays false. The days are
+  // read for the account the loop started with: when the account changes (or a day is not recorded for it), the loop
+  // stops without counting that day or the whole as read, so a new account never counts as read without its own days.
   async syncMissed(now=Date.now()){if(this.missedRead||this.missedRunning||now<(this.missedRetryAt??0))return;const from=this.backfillFrom?.();if(from===undefined)return;const today=this.day();
     if(typeof from!=='string'||from>=today){this.missedRead=true;return;}
     const {isBusinessDay}=require('./business-days.cjs');const days=[],first=new Date(Date.parse(today+'T00:00:00Z')-31*86400000).toISOString().slice(0,10);for(let t=Date.parse((from>first?from:first)+'T00:00:00Z');;t+=86400000){const d=new Date(t).toISOString().slice(0,10);if(d>=today)break;if(isBusinessDay(this.market==='US'?'US':'KR',d))days.push(d);}
-    this.missedRunning=true;this.missedDone??=new Set();
-    try{for(const d of days){if(this.missedDone.has(d))continue;try{await this.syncHistory(d);this.missedDone.add(d);if(this.missedFailure?.day===d)this.missedFailure=null;}
+    this.missedRunning=true;this.missedDone??=new Set();let start=null;try{start=this.identity();}catch{}let complete=Boolean(start);
+    try{for(const d of days){if(!complete)break;if(this.missedDone.has(d))continue;let cur=null;try{cur=this.identity();}catch{}if(cur!==start){complete=false;break;}
+        try{const r=await this.readHistory(d);if(!r.recorded||r.key!==start){complete=false;break;}this.missedDone.add(d);if(this.missedFailure?.day===d)this.missedFailure=null;}
         catch(error){const tries=(this.missedFailure?.day===d?this.missedFailure.tries:0)+1;this.missedFailure={day:d,tries,error:String(error?.message??error).slice(0,40)};this.missedRetryAt=Date.now()+300000;throw error;}
         if(this.missedSpacing!==0)await new Promise(r=>setTimeout(r,this.missedSpacing??1000));}
-      this.missedRead=true;}finally{this.missedRunning=false;}}
+      if(complete)this.missedRead=true;}finally{this.missedRunning=false;}}
   // KIS's fee-and-tax figure for Korean orders made outside the app (the order inquiry, as for the app's own orders), by
   // "<day>|<number>": {charges, filled} once read for that fill, {failed:true} after 6 failed attempts. Read soon after the
   // fill and again every 5 minutes, 3 orders per call, for today's and yesterday's rows; a fill that grows is read again.
