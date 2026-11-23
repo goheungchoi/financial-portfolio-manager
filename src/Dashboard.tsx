@@ -1,3 +1,4 @@
+import {unwatchedLine} from './unwatched-orders.mjs';
 import {useEffect,useState} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
 import {subscribeRuntime} from './runtimeFeed';
@@ -73,7 +74,10 @@ export function AiActivity({onNavigate}:{onNavigate(tab:string):void}){
   const hhmm=(t:number)=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});const em=state?.emergency as {active?:boolean;unavailableMarkets?:string[]}|undefined;
   // The provider wait (OpenAI refusal fix R3, Q5): a quiet app is not read as a healthy one.
   const waits=state?.providerWait??[];
-  const blocks=[...waits.map(w=>w.summary),em?.active&&'Daily loss limit reached: new buys are blocked.',em?.unavailableMarkets?.length&&'Daily loss check unavailable: new buys are restricted until it can be checked.',state?.reviewBackoff&&`Automatic reviews paused until ${hhmm(state.reviewBackoff.until)} after repeated response-format failures. Your own reviews still run.`].filter(Boolean) as string[];
+  // Armed conditional orders are the app's, watched only while auto trading runs (found in live use: they were taken to
+  // stay at KIS); the line says so while they are not watched.
+  const unwatched=unwatchedLine(state);
+  const blocks=[...waits.map(w=>w.summary),unwatched,em?.active&&'Daily loss limit reached: new buys are blocked.',em?.unavailableMarkets?.length&&'Daily loss check unavailable: new buys are restricted until it can be checked.',state?.reviewBackoff&&`Automatic reviews paused until ${hhmm(state.reviewBackoff.until)} after repeated response-format failures. Your own reviews still run.`].filter(Boolean) as string[];
   const bg=state?.backgroundAi,running=Boolean(launch?.running);const streak=(state as unknown as {guardrails?:{failureStreak?:number}})?.guardrails?.failureStreak??0;
   const errorLine=state?.lastError?`Last review failed${state.lastErrorAt?` at ${hhmm(state.lastErrorAt)}`:''}${streak>1?` (${streak} in a row)`:''}: ${(state.lastErrorDetail??'').split(' Stage:')[0]||String(state.lastError).replaceAll('_',' ').toLowerCase()} ${waits.length?`Automatic AI calls wait until ${waits[0].nextTry}.`:state.reviewBackoff?'Automatic reviews are paused for now.':running?'The next scheduled review tries again.':'Auto trading is stopped, so nothing retries automatically.'}`:null;
   const toggleBg=async()=>{if(!bg)return;setBusy(true);try{const reply=await window.portfolio!.setBackgroundAi(!bg.paused);if(reply.state)setState(reply.state);}catch{setNote('Could not reach the engine.');}finally{setBusy(false);}};

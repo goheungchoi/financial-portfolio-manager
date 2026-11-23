@@ -26,4 +26,9 @@ function attentionItems(pending,now=Date.now()){const rows=(pending??[]).filter(
 // item 9 (market, currency, amount, since, usBalanceUnseen); the detector's newer fields (holdReason, couldBeFill) are
 // for the Home line only, so item 9 does not change what the model is given.
 const contextRows=pending=>(pending??[]).map(p=>({market:p.market,currency:p.currency,amount:p.amount,since:p.since,...(p.usBalanceUnseen?{usBalanceUnseen:true}:{})}));
-module.exports={attentionItems,contextRows};
+// A deposit or withdrawal you confirmed that an order made outside the app explains (found in live use): one question each,
+// until you remove the flow or keep it (Dismiss).
+const askItems=asks=>(asks??[]).map(a=>{const kind=a.amount>0?'deposit':'withdrawal';
+  return {id:'flow-ask-'+a.flowId,tone:'action',title:`${money('KR',a.amount)} ${kind} on ${a.day}: ${a.full?'it may be':'part of it may be'} ${a.words}`,
+    detail:a.confirmed===false?`This ${kind} was detected, and ${a.full?'an order':'part of it matches an order'} made outside the app may explain it. If it was not a ${kind}, remove it on the Performance page; if it was, dismiss this.`:`You confirmed this ${kind}. ${a.full?'An order':`₩${Math.abs(a.explained).toLocaleString('en-US')} of it matches an order`} made outside the app${a.full?' explains it':''}. If it was not a ${kind}, remove it on the Performance page; if it was, dismiss this.`,tab:'Performance',action:'Open Performance',dismissible:true};});
+module.exports={attentionItems,contextRows,askItems};

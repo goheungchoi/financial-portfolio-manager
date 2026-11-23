@@ -465,6 +465,17 @@ app.whenReady().then(async () => {
   if(process.env.PORTFOLIO_SMOKE_DATA&&process.env.PORTFOLIO_PERFORMANCE_SEED){const seed=JSON.parse(process.env.PORTFOLIO_PERFORMANCE_SEED);for(const row of seed.history)store.db.prepare('INSERT OR REPLACE INTO nav_history VALUES(?,?,?)').run(seed.account,row.day,JSON.stringify(row));for(const review of seed.reviews??[])store.db.prepare('INSERT OR REPLACE INTO reviews VALUES(?,?)').run(review.id,JSON.stringify(review));}
   // Deposits and withdrawals not recorded by the user, detected after each balance refresh (electron/flow-detector.cjs).
   const flowDetector=new (require('./flow-detector.cjs').FlowDetector)(store.db,performance);flowDetector.onNote=(title,message)=>automation.log(require('node:crypto').randomUUID(),'System',title,message);
+  // Orders made outside the app (found in live use: a sale made in the KIS app was recorded as a deposit). The days the app
+  // did not read start at the detector's last reading; the history is complete up to its last read, or, after the day's
+  // last fill, until the next session (outside-fills.cjs historyThrough; automation.syncHistories reads it).
+  // undefined while the account is not known yet (syncMissed waits), null when the detector has no reading.
+  live.backfillFrom=()=>{const a=kisState.snapshot?.accountKey;if(!a)return undefined;const t=flowDetector.lastAt(a);return Number.isFinite(t)?require('./kis-activity.cjs').seoulDate(t):null;};
+  // The history is ready once today's and the missed days were read for the connected account; until then the detector
+  // gets no outside orders (outside: null), so its first reading with them seeds from a complete history.
+  let historyUnreadSince=null;
+  const historyReady=()=>{const a=kisState.snapshot?.accountKey;return Boolean(a&&live.missedRead&&live.historyKey===a&&Number.isFinite(live.historyReadAt));};
+  const ordersThrough=()=>require('./outside-fills.cjs').historyThrough({readAt:live.historyReadAt,ready:historyReady()});
+  const outsideFills=()=>{if(!historyReady())return null;try{const from=require('./kis-activity.cjs').seoulDate(Date.now()-100*86400000);return require('./outside-fills.cjs').outsideFills(live.historyRange(from),live.orders(),{charges:live.outsideCharges(),settings:costs?.get?.(),classify:s=>costs?.classify?.(s)??null});}catch{return null;}};
   // The broker's own balance figures, kept when they change (electron/broker-raw.cjs), for reconciliation.
   const brokerBalances=new (require('./broker-raw.cjs').BrokerBalances)(store.db);
   // M-1.5b: KIS's orderable answers at each order preparation, with the orders open then (for Q1/Q2).
@@ -510,7 +521,10 @@ app.whenReady().then(async () => {
     for(const flow of flowDetector.observe(s.accountKey,{usExplained:range=>inFlight.explained(s.accountKey,range),krCash:kr,
       // Item 9: each balance's read time (a U.S. refresh that failed keeps its old snapshot, so it is no new read) and the
       // route's unpaid KRW, for the short hold.
-      readAt:{KR:readTime(s.timestamp),US:us?readTime(us.timestamp):null},krwUnpaid:route?.krwUnpaidKRW??0,provisionalKRW:route?route.provisionalKRW:funding.uncertainKRW,...(route?{provisionalOutsideKRW:(()=>{try{const fx=automation.fx?.()?.usdKRW,c=require('./valuation.cjs').splitContext(usSnapshot,inFlightOf(s.accountKey),route,fx);return Math.max(0,route.provisionalKRW-(c?.reportedInFlightUSD??0)*(fx||0));}catch{return route.provisionalKRW;}})()}:{}),unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'&&!usSnapshot.settlementProvisional?(f=>usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0)-Math.max(0,(f?.buysUSD??0)-require('./valuation.cjs').coveredInFlight(f,route,automation.fx?.()?.usdKRW??null))+(f?.sellsUSD??0)-(route?.usUSD??0))(inFlightOf(s.accountKey)):null,...(route?{funding:route.explained}:{}),fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])]}))if(flow.detected)automation.noteDetectedFlow(flow);}catch{}};
+      readAt:{KR:readTime(s.timestamp),US:us?readTime(us.timestamp):null},krwUnpaid:route?.krwUnpaidKRW??0,provisionalKRW:route?route.provisionalKRW:funding.uncertainKRW,...(route?{provisionalOutsideKRW:(()=>{try{const fx=automation.fx?.()?.usdKRW,c=require('./valuation.cjs').splitContext(usSnapshot,inFlightOf(s.accountKey),route,fx);return Math.max(0,route.provisionalKRW-(c?.reportedInFlightUSD??0)*(fx||0));}catch{return route.provisionalKRW;}})()}:{}),unsettledKRW:funding.unsettledKRW,usCash:usSnapshot?.accountKey===s.accountKey+':US'&&!usSnapshot.settlementProvisional?(f=>usSnapshot.cash+(usSnapshot.pendingSaleProceeds??0)-Math.max(0,(f?.buysUSD??0)-require('./valuation.cjs').coveredInFlight(f,route,automation.fx?.()?.usdKRW??null))+(f?.sellsUSD??0)-(route?.usUSD??0))(inFlightOf(s.accountKey)):null,...(route?{funding:route.explained}:{}),fx:automation.fx?.()?.usdKRW??null,orders:[...live.orders(),...(usLive?.orders()??[])],outside:outsideFills(),ordersThrough:ordersThrough()}))if(flow.detected)automation.noteDetectedFlow(flow);
+      // A stop on Korean shares sold outside the app is closed or reduced with words, on the evidence of KIS's order history
+      // (automation.closeStopsNotHeld).
+      try{automation.closeStopsNotHeld(s,Date.now(),outsideFills());}catch{}}catch{}};
   live.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'KR'):0;};
   // Recorded flows and the changes the detector still holds (electron/flow-detector.cjs flowsSince).
   live.flowsSince=policy=>{const a=kisState.snapshot?.accountKey;return a?flowDetector.flowsSince(a,'KR',policy?.baselineAt):null;};
@@ -588,10 +602,10 @@ app.whenReady().then(async () => {
     catch(error){return hit?{...shape(hit.value,hit.at),stale:true}:{error:kisErrorCode(error)};}});
   ipcMain.handle('performance:add-flow',performanceAction(value=>{if(!kisState.snapshot)throw new Error('KIS_NOT_CONNECTED');const flow=performance.addFlow(kisState.snapshot.accountKey,value);return flow.replaced?{replaced:{amount:flow.replaced.amount,currency:flow.currency}}:null;}));
   ipcMain.handle('performance:confirm-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.confirmFlow(kisState.snapshot.accountKey,id);}));
-  ipcMain.handle('performance:remove-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.removeFlow(kisState.snapshot.accountKey,id);}));
+  ipcMain.handle('performance:remove-flow',performanceAction(id=>{if(!kisState.snapshot||typeof id!=='string')throw new Error('INVALID_REQUEST');performance.removeFlow(kisState.snapshot.accountKey,id);try{flowDetector.noteRemoved(kisState.snapshot.accountKey,id);}catch{}}));
   // A detected inflow that was a dividend or interest becomes an income record, not a deposit: returns count it as income.
   ipcMain.handle('performance:flow-is-income',performanceAction(id=>{const account=kisState.snapshot?.accountKey;if(!account||typeof id!=='string')throw new Error('INVALID_REQUEST');const flow=performance.flows(account).find(f=>f.id===id);if(!flow?.detected||flow.transfer||!(flow.amount>0))throw new Error('INVALID_FLOW');
-    costs.addIncome({symbol:'UNSPECIFIED',category:'dividend',payDate:flow.day,currency:flow.market==='US'?'USD':'KRW',country:flow.market==='US'?'US':'KR',net:flow.amount,gross:null,source:'detected-flow'});performance.removeFlow(account,id);}));
+    costs.addIncome({symbol:'UNSPECIFIED',category:'dividend',payDate:flow.day,currency:flow.market==='US'?'USD':'KRW',country:flow.market==='US'?'US':'KR',net:flow.amount,gross:null,source:'detected-flow'});performance.removeFlow(account,id);try{flowDetector.noteRemoved(account,id);}catch{}}));
   ipcMain.handle('performance:refresh-benchmarks',performanceAction(()=>refreshBenchmarks()));
   // Macro inputs (ECOS / FRED) through the provider worker, refreshed every 6 hours while the app is open.
   // UI tests seed a snapshot and never reach the network.
@@ -605,6 +619,16 @@ app.whenReady().then(async () => {
     // Item 9: a cash change the flow detector holds (not yet a return, a deposit or a withdrawal). One item per market,
     // or one for both when they may be an exchange; [Record it] opens Performance with the form filled (the draft).
     try{const a=kisState.snapshot?.accountKey;if(a)items.push(...require('./cash-checks.cjs').attentionItems(flowDetector.pending(a)));}catch{}
+    // KIS's order history not read for more than 10 minutes: Korean rises cannot be checked against orders made outside the
+    // app, so they wait 2 hours; said once, so a held change has a cause you can see.
+    try{const a=kisState.snapshot?.accountKey;if(a&&automation.config.scope!=='paper'&&!historyReady()){historyUnreadSince??=now;if(now-historyUnreadSince>600000)items.push({id:'history-unread',tone:'info',title:'KIS order history not read yet · Korean cash changes wait 2 hours',detail:"The app has not yet read KIS's order history for today and for the days it missed, so a rise in Korean cash cannot be checked against orders you made outside the app. It is recorded after 2 hours instead of 10 minutes, or explained once the history is read.",tab:'Connections',action:'Open Connections'});}else historyUnreadSince=null;}catch{}
+    // A deposit or withdrawal you confirmed that an order made outside the app explains (flow-detector settleRecorded).
+    try{const a=kisState.snapshot?.accountKey;if(a)items.push(...require('./cash-checks.cjs').askItems(flowDetector.asks(a)));}catch{}
+    // A stop closed or reduced because its shares were sold outside the app, or a question about one (closeStopsNotHeld),
+    // until you dismiss it.
+    try{for(const o of automation.stopNotices()){const k=o.notice.kind;items.push({id:'stop-notice-'+o.id,tone:k==='ask'?'action':'info',
+      title:k==='closed'?`Stop for ${o.symbol} closed: you sold the shares outside the app`:k==='reduced'?`Stop for ${o.symbol} reduced to the shares you hold`:`Stop for ${o.symbol}: check it on the Agent Desk`,
+      detail:o.notice.words,tab:'Journal',action:k==='ask'?'Open Agent Desk':'Open Journal',dismissible:true});}}catch{}
     if(!kisState.snapshot)items.push({id:'connect',tone:'info',title:'Connect your KIS account',detail:'Holdings, prices and broker trading appear after you import your KIS credentials.',tab:'Connections',action:'Open Connections'});
     for(const [engine,label,tab] of [[live,'Korea','KIS trading'],[usLive,'U.S.','U.S. stocks']]){try{const ready=engine.orders().filter(o=>o.status==='Ready'&&o.expiresAt>now);if(ready.length){counts.approvals[tab]=ready.length;items.push({id:'approve-'+tab,tone:'action',title:`${plural(ready.length,label+' order')} waiting for your approval`,detail:ready.slice(0,3).map(o=>`${o.side} ${o.quantity} ${o.symbol}`).join(' · ')+` · expires ${new Date(Math.min(...ready.map(o=>o.expiresAt))).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST`,tab,action:'Review orders'});}}catch{}}
     try{const learning=automation.memory.summary();if(learning.pending){counts.lessons=learning.pending;items.push({id:'lessons',tone:'info',title:`Optional: ${plural(learning.pending,'learning note')} to look at`,detail:'Learning feedback from completed trades. Nothing is waiting on it: no order and no money depends on this.',tab:'Journal',action:'Open Journal'});}}catch{}
@@ -633,7 +657,10 @@ app.whenReady().then(async () => {
   const loginItem=require('./login-item.cjs').createLoginItem({app,packaged:app.isPackaged,fake:process.env.PORTFOLIO_SMOKE_DATA?{on:false}:null});
   ipcMain.handle('system:login-item',event=>{authorize(event);return loginItem.get();});
   ipcMain.handle('system:set-login-item',(event,on)=>{authorize(event);try{return loginItem.set(on);}catch{return {...loginItem.get(),error:'Invalid request.'};}});
-  ipcMain.handle('workspace:dismiss',(event,id)=>{authorize(event);if(id==='restart-notice')restartNoticeDismissed=true;return attentionState();});
+  ipcMain.handle('workspace:dismiss',(event,id)=>{authorize(event);if(id==='restart-notice')restartNoticeDismissed=true;
+    else if(typeof id==='string'&&/^flow-ask-[\w-]{1,80}$/.test(id)){const a=kisState.snapshot?.accountKey;if(a)flowDetector.dismissAsk(a,id.slice('flow-ask-'.length));}
+    else if(typeof id==='string'&&/^stop-notice-[\w-]{1,80}$/.test(id))automation.acknowledgeStopNotice(id.slice('stop-notice-'.length));
+    return attentionState();});
   // App updates from GitHub Releases, for installed builds only (PORTFOLIO_UPDATE_TEST names an update config file for local tests).
   // Only installer builds carry app-update.yml (and electron-updater); portable folder builds and source runs have no updates.
   const updateTest=Boolean(process.env.PORTFOLIO_UPDATE_TEST);const installed=app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA&&require('node:fs').existsSync(path.join(process.resourcesPath,'app-update.yml'));

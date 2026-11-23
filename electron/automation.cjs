@@ -1230,9 +1230,30 @@ class Automation {
   // from its price, held at the agent's bound, with no limit on revisions; it is cancelled when the agent's stop time
   // passes or a cancel condition is met. Every 60 seconds while a market is open, the day's KIS order history (every
   // order, the app's or not) is read and kept.
-  async trackOrders(now=Date.now()){const P=require('./order-pricing.cjs');
+  // The day's KIS order history (every order, the app's or not), so the flow detector can explain cash moved by orders made
+  // outside the app (found in live use). Read every 60 seconds while a market is open; in Korea also every 5 minutes
+  // before the open (08:00–09:00 KST) and after the app's session until KIS's last fill of the day (20:00 KST: closing
+  // auction, after-close and evening orders), and once after it; once when the app starts on a closed market. When a new
+  // day begins while the app runs, yesterday's is read and the missed days are read again (syncMissed: from the flow
+  // detector's last reading, so days slept through are covered). KIS's fee figure for those orders is then read
+  // (refreshOutsideCharges). A read that fails waits 1, 2, 4 … minutes, at most 3 while the session is open and 30 when
+  // it is closed; every read, the day-change one included, is under that wait. These reads run whether or not Order
+  // tracking is on (tracking only decides whether open orders are moved).
+  async syncHistories(now=Date.now()){if(this.config.scope==='paper')return;const {lateWindow,afterLastFill}=require('./outside-fills.cjs');
     for(const [market,engine] of [['KR',this.live],['US',this.usLive]]){if(!engine)continue;const open=this.sessionOpen(market,now);
-      if(open&&now-((this.lastHistorySync??={})[market]??0)>=60000){this.lastHistorySync[market]=now;try{await engine.syncHistory();}catch{}}
+      (this.lastOpenAt??={});if(open)this.lastOpenAt[market]=now;const readAt=engine.historyReadAt,h=((this.historyState??={})[market]??={});
+      let day=null;try{day=engine.day();}catch{}if(day&&!h.day)h.day=day;const newDay=Boolean(day&&h.day&&h.day!==day);
+      const late=market==='KR'&&lateWindow(now),final=market==='KR'&&afterLastFill(now)&&!(readAt>=afterLastFill(now));
+      const due=open||late||final||newDay||!Number.isFinite(readAt)||readAt<(this.lastOpenAt[market]??0),gap=open?60000:late?300000:60000;
+      // The missed days, until read: tried again whenever due by their own wait (syncMissed: 5 minutes after a failure; no
+      // call while the account is not known), also at night after a day change.
+      if(market==='KR'&&engine.missedRead===false&&!due){try{await engine.syncMissed?.(now);}catch{}}
+      if(!due||now-((this.lastHistorySync??={})[market]??0)<gap||now<(h.retryAt??0))continue;this.lastHistorySync[market]=now;
+      try{if(newDay){await engine.syncHistory(h.day);h.day=day;engine.missedRead=false;}await engine.syncHistory();h.failures=0;h.retryAt=0;}
+      catch{h.failures=(h.failures??0)+1;h.retryAt=now+Math.min(open?3:30,2**(h.failures-1))*60000;continue;}
+      if(market==='KR'){try{await engine.syncMissed?.(now);}catch{}try{await engine.refreshOutsideCharges?.(now);}catch{}}}}
+  async trackOrders(now=Date.now()){const P=require('./order-pricing.cjs');await this.syncHistories(now);
+    for(const [market,engine] of [['KR',this.live],['US',this.usLive]]){if(!engine)continue;const open=this.sessionOpen(market,now);
       if(!open)continue;let orders;try{orders=engine.orders();}catch{continue;}
       for(const o of orders){
         if(!['Accepted','Partially filled'].includes(o.status)||!o.brokerOrderId||o.handsOff||o.trackingStopped||o.cancelRequestedAt||o.session&&!/regular/.test(o.session)||o.day!==engine.day())continue;
@@ -1631,6 +1652,44 @@ class Automation {
     const since=new Date(Date.parse(from+'T00:00:00Z')-60*86400000).toISOString().slice(0,10);
     const hit=filings.find(f=>f&&typeof f.date==='string'&&f.date>=since&&f.date<=to&&/유상증자|무상증자|감자|주식분할|주식병합/.test(String(f.title??'')));
     return hit?`A capital change of ${symbol} was filed on ${hit.date} (${String(hit.title).slice(0,60)}).`:null;}catch{return null;}}
+  // A stop on Korean shares sold outside the app (found in live use: the shares were sold in the KIS app and the stop
+  // stayed armed). It acts only on evidence, on two balance readings at least 3 minutes apart (a lagging balance never
+  // changes one): outside sales of the stock, less outside purchases, placed after the last reading that showed the
+  // higher count (lastHeldAt; each sale explains a fall once, since the count it explains then becomes the baseline),
+  // covering the fall from that count (lastHeld). Then: none held, the stop is closed; fewer held, it is reduced to them.
+  // Several stops on one stock that together cover more than is held: none changes, you are asked (the app cannot tell
+  // whose shares were sold). A fall no order explains (a balance that lists no holdings by mistake, for example) never
+  // changes a stop: it stays armed and you are asked, once for each count. Not a trading-scope limit: it sends nothing.
+  // Credit-lot orders, plan stops still waiting for their purchase, stocks the app sold or has an order on, U.S. stocks
+  // and the paper account are left to their own rules. Returns the ids changed or asked about.
+  closeStopsNotHeld(balance,now=Date.now(),outside=null){const at=Date.parse(balance?.timestamp??'');if(this.config.scope==='paper'||!Array.isArray(outside)||!Array.isArray(balance?.holdings)||!Number.isFinite(at))return [];
+    let orders,mine;try{orders=this.desk.orders(this.watchScope());mine=this.live?.orders?.()??[];}catch{return [];}
+    const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'],changed=[],plural=n=>`${n} share${n===1?'':'s'}`,num=id=>String(id).replace(/^0+(?=\d)/,'');
+    const eligible=orders.filter(o=>o.side==='Sell'&&!o.credit&&!/:/.test(o.symbol)&&!(o.linkedBuy&&!(this.linkedPurchase(o)?.filled>=1)));
+    const ask=(o,held,words)=>{if(o.notice?.kind==='ask'&&o.notice.held===held)return;this.desk.update(o,{notice:{kind:'ask',held,words,at:now}});this.log(o.id,'System','Conditional order · check',words);changed.push(o.id);};
+    // Judged per purpose, as setOrder covers: a stop loss and a take profit on the same shares are each judged against them.
+    for(const group of [...new Set(eligible.map(o=>o.symbol+'|'+o.purpose))]){const [symbol]=group.split('|');const stops=eligible.filter(o=>o.symbol+'|'+o.purpose===group),held=balance.holdings.find(h=>h.symbol===symbol)?.quantity??0,need=stops.reduce((n,o)=>n+o.quantity,0);
+      const app=mine.some(r=>r.symbol===symbol&&(OPEN.includes(r.status)||now-(r.createdAt??0)<600000||r.side==='Sell'&&r.filled>0&&stops.some(o=>(r.createdAt??0)>=(o.createdAt??0))));
+      // Covered (or the app's own orders explain it): the count held is the new baseline; a question about an older count goes.
+      if(app||held>=need){for(const o of stops){const patch={};if(o.shortSince)patch.shortSince=null;if(held>=1&&o.lastHeld!==held){patch.lastHeld=held;patch.lastHeldAt=at;}if(o.notice?.kind==='ask')patch.notice=null;if(Object.keys(patch).length)this.desk.update(o,patch);}continue;}
+      const ready=stops.filter(o=>{if(!Number.isFinite(o.shortSince)){this.desk.update(o,{shortSince:at});return false;}return at-o.shortSince>=180000;});if(ready.length<stops.length)continue;
+      if(stops.length>1){for(const o of stops)ask(o,held,`${o.purpose==='take_profit'?'Take-profit orders':'Stops'} for ${symbol} cover ${plural(need)} together and ${plural(held)} ${held===1?'is':'are'} held. The app cannot tell which stop the shares sold were for, so none is changed; change them on the Agent Desk.`);continue;}
+      // Clock margin: KIS gives the order time by its clock, the balance its time by this PC's; a sale counts only when ordered a
+      // minute after the baseline reading, so a small clock difference can only make the app ask, never reuse a sale.
+      const o=stops[0],base=o.lastHeld??o.quantity,since=Math.max(o.lastHeldAt??0,o.createdAt??0)+(o.lastHeldAt?60000:0);
+      const mineOut=(outside??[]).filter(f=>f.symbol===symbol&&f.outside?.kind==='cash'&&f.createdAt>=since);
+      const sales=mineOut.filter(f=>f.side==='Sell'),sold=sales.reduce((n,f)=>n+f.filled,0)-mineOut.filter(f=>f.side==='Buy').reduce((n,f)=>n+f.filled,0);
+      const ids=[...new Set(sales.map(f=>num(f.outside.orderId)))].join(', ');
+      if(sold<1||sold<base-held){ask(o,held,held<1?`${o.purpose==='take_profit'?'Take-profit order':'Stop'} for ${symbol}: the balance shows none held and no order explains it. It stays armed; cancel it on the Agent Desk if you sold the shares.`:`${o.purpose==='take_profit'?'Take-profit order':'Stop'} for ${symbol}: the balance shows ${plural(held)} of the ${plural(o.quantity)} it covers, and no order explains it. It stays as it is; change it on the Agent Desk if you sold them.`);continue;}
+      if(held<1){const words=`${o.purpose==='take_profit'?'Take-profit order':'Stop'} for ${symbol} (${plural(o.quantity)}) closed: you sold the shares outside the app (KIS order ${ids}); none are held.`;
+        this.desk.update(o,{status:'cancelled',outcome:words,closedAt:now,closedNotHeld:true,shortSince:null,notice:{kind:'closed',words,at:now}});this.log(o.id,'System','Conditional order · closed',words);changed.push(o.id);continue;}
+      const words=`${o.purpose==='take_profit'?'Take-profit order':'Stop'} for ${symbol} reduced from ${o.quantity} to ${plural(held)}: you sold ${plural(base-held)} outside the app (KIS order ${ids}).`;
+      this.desk.update(o,{quantity:held,lastHeld:held,lastHeldAt:at,shortSince:null,notice:{kind:'reduced',words,at:now}});this.log(o.id,'System','Conditional order · reduced',words);changed.push(o.id);}
+    return changed;}
+  // What closeStopsNotHeld told you in the last day (closed, reduced, or a question) that you have not dismissed, for Home.
+  stopNotices(now=Date.now()){let rows=[];try{const scope=this.watchScope();rows=[...this.desk.orders(scope),...this.desk.recentOrders(scope,20)];}catch{return [];}
+    return rows.filter(o=>o.notice&&!o.notice.acknowledgedAt&&(o.notice.kind==='ask'?o.status==='armed':now-(o.notice.at??0)<86400000));}
+  acknowledgeStopNotice(id){let rows=[];try{const scope=this.watchScope();rows=[...this.desk.orders(scope),...this.desk.recentOrders(scope,20)];}catch{return;}const o=rows.find(x=>x.id===id&&x.notice);if(o)this.desk.update(o,{notice:{...o.notice,acknowledgedAt:Date.now()}});}
   deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
   // The purchase a plan stop is linked to (P1): its engine record, the shares it filled, and whether it has ended (filled,
   // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
@@ -2013,6 +2072,8 @@ class Automation {
       for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}
     }
     // Open app orders follow the best bid or ask every 3 seconds while the app runs, auto trading on or not.
+    // With Order tracking off, the history is still read (syncHistories).
+    if(this.config.orderTracking===false&&this.config.scope!=='paper'&&!this.syncingHistories&&Date.now()-(this.lastHistoryTick??0)>=3000){this.lastHistoryTick=Date.now();this.syncingHistories=true;void this.syncHistories().catch(()=>{}).finally(()=>{this.syncingHistories=false;});}
     if(this.config.orderTracking!==false&&this.config.scope!=='paper'&&!this.trackingOrders&&Date.now()-(this.lastTrack??0)>=3000){this.lastTrack=Date.now();this.trackingOrders=true;void this.trackOrders().catch(()=>{}).finally(()=>{this.trackingOrders=false;});}
     if(this.schedulerStatus().label!=='Monitoring')return;
     if(this.reviewRequested&&!this.busy&&this.config.scope!=='paper'&&Date.now()>=(this.reviewRequested.notBefore??0)){const r=this.reviewRequested;this.reviewRequested=null;this.triggerEvidence={kind:'placement',reason:r.reason};this.log(randomUUID(),'System',r.trigger,r.reason);void this.review(r.trigger).catch(()=>{});return;}

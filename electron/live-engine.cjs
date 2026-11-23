@@ -17,7 +17,7 @@ class LiveEngine {
     // severalOpenSetting, a function of the saved setting (default off), read at every use so a change applies to the next
     // order. Off: today's one-open-order rule, byte for byte (tests/several-open).
     this.severalOpenFixed=options.severalOpen===true;this.severalOpenSetting=null;
-    db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_orders(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,day TEXT NOT NULL,seenAt INTEGER NOT NULL,payload TEXT NOT NULL);');
+    db.exec('CREATE TABLE IF NOT EXISTS live_policy(accountKey TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_orders(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,day TEXT NOT NULL,seenAt INTEGER NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS broker_order_charges(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL);');
     // A revision whose reply was lost to a restart stays unconfirmed, its higher price still committed, until history shows it.
     try{for(const r of db.prepare('SELECT payload FROM live_intents').all()){const o=JSON.parse(r.payload);if(o.pendingRevision&&String(o.accountKey??'').endsWith(':US')===(this.market==='US')){const {pendingRevision:p,...rest}=o;this.writeOrder({...rest,trackingStopped:{at:Date.now(),reason:'restart during a revision'},unconfirmed:{from:p.from,cancel:p.cancel,...(p.cancel?{}:{price:p.price})}});}}}catch{}
   }
@@ -442,7 +442,38 @@ class LiveEngine {
   recordHistory(report,day){let key;try{key=this.identity();}catch{return;}const st=this.db.prepare('INSERT INTO broker_orders VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET seenAt=excluded.seenAt,payload=excluded.payload');
     for(const r of report?.orders??[])st.run(`${key}|${day}|${r.orderId}`,key,day,Date.now(),JSON.stringify({...r,market:this.market}));}
   history(day=this.day()){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT payload FROM broker_orders WHERE accountKey=? AND day=? ORDER BY rowid').all(key,day).map(r=>JSON.parse(r.payload));}
-  async syncHistory(day=this.day()){const report=await this.broker.request('orders',{startDate:day,endDate:day});this.recordHistory(report,day);return report;}
+  // Every recorded KIS order row from a day on, each with its day (for orders made outside the app, outside-fills.cjs).
+  historyRange(fromDay){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT day,payload FROM broker_orders WHERE accountKey=? AND day>=? ORDER BY day,rowid').all(key,fromDay).map(r=>({...JSON.parse(r.payload),day:r.day}));}
+  // historyReadAt: when today's history was last read whole (the flow detector's ordersThrough). historyKey: the account it
+  // was read for; another account starts again (nothing read yet, the missed days not read).
+  resetHistoryFor(key){if(this.historyKey!==key){this.historyKey=key;this.historyReadAt=undefined;this.missedRead=false;this.missedRetryAt=0;}}
+  async syncHistory(day=this.day()){let key=null;try{key=this.identity();}catch{}if(key)this.resetHistoryFor(key);
+    const report=await this.broker.request('orders',{startDate:day,endDate:day});this.recordHistory(report,day);if(day===this.day())this.historyReadAt=Date.now();return report;}
+  // The Korean business days the app did not read, once per account and start: from backfillFrom() (the day of the flow
+  // detector's last reading; null when it has none, undefined while the account is not known yet) to yesterday, the newest
+  // 10 at most. A day that fails stops the run, retried after 5 minutes; until all are read, missedRead stays false.
+  async syncMissed(now=Date.now()){if(this.missedRead||now<(this.missedRetryAt??0))return;const from=this.backfillFrom?.();if(from===undefined)return;const today=this.day();
+    if(typeof from!=='string'||from>=today){this.missedRead=true;return;}
+    const {isBusinessDay}=require('./business-days.cjs');const days=[];for(let t=Date.parse(from+'T00:00:00Z');;t+=86400000){const d=new Date(t).toISOString().slice(0,10);if(d>=today)break;if(isBusinessDay('KR',d))days.push(d);}
+    try{for(const d of days.slice(-10))await this.syncHistory(d);}catch(error){this.missedRetryAt=now+300000;throw error;}this.missedRead=true;}
+  // KIS's fee-and-tax figure for Korean orders made outside the app (the order inquiry, as for the app's own orders), by
+  // "<day>|<number>": {charges, filled} once read for that fill, {failed:true} after 6 failed attempts. Read soon after the
+  // fill and again every 5 minutes, 3 orders per call, for today's and yesterday's rows; a fill that grows is read again.
+  outsideCharges(){let key;try{key=this.identity();}catch{return {};}const {keyOf}=require('./outside-fills.cjs');
+    return Object.fromEntries(this.db.prepare('SELECT payload FROM broker_order_charges WHERE accountKey=?').all(key).map(r=>JSON.parse(r.payload)).filter(p=>p.day).map(p=>[keyOf(p.day,p.orderId),Number.isFinite(p.charges)?{charges:p.charges,filled:p.filled}:p.attempts>=6?{failed:true}:null]).filter(([,v])=>v));}
+  async refreshOutsideCharges(now=Date.now()){if(this.market!=='KR')return 0;let key;try{key=this.identity();}catch{return 0;}
+    const {appOrderIds,keyOf}=require('./outside-fills.cjs');const {norm}=require('./order-chain.cjs');const yesterday=new Date(Date.parse(this.day()+'T00:00:00Z')-86400000).toISOString().slice(0,10);
+    // Today's and yesterday's rows, and any older large fill still waiting for its figure (it is not counted until then).
+    const {LARGE_KRW}=require('./outside-fills.cjs');const from=new Date(Date.parse(this.day()+'T00:00:00Z')-100*86400000).toISOString().slice(0,10);
+    // Rows the detector can list (a kind name it knows), newest first, so a new fill is not kept waiting behind older ones.
+    const {kindOf}=require('./outside-fills.cjs');const rows=this.historyRange(from).filter(r=>kindOf(r)&&(r.day>=yesterday||(Number(r.executionAmount)||0)>=LARGE_KRW)).sort((a,b)=>b.day.localeCompare(a.day)||(b.timestamp??0)-(a.timestamp??0)),mine=appOrderIds(rows,this.orders());const get=this.db.prepare('SELECT payload FROM broker_order_charges WHERE id=?'),put=this.db.prepare('INSERT INTO broker_order_charges VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload');
+    let done=0;for(const r of rows){if(done>=3)break;if(!(r.filled>0)||mine.has(keyOf(r.day,r.orderId)))continue;const id=`${key}|${r.day}|${norm(r.orderId)}`;const was=get.get(id);
+      const p=was?JSON.parse(was.payload):{orderId:String(r.orderId),day:r.day,attempts:0};const grown=Number.isFinite(p.filled)&&p.filled!==r.filled;
+      if(Number.isFinite(p.charges)&&!grown||!grown&&p.attempts>=6||now-(p.lastAttempt??0)<300000)continue;done++;const base=grown?{orderId:String(r.orderId),day:r.day,attempts:0}:p;
+      try{const c=await this.broker.request('charges',{day:r.day,orderId:String(r.orderId)});
+        put.run(id,key,JSON.stringify(c.filled===r.filled&&Number.isFinite(c.charges)?{orderId:String(r.orderId),day:r.day,filled:r.filled,charges:c.charges,retrievedAt:now,lastAttempt:now}:{...base,filled:r.filled,attempts:base.attempts+1,lastAttempt:now,code:'FILL_MISMATCH'}));}
+      catch(error){put.run(id,key,JSON.stringify({...base,filled:r.filled,attempts:base.attempts+1,lastAttempt:now,code:String(error?.message??'').slice(0,40)}));}}
+    return done;}
   async reconcile() {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');this.busy=true;
     try {

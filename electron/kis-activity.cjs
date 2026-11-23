@@ -35,7 +35,12 @@ function normalizeOrders(rows,start,end) {
     const status=row.cncl_yn==='Y'?(filled?'Partially filled / canceled':'Canceled'):rejected?(filled?'Partially filled / rejected':'Rejected'):filled===quantity && quantity>0?'Filled':filled?'Partially filled':remaining?'Pending':'Unfilled';
     const branch=row.ord_gno_brno??'';
     if(typeof branch!=='string' || !/^[A-Z0-9]{0,10}$/.test(branch))throw new Error('INVALID_RESPONSE');
-    const record={id:`${row.ord_dt}:${branch}:${row.odno}`,orderId:row.odno,originalOrderId,symbol:row.pdno,name:row.prdt_name.slice(0,120),timestamp,side:row.sll_buy_dvsn_cd==='01'?'Sell':'Buy',quantity,filled,remaining,rejected,executionAmount,averagePrice,orderPrice,status};
+    // KIS's name for the order's kind (현금매도, 현금매수, 유대신규 a short sale, 유대상환 its cover, …) and the loan date of a
+    // credit order, kept as KIS gives them (found in live use: without them a short and its cover read as a plain sale and
+    // purchase). Absent from a row, they are left out.
+    const creditName=typeof row.sll_buy_dvsn_cd_name==='string'&&row.sll_buy_dvsn_cd_name.trim()?row.sll_buy_dvsn_cd_name.trim().slice(0,20):null;
+    const loanDate=/^\d{8}$/.test(String(row.loan_dt??''))?`${row.loan_dt.slice(0,4)}-${row.loan_dt.slice(4,6)}-${row.loan_dt.slice(6,8)}`:null;
+    const record={id:`${row.ord_dt}:${branch}:${row.odno}`,orderId:row.odno,originalOrderId,symbol:row.pdno,name:row.prdt_name.slice(0,120),timestamp,side:row.sll_buy_dvsn_cd==='01'?'Sell':'Buy',quantity,filled,remaining,rejected,executionAmount,averagePrice,orderPrice,status,...(creditName?{creditName}:{}),...(loanDate?{loanDate}:{})};
     const previous=records.get(record.id);
     if(previous && JSON.stringify(previous)!==JSON.stringify(record))throw new Error('INCOMPLETE_HISTORY');
     records.set(record.id,record);

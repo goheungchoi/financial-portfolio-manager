@@ -60,7 +60,7 @@ Each row: the feature, where the user meets it, the settings that govern it, and
 | Holdings, allocation, exposure, movement | Home card, Holdings | — | P1 Holdings |
 | Company view, candles, indicators, research panel | Charts, pop-out window | — | P1 Charts, P4 §3.6 |
 | Performance against benchmarks, drawdown, corrections | Performance | — | P4 §3.3 |
-| Cash-flow detection ("cash checks") | Home "Needs you" line | — | P4 §3.3 |
+| Cash-flow detection ("cash checks"); Korean orders made outside the app counted as trades | Home "Needs you" line | — | P4 §3.3 |
 | Order history, Today strip, origin of each order | Activity | period on screen | P1 Activity, P4 §3.4 |
 | Realized P&L (KIS's Korean report) | Performance | — | P4 §3.4 |
 | Fees, taxes, income | Fees & taxes | cost and tax profile | P4 §3.5 |
@@ -76,7 +76,7 @@ Each row: the feature, where the user meets it, the settings that govern it, and
 | Cash rules: KIS buying power and the shared funding ledger | not shown today | none (fixed) | P2 §4 |
 | Several open orders, several orders per review | Engine → Trading | "Several open orders", "Orders per review" | P2 §3.11 |
 | Order tracking (moving an open order with the price) | Engine → Trading | "Order tracking" | P2 §3.9 |
-| Stops and other conditional orders, trailing stops | Journal → Orders and triggers | Engine: conditional orders, "Submit them automatically", trailing stops, caps | P2 §6 |
+| Stops and other conditional orders, trailing stops; a stop on Korean shares no longer held is closed with words | Journal → Orders and triggers | Engine: conditional orders, "Submit them automatically", trailing stops, caps | P2 §6 |
 | Leveraged and inverse ETFs, margin, short selling | Short & leverage | the switches and caps there | P2 §5.1–5.2 |
 | Daily loss limit response, daily automatic order cap, stop after failed reviews | Engine → guardrails | "When a daily loss limit is hit", caps | P2 §5.3–5.4 |
 | Extended sessions (NXT, U.S. pre/after/daytime) | Engine | session switches, size cap | P2 §5.5 |

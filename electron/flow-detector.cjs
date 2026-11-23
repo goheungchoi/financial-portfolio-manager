@@ -27,6 +27,15 @@ const HOLD_MS=2*3600000,MAX_HOLD_MS=4*86400000,EVIDENCE_MS=86400000,MATCH_DAYS=1
 // R1: while such a record is unconfirmed and under HOLD_MS old, any new unexplained part in its market or a change in
 // the other market takes it back into pending with its parts, and resolve runs as it would have under HOLD_MS.
 const SHORT_MS=10*60000,OTHER_READS=2;
+// An outside fill's stored effect is kept while its order day is within 110 days (fills of 100 days are compared).
+const metaKept=(k,t)=>{const m=/^kis:(\d{4})(\d{2})(\d{2}):/.exec(k);return !m||Date.parse(m[1]+'-'+m[2]+'-'+m[3]+'T00:00:00+09:00')>=t-110*86400000;};
+// Orders made outside the app (outside-fills.cjs): the history older than this keeps a Korean rise on the long hold, and
+// a question about a deposit or withdrawal you confirmed that such an order explains is shown for at most ASK_MS.
+const ORDERS_STALE_MS=3*60000,ASK_MS=7*86400000;
+// Whether a recorded flow's window holds a fill at t (the only reader of a recorded window here: an outside order's fill
+// is matched to the detected flow its cash went into; KIS moves cash at the fill or a little after, 10 minutes of slack).
+const holdsFill=(x,t,slack=10*60000)=>Number.isFinite(x.occurredBy)?t<=x.occurredBy&&(!Number.isFinite(x.occurredAfter)||t>=x.occurredAfter-slack):x.day===seoulDate(t);
+const {describe}=require('./outside-fills.cjs');
 // What each market's cash reading includes. Change a market's name here whenever what the caller passes as its cash
 // changes: a saved reading of another basis is not compared, so the change in definition is never taken for money moving.
 // KR: Korean cash net of the KRW known to be committed to unsettled U.S. buys (electron/integrated-settlement.cjs).
@@ -127,19 +136,46 @@ class FlowDetector {
   // funding: the recorder's cumulative explained amounts {KR, US} (electron/funding-transfers.cjs explained).
   // readAt {KR, US}: when each market's balance was read (item 9; the short hold counts the other market's reads).
   // krwUnpaid: the route's KRW for U.S. buys not yet seen leaving Korean cash (item 9: any settlement keeps the long hold).
-  observe(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,provisionalOutsideKRW=null,unsettledKRW=0,usExplained=null,funding=null,readAt=null,krwUnpaid=0}){
+  // outside: Korean fills KIS lists that the app did not send (outside-fills.cjs), counted like the app's own fills (found
+  // in live use: a sale made in the KIS app was recorded as a deposit). ordersThrough: the time up to which the day's KIS
+  // order history is known to be complete (null: not read); a Korean rise is recorded early only once the history was
+  // read after it. Both are left out by callers that do not track orders made outside the app.
+  // One reading is one transaction: a flow it settles or records and the saved reading are written together, so an error
+  // between them leaves neither.
+  // Its notes are sent once the reading is saved, so a reading rolled back sends none.
+  observe(account,options){const send=this.onNote,notes=[];this.onNote=(title,message)=>notes.push([title,message]);this.db.exec('SAVEPOINT flow_observe');
+    try{const found=this.observeReading(account,options??{});this.db.exec('RELEASE flow_observe');this.onNote=send;for(const [t,m] of notes)try{send?.(t,m);}catch{}return found;}
+    catch(error){this.onNote=send;try{this.db.exec('ROLLBACK TO flow_observe');this.db.exec('RELEASE flow_observe');}catch{}throw error;}}
+  // Your Remove of a detected flow (main.cjs performance:remove-flow): remembered as yours, so an order made outside the app
+  // that later explains it is not counted again (recordedForFill). The app's own removals never mark it.
+  noteRemoved(account,id){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)return;const w=JSON.parse(row.payload);
+    if(!(w.recorded??[]).some(x=>x.id===id))return;w.recorded=w.recorded.map(x=>x.id===id?{...x,removedBy:'you'}:x);this.db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify(w),account);}
+  observeReading(account,{krCash,usCash=null,fx=null,orders=[],provisionalKRW=0,provisionalOutsideKRW=null,unsettledKRW=0,usExplained=null,funding=null,readAt=null,krwUnpaid=0,outside=null,ordersThrough=undefined}){
     if(typeof account!=='string'||!account||!Number.isFinite(krCash))return [];
+    const tracked=Array.isArray(outside);
+    // A large fill waiting for KIS's fee figure is not counted yet; while one waits, a Korean rise keeps the long hold.
+    const awaiting=tracked&&outside.some(f=>f.awaitingCharge);if(tracked)outside=outside.filter(f=>!f.awaitingCharge);
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);let prev=row?JSON.parse(row.payload):null;
+    // An order made outside the app keeps the cash effect it was first counted with (a later estimate, from a changed cost
+    // profile, never moves it); only KIS's figure replaces an estimate, once, and a fill that grows is counted anew.
+    if(tracked){const meta=prev?.outsideMeta??{};outside=outside.map(f=>{const k=orderKey(f),m=meta[k],was=prev?.fills?.[k];if(!m||!Number.isFinite(was))return f;
+        const grew=m.filled!==f.filled,reported=m.basis!=='broker'&&f.resultCosts?.basis==='broker';return grew||reported?f:{...f,resultCosts:{...f.resultCosts,netCash:was,basis:m.basis}};});
+      orders=[...orders,...outside];}
     // Fills of orders missing from this reading (for example U.S. orders before the U.S. account loads) are kept as last seen.
     // The tracker's explained change since the previous reading; the reading keeps the last ledger event it covers.
     let usAdjust=0,usPretracking={},usEvent=prev?.usEvent??null;if(usExplained){try{const x=usExplained(prev?{afterId:prev.usEvent??null,since:prev.at,from:prev.at}:{afterId:Number.MAX_SAFE_INTEGER});if(prev){usAdjust=Number(x?.usd)||0;usPretracking=x?.pretracking??{};}if(Number.isFinite(x?.through))usEvent=x.through;}catch{usAdjust=0;}}
-    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),provOut:Math.round(Number.isFinite(provisionalOutsideKRW)?provisionalOutsideKRW:Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...(prev?.fills??{}),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{}),
+    const now={at:this.clock(),krCash,usCash:Number.isFinite(usCash)?usCash:null,basis:BASIS,provisionalKRW:Math.round(Number(provisionalKRW)||0),provOut:Math.round(Number.isFinite(provisionalOutsideKRW)?provisionalOutsideKRW:Number(provisionalKRW)||0),unsettledKRW:Math.round(Number(unsettledKRW)||0),fills:{...Object.fromEntries(Object.entries(prev?.fills??{}).filter(([k])=>metaKept(k,this.clock()))),...fillsOf(orders)},usEvent,...(funding?{funding:{KR:Number(funding.KR)||0,US:Number(funding.US)||0}}:{}),
       // Item 9: the snapshots' read times, unpaid KRW of the route, and whether a U.S. balance was ever read for this account.
       ...(readAt&&typeof readAt==='object'?{readAt:{KR:Number.isFinite(readAt.KR)?readAt.KR:null,US:Number.isFinite(readAt.US)?readAt.US:null}}:{}),krwUnpaid:Math.round(Number(krwUnpaid)||0),
-      usEver:Boolean(prev?.usEver||prev?.usCash!=null||Number.isFinite(usCash))};
+      usEver:Boolean(prev?.usEver||prev?.usCash!=null||Number.isFinite(usCash)),
+      ...(tracked||prev?.outsideSeen?{outsideSeen:true}:{}),...(awaiting?{awaitingCharge:true}:{}),...(ordersThrough!==undefined?{ordersThrough:Number.isFinite(ordersThrough)?ordersThrough:null}:{}),
+      // Kept for the fills' whole 100 days, so a fill missing from one reading keeps the effect it was counted with.
+      ...(tracked||prev?.outsideMeta?{outsideMeta:{...Object.fromEntries(Object.entries(prev?.outsideMeta??{}).filter(([k])=>metaKept(k,this.clock()))),...(tracked?Object.fromEntries(outside.map(f=>[orderKey(f),{basis:f.resultCosts?.basis??null,filled:f.filled}])):{})}}:{})};
     // Provisional changes and settlement evidence carry over between readings. (S4b-1: settlement-timing entries are no
     // longer kept; a stored one is dropped at this save.)
     const state={pending:{...(prev?.pending??{})},settled:(prev?.settled??[]).filter(s=>now.at-s.at<=EVIDENCE_MS),
+      // A deposit or withdrawal you confirmed that an order made outside the app explains: asked about on Home, never removed.
+      ...(prev?.asks?.length?{asks:prev.asks.filter(a=>now.at-a.at<ASK_MS)}:{}),...(prev?.recorded?.length?{recorded:prev.recorded.filter(x=>now.at-x.at<MATCH_DAYS*86400000)}:{}),...(prev?.askDone?.length?{askDone:prev.askDone.slice(-40)}:{}),
       // Item 9: short-hold records that may still be taken back (R1), and your act on one (R2), each for HOLD_MS.
       ...(prev?.recent?{recent:{...prev.recent}}:{}),...(prev?.acted?{acted:Object.fromEntries(Object.entries(prev.acted).filter(([,a])=>now.at-a.at<HOLD_MS))}:{})};
     // A change held since before parts were kept: when its later additions happened is unknown, so its one part spans
@@ -159,6 +195,43 @@ class FlowDetector {
     const was=basisOf(prev?.basis);
     if(!prev||was.KR!==BASIS.KR){state.pending={};save();return [];}
     if(was.US!==BASIS.US){prev={...prev,usCash:null};delete state.pending.US;}
+    // Orders made outside the app. The first reading that has them (an upgrade): fills made before the previous reading are
+    // already in its cash, so they count as seen, and a detected flow they explain is settled (settleRecorded). Later, a
+    // fill first seen now settles a flow already recorded only when the flow holds exactly its amount (one fill, or the
+    // fills first seen together), its cash did not move in this reading, and the history read before this one, taken
+    // after the flow, did not list it (then it came after the flow). Any other is counted here like an app fill.
+    // The sign of the Korean change held before this reading (its object is changed in place below).
+    const heldSign=Math.sign(prev.pending?.KR?.amount??0),moved=now.krCash-prev.krCash;
+    const heldHolds=(f,e)=>{const q=prev.pending?.KR;return Boolean(q&&Math.sign(q.amount)===Math.sign(e)&&(q.parts??[]).some(p=>(p.by??q.since)>=f.createdAt&&!big('KR',p.amount-e)));};
+    const fresh=[];if(tracked){const seeding=!prev.outsideSeen,fills={...(prev.fills??{})};
+      for(const f of outside){const key=orderKey(f),e=Math.round(cashEffect(f)*100)/100;if(Object.hasOwn(fills,key)||!e)continue;
+        // A fill a held change of its sign may hold (the change came at or after the order) is not seeded: it is counted, so it
+        // explains that change (a sale made while the app was closed, held by the reading before the history was read).
+        if(seeding&&f.createdAt<=prev.at&&!heldHolds(f,e)){fills[key]=e;fresh.push({f,key,e,seeded:true});continue;}fresh.push({f,key,e});}
+      const held=state.pending.KR;
+      for(const sign of [1,-1]){const group=fresh.filter(x=>Math.sign(x.e)===sign&&!x.settled);if(!group.length)continue;
+        const tries=[...group.map(x=>[x]),...(group.length>1?[group]:[])];
+        for(const set of tries){if(set.some(x=>x.settled))continue;const e=round('KR',set.reduce((n,x)=>n+x.e,0)),live=!set.every(x=>x.seeded);
+          if(!big('KR',e,fx))continue;// Not when a held change may be these fills (a part of about their amount, made at or after the order), nor when their
+          // cash moved in this reading.
+          if(live&&(heldHolds({createdAt:Math.min(...set.map(x=>x.f.createdAt))},e)||!big('KR',moved-e,fx)))continue;
+          const flow=this.recordedForFill(account,state,prev,set,e);if(!flow)continue;this.settleRecorded(account,state,flow,set,e);for(const x of set){fills[x.key]=x.e;x.settled=true;}}}
+      if(prev.fills||fresh.some(x=>x.seeded||x.settled))prev={...prev,fills};}
+    // A fill counted in this comparison: said in Activity, and kept on a change it joins, for the words if it explains it.
+    // compared false: the readings were not compared (a U.S. settlement in between); the fill is taken as seen, unsaid.
+    // waiting: the change is that fill waiting for its cash (the hold's reason); it ends when Korean cash moves. before stays
+    // for the words when the change is explained.
+    // When the cash moves, the part the fill made while waiting joins the part of that move: it was the fill counted ahead
+    // of its cash, not a change of its own, so a deposit in the same reading is recorded whole, at the move's time.
+    const counted=(compared=true)=>{if(!compared)return;const q=state.pending.KR;
+      if(q?.outside?.some(x=>x.waiting)&&now.krCash!==prev.krCash){const ids=new Set(q.outside.filter(x=>x.waiting&&x.partId).map(x=>x.partId)),last=q.parts.at(-1);
+        if(last&&!ids.has(last.id)){const moved=q.parts.filter(p=>ids.has(p.id));if(moved.length){q.parts=q.parts.filter(p=>!ids.has(p.id)).map(p=>p===last?{...p,amount:round('KR',p.amount+moved.reduce((n,x)=>n+x.amount,0))}:p);}}
+        q.outside=q.outside.map(x=>x.waiting?{...x,waiting:false}:x);}
+      for(const x of fresh){if(x.seeded||x.settled)continue;
+      // before: KIS listed the fill while the cash had not moved yet (its balance lags the fill by minutes) and nothing else
+      // was held: the held change is that fill waiting for its cash, never recorded early.
+      if(q&&q.parts?.length)q.outside=[...(q.outside??[]),{words:describe(x.f),amount:x.e,...(now.krCash===prev.krCash&&heldSign===0?{before:true,waiting:true,partId:q.parts.at(-1)?.id??null}:{})}].slice(-10);
+      try{this.onNote?.('Order outside the app',`Korean cash: ${describe(x.f)}, ${money('KR',x.e)} ${x.e>0?'in':'out'}, is counted as a trade, not as a deposit or withdrawal.${x.f.resultCosts?.basis==='estimate-unread'?" Its fees are estimated: KIS's figure for the order could not be read.":''}`);}catch{}}};
     // The first reading with U.S. cash after one without it starts the U.S. comparison here (a U.S. fill since then could
     // not be judged without both readings, and waiting for one that will never come would stop detection), but the Korean
     // change is still compared. A U.S. order filled in between may have been funded from KRW, and a fall could be money
@@ -187,8 +260,9 @@ class FlowDetector {
         // At the first U.S. reading the U.S. side of the payment was not seen, so it cannot be measured: no evidence is kept.
         const usFall=usStart?Infinity:seen&&seen.US<0?(fx>0?-seen.US*fx:Infinity):0,outstanding=seen?Math.round(paidOff-Math.max(0,-seen.KR)-usFall):0;
         if(outstanding>=THRESHOLD_KRW)state.settled.push({at:now.at,krw:outstanding});}
-      markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;}
-    const u=compare();if(!u)return [];this.takeBack(account,state,now,fx,u);
+      counted(false);markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;}
+    // Not judged now: the reading does not advance, but a flow settled or fills seen above are kept.
+    const u=compare();if(!u){if(fresh.some(x=>x.seeded||x.settled))this.db.prepare('INSERT INTO flow_watch VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(account,JSON.stringify({...prev,...state,outsideSeen:true}));return [];}this.takeBack(account,state,now,fx,u);
     // P2: the provisional KRW that settled in this reading (p) explains falls up to it, USD first (KIS takes U.S. cash before
     // KRW): those parts leave the comparison, and the rest of p is kept as settlement evidence for a later fall. A rise is
     // never taken out (a deposit always shows), and nothing beyond p is (a larger withdrawal leaves its excess).
@@ -222,7 +296,7 @@ class FlowDetector {
       // R2: a change that begins after you confirmed or removed an early record carries it, so its note names that record.
       else{const acted=Object.entries(state.acted??{})[0];state.pending[market]={amount:round(market,amount),since:now.at,after:prev.at??null,parts:[{id:randomUUID(),amount:round(market,amount),after:prev.at??null,by:now.at}],funding:u.usTraded,...mark,
         ...(acted?{earlier:{market:acted[0],amount:acted[1].amount,act:acted[1].act}}:{})};if(acted)delete state.acted[acted[0]];}}
-    markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;
+    counted();markFills(state,orders,now.at);const found=this.resolve(account,state,now,prev,fx);save();return found;
   }
   // Money moved since the day's baseline for the loss checks: the recorded flows (PerformanceHistory.flowsSince) and,
   // at once, the changes still held here (independent accounting review of 162d7c9, P1: a deposit held for two hours
@@ -272,8 +346,12 @@ class FlowDetector {
   // Item 9: why a held rise cannot be recorded after SHORT_MS now (null: it can). R3: the reasons that keep the long hold
   // are shown on Home and in the note; 'waiting' (the other market not yet read twice) is not one of them.
   shortReason(m,q,state,now,fx){if(!(q.amount>0))return 'fall';if(q.takenBack)return 'it changed again after an early record';if(q.couldBeFill)return 'an open order could fill it';if(q.funding)return 'a U.S. buy filled with it';
-    if(q.usUnseen)return 'the U.S. balance was not compared';if(now.provisionalKRW>0||now.unsettledKRW>0||state.settled.length||now.krwUnpaid>0)return 'U.S. buys are settling';
+    if(q.usUnseen)return 'the U.S. balance was not compared';if(m==='KR'&&now.awaitingCharge)return "an order made outside the app waits for KIS's fee figure";if(q.outside?.some(x=>x.waiting))return 'an order made outside the app is waiting for its cash';if(now.provisionalKRW>0||now.unsettledKRW>0||state.settled.length||now.krwUnpaid>0)return 'U.S. buys are settling';
     if(m==='US'&&!(fx>0))return 'no exchange rate';const o=m==='KR'?'US':'KR';if(state.pending[o])return `the ${label(o)} account changed too`;
+    // A Korean rise is recorded early only once KIS's order history was read after it, so an order made outside the app
+    // is seen first; a history not read for more than 3 minutes keeps the long hold with its reason.
+    if(m==='KR'&&Object.hasOwn(now,'ordersThrough')){const t=now.ordersThrough,lastBy=q.parts?.at(-1)?.by??q.since;
+      if(!(Number.isFinite(t)&&t>=lastBy))return !Number.isFinite(t)||now.at-t>ORDERS_STALE_MS?"the day's KIS orders were not read":'waiting';}
     if(!now.readAt)return 'waiting';if((o==='KR'||now.usEver)&&(q.otherReads??0)<OTHER_READS)return 'waiting';return null;}
   // Item 9 section 4 (A; design-note §4a): each held part, for the headline series (PerformanceHistory.held). It counts
   // as a deposit or withdrawal on the Seoul day of its `by` (where its detected flow will fall) unless something else may
@@ -286,6 +364,8 @@ class FlowDetector {
       const reason=q.couldBeFill?'an open order may explain it':q.funding?'a U.S. buy filled with it':settling?'U.S. buys are settling':null;
       for(const x of (Array.isArray(q.parts)&&q.parts.length?q.parts:[{amount:q.amount,by:q.since}]))if(!(x.id&&done.has(x.id)))out.push({market:m,amount:x.amount,by:x.by,since:q.since,counted:!reason,...(reason?{reason}:{})});}
     return out;}
+  // When the last reading was saved (the days the app did not read start on its day).
+  lastAt(account){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)return null;const at=JSON.parse(row.payload).at;return Number.isFinite(at)?at:null;}
   // Provisional changes held now, for the review context and the performance page.
   pending(account){
     const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);const p=row?JSON.parse(row.payload).pending??{}:{};
@@ -294,7 +374,11 @@ class FlowDetector {
   resolve(account,state,now,prev,fx){
     const p=state.pending,out=[];const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};this.countReads(state,now,{KR:Number.isFinite(now.krCash),US:now.usCash!=null&&prev?.usCash!=null});
     // Balances back where they were: nothing happened that needs recording.
-    for(const m of ['KR','US'])if(p[m]&&!big(m,p[m].amount,fx)){note('Cash change reversed',`${label(m)} cash returned to its earlier level; nothing recorded.`);delete p[m];}
+    // A change an order made outside the app explains (its fill was counted after the cash moved) says so.
+    for(const m of ['KR','US'])if(p[m]&&!big(m,p[m].amount,fx)){const by=p[m].outside??[],sum=by.reduce((n,x)=>n+x.amount,0);
+      if(by.length&&by.every(x=>x.before))note('Cash change explained',`${by.map(x=>x.words).join('; ')}: KIS listed it before its cash reached the balance, and the cash has now arrived; nothing recorded.`);
+      else if(by.length)note('Cash change explained',`${label(m)} cash ${sum>0?'rose':'fell'} by ${money(m,sum)}: ${by.map(x=>x.words).join('; ')} explains it; nothing recorded.`);
+      else note('Cash change reversed',`${label(m)} cash returned to its earlier level; nothing recorded.`);delete p[m];}
     // M-1c: a change you have already recorded yourself (a deposit or withdrawal of this market, the same direction, an
     // amount within the threshold, dated within the change's window and not yet explaining another change) is that
     // flow: it is not recorded again, and its held parts are marked as explained by it (a deposit the user
@@ -332,7 +416,9 @@ class FlowDetector {
       const earlier=q.earlier?q.earlier.act==='recorded'?` The earlier ${money(q.earlier.market,q.earlier.amount)} change you recorded yourself stands.`:` The earlier ${money(q.earlier.market,q.earlier.amount)} record you ${q.earlier.act} stands.`:'';
       const pieces=piecesOf(m,q,fx),added=[];
       pieces.forEach((x,i)=>{const flow=this.performance.addFlow(account,{day:seoulDate(x.occurredBy),market:m,amount:x.amount,detected:true,occurredAfter:x.occurredAfter,occurredBy:x.occurredBy,pendingIds:x.pendingIds,
-        note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen}${earlier}${!early&&x.amount>0&&q.holdReason?` Held 2 h: ${q.holdReason}.`:''} Confirm or remove.`.slice(0,200)});added.push(flow);out.push(flow);});
+        note:`Detected: ${label(m)} cash ${x.amount>0?'rose':'fell'} with no matching trade${pieces.length>1?` (${i+1} of ${pieces.length})`:x.mixed?' (net, in both directions)':''}.${unseen}${earlier}${!early&&x.amount>0&&q.holdReason?` Held 2 h: ${q.holdReason}.`:''} Confirm or remove.`.slice(0,200)});added.push(flow);out.push(flow);
+        // Remembered for MATCH_DAYS, so a fill that explains it is not counted again if you remove it (recordedForFill).
+        state.recorded=[...(state.recorded??[]),{id:flow.id,market:m,day:flow.day,amount:flow.amount,occurredAfter:flow.occurredAfter??null,occurredBy:flow.occurredBy??null,at:now.at}].slice(-60);});
       if(early){state.recent={...(state.recent??{}),[m]:{ids:added.map(f=>f.id),q:JSON.parse(JSON.stringify(q)),at:now.at}};
         note('Cash change recorded',`${label(m)} cash rose by ${money(m,q.amount)} and nothing else could explain it; recorded after 10 minutes. Confirm or remove it on the Performance page.`);}
       delete p[m];}
@@ -344,6 +430,54 @@ class FlowDetector {
   recordedByYou(account,m,q,at,fx){if(typeof this.performance?.explainHeld!=='function'||typeof this.performance?.flows!=='function')return null;const starts=(q.parts??[]).map(x=>x.after).filter(Number.isFinite);const from=seoulDate(starts.length?Math.min(...starts):Number.isFinite(q.after)?q.after:q.since),to=seoulDate(at);
     return this.performance.flows(account).filter(f=>f.market===m&&!f.detected&&!f.transfer&&!(f.pendingIds?.length)&&Math.sign(f.amount)===Math.sign(q.amount)&&!big(m,f.amount-q.amount,fx)&&f.day>=from&&f.day<=to)
       .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))[0]??null;}
+  // A Korean detected flow (still detected, one you confirmed, or one you removed) that orders made outside the app explain,
+  // their fills first seen after the flow was recorded: same sign, the amount within the threshold of theirs (a larger flow
+  // is never matched on its window alone), recorded in the last MATCH_DAYS days, not yet asked about, and its window holding
+  // the orders (holdsFill: KIS gives the order's time, never later than its fill). Not when the history read before this
+  // reading came after the flow: the fills were not listed then, so they came after it. A flow you removed is remembered
+  // (state.recorded), so its fill is not counted again elsewhere. The closest amount.
+  recordedForFill(account,state,prev,set,e){if(typeof this.performance?.flows!=='function')return null;const t=Math.max(...set.map(x=>x.f.createdAt)),since=this.clock()-MATCH_DAYS*86400000;
+    const asked=new Set([...(state.asks??[]).map(a=>a.flowId),...(state.askDone??[])]),seenAfter=x=>Number.isFinite(prev.ordersThrough)&&Number.isFinite(x.occurredBy)&&prev.ordersThrough>=x.occurredBy;
+    const fits=x=>x.market==='KR'&&!x.transfer&&!asked.has(x.id)&&(x.createdAt??x.at??0)>=since&&Math.sign(x.amount)===Math.sign(e)&&!big('KR',x.amount-e)&&holdsFill(x,t)&&!seenAfter(x);
+    const flows=this.performance.flows(account),ids=new Set(flows.map(x=>x.id));
+    const live=flows.filter(x=>(x.detected||Number.isFinite(x.confirmedAt)&&/^Detected/.test(x.note??''))&&fits(x));
+    // Removed by you (noteRemoved, from your Remove), never inferred from a flow's absence; a flow you replaced with your own
+    // record: that record is asked about, as one you confirmed.
+    const gone=(state.recorded??[]).filter(x=>x.removedBy==='you'&&!ids.has(x.id)&&fits({...x,market:x.market??'KR'})).map(x=>({...x,removed:true}));
+    const yours=flows.filter(x=>!x.detected&&x.replaced?.id&&(state.recorded??[]).some(r=>r.id===x.replaced.id)&&fits(x));
+    // More than one fits (the old release could record a sale's cash and, minutes later, a genuine deposit of about the same
+    // amount): the one whose window holds the order without the slack is taken only when exactly one does; otherwise none is
+    // withdrawn and you are asked about each still there. One that fits only through the slack while a flow of about this
+    // amount that you removed is remembered: asked about, never withdrawn.
+    const all=[...live,...yours,...gone];if(!all.length)return null;
+    const strict=x=>holdsFill(x,t,0);
+    const removedLike=(state.recorded??[]).some(x=>x.removedBy==='you'&&!ids.has(x.id)&&!big('KR',x.amount-e));
+    if(all.length===1)return strict(all[0])||!removedLike||all[0].removed?all[0]:{ask:all.filter(x=>!x.removed)};
+    const exact=all.filter(strict);if(exact.length===1)return exact[0];
+    return {ask:all.filter(x=>!x.removed)};}
+  // Settles a recorded flow orders made outside the app explain. Still detected: removed, with a note (never silently).
+  // One you confirmed stays; you are asked on Home. One you removed: nothing to change; the fills are not counted again.
+  settleRecorded(account,state,flow,set,e){const note=(title,message)=>{try{this.onNote?.(title,message);}catch{}};
+    const words=set.map(x=>describe(x.f)).join('; ');
+    // Several flows may hold these fills: none is changed; each still there is asked about (the fills count as seen).
+    if(flow.ask){if(!flow.ask.length)return;for(const x of flow.ask){if((state.asks??[]).some(a=>a.flowId===x.id))continue;state.asks=[...(state.asks??[]),{flowId:x.id,day:x.day,amount:x.amount,explained:round('KR',e),words,full:true,confirmed:!x.detected,at:this.clock()}];}
+      note('Detected change may be a trade',`${words} may explain one of ${flow.ask.length} recorded changes of about its amount; none is removed. Check them on the Performance page.`);return;}
+    const kind=flow.amount>0?'deposit':'withdrawal';
+    // The app's removal is not your act: an early record it settles leaves the take-back list (R2 would call it yours).
+    if(state.recent?.KR?.ids?.includes(flow.id)){state.recent.KR.ids=state.recent.KR.ids.filter(id=>id!==flow.id);if(!state.recent.KR.ids.length){delete state.recent.KR;if(!Object.keys(state.recent).length)delete state.recent;}}
+    state.recorded=(state.recorded??[]).filter(x=>x.id!==flow.id);
+    if(flow.removed){note('Order outside the app',`${words} matches the ${money('KR',flow.amount)} change detected for ${flow.day} that you removed; it is not counted again.`);return;}
+    if(flow.detected){this.performance.removeFlow(account,flow.id);note('Detected change withdrawn',`The ${money('KR',flow.amount)} ${kind} detected for ${flow.day} is ${words}, not a ${kind}; it is removed.`);return;}
+    state.asks=[...(state.asks??[]),{flowId:flow.id,day:flow.day,amount:flow.amount,explained:round('KR',e),words,full:true,confirmed:true,at:this.clock()}];
+    note('Confirmed deposit may be a trade',`You ${flow.replaced?'recorded':'confirmed'} ${money('KR',flow.amount)} as a ${kind} for ${flow.day}; ${words} explains it. If it was not a ${kind}, remove it on the Performance page.`);}
+  // The questions about flows you confirmed (settleRecorded), while the flow is still there, for Home.
+  asks(account){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)return [];const w=JSON.parse(row.payload);
+    const ids=new Set(typeof this.performance?.flows==='function'?this.performance.flows(account).map(f=>f.id):[]);
+    return (w.asks??[]).filter(a=>ids.has(a.flowId)&&this.clock()-a.at<ASK_MS);}
+  // You answered a question (kept it, or removed the flow): it is not asked again.
+  dismissAsk(account,flowId){const row=this.db.prepare('SELECT payload FROM flow_watch WHERE account=?').get(account);if(!row)return;const w=JSON.parse(row.payload);
+    w.asks=(w.asks??[]).filter(a=>a.flowId!==flowId);w.askDone=[...(w.askDone??[]),String(flowId)].slice(-40);
+    this.db.prepare('UPDATE flow_watch SET payload=? WHERE account=?').run(JSON.stringify(w),account);}
   // A transfer pair recorded in the last MATCH_DAYS days as funding awaiting its exchange (or by the user), not yet
   // completed, with the same direction and amounts within 3% (exchange rates differ between the two moments).
   recordedTransfer(account,kr,us,at){

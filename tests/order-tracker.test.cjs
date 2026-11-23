@@ -42,7 +42,11 @@ test('the agent’s stop time and cancel conditions cancel the order',async()=>{
 test('orders it must leave alone: taken over, paused, cancelling, extended session, an earlier day, closed or filled; a closed market, a busy engine or no book',async()=>{
   for(const extra of [{handsOff:{at:1,changes:[]}},{trackingStopped:{at:1,reason:'x'}},{cancelRequestedAt:1},{session:'us-pre'},{day:'2026-10-21'},{status:'Filled'},{status:'Canceled'},{brokerOrderId:null}]){
     const t=setup();t.add(extra);await t.a.trackOrders();assert.deepEqual(t.revisions(),[],JSON.stringify(extra));}
-  const closed=setup();closed.a.sessionOpen=()=>false;closed.add();await closed.a.trackOrders();assert.deepEqual(closed.revisions(),[]);assert.equal(closed.sent.filter(s=>s[0]==='orders').length,0,'no history read while closed');
+  // Closed: no history read once the day's history was read after the session (found in live use: orders made outside the
+  // app need it whole, so a start on a closed market reads it once).
+  const closed=setup();closed.a.sessionOpen=()=>false;closed.add();closed.engine.historyReadAt=Date.now();await closed.a.trackOrders();assert.deepEqual(closed.revisions(),[]);assert.equal(closed.sent.filter(s=>s[0]==='orders').length,0,'no history read while closed');
+  const start=setup();start.a.sessionOpen=()=>false;await start.a.trackOrders();assert.equal(start.sent.filter(s=>s[0]==='orders').length,1,'once at a start on a closed market');
+  start.a.lastHistorySync={};await start.a.trackOrders();assert.equal(start.sent.filter(s=>s[0]==='orders').length,1,'and not again');
   const busy=setup();busy.add();busy.engine.busy=true;await busy.a.trackOrders();assert.deepEqual(busy.revisions(),[]);
   const none=setup();none.add();none.book.bid=null;await none.a.trackOrders();await none.a.trackOrders();assert.deepEqual(none.revisions(),[]);assert.equal(none.events.filter(e=>/no usable order book/.test(e.body)).length,1,'noted once');
 });

@@ -230,7 +230,7 @@ what feeds the fingerprint, and section 5 P2 how this compares with the user's r
 
 **What Stop does.** `stop(a)` (`auto-launch.cjs:45`): cancels any launch in flight, saves
 `enabled:false, autoSubmit:false`, and switches both engines off (`a.live.stop()`, `a.usLive.stop()`) even if the save
-throws; pauses the paper account in paper scope. Reply: "Auto trading stopped. Existing broker orders remain active."
+throws; pauses the paper account in paper scope. Reply: "Auto trading stopped. Existing broker orders remain active." With armed conditional orders (conditional orders on): "Auto trading stopped. Orders already at KIS stay. Your N armed stops (symbols, oldest first, at most 4) are not watched until you start it again." ("conditional orders" when not all are stop losses).
 Stop is never refused: a save that only turns these two off skips the Claude conditions (`turningOff`,
 `automation.cjs:194`). Orders already at the broker stay; armed conditional orders stop being checked
 (`conditionalMonitoringActive()`, `:534`, needs `enabled` and `sessionArmed`).

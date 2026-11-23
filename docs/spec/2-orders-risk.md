@@ -878,6 +878,30 @@ A rejected stop loss sends an alert ("The position is not protected until a new 
 holding is listed as **unprotected** to the user and to every later review until stops cover it, the shares are gone,
 or the user dismisses it (`unprotected`, `agent-desk.cjs:194-205`).
 
+**Shares sold outside the app** (`closeStopsNotHeld`, at each Korean balance reading, monitoring or not). An armed Sell
+order on a Korean stock acts only on evidence, shown on two balance readings at least 3 minutes apart, with no app order
+to explain it (none open, none made in the last 10 minutes, no app sale filled since it was armed). The evidence is the
+stock's outside sales less its outside purchases (`outside-fills.cjs`), placed after the last reading that showed the
+higher count (`lastHeldAt` plus a minute for the difference between KIS's clock and this PC's; at least the order's arming),
+covering the fall from that count (`lastHeld`). Orders are judged per purpose, as `setOrder` covers: a stop loss and a take
+profit on the same shares are each judged against them. Nothing is judged while the order history is not ready. Each sale
+explains a fall once: the count it explains becomes the new baseline. Then:
+- none held → **cancelled**, "Stop for X (N shares) closed: you sold the shares outside the app (KIS order N); none are
+  held.";
+- fewer held, one stop on the stock → its quantity is **reduced** to the shares held, "Stop for X reduced from N to M
+  shares: you sold K shares outside the app (KIS order N).";
+- several orders of the same purpose that together cover more than is held → none changes, each is asked about ("Stops for X cover N
+  shares together and M are held. The app cannot tell which stop …").
+
+A fall no order explains (for example a balance that lists no holdings by mistake) never changes a stop. It stays armed
+and you are asked, once for each count: "… the balance shows none held and no order explains it. It stays armed; cancel
+it on the Agent Desk if you sold the shares." Each is logged and shown on Home until dismissed (`stop-notice-<id>`): a
+question while the order is armed, the others for a day. Credit-lot orders, plan stops still waiting for their purchase,
+U.S. stocks and the paper account are left out.
+
+Known behaviour: a sale ordered within 60 seconds after the baseline reading is not evidence (the order is asked about);
+several orders of one purpose are only asked about, also when every share is sold.
+
 **Expiry and cancelling**: an armed order expires at `expiresAt` (`expire`, `:41`); the AI cancels with
 `action:'cancel'`; the user with `desk:cancel-order` (`main.cjs:441`; `cancelOrder`, `agent-desk.cjs:208`).
 
