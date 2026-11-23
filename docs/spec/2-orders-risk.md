@@ -704,6 +704,29 @@ determined here.
 - `effectOf` (`:12-15`) says whether an order opens or closes exposure; the loss rules and the daily order cap use it.
 - Screen text beside the switches: quoted in the implementer note, items 5–6 (`src/ShortLeverage.tsx:39-46`; not
   re-read).
+- **The rules a short sale must pass** (`short-rules.cjs`, B3b; pure, not yet called by any order path, and the short
+  and cover paths stay not executable until B4). Every rule fails closed: a figure, time or input it cannot read
+  refuses.
+  - instruments: KOSPI and KOSDAQ stocks; ETF short sales are refused ("ETF short sales are not yet enabled.") until
+    KRX's ETF tick table is confirmed from its own rules; a stock whose kind is unknown is not shorted;
+  - borrowable: KIS's per-stock lending list (CTSC2702R, EXCG_DVSN_CD 02 KOSPI, 03 KOSDAQ), read just before the
+    order and used for at most a minute, for this stock and this market only; lending open (psbl_yn Y) and the
+    tradable quantity (trad_psbl_qty2) at least the order's, a positive whole number;
+  - the cap: all shorts together (open obligations, waiting short orders, this one) at most 20% of the account value,
+    the low bound when it is a range; no value, no short; an open short or waiting order whose amount cannot be read
+    refuses; no per-stock cap;
+  - freshness: a time more than 5 s ahead of the clock, or no readable clock, is not fresh;
+  - the price: the uptick rule as the smallest valid price above the last trade on the Korean grid (the band's tick at
+    each edge; an off-grid last trade too), never a market order; in the opening auction above the previous close by a tick; a new short goes at its placement price
+    raised to that floor; an open short is revised only to prices at or above the floor read then, raised when the
+    floor passes its price, not moved because the floor rose while its price still meets it, and not repriced on a
+    last trade older than 60 s or during the auction;
+  - KRX only; the regular session or the opening auction only: no short in the closing auction (15:20-15:30), pre-
+    or after-market, on NXT or through SOR, where no price is given;
+  - exposure: with exposure.cjs's factor (negative for inverse products), a short flips the sign, so a short of an
+    inverse product counts as long exposure;
+  - a refusal (KIS gives no reason): "Short of N <stock> at <price> refused by KIS (no reason given). The app checked:
+    <what passed>. Not checkable here: the exchange's short-sale ban list for today, and your KIS stock-loan limit."
 
 ### 5.3 The daily loss limit and its responses
 
