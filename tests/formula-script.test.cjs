@@ -10,10 +10,10 @@ const data={closes:s=>H[s]??null,price:s=>H[s]?.at(-1).close??null,previousClose
 const ctx=(extra={})=>({data,universe:spec=>spec.market==='TEST'?{name:'test',symbols:['111110','222220','333330','444440','555550']}:null,names:s=>'Name'+s.slice(0,1),...extra});
 const U='u = universe(market="TEST")\n';
 const big=(extra={})=>({...ctx(),universe:()=>({name:'big',symbols:Array.from({length:BOUNDS.universeSize},(_,i)=>String(100000+i))}),
-  data:{closes:()=>series(100,1),price:()=>170,previousClose:()=>159},...extra});
+  data:{closes:()=>series(100,1),price:()=>159,previousClose:()=>158},...extra});
 const addsUp=r=>r.coverage.forEach(c=>assert.equal(c.evaluated+c.noHistory+c.stale+c.errors,c.size,'each stock lands in exactly one count'));
 test('lines, names, print and log in order; formula functions with a named stock',()=>{
-  const r=run('x = price("111110")\ny = x * 2\nprint("double", y)\nlog("done")',ctx());assert.deepEqual(r.lines,['double 318','log: done']);assert.equal(r.stopped,undefined);
+  const r=run('x = close("111110",0)\ny = x * 2\nprint("double", y)\nlog("done")',ctx());assert.deepEqual(r.lines,['double 318','log: done']);assert.equal(r.stopped,undefined);
 });
 test('rank, top, bottom, filter and count over a universe; history too short or missing is counted, never ranked',()=>{
   const r=run([U+'print("up", top(u, ret(S,20), 2))','print("down", bottom(u, ret(S,20), 1))','f = filter(u, ret(S,20) > 0)','print("rising", count(f))','print("all", count(u))'].join('\n'),ctx());
@@ -23,8 +23,8 @@ test('rank, top, bottom, filter and count over a universe; history too short or 
 });
 test('the offset form writes a slope: the 20-day average now against five days ago',()=>{
   const r=run(U+'print(top(u, sma(S,20) - at(sma(S,20),5), 1))',ctx());assert.match(r.lines[0],/^1\. 111110 Name1 5 /,'rising by 1 a day: a slope of 5 over five days');
-  assert.equal(run('print(at(price("111110"), 3))',ctx()).lines[0],'157','at k the price is the close k completed days ago');
-  assert.equal(run('print(at(price("111110"), 99))',ctx()).stopped.code,'BAD_OFFSET');
+  assert.equal(run('print(at(close("111110",0), 3))',ctx()).lines[0],'156','at k the last close is the one k completed days before');
+  assert.equal(run('print(at(close("111110",0), 99))',ctx()).stopped.code,'BAD_OFFSET');
 });
 test('a stale stock is counted and not ranked',()=>{
   const r=run(U+'print(top(u, ret(S,20), 5))',ctx({isStale:s=>s==='111110'}));assert.doesNotMatch(r.lines[0],/111110/);assert.equal(r.coverage[0].stale,1);addsUp(r);
@@ -35,27 +35,27 @@ test('errors name the line; a bound stops at its line and returns what was print
   const p=run(Array.from({length:BOUNDS.lines},(_,i)=>`print(${i})`).join('\n'),ctx());assert.equal(p.lines.length,BOUNDS.lines,'within the line bound all print');
   assert.equal(run(Array.from({length:BOUNDS.lines+1},()=>'print(1)').join('\n'),ctx()).stopped.code,'TOO_MANY_LINES');
   assert.equal(run(U+'print(top(u, ret(S,20), 99))',ctx()).stopped.code,'BAD_N');
-  assert.equal(run('print(top(universe(market="NONE"), price(S), 1))',ctx()).stopped.code,'BAD_UNIVERSE');
-  let t=0;const slow=run(U+'print(count(u))\nprint(top(u, price(S), 1))',ctx({now:()=>(t+=1500)}));assert.equal(slow.stopped.code,'TOO_SLOW');
+  assert.equal(run('print(top(universe(market="NONE"), close(S,0), 1))',ctx()).stopped.code,'BAD_UNIVERSE');
+  let t=0;const slow=run(U+'print(count(u))\nprint(top(u, close(S,0), 1))',ctx({now:()=>(t+=1500)}));assert.equal(slow.stopped.code,'TOO_SLOW');
   const over={...ctx(),universe:()=>({name:'big',symbols:Array.from({length:BOUNDS.universeSize+1},(_,i)=>String(100000+i))})};assert.equal(run('u = universe(market="X")',over).stopped.code,'UNIVERSE_TOO_LARGE');
   assert.equal(run('a = universe(market="TEST")\nb = universe(market="TEST")\nc = universe(market="TEST")\nd = universe(market="TEST")',ctx()).stopped.code,'TOO_MANY_UNIVERSES');
 });
 test('no loops, no I/O, no state between calls; the existing single formulas are unchanged',()=>{
   assert.equal(run('while(1)',ctx()).stopped.code,'NOT_A_STATEMENT');assert.equal(run('x = require("fs")',ctx()).stopped.code,'UNKNOWN_FUNCTION');
   run('x = 5',ctx());assert.equal(run('print(x)',ctx()).stopped.code,'UNKNOWN_NAME','each run starts empty');
-  const F=require('../electron/formula.cjs');assert.equal(F.evaluate(F.parse('price("111110")').ast,data),159);
-  assert.match(run('u = list("111110","222220")\nprint(top(u, price(S), 1))',ctx()).lines[0],/^1\. 111110/,'an explicit list is a universe');
-  assert.match(run('print(top(universe(list=["111110","222220"]), price(S), 1))',ctx()).lines[0],/^1\. 111110/,'universe(list=[…]) is the same, counted once');
-  assert.equal(run('print(log(price("111110")) > 0)',ctx()).lines[0],'yes','log() inside an expression is the natural log; a log line is the statement');
+  const F=require('../electron/formula.cjs');assert.equal(F.evaluate(F.parse('close("111110",0)').ast,data),159);
+  assert.match(run('u = list("111110","222220")\nprint(top(u, close(S,0), 1))',ctx()).lines[0],/^1\. 111110/,'an explicit list is a universe');
+  assert.match(run('print(top(universe(list=["111110","222220"]), close(S,0), 1))',ctx()).lines[0],/^1\. 111110/,'universe(list=[…]) is the same, counted once');
+  assert.equal(run('print(log(close("111110",0)) > 0)',ctx()).lines[0],'yes','log() inside an expression is the natural log; a log line is the statement');
 });
 // Item 1: hangs and memory.
 test('item 1: a universe function inside a per-stock expression is refused; every node and stock counts; screens are bounded',()=>{
   assert.equal(run(U+'print(count(u, count(u, count(u, 1>0) > 0) > 0))',ctx()).stopped.code,'NO_S_IN_EXPRESSION');
-  const nested=run(U+'print(count(u, count(u, price(S) > 0) > 0))',ctx());assert.equal(nested.stopped.code,'NESTED_UNIVERSE');assert.equal(nested.stopped.line,2);
-  assert.equal(run(U+'print(top(u, count(u) + price(S), 1))',ctx()).stopped.code,'NESTED_UNIVERSE');
-  const started=Date.now();const heavy=run('u = universe(market="BIG")\n'+Array.from({length:10},()=>'print(count(u, price(S) + price(S) + price(S) + price(S) > 0))').join('\n'),big());
+  const nested=run(U+'print(count(u, count(u, close(S,0) > 0) > 0))',ctx());assert.equal(nested.stopped.code,'NESTED_UNIVERSE');assert.equal(nested.stopped.line,2);
+  assert.equal(run(U+'print(top(u, count(u) + close(S,0), 1))',ctx()).stopped.code,'NESTED_UNIVERSE');
+  const started=Date.now();const heavy=run('u = universe(market="BIG")\n'+Array.from({length:10},()=>'print(count(u, close(S,0) + close(S,0) + close(S,0) + close(S,0) > 0))').join('\n'),big());
   assert.equal(heavy.stopped.code,'TOO_MANY_EVALUATIONS');assert.ok(Date.now()-started<BOUNDS.ms,'stopped by the evaluation bound, quickly');assert.ok(heavy.coverage.length<=BOUNDS.screens);addsUp(heavy);
-  const screens=run(U+Array.from({length:BOUNDS.screens+1},()=>'print(count(u, price(S) > 0))').join('\n'),ctx());
+  const screens=run(U+Array.from({length:BOUNDS.screens+1},()=>'print(count(u, close(S,0) > 0))').join('\n'),ctx());
   assert.equal(screens.stopped.code,'TOO_MANY_SCREENS');assert.equal(screens.stopped.line,BOUNDS.screens+2);assert.equal(screens.coverage.length,BOUNDS.screens);assert.equal(screens.lines.length,BOUNDS.screens);addsUp(screens);
 });
 test('item 1: the real 2-second clock stops a slow screen inside its loop',()=>{
@@ -66,32 +66,38 @@ test('item 1: the real 2-second clock stops a slow screen inside its loop',()=>{
 });
 // Item 2: names and lists.
 test('item 2: universe names stay short; lists count toward the universe bound; the output bound covers the coverage',()=>{
-  const r=run(['u = ["111110"]',...Array.from({length:8},()=>'u = union(u,u,u,u,u,u,u,u)'),'print(count(u, price(S) > 0))'].join('\n'),ctx());
+  const r=run(['u = ["111110"]',...Array.from({length:8},()=>'u = union(u,u,u,u,u,u,u,u)'),'print(count(u, close(S,0) > 0))'].join('\n'),ctx());
   assert.equal(r.stopped,undefined);assert.ok(r.coverage[0].universe.length<=BOUNDS.name);assert.ok(JSON.stringify(r).length<1000);
   assert.equal(run('a = ["111110"]\nb = list("222220")\nc = universe(market="TEST")\nd = ["333330"]',ctx()).stopped.code,'TOO_MANY_UNIVERSES');
-  const long=run(U+'t = "'+'x'.repeat(120)+'"\n'+Array.from({length:15},()=>'print(t, t, count(u, price(S) > 0))').join('\n'),ctx());assert.equal(long.stopped.code,'OUTPUT_TOO_LONG');
+  const long=run(U+'t = "'+'x'.repeat(120)+'"\n'+Array.from({length:15},()=>'print(t, t, count(u, close(S,0) > 0))').join('\n'),ctx());assert.equal(long.stopped.code,'OUTPUT_TOO_LONG');
   const returned=long.lines.reduce((n,l)=>n+l.length+1,0)+long.coverage.reduce((n,c)=>n+JSON.stringify(c).length+1,0);assert.ok(returned<=BOUNDS.outputBytes,`${returned} characters returned`);
 });
 // Item 3: at() against a live price that differs from the last close.
-test('item 3: at(expr, k) is expr as of the close k completed days ago, spanning the same sessions at every k',()=>{
-  const live={...data,price:s=>s==='111110'?170:data.price(s)};const c=ctx({data:live});const one=t=>{const r=run(t,c);assert.equal(r.stopped,undefined,t);return Number(r.lines[0]);};
-  assert.equal(one('print(price("111110"))'),170);assert.equal(one('print(at(price("111110"),1))'),159,'k=1 is yesterday\'s close');
-  assert.equal(one('print(at(ret("111110",1),1))'),Number(((159/158-1)*100).toPrecision(8)),'a one-day return a day ago is not zero');
-  assert.equal(one('print(ret("111110",20))'),Number(((170/140-1)*100).toPrecision(8)),'now: the live price against the close 20 completed days back');
-  assert.equal(one('print(at(ret("111110",20),5))'),Number(((155/135-1)*100).toPrecision(8)),'five days ago: 20 sessions as well');
-  const w=Array.from({length:20},(_,i)=>139+i),m=w.reduce((a,b)=>a+b)/20,sd=Math.sqrt(w.reduce((a,b)=>a+(b-m)**2,0)/19);
-  assert.equal(one('print(at(zscore("111110",20),1))'),Number(((159-m)/sd).toPrecision(8)),'the window is the 20 closes before the price, never the price itself');
-  assert.equal(one('print(at(at(price("111110"),30),30))'),100);assert.equal(run('print(at(at(price("111110"),30),31))',c).stopped.code,'BAD_OFFSET','nested offsets add up to at most 60');
-  assert.equal(run('print(at(price("111110"),1.5))',c).stopped.code,'BAD_OFFSET');
+test('item 3: at(expr, k) is expr as of the close k completed days before, spanning the same sessions at every k; live(S) is the quote',()=>{
+  // Closes 100..159; the latest price inside ret, change, zscore and ratio_z is the last close (159), the history the closes before it.
+  const c=ctx({live:s=>s==='111110'?{price:170,readAt:Date.UTC(2030,0,2,0,41,5)}:null});const one=t=>{const r=run(t,c);assert.equal(r.stopped,undefined,t);return Number(r.lines[0].split(' ')[0]);};
+  assert.equal(one('print(close("111110",0))'),159,'the last completed close');assert.equal(one('print(at(close("111110",0),1))'),158,'the close a day before');
+  assert.equal(one('print(live("111110"))'),170,'the live quote');assert.equal(one('print(at(live("111110"),1))'),159,'at(live(S),1) is the last completed close');assert.equal(one('print(at(live("111110"),3))'),one('print(close("111110",2))'),'at(live(S),k) is close(S,k-1)');
+  assert.equal(one('print(ret("111110",1))'),Number(((159/158-1)*100).toPrecision(8)),'a one-day return is the last day\'s move, never zero');
+  assert.equal(one('print(at(ret("111110",1),1))'),Number(((158/157-1)*100).toPrecision(8)),'a one-day return a day before is not zero');
+  assert.equal(one('print(ret("111110",20))'),Number(((159/139-1)*100).toPrecision(8)),'now: the last close against the close 20 sessions before');
+  assert.equal(one('print(at(ret("111110",20),5))'),Number(((154/134-1)*100).toPrecision(8)),'five days before: 20 sessions as well');
+  assert.equal(one('print(change("111110"))'),Number(((159/158-1)*100).toPrecision(8)));
+  const w=Array.from({length:20},(_,i)=>138+i),m=w.reduce((a,b)=>a+b)/20,sd=Math.sqrt(w.reduce((a,b)=>a+(b-m)**2,0)/19);
+  assert.equal(one('print(at(zscore("111110",20),1))'),Number(((158-m)/sd).toPrecision(8)),'the window is the 20 closes before the price, never the price itself');
+  assert.equal(one('print(sma("111110",3))'),158,'other functions use the closes up to the last one');
+  assert.equal(one('print((live("111110") - close("111110",0)) / close("111110",0) * 100)'),Number(((170/159-1)*100).toPrecision(8)),'a live move is written by the author');
+  assert.equal(one('print(at(at(close("111110",0),30),29))'),100,'59 days before: the first close');assert.equal(run('print(at(at(close("111110",0),30),31))',c).stopped.code,'BAD_OFFSET','nested offsets add up to at most 60');
+  assert.equal(run('print(at(close("111110",0),1.5))',c).stopped.code,'BAD_OFFSET');
 });
 // Items 4 and 5: fixed signatures.
 test('items 4-5: named, extra or missing arguments are WRONG_ARGUMENTS naming the function and the line',()=>{
   const wrong=(t,fn)=>{const r=run(t,ctx());assert.equal(r.stopped?.code,'WRONG_ARGUMENTS',t);assert.match(r.stopped.words,new RegExp(`^line \\d+: wrong arguments \\(.*${fn}`),t);assert.doesNotMatch(r.stopped.words,/Cannot|undefined|TypeError/,t);};
-  wrong(U+'print(top(u, price(S), n=1))','top');wrong(U+'print(top(u, price(S), 1, "lowest"))','top');wrong('print(x=1)','print');
-  wrong('x = 1\nprint(at(x,1,2))','at');wrong(U+'print(top(u, price(S,5), 1))','price');wrong(U+'print(count(u, price(S) > 0, 1))','count');wrong('u = universe("TEST")','universe');
-  wrong(U+'print(rank(u, price(S)))','rank');wrong('print(at(1))','at');wrong('print(top())','top');wrong('print(rank())','rank');wrong(U+'print(filter(u))','filter');wrong(U+'print(union(u))','union');
+  wrong(U+'print(top(u, close(S,0), n=1))','top');wrong(U+'print(top(u, close(S,0), 1, "lowest"))','top');wrong('print(x=1)','print');
+  wrong('x = 1\nprint(at(x,1,2))','at');wrong(U+'print(top(u, close(S,5,0), 1))','close');wrong(U+'print(count(u, close(S,0) > 0, 1))','count');wrong('u = universe("TEST")','universe');
+  wrong(U+'print(rank(u, close(S,0)))','rank');wrong('print(at(1))','at');wrong('print(top())','top');wrong('print(rank())','rank');wrong(U+'print(filter(u))','filter');wrong(U+'print(union(u))','union');
   wrong('print(count())','count');wrong('print(list())','list');wrong('print()','print');wrong('u = universe(market="TEST", size=3)','universe');wrong('u = universe(market="TEST", market="TEST")','universe');
-  wrong(U+'print(rank(u, price(S), "up", 3))','direction');
+  wrong(U+'print(rank(u, close(S,0), "up", 3))','direction');
   let called=0;run('u = universe("TEST")',ctx({universe:()=>{called++;return null;}}));assert.equal(called,0,'the app is never asked for a malformed universe');
 });
 // Item 6: Object.prototype names.
@@ -103,14 +109,14 @@ test('item 6: Object.prototype names are refused as functions, names and argumen
 });
 // Item 7: one stock's arithmetic error.
 test('item 7: one stock\'s arithmetic error is counted in the coverage; the screen goes on',()=>{
-  const r=run(U+'print(top(u, (price(S)-sma(S,20))/std(S,20), 3))',ctx());assert.equal(r.stopped,undefined);
+  const r=run(U+'print(top(u, (close(S,0)-sma(S,20))/std(S,20), 3))',ctx());assert.equal(r.stopped,undefined);
   assert.doesNotMatch(r.lines[0],/333330/,'the flat stock is not ranked');assert.match(r.lines[0],/111110/);assert.equal(r.coverage[0].errors,1);addsUp(r);
   const top=run('print("a")\nprint(1/0)',ctx());assert.deepEqual(top.lines,['a']);assert.equal(top.stopped.code,'DIVIDE_BY_ZERO');assert.equal(top.stopped.line,2);
 });
 // Item 8: conditions and numbers.
 test('item 8: a non-condition in filter or count and a non-number in rank are refused',()=>{
-  assert.equal(run(U+'print(count(filter(u, rsi(S,14))))',ctx()).stopped.code,'NOT_A_CONDITION');assert.equal(run(U+'print(count(u, price(S)))',ctx()).stopped.code,'NOT_A_CONDITION');
-  assert.equal(run(U+'print(top(u, price(S) > 100, 3))',ctx()).stopped.code,'NOT_A_NUMBER');
+  assert.equal(run(U+'print(count(filter(u, rsi(S,14))))',ctx()).stopped.code,'NOT_A_CONDITION');assert.equal(run(U+'print(count(u, close(S,0)))',ctx()).stopped.code,'NOT_A_CONDITION');
+  assert.equal(run(U+'print(top(u, close(S,0) > 100, 3))',ctx()).stopped.code,'NOT_A_NUMBER');
   const r=run(U+'print(count(u, ret(S,20) > 0))',ctx());assert.equal(r.lines[0],'1');assert.equal(r.coverage[0].evaluated,3,'evaluated counts the values used');addsUp(r);
 });
 // Item 9: number printing.
@@ -122,15 +128,15 @@ test('item 9: a non-finite value is an error naming the line; numbers print with
 });
 // Item 10: unary minus.
 test('item 10: -2^2 is -4 in the script language; formula.cjs is unchanged',()=>{
-  const p=t=>run(`print(${t})`,ctx()).lines[0];assert.equal(p('-2^2'),'-4');assert.equal(p('(-2)^2'),'4');assert.equal(p('2^-1'),'0.5');assert.equal(p('2^3^2'),'512');assert.equal(p('-price("111110")'),'-159');
+  const p=t=>run(`print(${t})`,ctx()).lines[0];assert.equal(p('-2^2'),'-4');assert.equal(p('(-2)^2'),'4');assert.equal(p('2^-1'),'0.5');assert.equal(p('2^3^2'),'512');assert.equal(p('-close("111110",0)'),'-159');
   const F=require('../electron/formula.cjs');assert.equal(F.evaluate(F.parse('-2^2').ast,data),4,'conditions keep their behaviour');
 });
 // Item 11: symbols validated before any callback.
 test('item 11: every symbol from a list or from the app is checked before any callback',()=>{
   const seen=[];const spy={closes:s=>{seen.push(s);return null;},price:s=>{seen.push(s);return null;},previousClose:()=>null};
-  assert.equal(run('print(top(["../../x","a b"], price(S), 2))',ctx({data:spy})).stopped.code,'BAD_SYMBOL');assert.equal(run(U+'print(list(u))',ctx({data:spy})).stopped.code,'BAD_SYMBOL');
-  assert.equal(run('u = universe(market="X")\nprint(top(u, price(S), 1))',ctx({data:spy,universe:()=>({name:'x',symbols:['111110','../../etc']})})).stopped.code,'BAD_UNIVERSE');
-  assert.equal(run('print(price("../x"))',ctx({data:spy})).stopped.code,'BAD_SYMBOL');assert.deepEqual(seen,[]);
+  assert.equal(run('print(top(["../../x","a b"], close(S,0), 2))',ctx({data:spy})).stopped.code,'BAD_SYMBOL');assert.equal(run(U+'print(list(u))',ctx({data:spy})).stopped.code,'BAD_SYMBOL');
+  assert.equal(run('u = universe(market="X")\nprint(top(u, close(S,0), 1))',ctx({data:spy,universe:()=>({name:'x',symbols:['111110','../../etc']})})).stopped.code,'BAD_UNIVERSE');
+  assert.equal(run('print(close("../x",0))',ctx({data:spy})).stopped.code,'BAD_SYMBOL');assert.deepEqual(seen,[]);
 });
 // Item 12: line-by-line runs and reachable bounds.
 test('item 12: a bad line keeps what printed before it; the total length is checked first; no dead bounds',()=>{
@@ -145,30 +151,30 @@ test('item 13: no callback message reaches the output and nothing escapes run',(
   const secret='C:\\Users\\someone\\secret\\path '+'y'.repeat(5000);
   for(const thrown of [new Error(secret),secret,null]){const boom=()=>{throw thrown;};
     const cases=[
-      [U+'print(1)',ctx({universe:boom})],[U+'print(top(u, price(S), 3))',ctx({isStale:boom})],[U+'print(top(u, price(S), 3))',ctx({names:boom})],
-      [U+'print(top(u, ret(S,20), 3))',ctx({data:{price:boom,closes:boom,previousClose:boom}})],['print(price("111110"))',ctx({data:{price:boom,closes:boom}})],['print(1)',ctx({now:boom})]];
+      [U+'print(1)',ctx({universe:boom})],[U+'print(top(u, close(S,0), 3))',ctx({isStale:boom})],[U+'print(top(u, close(S,0), 3))',ctx({names:boom})],
+      [U+'print(top(u, ret(S,20), 3))',ctx({data:{price:boom,closes:boom,previousClose:boom}})],['print(close("111110",0))',ctx({data:{price:boom,closes:boom}})],['print(1)',ctx({now:boom})]];
     for(const [t,c] of cases){let r;assert.doesNotThrow(()=>{r=run(t,c);});const all=JSON.stringify(r);assert.doesNotMatch(all,/secret|Users|yyyy/,t);assert.ok(all.length<2000);}}
   const failed=run(U+'print(top(u, ret(S,20), 3))',ctx({isStale:()=>{throw new Error('x');}}));assert.equal(failed.coverage[0].errors,5);addsUp(failed);
   assert.deepEqual(run('print(1)',null).lines,['1']);assert.deepEqual(run('print(1)').lines,['1']);assert.equal(run(null,null).stopped.code,'EMPTY_SCRIPT');assert.equal(run(42,{}).stopped.code,'EMPTY_SCRIPT');
-  const getter=Object.defineProperty({},'data',{get(){throw new Error(secret);}});const g=run('print(price("111110"))',getter);assert.doesNotMatch(JSON.stringify(g),/secret/);
+  const getter=Object.defineProperty({},'data',{get(){throw new Error(secret);}});const g=run('print(close("111110",0))',getter);assert.doesNotMatch(JSON.stringify(g),/secret/);
 });
 // Item 14: the answers in words, as tests where they were faults.
 test('item 14: offsets add up; stale reads are marked; at() takes no universe; S is required; == compares like with like; control characters are stripped',()=>{
-  const st=ctx({isStale:s=>s==='111110'});assert.equal(run('print(price("111110"))',st).lines[0],'159 (stale data: 111110)');
-  assert.equal(run('x = price("111110")\nprint("x", x)',st).lines[0],'x 159 (stale data: 111110)','the mark travels with a named value');
-  assert.equal(run(U+'print(at(top(u, price(S), 1), 5))',ctx()).stopped.code,'NESTED_UNIVERSE');
-  assert.equal(run(U+'s = "111110"\nprint(top(u, price(s), 3))',ctx()).stopped.code,'NO_S_IN_EXPRESSION');
+  const st=ctx({isStale:s=>s==='111110'});assert.equal(run('print(close("111110",0))',st).lines[0],'159 (stale data: 111110)');
+  assert.equal(run('x = close("111110",0)\nprint("x", x)',st).lines[0],'x 159 (stale data: 111110)','the mark travels with a named value');
+  assert.equal(run(U+'print(at(top(u, close(S,0), 1), 5))',ctx()).stopped.code,'NESTED_UNIVERSE');
+  assert.equal(run(U+'s = "111110"\nprint(top(u, close(s,0), 3))',ctx()).stopped.code,'NO_S_IN_EXPRESSION');
   assert.equal(run('print(["111110"] == ["111110"])',ctx()).stopped.code,'NOT_COMPARABLE');assert.equal(run('print("1" == 1)',ctx()).stopped.code,'NOT_COMPARABLE');
   assert.equal(run('print("a" == "a", 1 == 1, (1 > 0) == (2 > 1))',ctx()).lines[0],'yes yes yes');
   const cr=run('print("a\rlog: fake\u202e\u0007")',ctx());assert.equal(cr.lines.length,1);assert.doesNotMatch(cr.lines[0],/[\u0000-\u001f\u202e]/);assert.match(cr.lines[0],/^a log: fake/);
-  const n=run(U+'print(top(u, price(S), 1))',ctx({names:()=>'Bad\nname\u0000'+'z'.repeat(100)})).lines[0];assert.doesNotMatch(n,/[\u0000-\u001f]/);assert.ok(n.length<120);
+  const n=run(U+'print(top(u, close(S,0), 1))',ctx({names:()=>'Bad\nname\u0000'+'z'.repeat(100)})).lines[0];assert.doesNotMatch(n,/[\u0000-\u001f]/);assert.ok(n.length<120);
 });
 // The planner's second review, items A-F.
 test('A: a screen with nothing evaluated says so; a constant window out of range is the script\'s error',()=>{
   for(const t of ['print(top(u, close(S,-1), 3))','print(top(u, close(S,9999), 3))','print(top(u, sma(S,0), 3))','print(top(u, sma(S,2.5), 3))']){const r=run(U+t,ctx());assert.equal(r.stopped?.code,'BAD_WINDOW',t);assert.equal(r.stopped.line,2);}
-  assert.equal(run(U+'print(top(u, log(0-price(S)), 3))',ctx()).lines[0],'(none: 0 of 5 evaluated; 1 no history, 4 not computable)');
-  assert.equal(run(U+'print(count(u, 1/(price(S)-price(S)) > 0))',ctx()).lines[0],'0 (count: 0 of 5 evaluated; 1 no history, 4 not computable)');
-  assert.equal(run(U+'print(filter(u, sqrt(0-1-price(S)) > 0))',ctx()).lines[0],'filter of test: 0 stocks (0 of 5 evaluated; 1 no history, 4 not computable)');
+  assert.equal(run(U+'print(top(u, log(0-close(S,0)), 3))',ctx()).lines[0],'(none: 0 of 5 evaluated; 1 no history, 4 not computable)');
+  assert.equal(run(U+'print(count(u, 1/(close(S,0)-close(S,0)) > 0))',ctx()).lines[0],'0 (count: 0 of 5 evaluated; 1 no history, 4 not computable)');
+  assert.equal(run(U+'print(filter(u, sqrt(0-1-close(S,0)) > 0))',ctx()).lines[0],'filter of test: 0 stocks (0 of 5 evaluated; 1 no history, 4 not computable)');
   assert.equal(run(U+'print(top(u, ret(S,20), 3))',ctx({isStale:()=>true})).lines[0],'(none: 0 of 5 evaluated; 5 stale)');
   assert.equal(run(U+'c = count(u, ret(S,90) > 0)\nprint("n", c)',ctx()).lines[0],'n 0 (count: 0 of 5 evaluated; 5 no history)','the note travels with a name');
   assert.equal(run(U+'print(count(u, ret(S,20) > 0))',ctx()).lines[0],'1','a screen that evaluated stocks prints its value alone');
@@ -177,32 +183,32 @@ test('B: one data shape: closes exclude the current day, so a slope means the sa
   const day=i=>new Date(Date.UTC(2030,0,1)+i*86400000).toISOString().slice(0,10);const rows=n=>Array.from({length:n},(_,i)=>({date:day(i),close:100+i,value:1e9}));
   const before={data:{closes:()=>rows(60),price:()=>160,previousClose:()=>159}};
   const after={data:{closes:()=>rows(61),price:()=>160,previousClose:()=>160},today:day(60)};
-  const t='print(sma("111110",20) - at(sma("111110",20),5), at(price("111110"),1), ret("111110",20), change("111110"), close("111110",0))';
-  const a=run(t,before),b=run(t,after);assert.equal(a.stopped,undefined);assert.deepEqual(b.lines,a.lines);assert.equal(a.lines[0].split(' ')[1],'159','at(x,1) is the last completed close at any hour');
-  assert.match(HELP,/price\(\) is that close, not a live quote/);assert.match(HELP,/"the latest price" is the last completed close/);
+  const t='print(sma("111110",20) - at(sma("111110",20),5), at(close("111110",0),1), ret("111110",20), change("111110"), close("111110",0))';
+  const a=run(t,before),b=run(t,after);assert.equal(a.stopped,undefined);assert.deepEqual(b.lines,a.lines);assert.equal(a.lines[0].split(' ')[1],'158','at(x,1) is the close before the last completed one, at any hour');
+  assert.match(HELP,/price\(\) is refused in scripts/);assert.match(HELP,/live\(S\) is the live quote/);assert.doesNotMatch(HELP,/price\(sym\)|price\(\) is the latest quote/);assert.match(HELP,/"the latest price" is the last completed close/);
 });
 test('C: one in-bounds ranking always prints, cut with "… N more not shown" when long',()=>{
   const c=big({names:s=>'N'.repeat(BOUNDS.name+10)+s});const r=run('u = universe(market="BIG")\nprint(top(u, ret(S,20), 50))',c);
   assert.equal(r.stopped,undefined);assert.match(r.lines[0],/; … \d+ more not shown$/);assert.ok(Buffer.byteLength(r.lines[0])<=BOUNDS.outputBytes);
-  assert.match(r.lines[0],/^1\. 100000 N{39}… 21\.428571 \(price 170\); 2\. /,'names cut to 40');assert.doesNotMatch(run(U+'print(top(u, ret(S,20), 50))',ctx()).lines[0],/not shown/,'a short ranking is whole');
+  assert.match(r.lines[0],/^1\. 100000 N{39}… 14\.388489 \(close 159\); 2\. /,'names cut to 40; the row says its price is a close');assert.doesNotMatch(run(U+'print(top(u, ret(S,20), 50))',ctx()).lines[0],/not shown/,'a short ranking is whole');
 });
 test('D: offsets keep no copy per day and stock; a long history gives the same values',()=>{
   const long=Array.from({length:2500},(_,i)=>({date:`x${i}`,close:100+i,value:1e9}));
   const c={...big(),universe:()=>({name:'big',symbols:Array.from({length:150},(_,i)=>String(100000+i))}),data:{closes:()=>long,price:()=>3000,previousClose:()=>2599}};
-  assert.equal(run('print(at(price("111110"),60), at(sma("111110",250),60))',c).lines[0],`${100+2500-60} ${100+2500-60-1-124.5}`);
-  const sum=Array.from({length:18},(_,i)=>`at(price(S),${i+1})`).join('+');const t=`u = universe(market="BIG")\nprint(top(u, ${sum}, 1))`;
+  assert.equal(run('print(at(close("111110",0),60), at(sma("111110",250),60))',c).lines[0],`${100+2500-61} ${100+2500-60-1-124.5}`);
+  const sum=Array.from({length:15},(_,i)=>`at(close(S,0),${i+1})`).join('+');const t=`u = universe(market="BIG")\nprint(top(u, ${sum}, 1))`;
   const before=process.memoryUsage().heapUsed;const r=run(t,c);const grew=process.memoryUsage().heapUsed-before;
   assert.equal(r.stopped,undefined);assert.ok(grew<20*1024*1024,`${Math.round(grew/1048576)} MB`);
 });
 test('E: tag characters, soft hyphen and other invisible marks are stripped; cuts keep pairs whole; the bound counts bytes',()=>{
   const odd=[0xad,0x61c,0x180e,0xfff9,0xfffb,0xe0041,0xe007f].map(c=>String.fromCodePoint(c)).join('');
   const r=run(`print("a${odd}b")`,ctx());assert.equal(r.lines[0],'a'+' '.repeat(7)+'b');
-  const face=String.fromCodePoint(0x1f600);const n=run(U+'print(top(u, price(S), 1))',ctx({names:()=>face.repeat(60)})).lines[0];assert.ok(n.isWellFormed(),'no lone surrogate');
+  const face=String.fromCodePoint(0x1f600);const n=run(U+'print(top(u, close(S,0), 1))',ctx({names:()=>face.repeat(60)})).lines[0];assert.ok(n.isWellFormed(),'no lone surrogate');
   const ko=String.fromCodePoint(0xac00).repeat(100);const k=run(`t = "${ko}"\n`+Array.from({length:10},()=>'print(t, t)').join('\n'),ctx());
   assert.equal(k.stopped.code,'OUTPUT_TOO_LONG');assert.ok(k.lines.reduce((s,l)=>s+Buffer.byteLength(l)+1,0)<=BOUNDS.outputBytes);assert.equal(k.lines.length,6,'600 bytes a line');
 });
 test('F: a failed stale check is not called stale; HELP states lists, print\'s values and the screens\' real cost',()=>{
-  const r=run('print(price("111110"))',ctx({isStale:()=>{throw new Error('x');}}));assert.equal(r.lines[0],'159 (freshness unknown: 111110)');
+  const r=run('print(close("111110",0))',ctx({isStale:()=>{throw new Error('x');}}));assert.equal(r.lines[0],'159 (freshness unknown: 111110)');
   assert.match(HELP,/lists included/);assert.match(HELP,/1 to 8 values/);assert.match(HELP,/over 400 stocks a 4-value expression uses 2,000/);
   const p=t=>run(`print(${t})`,ctx()).lines[0];
   assert.equal(p('1/3'),'0.33333333');assert.equal(p('155/135-1'),'0.14814815');assert.equal(p('1234.56789'),'1234.5679');assert.equal(p('123456789012.5'),'1.2345679e+11','rounded at 1e8 or more: exponent form');

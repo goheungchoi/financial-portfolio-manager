@@ -470,6 +470,14 @@ app.whenReady().then(async () => {
   const screenRefresher=new (require('./history-store.cjs').HistoryRefresher)({store:screenStore,set:()=>require('./screen-universe.cjs').nightlySet(automation.screens),
     request:(symbol,end)=>kisService.request('history-page',{symbol,end}),allowed:screenAllowed,closedDays:automation.screens.closedDays,clock:Date.now});
   automation.screenRefresher=screenRefresher;
+  // Live prices for screens (screen-run.cjs): a read is sent only while no app order is being sent or cancelled (an engine
+  // sending, or an order Submitting or Cancellation uncertain that can still fill) and nothing waits in the KIS queue; once
+  // an order starts being sent, the run's live reads stop.
+  const orderSending=()=>Boolean(live?.busy||usLive?.busy);
+  const liveAllowed=()=>{if(orderSending()||kisService.isBusy)return false;try{const now=Date.now();return ![...live.orders(),...usLive.orders()].some(o=>['Submitting','Cancellation uncertain'].includes(o?.status)&&now<W.activeUntil(o));}catch{return false;}};
+  automation.screenLive=require('./screen-run.cjs').makeLiveReader({request:(op,p)=>kisService.request(op,p),allowed:liveAllowed,orderSending,sessionOpen:(m,t)=>automation.sessionOpen(m,t)});
+  // A run of screens (a scout run; a review in S4) owns its live bound: 120 Korean and 40 U.S. stocks across its scripts.
+  automation.openScreenRun=()=>require('./screen-run.cjs').openRun({readLive:automation.screenLive,context:()=>require('./screen-universe.cjs').screenContext(automation.screens)});
   if(!process.env.PORTFOLIO_SMOKE_DATA){
     setInterval(()=>{try{screenRefresher.tick();}catch{}},1000).unref();
     let usSizeBusy=false;const refreshUsSize=async()=>{if(usSizeBusy||closing||!usSize.due().length)return;usSizeBusy=true;try{await usSize.refresh({fetcher:fetch,known:s=>master.get(s)?.type==='stock'});}catch{}finally{usSizeBusy=false;}};

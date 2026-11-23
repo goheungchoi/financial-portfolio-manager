@@ -146,10 +146,10 @@ test('universes: by market, type and size; your lists with market, type and a no
 test('the data a script sees: as of the last completed close per market; newer closes unused; stale counted; only listed codes requested',()=>{
   const d=deps();d.store.put('111110',page('2026-08-01',124,100));d.store.put('111120',page('2026-08-01',120,100));d.store.put('NASD:AAA',page('2026-08-01',123,10));
   const c=U.screenContext(d);assert.deepEqual(c.asOf,{KR:'2026-12-01',US:'2026-12-01'});
-  assert.equal(c.ctx.data.price('111110'),100+122,'the 2026-12-01 close; the store also has 12-02, unused');assert.equal(c.ctx.data.closes('111110').at(-1).date,'2026-11-30');
+  assert.equal(c.ctx.data.price('111110'),100+122,'the 2026-12-01 close; the store also has 12-02, unused');assert.equal(c.ctx.data.closes('111110').at(-1).date,'2026-12-01','the history runs to the as-of day, not past it');
   assert.equal(c.ctx.isStale('111120'),true);assert.equal(c.ctx.isStale('111110'),false);
-  const r=run('u = universe(market="KOSPI")\nprint(top(u, ret(S,20), 5))\nv = universe(market="US", type="any")\nprint(count(v, price(S) > 0))',c.ctx);
-  assert.equal(r.stopped,undefined);assert.match(r.lines[0],/^1\. 111110 A /);assert.equal(r.coverage[0].stale,1);assert.equal(r.lines[1],'1 (U.S. ETFs are not included: they have no size order)');
+  const r=run('u = universe(market="KOSPI")\nprint(top(u, ret(S,20), 5))\nv = universe(market="US", type="any")\nprint(count(v, close(S,0) > 0))',c.ctx);
+  assert.equal(r.stopped,undefined);assert.match(r.lines[0],/^1\. 111110 A /);assert.equal(r.coverage[0].stale,1);assert.equal(r.lines[1],'1 (as of close 2026-12-01) (U.S. ETFs are not included: they have no size order)');
   const c2=U.screenContext(d);run('print(top(list("999980","999970"), ret(S,5), 1))',c2.ctx);assert.equal(c2.finish(),1,'999970 is not listed: never requested');assert.deepEqual(d.store.requested(d.clock()),['999980']);
   const refused=run('print(count(universe(market="US", type="etf")))',c.ctx);assert.match(refused.stopped.words,/no size order is available/);assert.equal(c.depth(['111110','NASD:AAA']).US.median,123);assert.match(require('../electron/formula-script.cjs').HELP,/Closes are adjusted for splits as KIS gives them/);
 });

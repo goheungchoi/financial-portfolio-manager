@@ -261,4 +261,10 @@ async function historyPage(client,symbol,end,today){
   const body=await client.quotation('inquire-daily-itemchartprice','FHKST03010100',{FID_COND_MRKT_DIV_CODE:'J',FID_INPUT_ISCD:symbol,FID_INPUT_DATE_1:compact(shift(last,135)),FID_INPUT_DATE_2:compact(last),FID_PERIOD_DIV_CODE:'D',FID_ORG_ADJ_PRC:'0'});
   return closes(body?.output2).map(({date,high,low,close,volume,value})=>({date,high,low,close,volume,value}));
 }
-module.exports={historyPage,usMarketOverview,US_INDEX_ETFS,US_SECTOR_ETFS,overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};
+// Live quotes for up to 30 Korean stocks in one request (intstock-multprice, FHKST11300006; verified on a live account
+// 2026-11-23): {symbol, price, volume, treatment, readAt} per stock, readAt being the read time (the reply has no trade
+// time). Public quotations only.
+async function multiQuote(client,symbols){const params={};symbols.forEach((s,i)=>{params[`FID_COND_MRKT_DIV_CODE_${i+1}`]='J';params[`FID_INPUT_ISCD_${i+1}`]=s;});
+  const body=await client.quotation('intstock-multprice','FHKST11300006',params);const readAt=Date.now();const rows=Array.isArray(body?.output)?body.output:[];
+  return rows.map(r=>({symbol:String(r?.inter_shrn_iscd??'').trim(),price:positive(r?.inter2_prpr),volume:num(r?.acml_vol),treatment:String(r?.mrkt_trtm_cls_name??'').trim().slice(0,40),readAt})).filter(r=>symbols.includes(r.symbol));}
+module.exports={multiQuote,historyPage,usMarketOverview,US_INDEX_ETFS,US_SECTOR_ETFS,overview,dividends,meetings,revisions,investorFlows,shortSelling,creditBalance,programTrading,closes,riskMetrics,statements,valuationHistory,etfFund,etfHoldings,usOverview,breadth,sectors,topBuyers,marketOverview,fetchSection,num,round,isoDay,shift};

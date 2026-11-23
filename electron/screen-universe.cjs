@@ -5,8 +5,9 @@
 //   lists (own = holdings, watchlist, plan, allowlist). At most 400 stocks. U.S. ETFs have no size order, so a U.S.
 //   universe of ETFs is refused with words, and a U.S. universe of any type holds stocks only, with a note.
 // - The data contract (formula-script.cjs header): every screen is as of the last completed close per market (Q4).
-//   For each stock, price is that day's close and the history the closes before it; a newer close already read is not
-//   used, and a stock whose newest close is older than that day is stale. price() in a screen is not a live quote.
+//   For each stock the history is the closes up to that day, and its close is the latest price inside the formula functions;
+//   a newer close already read is not used, and a stock whose newest close is older than that day is stale. A script
+//   reads a live quote only through live(S) (screen-run.cjs).
 // - The nightly set: your holdings, plan targets, watchlist and allowlists, then symbols scripts asked for, then the
 //   largest N stocks of each exchange (N the setting), taken in turn by rank so a part-filled night covers every
 //   exchange, and the largest N Korean ETFs when the ETF switch is on.
@@ -30,13 +31,14 @@ function nightlySet(deps){const {perExchange,etfs}=deps.settings();const n=Math.
 function screenContext(deps){const now=deps.clock();const closed=deps.closedDays?.()??new Set();
   const asOf={KR:asOfDay('KR',now,closed),US:asOfDay('US',now,closed)};const missing=new Set();const rowsOf=new Map();
   const rows=s=>{if(rowsOf.has(s))return rowsOf.get(s);const day=asOf[marketOf(s)];const r=day?deps.store.closes(s).filter(x=>x.date<=day):[];if(!r.length)missing.add(s);rowsOf.set(s,r);return r;};
-  const data={price:s=>rows(s).at(-1)?.close??null,closes:s=>{const r=rows(s);return r.length>1?r.slice(0,-1):null;},previousClose:s=>rows(s).at(-2)?.close??null};
+  // The closes up to and including the as-of day; the latest price inside ret, change, zscore and ratio_z is that day's close.
+  const data={price:s=>rows(s).at(-1)?.close??null,closes:s=>{const r=rows(s);return r.length?r:null;},previousClose:s=>rows(s).at(-2)?.close??null};
   const isStale=s=>{const r=rows(s);return Boolean(r.length&&r.at(-1).date<asOf[marketOf(s)]);};
   const names=s=>{try{return deps.db.prepare('SELECT name FROM securities WHERE symbol=?').get(s)?.name??null;}catch{return null;}};
   const universe=spec=>universeFor(deps,spec,now);
   // Only codes the security master lists are asked for, so an unknown code never reaches the nightly reads.
   const finish=()=>{const outside=new Set(nightlySet(deps));const ask=[...missing].filter(s=>!outside.has(s)&&listed(deps.db,s)).slice(0,100);if(ask.length)deps.store.request(ask,now);return ask.length;};
-  return {ctx:{data,isStale,names,universe},asOf,depth:symbols=>deps.store.depth(symbols),finish,keep:KEEP};}
+  return {ctx:{data,isStale,names,universe,asOf},asOf,depth:symbols=>deps.store.depth(symbols),finish,keep:KEEP};}
 function universeFor(deps,spec,now){const n=Math.min(MAX,spec.top_cap??deps.settings().perExchange);const type=spec.type??'stock';
   if(!['stock','etf','any'].includes(type))return {refused:'UNKNOWN_UNIVERSE'};
   // Your own lists, optionally by market and type; cut to top_cap (default the setting) with a note saying so.
