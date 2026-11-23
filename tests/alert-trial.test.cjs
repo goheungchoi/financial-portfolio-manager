@@ -103,7 +103,7 @@ test('after a rollback and a restart the current rule decides; a restart during 
 test('protective monitoring runs before, during and after the trial: conditional orders are checked and fired, the emergency response runs',()=>{
   const {a}=harness();a.configure({conditionalOrders:true});a.sessionArmed=true;a.config={...a.config,enabled:true};
   assert.equal(a.desk.setOrder('s',{action:'add',id:'',symbol:'990020',side:'Sell',quantity:3,limitPrice:null,conditions:[{expr:'price("990020")',op:'<=',value:54000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['990020']}).status,'armed');
-  a.liveQuotes=()=>[{symbol:'990020',price:53000}];const fired=[];a.fireConditional=async o=>{fired.push(o.id);};const reviews=[];a.review=async trigger=>{reviews.push(trigger);return {};};
+  a.liveQuotes=()=>[{symbol:'990020',price:53000,retrievedAt:Date.now()}];/* a quote as the app reads it, with its read time: the watch uses no price whose age it cannot tell */const fired=[];a.fireConditional=async o=>{fired.push(o.id);};const reviews=[];a.review=async trigger=>{reviews.push(trigger);return {};};
   const step=()=>{a.lastDeskCheck=0;a.firing=false;a.lastTrialCheck=0;try{a.tick();}catch{}};
   step();assert.equal(fired.length,1,'before the trial');
   a.configure({alertTrial:'on'});step();assert.equal(fired.length,2,'during the trial');

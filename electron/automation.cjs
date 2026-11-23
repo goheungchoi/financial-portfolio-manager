@@ -541,6 +541,54 @@ class Automation {
   // The model and effort an agent runs on (step A2): 'trading', 'scout', 'narrative', 'compacting' or 'reflection'.
   agentModel(agent){return require('./agent-models.cjs').agentModel(this.config,agent);}
   conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper');}
+  // Orders while stopped, B-1 (electron/armed-quotes.cjs): every stock the armed conditional orders read (their own and
+  // their conditions'), per market, while they are watched (none otherwise), for main.cjs's reader of their prices.
+  watchedSymbols(market){if(!this.conditionalMonitoringActive())return [];return require('./armed-quotes.cjs').symbolsOf(this.desk.orders(this.watchScope()),market);}
+  // The copies read for the watch only (main.cjs's reader), kept apart from the polled quotes: no other reader sees them.
+  // Each read attempt of a watched stock: when, and whether it gave a price (a stock whose reads keep failing moves back in
+  // the order, is retried at most once a minute, and is named by its own cause on Home); successful reads per market, for
+  // the capacity test.
+  armedAttempted(symbol,ok,at=Date.now()){(this.armedAttempts??=new Map());const p=this.armedAttempts.get(symbol);this.armedAttempts.set(symbol,{at,ok,fails:ok?0:(p?.fails??0)+1});
+    if(ok){const m=String(symbol).includes(':')?'US':'KR';(this.armedReads??={})[m]=[...(this.armedReads[m]??[]).filter(t=>at-t<120000),at];}}
+  acceptArmedQuote(q){if(!q?.symbol||!(q.price>0))return;(this.armedQuotes??=new Map());
+    const row=String(q.symbol).includes(':')?{...q,venue:q.venue??'regular',timestamp:q.retrievedAt,stale:!q.session}:{...q,source:'rest'};this.armedQuotes.set(q.symbol,row);}
+  // The watch's own view (the 5-second check and trailing stops): per watched stock the newer of the polled quote and the
+  // copy, nothing older than 2 minutes. watchData(): formulaData with prices from that view only.
+  watchQuotes(now=Date.now()){let base=[];try{base=this.liveQuotes();}catch{}const watched=[...this.watchedSymbols('KR'),...this.watchedSymbols('US')];if(!watched.length)return base;
+    return require('./armed-quotes.cjs').watchQuotes(base,this.armedQuotes,watched,now);}
+  watchData(now=Date.now()){const view=this.watchQuotes(now),base=this.formulaData();return {...base,price:sym=>view.find(q=>q.symbol===sym&&Number.isFinite(q.price))?.price??null};}
+  armedNeeds(market,now=Date.now()){const watched=this.watchedSymbols(market);if(!watched.length)return [];const AQ=require('./armed-quotes.cjs');
+    // The latest copy of each stock known, even one too old to use: the stalest-first order goes by it.
+    const last=new Map();let base=[];try{base=this.liveQuotes();}catch{}for(const q of [...base,...(this.armedQuotes?.values()??[])]){const t=AQ.quoteTime(q);if(q?.symbol&&Number.isFinite(t)&&!(last.get(q.symbol)>=t))last.set(q.symbol,t);}
+    // ... or the last attempt to read it, so a failed read moves it back; one whose last read failed waits a minute.
+    for(const [s,a] of this.armedAttempts??[])if(Number.isFinite(a.at)&&!(last.get(s)>=a.at))last.set(s,a.at);
+    return AQ.needs(watched,this.watchQuotes(now),now,last).filter(s=>{const a=this.armedAttempts?.get(s);return !(a&&!a.ok&&now-a.at<AQ.RETRY_FAILED_MS);});}
+  // The Home line's stocks (no price on checks 30 s apart, past the first read's grace), updated by the tick.
+  staleWatched(){return this.staleShown??[];}
+  updateArmedWatch(now=Date.now()){const AQ=require('./armed-quotes.cjs');const armed=[...this.watchedSymbols('KR'),...this.watchedSymbols('US')];
+    if(this.armedQuotes)for(const s of [...this.armedQuotes.keys()])if(!armed.includes(s))this.armedQuotes.delete(s);
+    if(this.armedAttempts)for(const s of [...this.armedAttempts.keys()])if(!armed.includes(s))this.armedAttempts.delete(s);
+    if(!armed.length&&!this.staleTracker)return;this.staleTracker??=new AQ.StaleTracker();
+    const view=this.watchQuotes(now);this.staleShown=this.staleTracker.update(armed,AQ.staleArmed(armed,view,{now,open:(m,t)=>this.sessionOpen(m,t)}),now);
+    // The reader's backlog per market: since when some watched stock has needed a read without a pause. Past 2 minutes, the
+    // stale stocks are said to be too many to price (the reader cannot keep up), not a passing gap.
+    this.armedBacklog??={};for(const m of ['KR','US']){let n=[];try{n=this.armedNeeds(m,now);}catch{}if(n.length)this.armedBacklog[m]??=now;else this.armedBacklog[m]=null;}
+    // A stock of a closed market named in an order of an open market cannot be priced fresh: the order's own row says so.
+    const closedNote=sym=>`no live price for ${sym} while its market is closed`;const have=new Set(view.map(q=>q.symbol));
+    for(const o of this.desk.orders(this.watchScope())){const own=String(o.symbol).includes(':')?'US':'KR';let open=false;try{open=this.sessionOpen(own,now);}catch{}
+      const missing=open?AQ.orderSymbols(o).find(s=>s!==o.symbol&&(String(s).includes(':')?'US':'KR')!==own&&!have.has(s)&&!this.sessionOpen(String(s).includes(':')?'US':'KR',now)):null;
+      const want=missing?closedNote(missing):null;if(want&&o.waiting!==want&&(o.waiting==null||/while its market is closed$/.test(o.waiting)))this.desk.update(o,{waiting:want});
+      else if(!want&&/while its market is closed$/.test(o.waiting??''))this.desk.update(o,{waiting:null});}}
+  // Why each of the Home line's stocks has no price, by its own cause: KIS's request limit or the service's cool-down being
+  // waited out (limit, with its time); its last reads failed (failed: "no price from KIS"); more stocks needing reads in its
+  // market than the reader read in the last 2 minutes, with a backlog that long (capacity, with the orders left unwatched);
+  // else a passing gap.
+  armedStaleWhy(now=Date.now()){const s=this.staleShown??[];if(!s.length)return null;let pause=null;try{pause=this.armedPause?.()??null;}catch{}
+    const mk=x=>String(x).includes(':')?'US':'KR';const failed=s.filter(x=>{const a=this.armedAttempts?.get(x);return a&&!a.ok;});const rest=s.filter(x=>!failed.includes(x));
+    const over=m=>{const t=this.armedBacklog?.[m];if(!(t!=null&&now-t>=120000))return false;let n=[];try{n=this.armedNeeds(m,now);}catch{}const reads=(this.armedReads?.[m]??[]).filter(x=>now-x<120000).length;return n.length>reads;};
+    const limit=pause?rest:[],cap=pause?[]:rest.filter(x=>over(mk(x))),gap=pause?[]:rest.filter(x=>!cap.includes(x));
+    const orders=[...new Set(this.desk.orders(this.watchScope()).filter(o=>require('./armed-quotes.cjs').orderSymbols(o).some(x=>cap.includes(x))).map(o=>o.symbol))];
+    return {limit:limit.length?{until:pause,stocks:limit}:null,failed,capacity:cap.length?{watched:this.watchedSymbols('KR').length+this.watchedSymbols('US').length,stocks:cap,orders}:null,gap};}
   dryRuns(limit=5){return this.db.prepare('SELECT payload FROM dry_runs ORDER BY timestamp DESC LIMIT ?').all(limit).map(r=>{const {snapshot,...rest}=JSON.parse(r.payload);return rest;});}
   // What a dry-run review would cost before it starts: today's AI use against the limits, and an estimate from the
   // recent completed reviews on the model it would run on (a review is one or more requests). model: the dry run's
@@ -1571,10 +1619,19 @@ class Automation {
     const closed=()=>this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
-      const ctx=await engine.context(market==='US'?await this.refreshUS():null);
+      let ctx=await engine.context(market==='US'?await this.refreshUS():null);
       if(!ctx.marketSession?.open)return closed();
+      // Orders while stopped, B-1: every stock the order and its conditions read comes from a read made for this check (the
+      // engine's fresh read, or one read now, at most 8); a stock that cannot be read means no order, never a stored or polled
+      // copy. The reads are for this check only (the engine's value and what reviews receive are not changed).
+      {const AQ=require('./armed-quotes.cjs');const usable=q=>q?.price>0&&(!Number.isFinite(AQ.quoteTime(q))||AQ.freshEnough(q));
+        // A quote older than 60 s by its own time is not fresh: dropped from this check's quotes, so it is read again or the
+        // order waits.
+        ctx={...ctx,quotes:ctx.quotes.filter(usable)};const need=AQ.orderSymbols(order).filter(s=>!ctx.quotes.some(q=>q.symbol===s));
+        if(need.length){let more=[];if(typeof this.readFreshQuotes==='function')try{more=await this.readFreshQuotes(need);}catch{more=[];}more=more.filter(q=>AQ.freshEnough(q));
+          if(need.some(s=>!more.some(q=>q?.symbol===s))){this.desk.update(order,{status:'armed',waiting:'no fresh quote',nextCheckAt:Date.now()+60000});return;}ctx={...ctx,quotes:[...ctx.quotes,...more]};}}
       const quote=ctx.quotes.find(q=>q.symbol===order.symbol);if(!(quote?.price>0)){this.desk.update(order,{status:'armed',waiting:'no fresh quote',nextCheckAt:Date.now()+60000});return;}
-      const formula=require('./formula.cjs');const base=this.formulaData(ctx.quotes);const check=formula.checkConditions(order.conditions,order.combine,{...base,price:sym=>ctx.quotes.find(q=>q.symbol===sym)?.price??base.price(sym)});
+      const formula=require('./formula.cjs');const base=this.formulaData(ctx.quotes);const check=formula.checkConditions(order.conditions,order.combine,{...base,price:sym=>ctx.quotes.find(q=>q.symbol===sym&&q.price>0)?.price??null});
       if(!check.met){this.desk.update(order,{status:'armed',waiting:null,retries:0,lastCheck:check.results,nextCheckAt:Date.now()+60000});return;}
       // A plan stop linked to its purchase (P1) sells at most what that purchase filled; nothing filled yet, it waits while
       // the purchase is open and closes once it ended unfilled. Shares held before the purchase are never sold by it.
@@ -1672,7 +1729,7 @@ class Automation {
   // One tracking step for every armed trailing stop (electron/trailing-stops.cjs, step T1): regular-session quotes only,
   // the two-check rule, and a row write only when the level moves by a tick. Never throws; a failure skips that order.
   trackTrailing(scope=this.watchScope(),now=Date.now()){const T=require('./trailing-stops.cjs');const {regularOpen}=require('./market-hours.cjs');this.trailMemory??=new Map();
-    let quotes=[];try{quotes=this.liveQuotes();}catch{}const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
+    let quotes=[];try{quotes=this.watchQuotes(now);}catch{}const closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);
     // T3: trailSeen (this run, per order): when tracking last stepped, when a quote was last accepted, and since when the
     // regular session has been open, for the gap test and "not tracked since"; trailCatching: catch-ups in flight.
     this.trailSeen??=new Map();this.trailCatching??=new Set();
@@ -1770,7 +1827,7 @@ class Automation {
   stopNotices(now=Date.now()){let rows=[];try{const scope=this.watchScope();rows=[...this.desk.orders(scope),...this.desk.recentOrders(scope,20)];}catch{return [];}
     return rows.filter(o=>o.notice&&!o.notice.acknowledgedAt&&(o.notice.kind==='ask'?o.status==='armed':now-(o.notice.at??0)<86400000));}
   acknowledgeStopNotice(id){let rows=[];try{const scope=this.watchScope();rows=[...this.desk.orders(scope),...this.desk.recentOrders(scope,20)];}catch{return;}const o=rows.find(x=>x.id===id&&x.notice);if(o)this.desk.update(o,{notice:{...o.notice,acknowledgedAt:Date.now()}});}
-  deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5)};}
+  deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5),...(()=>{let stale=[];try{stale=this.staleWatched();}catch{}return stale.length?{stalePrices:stale,staleWhy:this.armedStaleWhy()}:{};})()};}
   // The purchase a plan stop is linked to (P1): its engine record, the shares it filled, and whether it has ended (filled,
   // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
   linkedPurchase(order,now=Date.now()){const l=order?.linkedBuy;if(!l)return null;const engine=(l.market??(/:/.test(order.symbol)?'US':'KR'))==='US'?this.usLive:this.live;let rec=null;try{rec=engine?.orders?.().find(r=>r.id===l.id)??null;}catch{rec=null;}if(!rec)return null;
@@ -2152,8 +2209,9 @@ class Automation {
     if(this.sessionArmed&&this.config.enabled&&this.config.scope!=='paper'&&Date.now()-(this.lastScheduleObservation??0)>=30000){this.lastScheduleObservation=Date.now();try{this.scheduleObserver.observe(this.scheduleState());}catch{}}
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
     if(deskDue&&this.config.scope!=='paper')try{this.syncLinkedStops();}catch{}
+    if(deskDue)try{this.updateArmedWatch();}catch{}
     if(deskDue&&this.conditionalMonitoringActive()&&!this.firing){
-      const scope=this.watchScope();const data=this.formulaData();const formula=require('./formula.cjs');
+      const scope=this.watchScope();const data=this.watchData();const formula=require('./formula.cjs');
       // Trailing stops move their level first (T1), so the check below reads the level as of this quote.
       if(this.config.trailingStops===true)this.trackTrailing(scope);
       for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}

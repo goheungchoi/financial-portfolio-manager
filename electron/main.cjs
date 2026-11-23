@@ -58,6 +58,10 @@ let usBalanceHold=null,usHeldReading=null;
 const useUs=snapshot=>{if(!usBalanceHold)return {snapshot,engine:snapshot};const r=usBalanceHold.accept(snapshot);const shown=r.provisional?{...r.balance,settlementProvisional:r.reason}:r.balance;
   return {snapshot:shown,engine:r.held?{...r.balance,settlementHeld:r.reason}:shown,...(r.held?{heldReading:snapshot}:{})};};
 let kisBusy = false;
+// Orders while stopped, B-1: when the quote poll's and the balance refresh's timers last fired (set where each fires), so
+// the reader of armed orders' prices (electron/armed-quotes.cjs) stays out of the way of their next turns, whatever drift
+// or sleep did to the timers.
+const jobLastRan={quote:null,account:null};
 let kisGeneration=0;
 let quoteBusy=false;
 let nextQuoteAttempt=0;
@@ -480,6 +484,23 @@ app.whenReady().then(async () => {
   // What the Scout panel shows about the screening history: the as-of day per market, the store's depth, why it is behind,
   // and the stocks that stopped deepening. Worked out at most once a minute.
   let screenStatusAt=0,screenStatusValue=null;
+  // Orders while stopped, B-1 (electron/armed-quotes.cjs): the copies of armed orders' prices the watch reads, one stock a
+  // step from this 1-second loop, the stalest needed first, at most one read every 3 s per market; only while that market
+  // is open, no order is being sent, KIS's queue is idle, KIS's request limit is not being waited out, and none of the
+  // app's own jobs (the quote poll, the balance refresh, reconcile, the U.S. refresh) falls due within 2 s. It never
+  // starts or re-runs another job: with nothing armed, nothing here does anything. A fire reads its own stocks fresh (at
+  // most 8).
+  {const AQ=require('./armed-quotes.cjs');
+    // Each job's next turn from its last actual run (a timer late or resumed from sleep moves its turn; a turn already passed
+    // without a run counts as due now).
+    const dueWithin=(last,period,now,ms)=>Number.isFinite(last)&&last+period-now<ms;
+    const jobsDueSoon=now=>dueWithin(jobLastRan.quote,30000,now,2000)||dueWithin(jobLastRan.account,120000,now,2000)||lastReconcile+30000-now<2000||(usSnapshot&&lastUSRefresh+60000-now<2000);
+    // KIS's request limit (the quote poll's wait) or the service's own cool-down: armed reads wait, and Home says so.
+    automation.armedPause=()=>{const until=Math.max(nextQuoteAttempt,kisService.cooldownUntil??0);return until>Date.now()?until:null;};
+    const step=AQ.createReader({request:(op,p)=>kisService.request(op,p),need:(m,now)=>automation.armedNeeds(m,now),sessions:()=>automation.sessionOptions(),accept:q=>automation.acceptArmedQuote(q),attempted:(s,ok,at)=>automation.armedAttempted(s,ok,at),
+      allowed:(m,now)=>Boolean(kisState.snapshot)&&automation.sessionOpen(m,now)&&!orderSending()&&!kisService.isBusy&&!kisBusy&&!quoteBusy&&!usRefreshing&&now>=(kisService.cooldownUntil??0)&&now>=nextQuoteAttempt&&!jobsDueSoon(now)});
+    setInterval(()=>{if(closing||!kisState.snapshot)return;const generation=kisGeneration;for(const m of ['KR','US'])void step(m,()=>generation===kisGeneration).catch(()=>{});},1000).unref();
+    automation.readFreshQuotes=symbols=>AQ.readFresh((op,p)=>kisService.request(op,p),symbols,automation.sessionOptions());}
   automation.screenStatus=()=>{const now=Date.now();if(screenStatusAt&&now-screenStatusAt<60000)return screenStatusValue;screenStatusAt=now;
     try{screenStatusValue=require('./screen-status.cjs').screenStatus({deps:automation.screens,refresher:screenRefresher,enabled:automation.config.scoutEnabled});}catch{screenStatusValue={error:true};}return screenStatusValue;};
   // The screening engine runs scripts in its own process (screen-worker.cjs), never here; each pass gets the lists,
@@ -868,8 +889,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('paper:pause',(event,paused)=>{authorize(event);try{return {ok:true,state:paper.setPaused(paused)};}catch{return {ok:false,error:'INVALID_REQUEST'};}});
   ipcMain.handle('paper:cancel',(event,id)=>{authorize(event);try{if(typeof id!=='string')throw 0;return {ok:true,state:paper.cancel(id)};}catch{return {ok:false,error:'PAPER_REQUEST_FAILED'};}});
   marketTimer = setInterval(publishMarket,1000);
-  quoteTimer=setInterval(()=>void pollKisQuotes(),30000);
-  accountTimer=setInterval(()=>void refreshKisBalance(),120000);
+  quoteTimer=setInterval(()=>{jobLastRan.quote=Date.now();void pollKisQuotes();},30000);jobLastRan.quote=Date.now();
+  accountTimer=setInterval(()=>{jobLastRan.account=Date.now();void refreshKisBalance();},120000);jobLastRan.account=Date.now();
   snapshotTimer = setInterval(()=> {
     if (!feedPaused) store.saveSnapshot({...syntheticState().snapshot,timestamp:new Date().toISOString()});
   },30000);

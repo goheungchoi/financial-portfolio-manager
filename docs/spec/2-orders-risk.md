@@ -856,6 +856,37 @@ auto trading is on and armed for this run, and the scope is not paper (`conditio
 levels move first; then each armed order's conditions are checked on live quotes; the first one met fires. One fires at
 a time.
 
+**The quotes the watch reads.** The app polls quotes for other reasons, the same running or not: Korea every 30 s
+(`pollKisQuotes`, one request of at most 20 codes: watches, the allowed list, holdings, discovery), the U.S. every 60 s
+(`refreshUS`, one `us-context` of at most 20); those requests, every job's timing, `liveQuotes()` and `formulaData()` are
+as in 1.5.73, and every reader of prices other than the watch (reviews, compute, agent triggers, the scout, the order
+tracker, plan trails) sees only them. The watch (the 5-second check and trailing stops) reads its own view
+(`watchQuotes`, `watchData`; `armed-quotes.cjs`, orders while stopped B-1): for each stock an armed order reads (its
+own, and those its conditions name), the newer by time of the polled quote and a copy read for the watch, none older
+than 2 minutes. A reader keeps those copies current from main.cjs's 1-second loop: one stock a step, at most one read
+every 3 s per market (Korea `quotes` for one code, the U.S. `us-quote` with the session switches), always the stock whose
+latest copy is oldest (never read first; ties in the order armed), for stocks with no usable copy or one older than 45 s
+(Korea) or 90 s (U.S.); a stock whose last read failed waits a minute before the next try, and a failed try counts as a
+read in that order, so it never holds up the others. A step reads only while that market is open, no order is being
+sent, KIS's queue is idle, KIS's request limit and the service's cool-down are not being waited out, and none of the
+app's jobs (the quote poll, the balance refresh, reconcile, the U.S. refresh) falls due within 2 s of its last actual
+run; it never starts another job, and with nothing armed it does nothing. Capacity, with every job sharing the queue on
+the live account: about 11 Korean reads a minute, so about 12 armed stocks outside the polls stay well under 2 minutes
+and about 20 at the edge; past it every stock degrades evenly. On the mock account with full lists the queue is never
+idle, so no copy is read. A copy dated more than 5 s ahead of the clock is not used. When an order fires, every stock the order
+and its conditions read comes from a read made for that check (the engine's fresh read, or at most 8 read then, one
+request each, while other orders wait for that fire, as before), at most 60 s old by its own time; otherwise "no fresh
+quote" and no order, never a stored or polled copy. Before this, an armed order on a stock outside the polls had no
+price and could never fire. Home names the stocks with no price in the watch's view while their market is open, on
+checks at least 30 s apart and after their first read was due (45 s Korea, 90 s U.S.), each by its own cause, one
+sentence per cause (`desk.stalePrices`, `desk.staleWhy`): while KIS's request limit or the service's cool-down is waited
+out, "Orders not watched: prices wait for KIS's request limit until HH:MM KST (<stocks>)."; a stock whose last read
+failed, "No price from KIS for <stocks>: orders that need it are not watched."; when the reader has had a backlog in
+that market for over 2 minutes and more stocks need reads than it read in that time, "Too many stocks to price (N):
+these orders are not watched: <orders>."; otherwise "Orders not watched: no fresh prices (<stocks>)." A stock of a closed market named in an order of
+an open market has no price (the condition is not met) and the order's own row says "no live price for <stock> while
+its market is closed".
+
 **Firing** (`fireConditional`, `automation.cjs:1433-1539`):
 
 1. Fresh account read through the engine's `context`. Market closed → stays armed, checked again in 5 minutes.
