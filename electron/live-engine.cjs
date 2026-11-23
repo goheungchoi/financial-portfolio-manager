@@ -568,7 +568,7 @@ class LiveEngine {
   // Adds fields to an app order (the agent's execution bounds for the tracker), before or after it is sent.
   // The watch's mark (madeBy 'conditional') comes only from propose({conditional:true}): a patch that sets it, or changes
   // it on a watch order, is refused (B-2 review, finding 3).
-  annotate(id,patch){const order=this.orders().find(row=>row.id===id);if(!order)return null;if(patch&&'madeBy' in patch&&(patch.madeBy==='conditional'||order.madeBy==='conditional')&&patch.madeBy!==order.madeBy)throw new Error('INVALID_REQUEST');const next={...order,...patch};this.save(next);return next;}
+  annotate(id,patch){const order=this.orders().find(row=>row.id===id);if(!order)return null;if(patch&&'madeBy' in patch&&(patch.madeBy==='conditional'||order.madeBy==='conditional')&&patch.madeBy!==order.madeBy)throw new Error('INVALID_REQUEST');if(patch&&'conditionalId' in patch&&order.conditionalId!=null&&patch.conditionalId!==order.conditionalId)throw new Error('INVALID_REQUEST');const next={...order,...patch};this.save(next);return next;}
   // Moves an open app order to a new limit price, or cancels it, at KIS, for its unfilled shares. Each number KIS gives
   // a revision joins the order's own chain (brokerOrderIds), so history follows it as the app's. One KIS order action at
   // a time (busy). Refused for an order you took over in KIS (handsOff). An unclear reply stops tracking the order
@@ -638,7 +638,7 @@ class LiveEngine {
     // F1 (M-1.4 review): the leveraged cap of a raise counts the other open buys at their full quantity too (D5's reason).
     if(this.exposure)try{if(this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings,pending:pending.map(o=>({...o,notional:o.fullQuantity*o.price}))}).requiresApproval)return 'APPROVAL_REQUIRED';}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
     return null;}
-  async autoSubmit(id){const order=this.orders().find(row=>row.id===id);const underPermit=!this.enabled&&order?.madeBy==='conditional'&&this.permitHolds();if(underPermit?!this.conditionalPermit.auto:!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');
+  async autoSubmit(id){const order=this.orders().find(row=>row.id===id);const underPermit=!(this.enabled&&this.autoEnabled)&&order?.madeBy==='conditional'&&this.permitHolds();if(underPermit?!this.conditionalPermit.auto:!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');
     // 2026-11-19, the user's decision (artifacts/reviews/2026-11-19-us-auto-buys/decision.md): automatic U.S. buys are
     // no longer blocked (R15 removed). This market's automatic switch (autoEnabled) governs buys and sales alike. A U.S.
     // buy is checked as a manual one is: KIS's buying power capped at real cash (R17) and the shared ledger under the

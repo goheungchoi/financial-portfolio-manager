@@ -196,7 +196,9 @@ refreshes the U.S. account when in scope, re-applies each selected engine's save
 with automatic orders (`e.configure(policy, 'ENABLE LIVE|MOCK')`, `e.enableAuto(...)`, `:25`), un-pauses the paper
 account in paper scope, then saves `enabled:true, autoSubmit:true` (`:27`) and arms the session (`a.sessionArmed=true`): Start is the only
 thing that arms one (audit item 15, 1.5.69). It does **not** run a review: the schedule resumes from the saved clock, and the reply says
-when the next review is due (`:35-42`).
+when the next review is due (`:35-42`). With conditional orders kept working while stopped (2-orders-risk §6.5), Start
+also keeps the switches record and ends Stop everything (`watchStarted`); Stop leaves the watch on, and Stop everything
+(`stopEverything`) stops both.
 
 **Every condition that refuses Start**, in the order checked:
 

@@ -113,6 +113,7 @@ class Automation {
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS claude_trading_state(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)');// Claude trading D-3 (review F1: created once)
     this.reviewInterval=new (require('./review-interval.cjs').ReviewInterval)(db);
+    this.watchStopped=new (require('./watch-while-stopped.cjs').WatchWhileStopped)(db);// orders while stopped, B-3
     this.watches=new (require('./review-watches.cjs').ReviewWatches)(db);
     this.outcomes=new (require('./outcome-ledger.cjs').OutcomeLedger)(db);this.memory=new (require('./learning-memory.cjs').LearningMemory)(db);try{this.memory.proposeProcedural();}catch{}this.alertTrial=new (require('./alert-trial.cjs').AlertTrial)(db);
     this.trials=new (require('./lesson-trials.cjs').LessonTrials)(db,this.memory);
@@ -215,7 +216,10 @@ class Automation {
     // including turning "Scheduled reviews" on: it saves the switch, and the schedule runs from the next Start. A save
     // with enabled off disarms. Before, every Engine settings save sent the saved enabled:true and re-armed a session
     // paused after a restart without Start.
+    const switchesChanged=next.conditionalAutoSubmit!==this.config.conditionalAutoSubmit||next.autoSubmit!==this.config.autoSubmit;
     this.config=next;this.revision=(this.revision??0)+1;this.saveConfig();this.savedAt=Date.now();if(Object.hasOwn(value,'enabled')&&!next.enabled)this.sessionArmed=false;
+    // Orders while stopped, B-3: a switch saved while auto trading runs is the last running value.
+    if(switchesChanged)this.refreshWatchRecord();
     // Claude trading D-3 (D-0 note section 8; review C): the switch to Claude makes the first review wait for your press;
     // switching back to another vendor's model clears it.
     if(toClaude)this.setClaudeFirstReview({state:'pending',since:Date.now()});else if(fromClaude)this.setClaudeFirstReview(null);
@@ -540,7 +544,50 @@ class Automation {
   // Whether armed conditional orders are being checked and can fire: the one rule the firing loop, reviews and the UI share.
   // The model and effort an agent runs on (step A2): 'trading', 'scout', 'narrative', 'compacting' or 'reflection'.
   agentModel(agent){return require('./agent-models.cjs').agentModel(this.config,agent);}
-  conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper');}
+  conditionalMonitoringActive(){return Boolean(this.config.conditionalOrders&&this.config.enabled&&this.sessionArmed&&this.config.scope!=='paper')||this.watchingWhileStopped();}
+  // Orders while stopped, B-3 (electron/watch-while-stopped.cjs). The KIS account and environment connected now, or null.
+  connectedAccount(){try{const account=this.live?.identity?.();const environment=this.live?.getConnection?.()?.snapshot?.environment;return typeof account==='string'&&account&&['live','mock'].includes(environment)?{account,environment}:null;}catch{return null;}}
+  autoTradingRuns(){return Boolean(this.config.enabled&&this.sessionArmed);}
+  switchesRecord(){return require('./watch-while-stopped.cjs').recordOf({config:this.config,engines:{KR:this.live,US:this.usLive}});}
+  // Watched whether or not auto trading runs: the setting on for the account and environment connected now, not Stop
+  // everything, conditional orders on, a broker scope. Nothing else (no review, no AI call) runs because of it.
+  watchingWhileStopped(){if(!this.config.conditionalOrders||this.config.scope==='paper'||!this.watchStopped)return false;const v=this.watchStopped.get();return Boolean(v&&!v.everythingStopped&&this.watchStopped.matches(this.connectedAccount()));}
+  // Whether this market's watched orders follow the switches record: the setting on, and auto trading not running or the
+  // market's engine stopped (after a restart or a reconnect, the unclear-order halt, a hand stop, or its trading enabled
+  // by hand after Stop). While auto trading runs with the engine enabled, the live switches decide, as in 1.5.73, so
+  // approval there never depends on the record. With the setting off, never (1.5.73).
+  recordDecides(engine,market){return this.watchingWhileStopped()&&!(this.autoTradingRuns()&&engine?.enabled!==false&&require('./watch-while-stopped.cjs').inScope(this.config.scope,market));}
+  // Whether a watched order of this market is sent by itself while its trading is stopped (the switches record).
+  autoWhileStopped(market){return require('./watch-while-stopped.cjs').autoWhileStopped(this.watchStopped?.get(),this.config,market);}
+  // The setting. Turning it on is the consent for the account connected now, with its environment in the phrase; it also
+  // ends Stop everything. Off removes the consent and the record.
+  setWatchWhileStopped(on,confirmation){const W=this.watchStopped;
+    if(on!==true){W.clear();this.syncConditionalPermits();return null;}
+    const c=this.connectedAccount();if(!c)throw new Error('KIS_NOT_CONNECTED');
+    if(confirmation!==(c.environment==='live'?'WATCH WHILE STOPPED LIVE':'WATCH WHILE STOPPED MOCK'))throw new Error('APPROVAL_REQUIRED');
+    const kept=W.matches(c)?W.get().record??null:null;const v=W.turnOn({...c,record:this.autoTradingRuns()?this.switchesRecord():kept});
+    this.log(randomUUID(),'System','Conditional orders · kept working while stopped',`On for the ${c.environment} account.`);this.syncConditionalPermits();return v;}
+  // Stop everything: auto trading stops as with Stop, and the watch while stopped pauses until Start or until the setting
+  // is turned on again, across a restart.
+  stopEverything(){try{return require('./auto-launch.cjs').stop(this);}finally{this.watchStopped?.stopEverything();this.syncConditionalPermits();}}
+  // The record follows the switches while auto trading runs: called on every change of them (Engine settings, each
+  // market's trading and automatic switch in main.cjs) and by Stop and every automatic stop before they are cleared, so it
+  // is the switches as they were when auto trading stopped. Written only when they differ.
+  refreshWatchRecord(){if(!this.autoTradingRuns()||!this.watchStopped?.matches(this.connectedAccount()))return;const r=this.switchesRecord(),old=this.watchStopped.get().record;
+    if(old)for(const [m,e] of [['KR',this.live],['US',this.usLive]])if(e?.enabled!==true)r.markets[m]=old.markets?.[m]===true;
+    const same=old&&JSON.stringify({...old,at:0})===JSON.stringify({...r,at:0});if(!same)this.watchStopped.setRecord(r);}
+  // Start: the switches now in force become the record, and Stop everything ends.
+  watchStarted(){if(this.watchStopped?.matches(this.connectedAccount()))this.watchStopped.started(this.switchesRecord());this.syncConditionalPermits();}
+  // Each engine's permit follows the rule above; an account or environment other than the consent's voids it. A market
+  // with an unclear order (one open order at a time) gets none until KIS order history settles it (question C).
+  syncConditionalPermits(){const W=this.watchStopped;if(!W)return;const v=W.get(),c=this.connectedAccount();
+    if(v&&c&&!(v.account===c.account&&v.environment===c.environment)){W.clear();this.log(randomUUID(),'System','Conditional orders · not watched while stopped','A different KIS account or environment is connected, so the setting is off until you turn it on for this one.');}
+    const watching=this.watchingWhileStopped(),row=watching?W.get():null,WS=require('./watch-while-stopped.cjs');
+    for(const [engine,market] of [[this.live,'KR'],[this.usLive,'US']]){if(typeof engine?.permitConditional!=='function')continue;
+      let want=null;if(watching&&WS.inScope(this.config.scope,market)&&!this.unclearOpen(engine)){let account=null;try{account=engine.identity();}catch{}if(account)want={account,auto:WS.autoWhileStopped(row,this.config,market)};}
+      const p=engine.conditionalPermit;if(!want){if(p)engine.revokeConditional();continue;}
+      if(!p||p.account!==want.account||p.auto!==want.auto)engine.permitConditional(want);}}
+  unclearOpen(engine){if(engine.severalOpen)return false;try{return engine.orders().some(o=>o.status==='Uncertain');}catch{return true;}}
   // Orders while stopped, B-1 (electron/armed-quotes.cjs): every stock the armed conditional orders read (their own and
   // their conditions'), per market, while they are watched (none otherwise), for main.cjs's reader of their prices.
   watchedSymbols(market){if(!this.conditionalMonitoringActive())return [];return require('./armed-quotes.cjs').symbolsOf(this.desk.orders(this.watchScope()),market);}
@@ -1645,6 +1692,13 @@ class Automation {
         linkedCap=lp.filled;}
       // Priced from a fresh order book with limitPrice as the bound (a sale's floor, a purchase's cap); without a book for a
       // minute the order stays armed and a review is asked for.
+      // A market whose trading was never set up on this account (no limits saved: Start never ran on it) cannot propose; while
+      // stopped the order stays armed, not watched until Start, rather than being closed as refused.
+      if(engine.enabled===false&&this.watchingWhileStopped()){let p=null;try{p=engine.policy?.();}catch{}if(!p){const w='auto trading has not been started on this account';if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w}; it stays armed until you start auto trading.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:Date.now()+300000});return;}}
+      // Question A (the user's answer, "Sells keep working"): with the loss limit's response "stop", a Buy watched while
+      // its market's trading is stopped waits while the limit is reached (checked again every 5 minutes, within its expiry).
+      {const e=order.credit?{}:this.emergencyState();if(order.side==='Buy'&&this.config.lossAction==='stop'&&engine.enabled===false&&this.watchingWhileStopped()&&(e.activeMarkets??(e.active?[market]:[])).includes(market)){const w='the daily loss limit is reached';
+        if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w} and auto trading stopped; it stays armed and is checked again while the limit applies.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:Date.now()+300000});return;}}
       const placement=await this.placementPrice({symbol:order.symbol,side:order.side,bound:order.limitPrice??null,id:order.id,still:()=>this.watchScope()===scope});
       if(!placement){this.desk.update(order,{status:'armed',waiting:'no order book',nextCheckAt:Date.now()+60000});return;}const limit=placement.price;
       const drift=Math.abs(limit/quote.price-1)*100;if(drift>this.config.conditionalMaxSlippagePct)return note('rejected',`Limit ${limit} is ${drift.toFixed(2)}% from the price ${quote.price}, above the ${this.config.conditionalMaxSlippagePct}% limit.`,{results:check.results});
@@ -1682,7 +1736,7 @@ class Automation {
       }
       proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})},{conditional:true});engine.annotate?.(proposal.id,{conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});
       // The same daily cap as reviews' (1.5.48 audit, A6), taken before the send; a closing order is not held back by it.
-      const cap=this.config.maxAutoOrdersPerDay;const wanted=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval;
+      const cap=this.config.maxAutoOrdersPerDay;const wanted=(this.recordDecides(engine,market)?this.autoWhileStopped(market):this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false)&&proposal.status==='Ready'&&!proposal.requiresApproval;
       const closing=(()=>{try{return !require('./credit-paths.cjs').effectOf({side:order.side,credit:order.credit?.kind??'none'}).opening;}catch{return order.side==='Sell'&&!order.credit;}})();
       slot=wanted?this.guardrails.reserveSlot({cap,source:'conditional',ref:'conditional:'+proposal.id,closing}):null;const capReached=wanted&&!slot;const auto=wanted&&Boolean(slot);
       const waits=why=>note('proposed',`Not executed: proposal ${proposal.id} at ${limit} for ${quantity} shares ${why}. Nothing is at the broker until it is approved.`,{proposalId:proposal.id,results:check.results});
@@ -2209,6 +2263,7 @@ class Automation {
     if(this.sessionArmed&&this.config.enabled&&this.config.scope!=='paper'&&Date.now()-(this.lastScheduleObservation??0)>=30000){this.lastScheduleObservation=Date.now();try{this.scheduleObserver.observe(this.scheduleState());}catch{}}
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
     if(deskDue&&this.config.scope!=='paper')try{this.syncLinkedStops();}catch{}
+    if(deskDue)try{this.syncConditionalPermits();}catch{}
     if(deskDue)try{this.updateArmedWatch();}catch{}
     if(deskDue&&this.conditionalMonitoringActive()&&!this.firing){
       const scope=this.watchScope();const data=this.watchData();const formula=require('./formula.cjs');

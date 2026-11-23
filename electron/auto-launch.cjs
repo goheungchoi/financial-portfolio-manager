@@ -27,6 +27,7 @@ async function start(a,token){
     a.configure({enabled:true,autoSubmit:true});
     // Start is what arms the session (audit item 15): a settings save never does.
     a.sessionArmed=true;a.pausedByRestart=false;
+    a.watchStarted?.();// orders while stopped, B-3: the switches record
   }catch(error){if(generation===(a.launchGeneration??0))for(const row of prior){row.e.enabled=row.enabled;row.e.autoEnabled=row.autoEnabled;}throw error;}
   finally{a.launching=false;}
   // Starting resumes the schedule: no review runs because of the button. The last review time is kept across restarts
@@ -54,7 +55,7 @@ function startMessage(a){
 // The engines stop even if the save throws (2026-11-18); the error then reaches runtime:stop, which shows it.
 // The message says plainly that armed conditional orders are the app's, not KIS's (found in live use: "existing broker
 // orders remain active" was read as the stops staying at KIS): they are not watched until auto trading starts again.
-function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;try{a.configure({enabled:false,autoSubmit:false});}finally{a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);}
+function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;try{a.refreshWatchRecord?.();}catch{}try{a.configure({enabled:false,autoSubmit:false});}finally{a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);}
   let armed=[];try{armed=a.config.conditionalOrders?a.desk.orders(a.watchScope()):[];}catch{armed=[];}if(!armed.length)return 'Auto trading stopped. Existing broker orders remain active.';
   const stops=armed.every(o=>o.purpose==='stop_loss'),n=armed.length,word=stops?(n===1?'stop':'stops'):(n===1?'conditional order':'conditional orders');
   return `Auto trading stopped. Orders already at KIS stay. Your ${n} armed ${word} (${[...new Set([...armed].sort((x,y)=>(x.createdAt??0)-(y.createdAt??0)).map(o=>o.symbol))].slice(0,4).join(', ')}) ${n===1?'is':'are'} not watched until you start it again.`;}

@@ -79,6 +79,7 @@ Each row: the feature, where the user meets it, the settings that govern it, and
 | Several open orders, several orders per review | Engine → Trading | "Several open orders", "Orders per review" | P2 §3.11 |
 | Order tracking (moving an open order with the price) | Engine → Trading | "Order tracking" | P2 §3.9 |
 | Stops and other conditional orders, trailing stops; a stop on Korean shares no longer held is closed with words | Journal → Orders and triggers | Engine: conditional orders, "Submit them automatically", trailing stops, caps | P2 §6 |
+| Conditional orders kept working while auto trading is stopped (off by default; consent per account and environment; Stop everything) | no screen yet (B-4) | the setting, the switches record kept at Start | P2 §6.5 |
 | Leveraged and inverse ETFs, margin, short selling | Short & leverage | the switches and caps there | P2 §5.1–5.2 |
 | Daily loss limit response, daily automatic order cap, stop after failed reviews | Engine → guardrails | "When a daily loss limit is hit", caps | P2 §5.3–5.4 |
 | Extended sessions (NXT, U.S. pre/after/daytime) | Engine | session switches, size cap | P2 §5.5 |

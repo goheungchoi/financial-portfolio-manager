@@ -852,9 +852,52 @@ A trailing stop is an armed cash-share Sell (`stop_loss` or `take_profit`) with 
 ### 6.5 Watching and firing
 
 **Watching** (`Automation.tick`, `automation.cjs:1955-1962`): every 5 seconds, only while conditional orders are on,
-auto trading is on and armed for this run, and the scope is not paper (`conditionalMonitoringActive`, `:534`). Trailing
-levels move first; then each armed order's conditions are checked on live quotes; the first one met fires. One fires at
-a time.
+auto trading is on and armed for this run, and the scope is not paper (`conditionalMonitoringActive`, `:534`), or while
+they are watched while stopped (below). Trailing levels move first; then each armed order's conditions are checked on
+live quotes; the first one met fires. One fires at a time.
+
+**Watched while auto trading is stopped** (orders while stopped B-3; `electron/watch-while-stopped.cjs`,
+`Automation.watchingWhileStopped`, `syncConditionalPermits`). Off by default; with it off everything is as in 1.5.73.
+- **The setting and its consent.** Kept in a row of its own (`conditional_watch`), never in the saved settings, so it
+  reaches no review, settings revision or start token. Turning it on (`setWatchWhileStopped(true, 'WATCH WHILE STOPPED
+  LIVE|MOCK')`, the phrase naming the connected environment; not while disconnected) is the consent for the KIS
+  account and environment connected then. Another account or environment connected later makes it void: the row is
+  removed, the setting reads off, and it is turned on again for that one ("Conditional orders · not watched while
+  stopped" in Activity). A dropped connection with the same account back is not a switch. Off removes it.
+- **The rule.** Watched whether or not auto trading runs while: the setting is on for the account and environment
+  connected now, Stop everything is not in force, conditional orders are on, and the scope is a broker scope. A restart
+  needs no Start: the watch resumes once the account is connected. Nothing else runs because of it (no review, no AI
+  call).
+- **The switches record.** The switches as they were when auto trading stopped: taken at Start, when the setting is
+  turned on while running, on every change of a switch while running (Engine settings, and each market's trading and
+  automatic switches, `refreshWatchRecord` from main.cjs's handlers), and by Stop and every automatic stop before they
+  are cleared (written only when they differ). A market's entry is refreshed only while its engine is trading; an engine
+  stopped by a reconnect or the unclear-order halt leaves that market's entry as it was. It holds: "Submit them automatically", auto trading's automatic
+  submission, and per market whether it was in scope with its trading and automatic switches on. Whenever auto trading
+  is not running, or a market's engine is stopped while it runs (after a restart or a reconnect, the halt, a hand stop;
+  `recordDecides`), a fired order of that market is sent by itself only if the
+  record says so and "Submit them
+  automatically" is still on (it can turn sending off, never on); with no record (never started since the consent), or
+  for a market not in scope at that Start or no longer in scope, it is proposed for your approval. While auto trading
+  runs with the engine enabled, the live switches decide, as before, refreshed or not.
+- **The permits.** Every 5 seconds (and at each change) each engine in scope is given the engine permit (below) for the
+  connected account with `auto` from the record, or has it revoked when the rule no longer holds. A market with an
+  unclear order (one open order at a time) gets none until KIS order history settles it, and then only if the consent
+  still matches (question C).
+- **Stop everything** (`stopEverything`): stops auto trading as Stop does and pauses the watch while stopped, kept across
+  a restart, until Start or until the setting is turned on again.
+- **Every way auto trading stops without your Stop**, with the setting on: the daily loss limit with response "stop"
+  (the watch goes on: Sells are sent as before; a Buy that opens or adds waits, "the daily loss limit is reached",
+  checked again every 5 minutes while the limit applies, within its expiry, before any order book is read, with one
+  Activity line; the same when the limit is reached while
+  already stopped; the user's answer to question A); consecutive failed reviews (the watch goes on, as after Stop); a
+  restart of the app or of Windows (the watch resumes once connected); an unclear order (that market waits, as above);
+  a connection change (permits revoked at once, given again when the consented account is back). Closing the app and
+  Stop everything halt every order. A market whose trading was never set up on the account (no limits saved: auto
+  trading never started on it) cannot propose: its orders stay armed, "auto trading has not been started on this
+  account", never closed as refused. A restart on a new day needs no Start: the engine takes the new day from the
+  balance it reads at sending. Start is refused while an order is being sent; Stop everything during a fire stops it
+  before it is placed, unless it is already being placed. With the setting off each of them ends the watch, as in 1.5.73.
 
 **The quotes the watch reads.** The app polls quotes for other reasons, the same running or not: Korea every 30 s
 (`pollKisQuotes`, one request of at most 20 codes: watches, the allowed list, holdings, discovery), the U.S. every 60 s
@@ -893,7 +936,8 @@ engine refuses every order as in 1.5.73. A permit names one account and whether 
 themselves (`auto`). While the engine is stopped and the permit's account is connected, only an order the watch makes
 (`propose(command,{conditional:true})`, which marks it `madeBy:'conditional'`; that mark comes from nowhere else:
 `annotate` refuses to set it or to change it with `INVALID_REQUEST`) is proposed, approved by you, sent, revised and
-cancelled; while stopped, whether it is sent by itself is decided by the permit alone (`auto`), whatever the market's
+cancelled; whenever the market is not trading automatically (stopped, or enabled with its automatic switch off),
+whether a watch order is sent by itself is decided by the permit alone (`auto`), whatever the market's
 automatic switch was left at; a review's order and your own ticket are refused
 with `KIS_TRADING_DISABLED`, and an order made by anything else, even one proposed while running, is never sent under
 it. Every limit of the engine applies as when running: the size and daily turnover limits, the allowed list, one open
@@ -902,7 +946,7 @@ on an automatic order that opens exposure, approvals, funds and expiry. An uncle
 order at a time) also revokes the permit, and so does every connection change (connect, forget, disconnect in
 main.cjs), so a permit never outlives the connection it was given for; Stop auto trading leaves it. While running, the
 permit changes nothing. Setting and revoking it belongs to
-the app (B-3); nothing sets it yet.
+the app: `syncConditionalPermits` (above). The conditional order an order belongs to (`conditionalId`) is set once.
 
 **Firing** (`fireConditional`, `automation.cjs:1433-1539`):
 
@@ -1080,7 +1124,8 @@ batch is not sent; the review fails), per `order-outcomes.cjs`. "Words" are from
 | Extended approval | U.S. pre/after-market + automatic | `:176` | fixed | same |
 | Daily automatic-order cap | Opening orders at the cap | `automation.cjs:1178`, `:1513` | `maxAutoOrdersPerDay` | "Guardrail: the daily limit of N automatic orders is reached. Proposal awaits manual approval." |
 | App `autoSubmit` off / market automatic off | — | `automation.cjs:1174`, `:1194` | Start / the switches | "… automatic execution is off. Proposal awaits manual approval." |
-| Fired conditional without auto-submit | `conditionalAutoSubmit` off | `automation.cjs:1509-1513` | "Submit them automatically" | "Not executed: proposal … awaits your approval" |
+| Fired conditional without auto-submit | `conditionalAutoSubmit` off; while stopped, the switches record (§6.5) | `automation.cjs:1509-1513` | "Submit them automatically" | "Not executed: proposal … awaits your approval" |
+| Conditional Buy while stopped at the loss limit | Watched while stopped, response "stop", the limit reached in its market | `fireConditional` | loss limit + `lossAction` | the order stays armed: "the daily loss limit is reached" |
 | Loss guardrails (not proposed at all) | 5.3 | `automation.cjs:1140-1143` | loss limit + `lossAction` | "Guardrail: new buys are blocked / restricted…" |
 | Credit draft | Any credit decision | `automation.cjs:1146` | fixed | "Draft only: …" |
 | Execution off | The market's trading is off | `automation.cjs:1148` | Start | "… trading session is off. Recommendation recorded…" |
