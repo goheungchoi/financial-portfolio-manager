@@ -49,7 +49,24 @@ function korea(k,{us,now,funding=null,inFlight=null,rate=null}){
   if(split){if(split.krLow>0||split.krHigh>0)components.push(part('usBuyFunding',-split.krLow,split.krLow===split.krHigh?'observed':'derived','U.S. buys awaiting settlement (ustl_buy_amt_smtl): the KRW KIS has shown for them'+(settledUnpaid>0?`, and ₩${Math.round(settledUnpaid).toLocaleString('en-US')} KIS settled from Korea not yet seen leaving Korean cash`:''),{low:-split.krLow,high:-split.krHigh,note:split.krLow===split.krHigh?'paid in KRW':`${Math.round(split.krLow-split.krHigh)} of it may have been paid in USD`}));}
   else if(total>0)components.push(part('usBuyFunding',-total,known===total?'observed':'derived','U.S. buys awaiting settlement (ustl_buy_amt_smtl)',{low:-total,high:-known,note:known===total?'paid in KRW':`${Math.round(total-known)} of it may have been paid in USD`}));
   const credit=Boolean(k.loanTotal||k.shortProceeds||(k.shorts??[]).length);let brokerNet=null;
+  // B3a (found in live use, a distribution short opened and covered in KIS's own app): KIS's net assets (nass_amt) are
+  // total value less tot_loan_amt, and count a short as zero at any price (its row is in the holdings' value at +market
+  // and in tot_loan_amt at -market); the sale proceeds are in no cash figure. So the account's value is net assets plus
+  // each short's proceeds less its obligation at market (stln_slng_chgs - loan_amt). Exact only when every credit row is
+  // a distribution short (no margin loan, no own-stock-loan short) and both identities hold to the won: net assets =
+  // total - loans, and loans = the shorts' obligations. Otherwise the range below stays, naming what is unconfirmed.
+  const settledShort=(()=>{const shorts=k.shorts??[];if(!shorts.length||long.some(h=>(h.loans??[]).length))return false;
+    if(!shorts.every(s=>s.source==='distribution'&&finite(s.loanAmount)&&finite(s.proceeds)))return false;
+    if(![k.netAssets,k.grossTotal,k.loanTotal].every(finite))return false;
+    return Math.abs(k.netAssets-(k.grossTotal-k.loanTotal))<=1&&Math.abs(k.loanTotal-sum(shorts,s=>s.loanAmount))<=1;})();
+  if(credit&&settledShort){const shorts=k.shorts,obligation=sum(shorts,s=>s.loanAmount),gain=sum(shorts,s=>s.proceeds-s.loanAmount);
+    const funding=components.filter(c=>c.name==='usBuyFunding');components.length=0;
+    components.push(part('netAssets',k.netAssets+gain,'observed',"KIS net assets (nass_amt, which counts a short as zero) plus each short's sale proceeds less its obligation at market (stln_slng_chgs - loan_amt)"),...funding);
+    return finish('KRW',k,components,reasons,{credit:{loanTotal:k.loanTotal,shortProceeds:k.shortProceeds??null,shortLiability:obligation,shortGain:gain,brokerNet:k.netAssets,settled:true}},now,{reportedTotal:k.reportedTotal,grossTotal:k.grossTotal});}
   if(credit){
+    // Why the range stays (B3a): which credit rows are not yet confirmed.
+    if((k.shorts??[]).some(s=>s.source==='self'))reasons.push('an own-stock-loan short (자기대주) is open, whose rows are not yet confirmed');
+    if(long.some(h=>(h.loans??[]).length))reasons.push('a margin loan (융자) is open, whose rows are not yet confirmed');
     const shortLiability=sum(k.shorts??[],s=>s.quantity*s.price);
     const computed=sum(components,c=>c.amount)+(k.shortProceeds??0)-(k.loanTotal??0)-shortLiability;
     brokerNet=finite(k.netAssets)?k.netAssets:null;

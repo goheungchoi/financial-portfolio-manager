@@ -41,7 +41,9 @@ function normalizeBalance(rows,summary,environment) {
     const type=String(row.trad_dvsn_name??'');const credit=type.includes('대주')?'short':type.includes('융자')?'margin':'cash';
     const line={quantity,cost:amount(row.pchs_avg_pric),price:amount(row.prpr),marketValue:amount(row.evlu_amt),unrealized:amount(row.evlu_pfls_amt),available:row.ord_psbl_qty===undefined?null:amount(row.ord_psbl_qty)};
     if(line.cost<0 || line.price<0 || line.marketValue<0) throw new KisError('INVALID_RESPONSE');
-    if(credit==='short'){const proceeds=row.stln_slng_chgs==null||String(row.stln_slng_chgs).trim()===''?null:amount(row.stln_slng_chgs);shorts.push({symbol:row.pdno,name:row.prdt_name.slice(0,120),quantity,price:line.price,entryPrice:proceeds!=null&&quantity?Math.round(proceeds/quantity):line.cost||null,proceeds,loanDate:day(row.loan_dt),expiry:day(row.expd_dt),source:type.includes('자기')?'self':'distribution',availableQuantity:line.available});continue;}
+    if(credit==='short'){const proceeds=row.stln_slng_chgs==null||String(row.stln_slng_chgs).trim()===''?null:amount(row.stln_slng_chgs);// loanAmount: the obligation at market (loan_amt; found in live use to be the price times the quantity).
+      const loanAmount=row.loan_amt==null||String(row.loan_amt).trim()===''?null:amount(row.loan_amt);
+      shorts.push({symbol:row.pdno,name:row.prdt_name.slice(0,120),quantity,price:line.price,entryPrice:proceeds!=null&&quantity?Math.round(proceeds/quantity):line.cost||null,proceeds,loanAmount,loanDate:day(row.loan_dt),expiry:day(row.expd_dt),source:type.includes('자기')?'self':'distribution',availableQuantity:line.available});continue;}
     const existing=bySymbol.get(row.pdno);
     if(credit==='cash'&&existing?.cashRow)throw new KisError('INVALID_RESPONSE');
     const holding=existing??{symbol:row.pdno,name:row.prdt_name.slice(0,120),quantity:0,cost:0,price:line.price,marketValue:0,unrealized:0,availableQuantity:null,loans:[],cashRow:false};

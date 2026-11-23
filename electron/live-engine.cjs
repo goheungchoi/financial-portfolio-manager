@@ -436,7 +436,8 @@ class LiveEngine {
     // Korean order history reports the average execution price as averagePrice; U.S. history as fillPrice.
     const fillPrice=res.fillPrice;const resultCosts=res.filled>0&&fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:res.filled,price:fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,classification:this.costs?.classify?.(order.symbol)??null}):null;
     const closed=['Filled','Canceled','Rejected'].includes(res.status);
-    const next={...order,resultCosts,fillPrice,reconciledAt:Date.now(),...((res.status==='Filled'||res.filled>0&&closed)&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:res.filled,status:res.status,reason:null,
+    // lotLoanDate: KIS's loan date for the app's credit order, from its history rows (a short's lot; a cover names it).
+    const next={...order,resultCosts,fillPrice,...(res.loanDate?{lotLoanDate:res.loanDate}:{}),reconciledAt:Date.now(),...((res.status==='Filled'||res.filled>0&&closed)&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:res.filled,status:res.status,reason:null,
       ...(res.closedReason?{closedReason:res.closedReason}:{}),currentBrokerOrderId:res.current,...(res.currentPrice?{currentPrice:res.currentPrice}:{}),chain:res.chain,...(res.outside.length&&!order.handsOff?{handsOff:{at:Date.now(),changes:res.outside}}:{})};
     this.save(next);return next;}
   orderReconciliation(){

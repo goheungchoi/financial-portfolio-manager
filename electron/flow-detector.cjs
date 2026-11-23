@@ -57,14 +57,22 @@ const BASIS={KR:'net-of-unpaid-funding',US:'with-pending-in-flight-and-route'};
 const basisOf=b=>typeof b==='string'?{KR:b,US:null}:b&&typeof b==='object'?b:{};
 const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];
 // An order's cash effect in its market currency: the broker's net cash when known, otherwise the gross amount.
-function cashEffect(order){
-  if(!(order.filled>0)||!(order.fillPrice>0))return 0;const net=order.resultCosts?.netCash;
-  if(Number.isFinite(net))return net;const gross=order.filled*order.fillPrice;return order.side==='Sell'?gross:-gross;
+// B3a (found in live use: KIS's cash moved by a short sale's fees only, and by its proceeds less the buy-back at the
+// cover): the app's own short sale moves Korean cash by its fees and tax only; its cover by the proceeds of the lot it
+// repays less the buy-back and fees. The lot is the app's short sales of the stock whose loan date KIS gives in their
+// history (lotLoanDate) is the cover's (credit.loanDate, the lot's loan date the cover sends), by their average fill
+// price. A cover with no short of its lot known is not explained (0), so its change is held and recorded for you.
+function cashEffect(order,orders=null){
+  if(!(order.filled>0)||!(order.fillPrice>0))return 0;const net=order.resultCosts?.netCash,gross=order.filled*order.fillPrice,kind=order.credit?.kind;
+  if(kind==='short')return Number.isFinite(net)?net-gross:0;
+  if(kind==='cover'){const lot=order.credit?.loanDate??null;const sold=lot?(Array.isArray(orders)?orders:[]).filter(o=>o.credit?.kind==='short'&&o.symbol===order.symbol&&o.lotLoanDate===lot&&o.filled>0&&o.fillPrice>0):[];const shares=sold.reduce((n,o)=>n+o.filled,0);if(!(shares>0))return 0;
+    const proceeds=sold.reduce((n,o)=>n+o.filled*o.fillPrice,0)/shares*order.filled,fees=Number.isFinite(net)?-net-gross:0;return proceeds-gross-fees;}
+  if(Number.isFinite(net))return net;return order.side==='Sell'?gross:-gross;
 }
 // Each order's cash effect at a reading, by order: the next reading is explained only by what changed since, so an
 // order placed before a reading and filled hours later is still counted once, when its fill appears.
 const orderKey=o=>o.id??`${o.market??'KR'}|${o.side}|${o.symbol}|${o.createdAt}`;
-const fillsOf=orders=>Object.fromEntries(orders.map(o=>[orderKey(o),Math.round(cashEffect(o)*100)/100]).filter(([,effect])=>effect!==0));
+const fillsOf=orders=>Object.fromEntries(orders.map(o=>[orderKey(o),Math.round(cashEffect(o,orders)*100)/100]).filter(([,effect])=>effect!==0));
 // M-3.2: what fills of open orders the app has not counted yet could move a market's cash by: buys a fall up to their
 // unfilled shares at the highest price they may carry (limit, confirmed revision, or one sent but not confirmed), with
 // 1% for fees; sales a rise up to their unfilled shares at that price. Your own orders in KIS are not the app's records.
@@ -76,7 +84,7 @@ function fillEnvelope(orders,market){let fall=0,rise=0;for(const o of orders){if
 function unexplained(prev,now,orders){
   // An order missing from the previous reading's fills had none then, unless it was already seen filled before it.
   // Readings saved before fills were kept fall back to the orders placed in between.
-  const change=o=>{const effect=cashEffect(o);if(!prev.fills)return o.createdAt>prev.at&&o.createdAt<=now.at?effect:0;
+  const change=o=>{const effect=cashEffect(o,orders);if(!prev.fills)return o.createdAt>prev.at&&o.createdAt<=now.at?effect:0;
     const before=Object.hasOwn(prev.fills,orderKey(o))?prev.fills[orderKey(o)]:Number.isFinite(o.filledObservedAt)&&o.filledObservedAt<=prev.at?effect:0;return effect-before;};
   const moved=orders.map(o=>({market:o.market??'KR',amount:change(o)})).filter(m=>Math.abs(m.amount)>=0.005);
   const usTraded=moved.some(m=>m.market==='US');

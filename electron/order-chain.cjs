@@ -31,6 +31,8 @@ function resolve(order,rows){
   const status=filled>=order.quantity?'Filled':cancelled(tail)||expired?'Canceled':rejected(tail)?'Rejected':filled>0?'Partially filled':'Accepted';
   // Links the app did not create: someone revised or cancelled the order outside the app.
   const outside=chain.filter(r=>!mine.has(norm(r.orderId))).map(r=>({orderId:asSent(norm(r.orderId)),from:r.originalOrderId==null?null:asSent(norm(r.originalOrderId)),kind:cancelled(r)?'cancel':'revision',price:r.orderPrice??null}));
-  return {status,...(expired?{closedReason:'expired unfilled'}:{}),filled,fillPrice,current:asSent(norm(tail.orderId)),currentPrice:tail.orderPrice??null,remaining:Math.max(0,order.quantity-filled),chain:ids.map(asSent),outside};
+  // loanDate: KIS's loan date of a credit order (loan_dt; a short's is its lot, the settlement day), from its rows.
+  const loanDate=chain.find(r=>r.loanDate)?.loanDate??null;
+  return {status,...(expired?{closedReason:'expired unfilled'}:{}),...(loanDate?{loanDate}:{}),filled,fillPrice,current:asSent(norm(tail.orderId)),currentPrice:tail.orderPrice??null,remaining:Math.max(0,order.quantity-filled),chain:ids.map(asSent),outside};
 }
 module.exports={resolve,norm,padLike};
