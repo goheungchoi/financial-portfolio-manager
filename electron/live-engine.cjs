@@ -122,7 +122,7 @@ class LiveEngine {
   propose(command,{ticket=false,conditional=false}={}) {
     // Optional credit: {kind:'margin-buy'|'margin-sell'|'short'|'cover', loanDate} for Korean margin and short orders (live accounts).
     const credit=command?.credit??null;if(command&&'credit' in command){const {credit:_,...rest}=command;command=rest;}
-    if(credit!=null&&(this.market!=='KR'||typeof credit!=='object'||Object.keys(credit).some(k=>!['kind','loanDate'].includes(k))||!({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]||({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]!==command.side))throw new Error('INVALID_ORDER');
+    if(credit!=null&&(this.market!=='KR'||typeof credit!=='object'||Object.keys(credit).some(k=>!['kind','loanDate',...(credit.kind==='short'?['market']:[])].includes(k))||credit.kind==='short'&&credit.market!=null&&!['KOSPI','KOSDAQ'].includes(credit.market)||!({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]||({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]!==command.side))throw new Error('INVALID_ORDER');
     if(credit&&this.getConnection().snapshot?.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
     if(!command || Object.keys(command).sort().join(',')!=='limitPrice,quantity,side,symbol' || !['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!this.validPrice(command.limitPrice)||!this.validSymbol(command.symbol))throw new Error('INVALID_ORDER');
     if(!this.enabled&&!(conditional===true&&this.permitHolds()))throw new Error('KIS_TRADING_DISABLED');
@@ -143,7 +143,7 @@ class LiveEngine {
     let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null,pending});}
     // A short cover reduces exposure: the product approval of a buy does not apply to it (1.5.48 review, R2).
     const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
-    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null,...(conditional===true?{madeBy:'conditional'}:{})};this.save(intent);return intent;
+    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null,...(credit.kind==='short'&&credit.market?{market:credit.market}:{})},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null,...(conditional===true?{madeBy:'conditional'}:{})};this.save(intent);return intent;
   }
   // Your submission (the confirmation phrase is your approval). Automatic submissions go through autoSubmit; whether a
   // submission is automatic belongs to that call alone (1.5.48 review, R4): a competing call refused as busy cannot
@@ -181,6 +181,9 @@ class LiveEngine {
       timings.checkMs=since(t);t=Date.now();
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
+      // B3c: the lot as read now, so a fill is released only once a later balance shows it (short-rules balanceShows).
+      if(order.credit?.kind==='cover'){const l=prepared.balance.shorts?.find(s=>s.symbol===order.symbol&&s.loanDate===order.credit.loanDate);order={...order,lotAtSend:Number.isFinite(l?.quantity)?l.quantity:null,lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};}
+      else if(order.credit?.kind==='short')order={...order,lotAtSend:require('./short-rules.cjs').shortQuantity(prepared.balance,order.symbol),lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
       // M-1.4: the other open orders (the app's, and yours in KIS from this preparation) every limit counts with this one;
       // none with the switch off.
@@ -448,7 +451,9 @@ class LiveEngine {
     const fillPrice=res.fillPrice;const resultCosts=res.filled>0&&fillPrice&&order.costSettings?require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:res.filled,price:fillPrice,symbol:order.symbol,costPerShare:order.costPerShare,settings:order.costSettings,classification:this.costs?.classify?.(order.symbol)??null}):null;
     const closed=['Filled','Canceled','Rejected'].includes(res.status);
     // lotLoanDate: KIS's loan date for the app's credit order, from its history rows (a short's lot; a cover names it).
-    const next={...order,resultCosts,fillPrice,...(res.loanDate?{lotLoanDate:res.loanDate}:{}),reconciledAt:Date.now(),...((res.status==='Filled'||res.filled>0&&closed)&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:res.filled,status:res.status,reason:null,
+    // B3c: KIS's own names and loan date for the app's short or cover, checked against the app's record, in words.
+    const creditCheck=order.credit?require('./short-rules.cjs').creditRowCheck(order,res.chain):null;
+    const next={...order,resultCosts,fillPrice,...(res.loanDate?{lotLoanDate:res.loanDate}:{}),...(creditCheck?{creditCheck}:{}),reconciledAt:Date.now(),...((res.status==='Filled'||res.filled>0&&closed)&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:res.filled,status:res.status,reason:null,
       ...(res.closedReason?{closedReason:res.closedReason}:{}),currentBrokerOrderId:res.current,...(res.currentPrice?{currentPrice:res.currentPrice}:{}),chain:res.chain,...(res.outside.length&&!order.handsOff?{handsOff:{at:Date.now(),changes:res.outside}}:{})};
     this.save(next);return next;}
   orderReconciliation(){

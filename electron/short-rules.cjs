@@ -106,4 +106,53 @@ function refusalWords({symbol,name=null,quantity,price,checked={}}){const fmt=n=
   const done=[...(wholePositive(checked.borrowable)&&wholePositive(quantity)?[`borrowable ${fmt(checked.borrowable)} ≥ ${fmt(quantity)}`]:[]),...(checked.floorOk===true?['price above the last trade']:[]),VENUE,...(num(checked.capAfterPct)!=null&&num(checked.capAfterPct)>=0?[`cap ${pct(num(checked.capAfterPct))} of ${pct(positive(checked.capMaxPct)??DEFAULT_MAX_PCT)}`]:[])];
   return `Short of ${qty}${what}${at} refused by KIS (no reason given). The app checked: ${done.join(', ')}. Not checkable here: the exchange's short-sale ban list for today, and your KIS stock-loan limit.`;}
 
-module.exports={MAX_BORROW_AGE_MS,LAST_TRADE_FRESH_MS,FUTURE_SKEW_MS,DEFAULT_MAX_PCT,VENUE,lendExchange,instrumentAllowed,parseBorrowable,borrowable,capBase,capCheck,upToTick,floorPrice,auctionFloor,floorNow,shortPrice,reviseShort,sessionAllowed,signedExposure,refusalWords,fresh};
+// B3c. The loan date a new short (CRDT_TYPE 22) sends: B4 decides which one KIS's API accepts, from the order row it
+// reads back. 'trade-day' (what the code sent before B3c) or 'settlement' (T+2 Korean business days, what KIS's own app
+// recorded in the hand test). One constant, so B4 can try one and, on a refusal, the other.
+const SHORT_LOAN_DATE_RULE='trade-day';
+const nextDay=d=>new Date(Date.parse(d+'T00:00:00Z')+86400000).toISOString().slice(0,10);
+// today: the Seoul trade day (YYYY-MM-DD); isOpen(day): true or false when known (the KIS calendar), else weekdays.
+function shortLoanDate(today,rule=SHORT_LOAN_DATE_RULE,isOpen=null){if(!/^\d{4}-\d{2}-\d{2}$/.test(String(today??'')))throw new Error('INVALID_DATE');if(rule==='trade-day')return today;
+  if(rule!=='settlement')throw new Error('INVALID_RULE');const {isBusinessDay}=require('./business-days.cjs');let d=today,n=0;while(n<2){d=nextDay(d);if(isBusinessDay('KR',d,{krOpen:isOpen}))n++;}return d;}
+// After a credit fill the balance shows it 1-3 minutes later. A fill counts until a balance read after it was seen shows
+// it: a filled cover keeps its quantity reserved until the lot reads lower by it (or gone), and a filled short counts
+// toward the cap until the stock's short rows read higher by it. Time never releases it; an unknown time or an unknown
+// lot at sending keeps it (fail closed). lotAtSend: the lot's (a cover) or the stock's short (a short) quantity in the
+// balance read at sending.
+const BALANCE_WAIT_WORDS_MS=600000;
+const seenAt=o=>Number.isFinite(o?.filledObservedAt)?o.filledObservedAt:o?.reconciledAt;
+// others: the other fills on the same lot (a cover) or the same stock's shorts (a short). The balance must account for
+// this fill and every other sent on the same or a later reading (lotAtSendAt; unknown counts), so fills sent on one
+// reading are released together, only once the balance shows all of them (B3c review 2).
+function balanceShows(order,balance,quantityNow,others=[]){const filled=Number(order?.filled)||0;if(filled<=0)return true;const at=Date.parse(balance?.timestamp??''),seen=seenAt(order);
+  if(!(Number.isFinite(at)&&Number.isFinite(seen)&&at>seen&&Number.isFinite(order.lotAtSend)&&Number.isFinite(quantityNow)))return false;
+  const all=groupFilled(order,others);return order.side==='Buy'?quantityNow<=order.lotAtSend-all:quantityNow>=order.lotAtSend+all;}
+// This fill and every other sent on the same or a later reading (an unknown reading time counts).
+function groupFilled(order,others){const since=order.lotAtSendAt;return (Number(order?.filled)||0)+(Array.isArray(others)?others:[]).filter(o=>o&&o!==order&&o.id!==order.id&&Number(o.filled)>0&&!(Number.isFinite(since)&&Number.isFinite(o.lotAtSendAt)&&o.lotAtSendAt<since)).reduce((n,o)=>n+(Number(o.filled)||0),0);}
+// How much of the fills the balance still has to show, as this order's reading sees it: the balance's quantity less what
+// the lot should read after this fill and every later one (a cover), or the reverse (a short). With an unknown time or
+// lot, every fill of the group (fail closed).
+function unshownQuantity(order,balance,quantityNow,others=[]){const all=groupFilled(order,others);const at=Date.parse(balance?.timestamp??''),seen=seenAt(order);
+  if(!(Number.isFinite(at)&&Number.isFinite(seen)&&at>seen&&Number.isFinite(order.lotAtSend)&&Number.isFinite(quantityNow)))return all;
+  return Math.max(0,order.side==='Buy'?quantityNow-(order.lotAtSend-all):(order.lotAtSend+all)-quantityNow);}
+const shortQuantity=(balance,symbol)=>(balance?.shorts??[]).filter(s=>s.symbol===symbol).reduce((n,s)=>n+(Number(s.quantity)||0),0);
+// The app's filled shorts the balance does not show yet, as waiting notionals for capCheck.
+// Per stock: the short quantity the balance still has to show (the most any order's reading finds), at the highest price.
+function laggingShorts(orders,balance){const shorts=(Array.isArray(orders)?orders:[]).filter(o=>o?.side==='Sell'&&o.credit?.kind==='short'&&Number(o.filled)>0);const out=[];
+  for(const symbol of new Set(shorts.map(o=>o.symbol))){const group=shorts.filter(o=>o.symbol===symbol),q=shortQuantity(balance,symbol);const missing=Math.max(0,...group.map(o=>unshownQuantity(o,balance,q,group)));
+    if(missing>0)out.push({notional:missing*Math.max(...group.map(o=>Number(o.fillPrice??o.limitPrice)||0))});}return out;}
+// Words for a fill the balance has not shown for over 10 minutes (or since an unknown time), so the user sees why no
+// further cover goes out.
+function balanceWaitWords(order,now){const seen=seenAt(order);return !Number.isFinite(seen)||!Number.isFinite(now)||now-seen>BALANCE_WAIT_WORDS_MS?'waiting for KIS\'s balance to show the cover':null;}
+// B3c reconcile: KIS's order rows for the app's short or cover say what KIS did; a name or loan date that does not match
+// the app's record is reported in words (null when it matches or there is nothing to compare).
+function creditRowCheck(order,rows){const kind=order?.credit?.kind;if(!['short','cover'].includes(kind))return null;const list=(Array.isArray(rows)?rows:[]).filter(r=>r&&typeof r.creditName==='string');if(!list.length)return null;
+  // Only KIS's known names are printed; anything else is "an unknown kind".
+  const KNOWN=new Set(['현금매수','현금매도','유대신규','유대상환','유대매도','유대매도거부','자대신규','자대상환','유통융자신규','유통융자상환','자기융자신규','자기융자상환']);
+  const names=[...new Set(list.map(r=>KNOWN.has(r.creditName)?r.creditName:'an unknown kind'))],words=[];
+  if(kind==='short'&&!names.some(n=>/대/.test(n)&&/(신규|매도)/.test(n)))words.push(`KIS recorded it as ${names.join(', ')}, not a new short sale`);
+  if(kind==='cover'&&!names.some(n=>/대/.test(n)&&/상환/.test(n)))words.push(`KIS recorded it as ${names.join(', ')}, not a cover`);
+  if(kind==='cover'&&order.credit.loanDate){const dates=[...new Set(list.map(r=>r.loanDate).filter(Boolean))];if(dates.length&&!dates.includes(order.credit.loanDate))words.push(`its loan date at KIS is ${dates.join(', ')}, the app sent ${order.credit.loanDate}`);}
+  return words.length?words.join('; ')+'.':null;}
+
+module.exports={MAX_BORROW_AGE_MS,LAST_TRADE_FRESH_MS,FUTURE_SKEW_MS,DEFAULT_MAX_PCT,VENUE,lendExchange,instrumentAllowed,parseBorrowable,borrowable,capBase,capCheck,upToTick,floorPrice,auctionFloor,floorNow,shortPrice,reviseShort,sessionAllowed,signedExposure,refusalWords,fresh,SHORT_LOAN_DATE_RULE,shortLoanDate,BALANCE_WAIT_WORDS_MS,balanceShows,unshownQuantity,shortQuantity,laggingShorts,balanceWaitWords,creditRowCheck};

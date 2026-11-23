@@ -33,8 +33,14 @@ function remaining(balance,{symbol,side,credit=null},orders=[]){
   const {effect,kind}=effectOf({side,credit});if(!effect.startsWith('CLOSE_'))return null;const loanDate=typeof credit==='object'?credit?.loanDate??null:null;
   const all=lots(balance,symbol);const lot=kind==='none'?all.cash:(kind==='margin-sell'?all.margin:all.short).find(l=>l.loanDate===loanDate);if(!lot)throw new Error('NO_SUCH_LOT');
   const key=lotKey(kind,loanDate);// A proposal never sent stops reserving once it has expired.
-  const reserved=orders.filter(o=>o.symbol===symbol&&OPEN.includes(o.status)&&!(o.status==='Ready'&&o.expiresAt<Date.now())&&(()=>{try{return effectOf(o).effect.startsWith('CLOSE_');}catch{return false;}})()&&lotKey(o.credit?.kind??'none',o.credit?.loanDate??null)===key).reduce((n,o)=>n+Math.max(0,(o.quantity??0)-(o.filled??0)),0);
-  return {lot,available:Math.max(0,lot.available-reserved),reserved};
+  const sameLot=kind==='cover'?orders.filter(o=>o.symbol===symbol&&o.side==='Buy'&&o.credit?.kind==='cover'&&lotKey('cover',o.credit?.loanDate??null)===key):[];
+  const lagging=sameLot.filter(o=>!require('./short-rules.cjs').balanceShows(o,balance,lot.quantity,sameLot));
+  const reserved=orders.filter(o=>o.symbol===symbol&&OPEN.includes(o.status)&&!(o.status==='Ready'&&o.expiresAt<Date.now())&&(()=>{try{return effectOf(o).effect.startsWith('CLOSE_');}catch{return false;}})()&&lotKey(o.credit?.kind??'none',o.credit?.loanDate??null)===key).reduce((n,o)=>n+Math.max(0,(o.quantity??0)-(o.filled??0)),0)
+    // B3c: a cover's filled shares until a balance read after the fill shows the lot lower by them (short-rules
+    // balanceShows); time never releases them.
+    +Math.max(0,...lagging.map(o=>require('./short-rules.cjs').unshownQuantity(o,balance,lot.quantity,sameLot)));
+  const wait=lagging.map(o=>require('./short-rules.cjs').balanceWaitWords(o,Date.parse(balance?.timestamp??''))).find(Boolean);
+  return {lot,available:Math.max(0,lot.available-reserved),reserved,...(wait?{waiting:wait}:{})};
 }
 function check(balance,order,orders=[]){const r=remaining(balance,order,orders);if(r&&order.quantity>r.available)throw new Error('EXCEEDS_LOT');return r;}
 // The broker contract of each credit path. executable: every field the order sends has a confirmed meaning.

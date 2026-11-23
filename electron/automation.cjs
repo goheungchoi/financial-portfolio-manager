@@ -646,6 +646,13 @@ class Automation {
   unprotectedNow(scope){const positions=this.brokerPositions();const listed=this.desk.unprotected(scope,positions);const seen=new Set(listed.map(u=>u.symbol));
     let held=[];try{held=this.desk.orders(scope).filter(o=>positions?.[o.symbol]?.quantity>0&&!seen.has(o.symbol)).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h);}catch{held=[];}
     return [...listed,...held.map(([o,h])=>({symbol:o.symbol,orderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,coveredQuantity:0,held:true,waiting:h.why}))];}
+  // Short selling B3c: the Korean session a short is priced in now: 'auction' (the 30 minutes before the open), 'regular'
+  // (the open to the app's last order time, krWindow, special days included), else 'other' (no short).
+  krShortSession(now=Date.now()){const day=new Date(now+9*3600000).toISOString().slice(0,10),m=Math.floor(((now+9*3600000)%86400000)/60000);const w=require('./kr-hours.cjs').krWindow(day);
+    // Not a Korean business day by the app's calendar (weekends, the KIS calendar's closed days, days seen closed): no session.
+    // An unreadable calendar is no session for a short; the tracker goes on with the other orders.
+    let closed;try{closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);}catch{return 'other';}const wd=new Date(now+9*3600000).getUTCDay();if(wd===0||wd===6||closed.has(day))return 'other';
+    return m>=w.open-30&&m<w.open?'auction':m>=w.open&&m<w.appEnd?'regular':'other';}
   // Why a market's orders wait under one open order at a time, or null: an earlier app order there is unclear, or another
   // is open. A passing cause (B-4 review): an armed order waits and is checked again, never closed for it.
   oneOpenWait(engine,market){if(!engine||engine.severalOpen)return null;let rows=[];try{rows=(engine.orders?.()??[]).filter(o=>typeof o.symbol==='string'&&(/:/.test(o.symbol)?'US':'KR')===market);}catch{return null;}const where=market==='US'?'the U.S.':'Korea';
@@ -1456,6 +1463,12 @@ class Automation {
         if(stop){try{await engine.revise(o.id,{cancel:true});this.log(o.id,'System','Order cancelled',`${o.side} ${remaining} ${o.symbol}: ${stop}.`);}catch(error){await this.trackFailed(engine,o,error);}continue;}
         let reply=null;try{reply=await this.orderBook?.(o.symbol);}catch{}const book=P.usableBook(reply);if(!book){this.noteTrack(o,'no usable order book; it stays at its price');continue;}
         const target=P.target({side:o.side,book,bound:t.bound??null,market}),current=o.currentPrice??o.limitPrice;
+        // Short selling B3c: a short sale's every revised price is at or above the uptick floor read now (short-rules
+        // reviseShort): raised when the floor passes it, never moved below it, not repriced on a stale trade or outside the
+        // regular session.
+        if(o.side==='Sell'&&o.credit?.kind==='short'){const q=(this.marketQuotes?.()??[]).find(x=>x?.symbol===o.symbol);const r=require('./short-rules.cjs').reviseShort({current,target:target.price,session:this.krShortSession(now),last:q?.price,lastAt:require('./armed-quotes.cjs').quoteTime(q),now});
+          if(r.price==null){if(r.why)this.noteTrack(o,r.why);continue;}if(r.why!=='raised to the uptick floor'&&!P.shouldRevise(current,r.price))continue;
+          try{await engine.revise(o.id,{price:r.price});this.log(o.id,'System','Order revised',`${o.side} ${remaining} ${o.symbol} (short sale): ${current} → ${r.price}${r.why?` (${r.why})`:''}.`);}catch(error){await this.trackFailed(engine,o,error);}continue;}
         if(!P.shouldRevise(current,target.price)){if(target.atBound&&current===target.price)this.noteTrack(o,`held at your bound ${t.bound} (${o.side==='Sell'?'best bid':'best ask'} ${target.best})`);continue;}
         try{await engine.revise(o.id,{price:target.price});this.log(o.id,'System','Order revised',`${o.side} ${remaining} ${o.symbol}: ${current} → ${target.price} (${o.side==='Sell'?'best bid':'best ask'} ${target.best}${target.atBound?`, held at your bound ${t.bound}`:''}).`);}
         catch(error){await this.trackFailed(engine,o,error);}}}}

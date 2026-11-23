@@ -727,6 +727,27 @@ determined here.
     inverse product counts as long exposure;
   - a refusal (KIS gives no reason): "Short of N <stock> at <price> refused by KIS (no reason given). The app checked:
     <what passed>. Not checkable here: the exchange's short-sale ban list for today, and your KIS stock-loan limit."
+- **The short and cover order path** (B3c; still not executable: `placeCreditOrder` refuses before any request while
+  the path is not confirmed):
+  - preparation: an order on a credit path that is not confirmed is refused after its fields are checked and before
+    any request; a short's capacity is KIS's lending list for the stock, read then (`getLendable`, CTSC2702R
+    lendable-by-company, the stock's market code), checked by `borrowable`; TTTC8909R is no longer used for a short
+    (it answers new margin loans only). A short's command carries its market (KOSPI or KOSDAQ; the engine accepts that
+    key for a short only);
+  - the request: every credit order sends EXCG_ID_DVSN_CD KRX; a new short's LOAN_DT follows one rule,
+    `SHORT_LOAN_DATE_RULE` ('trade-day' now, or 'settlement', T+2 Korean business days), which B4 settles; a cover
+    sends its lot's loan date;
+  - the tracker: an open short sale is revised only by `reviseShort` (at or above the uptick floor read then, raised
+    when the floor passes its price, not moved because the floor rose while its price meets it, not on a last trade
+    older than 60 s, not in the auction or outside the regular session: `krShortSession`, from the app's Korean
+    hours and calendar, special days included; a weekend or a closed day is no session);
+  - the balance lag: a filled cover keeps its quantity reserved until a balance read after the fill shows its lot
+    lower by it, and a filled short counts toward the cap (`laggingShorts`) until the stock's short rows read higher by
+    it (`balanceShows`, against the quantity read at sending, `lotAtSend`, and every fill sent on the same or a later
+    reading); what stays reserved is only what the balance has not shown yet (`unshownQuantity`); time never releases
+    it, and an unknown time or lot keeps every fill; after 10 minutes unseen the lot says "waiting for KIS's balance to show the cover";
+  - reconcile: KIS's order-row names and loan date for the app's short or cover are checked against its record, and a
+    mismatch is kept on the order in words (`creditCheck`), naming only KIS's known kinds ("an unknown kind" otherwise).
 
 ### 5.3 The daily loss limit and its responses
 

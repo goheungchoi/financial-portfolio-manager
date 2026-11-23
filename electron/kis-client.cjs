@@ -273,6 +273,8 @@ class KisReadOnlyClient {
       const spec=CREDIT_KINDS[command.credit?.kind];if(!spec||spec.side!==command.side||!spec.types.includes(command.credit.type)||spec.repay&&!/^\d{4}-\d{2}-\d{2}$/.test(command.credit.loanDate??''))throw new KisError('INVALID_ORDER');
       if(this.#credentials.environment!=='live')throw new KisError('FEATURE_UNAVAILABLE');
     }
+    // A credit path whose fields are not confirmed is refused before any request, after the order is checked (as propose, send and placeCreditOrder).
+    if(command?.credit!=null&&!require('./credit-paths.cjs').pathStatus(command.credit?.kind).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
     await this.checkSession(session);const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
     const quoteBody=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:session?.route?.quote==='NX'?'NX':'J',FID_INPUT_ISCD:command.symbol});const output=quoteBody.output;
     const price=amount(output?.stck_prpr),unit=amount(output?.aspr_unit);
@@ -284,7 +286,11 @@ class KisReadOnlyClient {
       // New margin loans and short sales: the broker's credit capacity. Repayments: the matching loan or short position.
       const {kind,type,loanDate}=command.credit;
       // APBK1617: the account has no KIS credit-trading agreement (신용계좌만 신용주문가능금액조회가 가능합니다).
-      if(['margin-buy','short'].includes(kind)){const body=await this.tradingQuery('inquire-credit-psamount','TTTC8909R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'00',CRDT_TYPE:type,CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});availableQuantity=amount(body.output?.max_buy_qty);capacity={tr:'TTTC8909R',fields:numeric(body.output)};}
+      // B3c: a short's capacity is KIS's lending list for the stock (CTSC2702R), read now; TTTC8909R answers new margin
+      // loans only (read 2026-11-23). The stock's market (KOSPI or KOSDAQ) comes with the command.
+      if(kind==='short'){const R=require('./short-rules.cjs');const read=await this.getLendable(command.symbol,command.credit.market);const ok=R.borrowable(read,command.quantity,Date.now(),{symbol:command.symbol,market:command.credit.market});
+        if(!ok.ok)throw new KisError(ok.code);availableQuantity=ok.tradable;capacity={tr:'CTSC2702R',fields:{trad_psbl_qty2:read.tradable,lmt_qty1:read.limit,use_qty1:read.used}};}
+      else if(kind==='margin-buy'){const body=await this.tradingQuery('inquire-credit-psamount','TTTC8909R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'00',CRDT_TYPE:type,CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});availableQuantity=amount(body.output?.max_buy_qty);capacity={tr:'TTTC8909R',fields:numeric(body.output)};}
       else if(kind==='margin-sell'){const loan=balance.holdings.find(row=>row.symbol===command.symbol)?.loans?.find(row=>row.loanDate===loanDate);availableQuantity=loan?loan.availableQuantity??loan.quantity:null;}
       else {const short=balance.shorts?.find(row=>row.symbol===command.symbol&&row.loanDate===loanDate);availableQuantity=short?short.availableQuantity??short.quantity:null;}
       if(availableQuantity==null||command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');
@@ -297,13 +303,20 @@ class KisReadOnlyClient {
     const open=require('./broker-open-orders.cjs').openGuard(orders,command,{severalOpen,fail:()=>new KisError('OPEN_BROKER_ORDERS')});
     return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{})};
   }
+  // B3c: KIS's lending list for one stock (CTSC2702R, lendable-by-company), read just before a short: the row for this
+  // stock as short-rules reads it, or one that is not open when the stock is not listed (not lendable now).
+  async getLendable(symbol,market){const R=require('./short-rules.cjs');const code=R.lendExchange(market);if(!/^[0-9A-Z]{6}$/.test(String(symbol??'')))throw new KisError('INVALID_ORDER');
+    const body=await this.quotation('lendable-by-company','CTSC2702R',{EXCG_DVSN_CD:code,PDNO:symbol,THCO_STLN_PSBL_YN:'Y',INQR_DVSN_1:'1',CTX_AREA_FK200:'',CTX_AREA_NK100:''});
+    const row=(Array.isArray(body.output1)?body.output1:[]).find(r=>r?.pdno===symbol);return row?R.parseBorrowable(row,Date.now(),code):{symbol,exchange:code,open:false,tradable:0,limit:null,used:null,at:Date.now()};}
   // Credit order (order-credit): margin buy/repay and short sale/cover. Live accounts only; KIS does not support it on mock.
   async placeCreditOrder(command) {
     // Only a credit path whose fields are confirmed is ever sent (electron/credit-paths.cjs, audit 2026-11-04 Stage 3).
     if(!require('./credit-paths.cjs').pathStatus(command.credit?.kind).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
     await this.authenticate();await this.wait(550);const {seoulDate}=require('./kis-activity.cjs');
-    const loanDate=(['margin-buy','short'].includes(command.credit.kind)?seoulDate():command.credit.loanDate).replaceAll('-','');
-    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:loanDate,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};
+    // B3c: a new short's loan date by the one rule B4 settles (short-rules SHORT_LOAN_DATE_RULE); a cover sends its lot's.
+    const loanDate=(command.credit.kind==='margin-buy'?seoulDate():command.credit.kind==='short'?require('./short-rules.cjs').shortLoanDate(seoulDate()):command.credit.loanDate).replaceAll('-','');
+    // KRX always: short sales go to KRX only (never NXT or SOR), and every credit order with them.
+    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:loanDate,EXCG_ID_DVSN_CD:require('./short-rules.cjs').VENUE,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};
     try {
       const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-credit',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:command.side==='Buy'?'TTTC0052U':'TTTC0051U',custtype:'P'},body:JSON.stringify(params)});
       if(body.rt_cd!=='0')throw rejected(body);
