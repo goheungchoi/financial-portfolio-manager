@@ -24,3 +24,6 @@ export function seoulDate(now=Date.now()) {
   const value=type=>parts.find(part=>part.type===type).value;
   return `${value('year')}-${value('month')}-${value('day')}`;
 }
+// The side as Activity shows it: a short sale and its cover by KIS's kind name (creditName, found in live use: they read
+// as a plain sale and purchase), otherwise Buy or Sell. The Side filter still uses the side itself.
+export function sideLabel(order){const n=String(order?.creditName??'');if(n.includes('유대신규')||n.includes('대주매도')||n.includes('유대매도'))return '공매도';if(n.includes('유대상환')||n.includes('대주상환'))return '공매도 상환';return order?.side??'';}

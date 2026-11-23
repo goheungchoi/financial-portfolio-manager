@@ -142,7 +142,7 @@ function marketState() {return kisState.snapshot?{...buildKisMarket(kisState,kis
 function broadcastMarket() {const state=marketState();for(const win of BrowserWindow.getAllWindows())win.webContents.send('market:changed',state);}
 // Which request failed, when, and KIS's own code if it gave one, for the Market feed (2026-11-19: it said only
 // "The last request failed" and "Reconnecting").
-const failedRequest=(request,error)=>({errorRequest:request,errorAt:Date.now(),brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?error.brokerCode:null});
+const failedRequest=(request,error)=>({errorRequest:request,errorAt:Date.now(),brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?error.brokerCode:null,brokerMessage:typeof error?.brokerMessage==='string'&&error.brokerMessage?error.brokerMessage.slice(0,120):null});
 async function pollKisQuotes() {
   if(kisService.isBusy || kisBusy || quoteBusy || !kisState.snapshot || Date.now()<nextQuoteAttempt)return;
   quoteBusy=true;const generation=kisGeneration;
@@ -151,7 +151,7 @@ async function pollKisQuotes() {
     const quotes=await kisService.request('quotes',{symbols:[...new Set([...watched,...selected,...kisState.snapshot.holdings.map(row=>row.symbol),...(automation?.discovery?.symbols('KR')??[])])].filter(symbol=>/^\d{6}$/.test(symbol)).slice(0,20)});
     if(generation===kisGeneration) {
       // A good poll clears an error the quote poll itself set; a balance error stays until the balance is read again.
-      if(kisState.status==='error'&&kisState.errorRequest==='quotes')kisState={...kisState,status:'connected',error:null,errorRequest:null,errorAt:null,brokerCode:null};
+      if(kisState.status==='error'&&kisState.errorRequest==='quotes')kisState={...kisState,status:'connected',error:null,errorRequest:null,errorAt:null,brokerCode:null,brokerMessage:null};
       for(const quote of quotes){const previous=kisQuotes.get(quote.symbol);if(previous?.source!=='stream' || Date.now()-previous.receivedAt>60000)kisQuotes.set(quote.symbol,{...quote,source:'rest'});else if(quote.previousClose)kisQuotes.set(quote.symbol,{...previous,previousClose:quote.previousClose});}
       broadcastMarket();
     }

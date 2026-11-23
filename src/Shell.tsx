@@ -2,7 +2,7 @@ import {useEffect,useRef,useState,type ReactNode} from 'react';
 import type {RuntimeState} from './RuntimeSettings';
 import {HOME,tabGuides,workspaceGroups} from './WorkspaceUX';
 import {subscribeRuntime} from './runtimeFeed';
-type Market={status:string;marketsOpen?:boolean|null;error?:string|null;failure?:{code:string|null;request:string|null;at:number|null;brokerCode:string|null};accountTimestamp?:string;stream?:{status:string;subscribed:number};quotes:{timestamp?:number;timeBasis?:string;stale:boolean}[]};
+type Market={status:string;marketsOpen?:boolean|null;error?:string|null;failure?:{code:string|null;request:string|null;at:number|null;brokerCode:string|null;brokerMessage?:string|null};accountTimestamp?:string;stream?:{status:string;subscribed:number};quotes:{timestamp?:number;timeBasis?:string;stale:boolean}[]};
 const kst=(ms:number)=>new Date(ms).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit'});
 // 2026-11-19: "Reconnecting" only when the stream is reconnecting. Before, any status but "connected" read so: a stale
 // quote overnight (markets closed) or one failed request showed "Reconnecting" with nothing reconnecting.
@@ -17,7 +17,7 @@ export function feedTone(market:Market|null|undefined,stale:boolean){const l=fee
 const REQUEST:Record<string,string>={quotes:'quote poll',balance:'balance refresh'};
 // Which request failed, its code (and KIS's own code), and when.
 export function failureLine(market:Market){const f=market.failure;if(!f)return `The last request failed (${market.error??'unknown'}).`;
-  return `The last ${REQUEST[f.request??'']??'request'} failed: ${f.code??'unknown'}${f.brokerCode?` (KIS ${f.brokerCode})`:''}${f.at?` at ${kst(f.at)} KST`:''}.`;}
+  return `The last ${REQUEST[f.request??'']??'request'} failed: ${f.code??'unknown'}${f.brokerCode?` (KIS ${f.brokerCode}${f.brokerMessage?`: ${f.brokerMessage}`:''})`:''}${f.at?` at ${kst(f.at)} KST`:''}.`;}
 // A status chip that opens a small panel of details; closes on outside click or Escape.
 function Chip({label,tone,children,title}:{label:ReactNode;tone:string;children?:ReactNode;title?:string}){
   const [open,setOpen]=useState(false);const ref=useRef<HTMLDivElement>(null);

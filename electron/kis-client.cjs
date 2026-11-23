@@ -4,8 +4,12 @@ class KisError extends Error { constructor(code) { super(code); this.code=code; 
 // before it was sent: ORDER_NOT_SENT, with when to try again), or anything else, which may have reached KIS.
 // A rate limit KIS returns for the request itself stays uncertain: the request was sent.
 // A KIS refusal (rt_cd not 0) with KIS's message code (msg_cd) kept, and nothing else of the reply.
-function rejected(body){const error=new KisError('BROKER_REJECTED');if(/^[A-Z0-9_-]{1,24}$/.test(String(body?.msg_cd??'')))error.brokerCode=body.msg_cd;return error;}
-function orderError(error){if(error?.code==='BROKER_REJECTED')return new KisError('BROKER_REJECTED');
+// KIS's message for a refusal (msg1), kept beside its code: at most 120 characters, control characters removed, any run
+// of 6 or more digits masked (no account or order numbers), so it can be shown and saved with the failure.
+function brokerText(body){const t=typeof body?.msg1==='string'?body.msg1:'';const c=t.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\d{6,}/g,'…').replace(/\s+/g,' ').trim().slice(0,120);return c||null;}
+function brokerFields(body){return {...(/^[A-Z0-9_-]{1,24}$/.test(String(body?.msg_cd??''))?{brokerCode:body.msg_cd}:{}),...(brokerText(body)?{brokerMessage:brokerText(body)}:{})};}
+function rejected(body){return Object.assign(new KisError('BROKER_REJECTED'),brokerFields(body));}
+function orderError(error){if(error?.code==='BROKER_REJECTED')return Object.assign(new KisError('BROKER_REJECTED'),error.brokerCode?{brokerCode:error.brokerCode}:{},error.brokerMessage?{brokerMessage:error.brokerMessage}:{});
   if(error?.notSent===true){const e=new KisError('ORDER_NOT_SENT');if(Number.isFinite(error.retryAt))e.retryAt=error.retryAt;return e;}
   return new KisError('ORDER_UNCERTAIN');}
 function parseCredentials(text) {
@@ -207,7 +211,7 @@ class KisReadOnlyClient {
       const filters=kind==='orders'?{SLL_BUY_DVSN_CD:'00',CCLD_DVSN:'00',INQR_DVSN:'00',INQR_DVSN_3:'00',ORD_GNO_BRNO:'',ODNO:'',INQR_DVSN_1:'',EXCG_ID_DVSN_CD:'ALL'}:{SORT_DVSN:'02',CBLC_DVSN:'00'};
       const params=new URLSearchParams({CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,INQR_STRT_DT:range.start,INQR_END_DT:range.end,PDNO:'',CTX_AREA_FK100:fk,CTX_AREA_NK100:nk,...filters});
       const result=await this.request('/uapi/domestic-stock/v1/trading/'+endpoint+'?'+params,{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P',tr_cont:continuation}});
-      if(result.body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+      if(result.body.rt_cd!=='0')throw rejected(result.body);
       if(!Array.isArray(result.body.output1))throw new KisError('INVALID_RESPONSE');
       rows.push(...result.body.output1);
       summary ??= Array.isArray(result.body.output2)?result.body.output2[0]:result.body.output2;
@@ -226,7 +230,7 @@ class KisReadOnlyClient {
   async tradingQuery(endpoint,trId,params) {
     await this.authenticate();await this.wait(550);
     const {body}=await this.request('/uapi/domestic-stock/v1/trading/'+endpoint+'?'+new URLSearchParams({CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,...params}),{method:'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P'}});
-    if(body.rt_cd!=='0'){const error=new KisError(body.msg_cd==='APBK1617'?'CREDIT_ACCOUNT_REQUIRED':'BROKER_REJECTED');error.brokerCode=typeof body.msg_cd==='string'?body.msg_cd:null;throw error;}return body;
+    if(body.rt_cd!=='0'){const error=new KisError(body.msg_cd==='APBK1617'?'CREDIT_ACCOUNT_REQUIRED':'BROKER_REJECTED');error.brokerCode=typeof body.msg_cd==='string'?body.msg_cd:null;if(brokerText(body))error.brokerMessage=brokerText(body);throw error;}return body;
   }
   // One domestic order's executions and the broker's fee-plus-tax figure (prsm_tlex_smtl), via the daily order inquiry.
   async getOrderCharges(day,orderId) {
@@ -243,7 +247,7 @@ class KisReadOnlyClient {
     const account=includeAccount&&endpoint.startsWith('/uapi/overseas-stock/')?{CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode}:{};
     const payload={...account,...params};
     const result=await this.request(endpoint+(post?'':'?'+new URLSearchParams(payload)),{method:post?'POST':'GET',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:trId,custtype:'P',tr_cont:continuation},...(post?{body:JSON.stringify(payload)}:{})});
-    if(result.body.rt_cd!=='0'){const error=new KisError('BROKER_REJECTED');if(/^[A-Z0-9_-]{1,24}$/.test(result.body.msg_cd??''))error.brokerCode=result.body.msg_cd;throw error;}return result;
+    if(result.body.rt_cd!=='0')throw rejected(result.body);return result;
   }
   overseasIdentity(){return {environment:this.#credentials.environment,accountKey:require('node:crypto').createHmac('sha256',this.#credentials.appSecret).update(this.#credentials.environment+this.#credentials.accountNumber+this.#credentials.accountProductCode).digest('hex')+':US'};}
   // session: an extended session from market-sessions.tradableNow (its hours were checked there); it still needs a trading day.
@@ -302,7 +306,7 @@ class KisReadOnlyClient {
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:loanDate,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};
     try {
       const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-credit',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:command.side==='Buy'?'TTTC0052U':'TTTC0051U',custtype:'P'},body:JSON.stringify(params)});
-      if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+      if(body.rt_cd!=='0')throw rejected(body);
       if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
     }catch(error){throw orderError(error);}
@@ -314,7 +318,7 @@ class KisReadOnlyClient {
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,ORD_DVSN:['00','07'].includes(session?.route?.ordDvsn)?session.route.ordDvsn:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice),EXCG_ID_DVSN_CD:['KRX','NXT'].includes(session?.route?.exchange)?session.route.exchange:'KRX',SLL_TYPE:command.side==='Sell'?'01':'',CNDT_PRIC:''};
     try {
       const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-cash',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:(this.#credentials.environment==='live'?'T':'V')+(command.side==='Buy'?'TTC0012U':'TTC0011U'),custtype:'P'},body:JSON.stringify(params)});
-      if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+      if(body.rt_cd!=='0')throw rejected(body);
       if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
     }catch(error){throw orderError(error);}
@@ -327,10 +331,10 @@ class KisReadOnlyClient {
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,KRX_FWDG_ORD_ORGNO:String(organization??''),ORGN_ODNO:String(originalOrderId),ORD_DVSN:'00',RVSE_CNCL_DVSN_CD:cancel?'02':'01',ORD_QTY:'0',ORD_UNPR:cancel?'0':String(price),QTY_ALL_ORD_YN:'Y',EXCG_ID_DVSN_CD:exchange};
     try {
       const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-rvsecncl',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:this.#credentials.environment==='live'?'TTTC0013U':'VTTC0013U',custtype:'P'},body:JSON.stringify(params)});
-      if(body.rt_cd!=='0')throw new KisError('BROKER_REJECTED');
+      if(body.rt_cd!=='0')throw rejected(body);
       if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
       return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??String(organization??''),at:new Date().toISOString()};
     }catch(error){throw orderError(error);}// M-1.5a: refused by the request-limit window before sending: ORDER_NOT_SENT
   }
 }
-module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS,orderError,rejected};
+module.exports={KisReadOnlyClient,KisError,parseCredentials,normalizeBalance,CREDIT_KINDS,orderError,rejected,brokerText};

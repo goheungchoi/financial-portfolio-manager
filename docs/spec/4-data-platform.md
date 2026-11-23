@@ -238,7 +238,7 @@ here; parts 2 and 3 describe them.
 | `app_exit` | exit-record.cjs:8 | id=1, payload JSON | how this run started and stopped (1.5) | ExitRecord | one row |
 | `app_update_settings` | app-updates.cjs:8 | id=1, payload JSON | update settings | AppUpdates | one row |
 | `notification_outbox` | notifications.cjs:5-6 | id PK, message, attempts, nextAt, delivered, payload (added), createdAt (added) | one phone message waiting or sent | Notifications | kept (rows expire unsent after 12 h by `attempts=99`, never deleted) |
-| `kis_failures` | main.cjs:261 | id PK auto, at, payload JSON | one failed KIS request (operation, codes, wait and run time; no payload, no account data) | `kisService.onFailure` | newest 200 (main.cjs:262) |
+| `kis_failures` | main.cjs:261 | id PK auto, at, payload JSON | one failed KIS request (operation, codes, KIS's refusal message beside its code (`brokerMessage`: at most 120 characters, control characters removed, runs of 6 or more digits masked), wait and run time; no payload, no account data) | `kisService.onFailure` | newest 200 (main.cjs:262) |
 | `kr_calendar` | main.cjs:85 | day PK, open, fetchedAt | one Korean day, open or closed, from KIS | `refreshKrCalendar`; read `officialKrCalendar` | kept |
 | `daily_digests` | daily-digest.cjs:45 | day PK, payload JSON | the day's digest as sent | daily-digest.cjs | kept |
 | `activity_last` | activity-cache.cjs:9 | kind PK, payload JSON | the last KIS report per kind (`orders`, `profit`) with its account | ActivityCache | one row per kind |

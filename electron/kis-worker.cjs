@@ -109,6 +109,6 @@ process.parentPort.on('message',async ({data})=>{
     process.parentPort.postMessage({id,ok:true,snapshot});
   } catch(error) {
     // The code the app receives (worker-codes.cjs: not-sent orders, Korea's allowed codes, the U.S. public codes).
-    process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,...(Number.isFinite(error.ticketAgeMs)?{ticketAgeMs:error.ticketAgeMs}:{}),code:require('./worker-codes.cjs').relayCode(operation,error)});
+    process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,brokerMessage:typeof error.brokerMessage==='string'?error.brokerMessage.slice(0,120):null,...(Number.isFinite(error.ticketAgeMs)?{ticketAgeMs:error.ticketAgeMs}:{}),code:require('./worker-codes.cjs').relayCode(operation,error)});
   } finally {busy=false;}
 });

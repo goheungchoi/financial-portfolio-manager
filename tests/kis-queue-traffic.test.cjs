@@ -41,9 +41,9 @@ test('B(1) and B(3) wiring: main stores the records; the Market feed names the r
   const main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');
   assert.match(main,/CREATE TABLE IF NOT EXISTS kis_failures/);assert.match(main,/kisService\.onFailure=record=>/);
   assert.ok(main.includes("...failedRequest('quotes',error)")&&main.includes("...failedRequest('balance',error)"));
-  assert.ok(main.includes("if(kisState.status==='error'&&kisState.errorRequest==='quotes')kisState={...kisState,status:'connected',error:null,errorRequest:null,errorAt:null,brokerCode:null};"),'a good poll clears the poll\'s error');
+  assert.ok(main.includes("if(kisState.status==='error'&&kisState.errorRequest==='quotes')kisState={...kisState,status:'connected',error:null,errorRequest:null,errorAt:null,brokerCode:null,brokerMessage:null};"),'a good poll clears the poll\'s error');
   const {buildKisMarket}=require('../electron/kis-market.cjs');const snap={environment:'live',timestamp:'x',cash:0,reportedTotal:0,holdings:[]};
-  assert.deepEqual(buildKisMarket({status:'error',error:'BROKER_REJECTED',errorRequest:'quotes',errorAt:5,brokerCode:'EGW00123',snapshot:snap},new Map()).failure,{code:'BROKER_REJECTED',request:'quotes',at:5,brokerCode:'EGW00123'});
+  assert.deepEqual(buildKisMarket({status:'error',error:'BROKER_REJECTED',errorRequest:'quotes',errorAt:5,brokerCode:'EGW00123',snapshot:snap},new Map()).failure,{code:'BROKER_REJECTED',request:'quotes',at:5,brokerCode:'EGW00123',brokerMessage:null},"KIS's message beside the code (none here)");
   assert.equal(buildKisMarket({status:'connected',snapshot:snap},new Map()).failure,undefined);
   const shell=fs.readFileSync(path.join(__dirname,'../src/Shell.tsx'),'utf8');
   assert.ok(shell.includes("if(market.stream?.status==='reconnecting')return 'Reconnecting';"));assert.ok(shell.includes("if(market.status==='error')return 'Request failed';"));

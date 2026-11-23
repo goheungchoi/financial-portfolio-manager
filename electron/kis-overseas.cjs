@@ -146,6 +146,6 @@ class OverseasClient{
     if(!usSession(this.clock()).open)throw new Error('SESSION_CLOSED');
     try{const {body}=await this.query('order-rvsecncl',this.tr('TTTT1004U','VTTT1004U'),{OVRS_EXCG_CD:exchange,PDNO:ticker,ORGN_ODNO:String(originalOrderId),RVSE_CNCL_DVSN_CD:cancel?'02':'01',ORD_QTY:String(quantity),OVRS_ORD_UNPR:cancel?'0':price.toFixed(2),MGCO_APTM_ODNO:'',ORD_SVR_DVSN_CD:'0'},{post:true});if(!/^\d+$/.test(body.output?.ODNO))throw new Error('ORDER_UNCERTAIN');return {brokerOrderId:body.output.ODNO,at:new Date().toISOString()};}
     // M-1.5a: refused by the request-limit window before sending is ORDER_NOT_SENT (kis-client.cjs orderError).
-    catch(error){throw error.message==='BROKER_REJECTED'?new Error('BROKER_REJECTED'):require('./kis-client.cjs').orderError(error);}}
+    catch(error){throw error.message==='BROKER_REJECTED'?Object.assign(new Error('BROKER_REJECTED'),error.brokerCode?{brokerCode:error.brokerCode}:{},error.brokerMessage?{brokerMessage:error.brokerMessage}:{}):require('./kis-client.cjs').orderError(error);}}
 }
 module.exports={OverseasClient,instrument,usSession,localDate};

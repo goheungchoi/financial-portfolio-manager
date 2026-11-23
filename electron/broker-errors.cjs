@@ -13,6 +13,6 @@ const BROKER=['BROKER_REJECTED','CREDIT_ACCOUNT_REQUIRED'];
 function classify(error){
   const raw=error?.code??error?.message;const code=typeof raw==='string'&&/^[A-Z][A-Z0-9_]{2,39}$/.test(raw)&&!raw.startsWith('ERR_')?raw:null;
   if(!code){const where=String(error?.stack??'').match(/([A-Za-z0-9_.-]+\.cjs):(\d+)/);return {kind:'internal',code:'INTERNAL_ERROR',type:error instanceof Error?error.name:typeof error,...(where?{where:`${where[1]}:${where[2]}`}:{})};}
-  return {kind:BROKER.includes(code)?'broker':TEMPORARY.includes(code)?'temporary':code==='ORDER_UNCERTAIN'?'uncertain':'check',code,...(typeof error?.brokerCode==='string'?{brokerCode:error.brokerCode}:{})};
+  return {kind:BROKER.includes(code)?'broker':TEMPORARY.includes(code)?'temporary':code==='ORDER_UNCERTAIN'?'uncertain':'check',code,...(typeof error?.brokerMessage==='string'&&error.brokerMessage?{brokerMessage:error.brokerMessage.slice(0,120)}:{}),...(typeof error?.brokerCode==='string'?{brokerCode:error.brokerCode}:{})};
 }
 module.exports={PUBLIC,responseError,classify,TEMPORARY};

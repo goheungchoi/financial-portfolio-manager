@@ -8,7 +8,7 @@ const SCOUT_RETRY_CODES=['BROKER_REJECTED','RATE_LIMITED','REQUEST_TIMEOUT','NET
 // Codes after which the order's state at KIS is unknown are not refusals: the review fails, as before.
 const UNKNOWN_AT_KIS=['ORDER_UNCERTAIN','BROKER_ORDER_MISMATCH'];
 function refusedNote(d,code,error=null){const what=`${d.action} ${d.quantity} ${d.symbol}`;
-  if(code==='BROKER_REJECTED')return `Rejected by KIS: ${what}${/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?` (KIS ${error.brokerCode})`:''}.`;
+  if(code==='BROKER_REJECTED')return `Rejected by KIS: ${what}${/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?` (KIS ${error.brokerCode}${typeof error?.brokerMessage==='string'&&error.brokerMessage?`: ${error.brokerMessage}`:''})`:''}.`;
   // The buy-back block's refusal carries its dated words (buyback.cjs refusal).
   if(['BUYBACK_BLOCKED','BUYBACK_UNKNOWN'].includes(code)&&typeof error?.detail==='string'&&error.detail)return `Not sent: ${what}: ${error.detail.replace(/^Not sent: /,'')}`;
   return `Not sent: ${what}: ${require('./activity-today.cjs').reasonText(code)}.`;}
@@ -1594,7 +1594,7 @@ class Automation {
       if(sent==='Rejected'&&placed.reason==='SESSION_CLOSED')return closed();
       // M-1a: KIS's request limit refused it before it was sent; armed again for when KIS may be asked.
       if(sent==='Rejected'&&placed.reason==='ORDER_NOT_SENT')return retry(placed.notSentCause==='ticket-expired'?'TICKET_EXPIRED':'RATE_LIMITED',placed.retryAt);
-      if(sent==='Rejected')return note('rejected',`The broker rejected it (${placed.reason??'BROKER_REJECTED'}${placed.brokerCode?`, KIS ${placed.brokerCode}`:''}). No order was placed.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,results:check.results});
+      if(sent==='Rejected')return note('rejected',`The broker rejected it (${placed.reason??'BROKER_REJECTED'}${placed.brokerCode?`, KIS ${placed.brokerCode}${placed.brokerMessage?`: ${placed.brokerMessage}`:''}`:''}). No order was placed.`,{proposalId:proposal.id,orderId:placed.id??null,brokerStatus:sent,results:check.results});
       // A sale went out: the other armed cash sells of this symbol wait a minute, so the next one is judged on a balance read
       // after this fill. This narrows, not closes, the window where a fill is recorded before the balance shows it.
       if(order.side==='Sell'&&!order.credit)for(const other of this.desk.orders(scope))if(other.id!==order.id&&other.symbol===order.symbol&&other.side==='Sell'&&!other.credit)this.desk.update(other,{nextCheckAt:Math.max(other.nextCheckAt??0,Date.now()+60000)});
@@ -1613,7 +1613,7 @@ class Automation {
       if(f.kind==='internal'){this.log(order.id,'System','Conditional order · internal error',`${order.side} ${order.quantity} ${order.symbol}: ${f.type}${f.where?` at ${f.where}`:''}. This is a fault in the app, not a broker or risk refusal.`);
         return note('rejected',unsent?`Internal error in the app (INTERNAL_ERROR, ${f.type}${f.where?` at ${f.where}`:''}).${left} Nothing was sent to the broker.`:`Internal error in the app (INTERNAL_ERROR, ${f.type}${f.where?` at ${f.where}`:''}) after proposal ${proposal.id} reached status ${at}: it may be at the broker. Check the order list before arming another.`,{failure:f});}
       if(f.kind==='uncertain'||!unsent)return note('submitted',`The broker's reply was unclear (${f.code}): not confirmed as accepted or filled. New orders on this account wait until KIS order history confirms it; it is not retried.`,{proposalId:proposal?.id??null,brokerStatus:at,unconfirmed:true,failure:f});
-      if(f.kind==='broker')return note('rejected',`The broker rejected it (${f.code}${f.brokerCode?`, KIS ${f.brokerCode}`:''}).${left}`,{failure:f});
+      if(f.kind==='broker')return note('rejected',`The broker rejected it (${f.code}${f.brokerCode?`, KIS ${f.brokerCode}${f.brokerMessage?`: ${f.brokerMessage}`:''}`:''}).${left}`,{failure:f});
       if(['BUYBACK_BLOCKED','BUYBACK_UNKNOWN'].includes(error?.message)&&typeof error.detail==='string')return note('rejected',`${error.detail}${left}`,{failure:f});
       return note('rejected',`An app order check refused it (${f.code}).${left}`,{failure:f});}
   }
