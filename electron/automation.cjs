@@ -1680,7 +1680,7 @@ class Automation {
         // because the setting can change after the order was armed.
         {const refused=this.leveragedEntryRefusal(engine,order.symbol,order.side);if(refused)return note('rejected',refused+' Nothing was sent.',{results:check.results});}
       }
-      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})});engine.annotate?.(proposal.id,{madeBy:'conditional',conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});
+      proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})},{conditional:true});engine.annotate?.(proposal.id,{conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});
       // The same daily cap as reviews' (1.5.48 audit, A6), taken before the send; a closing order is not held back by it.
       const cap=this.config.maxAutoOrdersPerDay;const wanted=this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false&&proposal.status==='Ready'&&!proposal.requiresApproval;
       const closing=(()=>{try{return !require('./credit-paths.cjs').effectOf({side:order.side,credit:order.credit?.kind??'none'}).opening;}catch{return order.side==='Sell'&&!order.credit;}})();

@@ -38,7 +38,7 @@ test('origin: only a positive mark names it; an order with none is "The app", ne
 test('each path that creates an order marks it: review (first and further orders), conditional, ticket (Korea and U.S.)',()=>{
   const auto=fs.readFileSync(path.join(__dirname,'../electron/automation.cjs'),'utf8'),main=fs.readFileSync(path.join(__dirname,'../electron/main.cjs'),'utf8');
   assert.ok(auto.includes("execution.annotate?.(proposal.id,{madeBy:'review',reviewId:id,...(bounds?{tracking:bounds}:{})});"),'placeOrder, which a batch calls for each order');
-  assert.ok(auto.includes("engine.annotate?.(proposal.id,{madeBy:'conditional',conditionalId:order.id"),'fireConditional');
+  assert.ok(auto.includes("},{conditional:true});engine.annotate?.(proposal.id,{conditionalId:order.id"),'fireConditional: marked by propose');
   // The ticket is the user's own order: the buy-back block does not refuse it ({ticket:true}).
   assert.ok(main.includes("ipcMain.handle('live:propose',liveAction(command=>{const p=live.propose(command,{ticket:true});return (p?.id&&live.annotate(p.id,{madeBy:'ticket'}))||p;}));"));
   assert.ok(main.includes("if(name==='propose'&&data?.id)data=usLive.annotate(data.id,{madeBy:'ticket'})??data;"));

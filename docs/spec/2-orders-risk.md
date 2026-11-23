@@ -887,6 +887,23 @@ these orders are not watched: <orders>."; otherwise "Orders not watched: no fres
 an open market has no price (the condition is not met) and the order's own row says "no live price for <stock> while
 its market is closed".
 
+**The engine's permit for the watch's orders** (`LiveEngine.permitConditional`, `revokeConditional`, `admits`; orders
+while stopped B-2). Separate from the engine's trading switch (`enabled`) and off by default: with no permit, a stopped
+engine refuses every order as in 1.5.73. A permit names one account and whether the watch's orders may be sent by
+themselves (`auto`). While the engine is stopped and the permit's account is connected, only an order the watch makes
+(`propose(command,{conditional:true})`, which marks it `madeBy:'conditional'`; that mark comes from nowhere else:
+`annotate` refuses to set it or to change it with `INVALID_REQUEST`) is proposed, approved by you, sent, revised and
+cancelled; while stopped, whether it is sent by itself is decided by the permit alone (`auto`), whatever the market's
+automatic switch was left at; a review's order and your own ticket are refused
+with `KIS_TRADING_DISABLED`, and an order made by anything else, even one proposed while running, is never sent under
+it. Every limit of the engine applies as when running: the size and daily turnover limits, the allowed list, one open
+order at a time (unless several are allowed), the buy-back block at proposal and at sending, the daily-loss restriction
+on an automatic order that opens exposure, approvals, funds and expiry. An unclear order that stops the market (one open
+order at a time) also revokes the permit, and so does every connection change (connect, forget, disconnect in
+main.cjs), so a permit never outlives the connection it was given for; Stop auto trading leaves it. While running, the
+permit changes nothing. Setting and revoking it belongs to
+the app (B-3); nothing sets it yet.
+
 **Firing** (`fireConditional`, `automation.cjs:1433-1539`):
 
 1. Fresh account read through the engine's `context`. Market closed → stays armed, checked again in 5 minutes.
@@ -897,7 +914,8 @@ its market is closed".
 6. A sale: nothing held → cancelled as "Not needed"; quantity capped at shares held and free.
 7. A buy: above `conditionalMaxOrderPct` of equity → rejected; cash below notional × 1.005 → rejected; the loss rules
    of 5.3; the leveraged-entry rule.
-8. `engine.propose`, marked `madeBy:'conditional'`.
+8. `engine.propose(…,{conditional:true})`, which marks it `madeBy:'conditional'` (running or stopped); `annotate` adds
+   its `conditionalId` and bound and can never set or change that mark.
 9. Sent automatically only when `conditionalAutoSubmit` **and** `autoSubmit` are on, the market's automatic switch is
    on, the proposal needs no approval, and a daily slot is free. Otherwise status `proposed`: "Not executed: proposal …
    awaits your approval" (`:1509-1513`).

@@ -12,6 +12,9 @@ class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
     this.market=options.market??'KR';this.day=this.market==='US'?require('./kis-overseas.cjs').localDate:seoulDate;this.validSymbol=symbol=>this.market==='US'?/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(symbol):/^\d{6}$/.test(symbol);this.validPrice=price=>Number.isFinite(price)&&price>=1&&(this.market==='US'?Math.abs(price*100-Math.round(price*100))<1e-7:Number.isSafeInteger(price));
     this.db=db;this.broker=broker;this.getConnection=getConnection;this.enabled=false;this.autoEnabled=false;this.busy=false;
+    // Orders while stopped, B-2 (artifacts/reviews/2026-11-24-orders-while-stopped): a permit for the conditional watch's
+    // orders only, separate from enabled, set and revoked by the app (automation), never by a review or a ticket.
+    this.conditionalPermit=null;
     // M-1 (several orders open at once, artifacts/reviews/2026-11-16-multi-order): off unless turned on. Tests and the
     // desktop harness pass severalOpen:true to the constructor; the app (M-6, the user's "A switch in settings") gives
     // severalOpenSetting, a function of the saved setting (default off), read at every use so a change applies to the next
@@ -63,6 +66,14 @@ class LiveEngine {
   integratedFunding(snapshot){if(this.market!=='US'||!this.buyingPower)return 0;try{return this.buyingPower(snapshot)?.fromKRWUSD||0;}catch{return 0;}}
   funded(snapshot){return (Number.isFinite(snapshot?.reportedTotal)&&snapshot.reportedTotal>0)||this.integratedFunding(snapshot)>0;}
   stop(){this.enabled=false;this.autoEnabled=false;return this.getState();}
+  // The permit (B-2): while trading is stopped, an order the conditional watch makes (madeBy 'conditional') may be
+  // proposed, approved by you, sent and tracked, for the account the permit names only; auto: whether it may be sent by
+  // itself (the switches in force when auto trading last ran). Every other order is refused as when stopped
+  // (KIS_TRADING_DISABLED). An unclear order that halts the market revokes it.
+  permitConditional({account,auto=false}={}){if(typeof account!=='string'||!account)throw new Error('INVALID_REQUEST');this.conditionalPermit={account,auto:auto===true,at:Date.now()};return this.conditionalPermit;}
+  revokeConditional(){this.conditionalPermit=null;}
+  permitHolds(){const p=this.conditionalPermit;if(!p)return false;let key=null;try{key=this.identity();}catch{}return key===p.account;}
+  admits(order){return this.enabled||(order?.madeBy==='conditional'&&this.permitHolds());}
   enableAuto(confirmation){const environment=this.getConnection().snapshot?.environment;if(!this.enabled||confirmation!==(environment==='live'?'ENABLE AUTO LIVE':'ENABLE AUTO MOCK'))throw new Error('ACTIVATION_REQUIRED');this.autoEnabled=true;return this.getState();}
   getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;return {httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null,...(()=>{if(!this.settlingFills)return {};try{const n=this.settlingFills();return Number.isInteger(n)?{settlingFills:n}:{};}catch{return {};}})()};}
   // A new day takes its basis from the valuation, or is pending when it cannot be read (1.5.48 review, R1). A pending day
@@ -108,13 +119,13 @@ class LiveEngine {
   // Whether several open orders are allowed now (M-6: the review asks for several orders only then).
   allowsSeveralOpen(){return this.severalOpen;}
   // ticket: your own order ticket in the app (live:propose, us:propose), which the buy-back block never refuses.
-  propose(command,{ticket=false}={}) {
+  propose(command,{ticket=false,conditional=false}={}) {
     // Optional credit: {kind:'margin-buy'|'margin-sell'|'short'|'cover', loanDate} for Korean margin and short orders (live accounts).
     const credit=command?.credit??null;if(command&&'credit' in command){const {credit:_,...rest}=command;command=rest;}
     if(credit!=null&&(this.market!=='KR'||typeof credit!=='object'||Object.keys(credit).some(k=>!['kind','loanDate'].includes(k))||!({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]||({'margin-buy':'Buy','margin-sell':'Sell',short:'Sell',cover:'Buy'})[credit.kind]!==command.side))throw new Error('INVALID_ORDER');
     if(credit&&this.getConnection().snapshot?.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');
     if(!command || Object.keys(command).sort().join(',')!=='limitPrice,quantity,side,symbol' || !['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!this.validPrice(command.limitPrice)||!this.validSymbol(command.symbol))throw new Error('INVALID_ORDER');
-    if(!this.enabled)throw new Error('KIS_TRADING_DISABLED');
+    if(!this.enabled&&!(conditional===true&&this.permitHolds()))throw new Error('KIS_TRADING_DISABLED');
     // The buy-back block (buyback.cjs): an app buy of a stock you sold outside the app, a cover excepted.
     // While the list cannot be known (BUYBACK_UNKNOWN) the app's own buys wait: fail closed, the user's rule.
     if(require('./buyback.cjs').appliesTo({side:command.side,credit:credit?.kind??null,ticket})){const refused=require('./buyback.cjs').refusalFor(this,command.symbol,this.market);if(refused)throw refused;}
@@ -132,7 +143,7 @@ class LiveEngine {
     let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:this.exposureBase(balance),balance,loanDate:credit.loanDate??null,pending});}
     // A short cover reduces exposure: the product approval of a buy does not apply to it (1.5.48 review, R2).
     const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
-    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null};this.save(intent);return intent;
+    const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null,...(conditional===true?{madeBy:'conditional'}:{})};this.save(intent);return intent;
   }
   // Your submission (the confirmation phrase is your approval). Automatic submissions go through autoSubmit; whether a
   // submission is automatic belongs to that call alone (1.5.48 review, R4): a competing call refused as busy cannot
@@ -147,7 +158,7 @@ class LiveEngine {
       if(order.credit&&!require('./credit-paths.cjs').pathStatus(order.credit.kind).executable)throw new Error('CREDIT_PATH_UNVERIFIED');
       const environment=this.getConnection().snapshot.environment;
       if(confirmation!==(environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER'))throw new Error('APPROVAL_REQUIRED');
-      if(!this.enabled||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
+      if(!this.admits(order)||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
       // The buy-back block again at sending (a proposal made before the stock was blocked), your own ticket excepted.
       if(require('./buyback.cjs').appliesTo({side:order.side,credit:order.credit?.kind??null,ticket:order.madeBy==='ticket'})){const refused=require('./buyback.cjs').refusalFor(this,order.symbol,this.market);if(refused)throw refused;}
       if(this.severalOpen){const stop=this.openBlock(order);if(stop)throw Object.assign(new Error('RECONCILIATION_REQUIRED'),{detail:stop});}
@@ -203,7 +214,7 @@ class LiveEngine {
       // last fill count, so a fill not yet counted is in both: over, never under), plus this order.
       const sameOpen=pending.filter(o=>o.side==='Buy'&&o.credit!=='cover'&&require('./broker-open-orders.cjs').sameStock(o.symbol,order.symbol)).reduce((n,o)=>n+o.quantity,0);
       if(policy.maxCompanyPct!=null&&order.side==='Buy'&&((prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.quantity??0)+sameOpen+order.quantity)*order.limitPrice/accountBase*100>policy.maxCompanyPct)throw new Error('CONCENTRATION_LIMIT');
-      if(!this.enabled || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
+      if(!this.admits(order) || Date.now()>order.expiresAt || this.identity()!==order.accountKey)throw new Error('DISABLED_OR_EXPIRED');
       if(this.costs){const costSettings=this.costs.get();const costPerShare=prepared.balance.holdings.find(row=>row.symbol===order.symbol)?.cost??null;order={...order,costSettings,costPerShare,costEstimate:require('./trading-costs.cjs').estimateCosts({market:this.market,side:order.side,quantity:order.quantity,price:order.limitPrice,symbol:order.symbol,costPerShare,settings:costSettings,classification:this.costs.classify?.(order.symbol)??null})};}
       // A margin buy is funded by the loan; the broker's credit capacity was checked when preparing the order.
       // U.S. buys may draw on KRW through integrated margin, capped at real cash (buying-power.cjs).
@@ -244,7 +255,7 @@ class LiveEngine {
         if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN',...(error.message==='BROKER_REJECTED'&&/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?{brokerCode:error.brokerCode}:{}),...(error.message==='BROKER_REJECTED'&&typeof error.brokerMessage==='string'&&error.brokerMessage?{brokerMessage:error.brokerMessage.slice(0,120)}:{})};
         // Rule U (M-1.2): with several orders open allowed, an unclear order blocks only its own stock (openBlock) and is
         // counted in full in every sum; the market's trading stays on. Off: the market stops, as before.
-        if(!this.severalOpen)this.enabled=false;}
+        if(!this.severalOpen){this.enabled=false;this.conditionalPermit=null;}}
       this.save(order);return order;
       });
     }finally{this.busy=false;}
@@ -309,7 +320,7 @@ class LiveEngine {
   // Why an order may not be sent now, or null: trading stopped, another account connected, expired, or no longer allowed
   // by the current limits. Synchronous, so nothing can change between this check and the send.
   notSendable(order,policy){
-    if(!this.enabled||Date.now()>order.expiresAt)return 'DISABLED_OR_EXPIRED';
+    if(!this.admits(order)||Date.now()>order.expiresAt)return 'DISABLED_OR_EXPIRED';
     let key=null;try{key=this.identity();}catch{}if(key!==order.accountKey)return 'ACCOUNT_CHANGED';
     let now=null;try{now=this.policy();}catch{}if(!now||now.day!==policy.day||!now.anyStock&&!now.symbols.includes(order.symbol)||now.maxOrderKRW!=null&&order.notional>now.maxOrderKRW)return 'LIMIT_CHANGED';
     return null;}
@@ -555,7 +566,9 @@ class LiveEngine {
   }
   // Proposals that need approval stay Ready for the user instead of being submitted automatically.
   // Adds fields to an app order (the agent's execution bounds for the tracker), before or after it is sent.
-  annotate(id,patch){const order=this.orders().find(row=>row.id===id);if(!order)return null;const next={...order,...patch};this.save(next);return next;}
+  // The watch's mark (madeBy 'conditional') comes only from propose({conditional:true}): a patch that sets it, or changes
+  // it on a watch order, is refused (B-2 review, finding 3).
+  annotate(id,patch){const order=this.orders().find(row=>row.id===id);if(!order)return null;if(patch&&'madeBy' in patch&&(patch.madeBy==='conditional'||order.madeBy==='conditional')&&patch.madeBy!==order.madeBy)throw new Error('INVALID_REQUEST');const next={...order,...patch};this.save(next);return next;}
   // Moves an open app order to a new limit price, or cancels it, at KIS, for its unfilled shares. Each number KIS gives
   // a revision joins the order's own chain (brokerOrderIds), so history follows it as the app's. One KIS order action at
   // a time (busy). Refused for an order you took over in KIS (handsOff). An unclear reply stops tracking the order
@@ -604,7 +617,7 @@ class LiveEngine {
   }
   // Why a revision raising a buy may not be sent now, or null (1.5.48 audit, A1). Synchronous.
   revisionStop(order,{price,remaining,notional}){
-    if(!this.enabled)return 'DISABLED_OR_EXPIRED';let key=null;try{key=this.identity();}catch{}if(key!==order.accountKey)return 'ACCOUNT_CHANGED';
+    if(!this.admits(order))return 'DISABLED_OR_EXPIRED';let key=null;try{key=this.identity();}catch{}if(key!==order.accountKey)return 'ACCOUNT_CHANGED';
     let policy=null;try{policy=this.policy();}catch{}if(!policy||policy.day!==this.day())return 'DAILY_SESSION_SETUP_REQUIRED';
     if(!policy.anyStock&&!policy.symbols.includes(order.symbol))return 'INSTRUMENT_NOT_ALLOWED';
     if(!Number.isFinite(notional)||policy.maxOrderKRW!=null&&notional>policy.maxOrderKRW)return 'ORDER_SIZE_LIMIT';
@@ -625,7 +638,7 @@ class LiveEngine {
     // F1 (M-1.4 review): the leveraged cap of a raise counts the other open buys at their full quantity too (D5's reason).
     if(this.exposure)try{if(this.exposure.check({account:order.accountKey,symbol:order.symbol,side:'Buy',notional,equity:base,holdings:balance.holdings,pending:pending.map(o=>({...o,notional:o.fullQuantity*o.price}))}).requiresApproval)return 'APPROVAL_REQUIRED';}catch(error){return /^[A-Z_]{3,40}$/.test(error.message)?error.message:'LIMIT_CHANGED';}
     return null;}
-  async autoSubmit(id){if(!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');const order=this.orders().find(row=>row.id===id);
+  async autoSubmit(id){const order=this.orders().find(row=>row.id===id);const underPermit=!this.enabled&&order?.madeBy==='conditional'&&this.permitHolds();if(underPermit?!this.conditionalPermit.auto:!this.autoEnabled)throw new Error('AUTO_KIS_DISABLED');
     // 2026-11-19, the user's decision (artifacts/reviews/2026-11-19-us-auto-buys/decision.md): automatic U.S. buys are
     // no longer blocked (R15 removed). This market's automatic switch (autoEnabled) governs buys and sales alike. A U.S.
     // buy is checked as a manual one is: KIS's buying power capped at real cash (R17) and the shared ledger under the

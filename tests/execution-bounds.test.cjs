@@ -59,7 +59,7 @@ test('a stop time that passes while the order book is awaited withholds the orde
   assert.deepEqual(log2,[],'priced after the stop time: nothing proposed');
 });
 test('a conditional order carries its limitPrice to the tracker as its bound',()=>{
-  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.ok(src.includes("engine.annotate?.(proposal.id,{madeBy:'conditional',conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});"));
+  const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.ok(src.includes("engine.annotate?.(proposal.id,{conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});"));
 });
 
 // Edge case: a cancel condition met while the review was running. The recheck used the review's own quotes, read when it

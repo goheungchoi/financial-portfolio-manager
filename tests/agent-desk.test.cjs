@@ -96,7 +96,7 @@ function harness({engineCtx,autoSubmit=true,conditionalAutoSubmit=true}={}){
   const closes=series(40,i=>200000+i*500);automation.series={closes:s=>s==='005930'?closes:null,ensure:async()=>{}};
   automation.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()}];
   automation.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit,conditionalOrders:true,conditionalAutoSubmit});
-  if(engineCtx){const calls={propose:[],submit:[]};automation.live={identity:()=>'acct',autoEnabled:true,enabled:true,context:async()=>engineCtx(),propose:cmd=>{calls.propose.push(cmd);return {id:'P1',status:'Ready'};},autoSubmit:async id=>{calls.submit.push(id);return {id:'O1'};},getState:()=>({})};automation.calls=calls;}
+  if(engineCtx){const calls={propose:[],submit:[]};automation.live={identity:()=>'acct',autoEnabled:true,enabled:true,context:async()=>engineCtx(),propose:(cmd,opts)=>{calls.propose.push(cmd);calls.proposeOptions=[...(calls.proposeOptions??[]),opts];return {id:'P1',status:'Ready',...(opts?.conditional===true?{madeBy:'conditional'}:{})};},autoSubmit:async id=>{calls.submit.push(id);return {id:'O1'};},getState:()=>({})};automation.calls=calls;}
   return {automation,supplied,events,queue,db};
 }
 const call=(name,args,id)=>({name,callId:id,args});
@@ -193,7 +193,7 @@ function engines(a,{lossMarkets=[],kr={},us={}}={}){
   const ctx=symbol=>({marketSession:{open:true},quotes:[{symbol,price:symbol.includes(':')?200:217000}],positions:{'005930':{quantity:10},'NASD:NVDA':{quantity:10}},equity:100000000,cash:50000000});
   const calls={propose:[],submit:[],annotate:[]};const book=[];
   const engine=(market,over)=>({market,identity:()=>'acct'+(market==='US'?':US':''),autoEnabled:true,enabled:true,context:async()=>ctx(market==='US'?'NASD:NVDA':'005930'),
-    propose:cmd=>{calls.propose.push({market,...cmd});const p={id:'P'+calls.propose.length,status:'Ready'};book.push(p);return p;},autoSubmit:async id=>{calls.submit.push(id);const p=book.find(r=>r.id===id);p.status='Accepted';return {...p};},
+    propose:(cmd,opts)=>{calls.propose.push({market,...cmd});const p={id:'P'+calls.propose.length,status:'Ready',...(opts?.conditional===true?{madeBy:'conditional'}:{})};book.push(p);return p;},autoSubmit:async id=>{calls.submit.push(id);const p=book.find(r=>r.id===id);p.status='Accepted';return {...p};},
     orders:()=>book,annotate:(id,patch)=>{calls.annotate.push([id,patch]);Object.assign(book.find(r=>r.id===id)??{},patch);},getState:()=>({}),...over});
   a.live=engine('KR',kr);a.usLive=engine('US',us);a.refreshUS=async()=>null;a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()},{symbol:'NASD:NVDA',price:200,timestamp:Date.now(),retrievedAt:Date.now()}];a.calls=calls;a.book=book;
   a.emergencyState=()=>({active:lossMarkets.length>0,activeMarkets:lossMarkets});return a;
@@ -253,7 +253,7 @@ test('a temporary refusal before anything reached KIS is retried three times wit
   // The proposal reached Submitting before the error: it may be at KIS, so it is unconfirmed and never retried.
   const {automation:b}=harness();engines(b,{kr:{autoSubmit:async id=>{b.book.find(p=>p.id===id).status='Submitting';throw new Error('REQUEST_TIMEOUT');}}});
   const u=await fired(b,armOrder(b,{side:'Sell'}));assert.equal(u.status,'submitted');assert.equal(u.unconfirmed,true);assert.equal(b.calls.annotate.filter(([,patch])=>'expiresAt' in patch).length,0,'a proposal that may be at KIS is left alone (never retired)');
-  assert.deepEqual(b.calls.annotate.map(([,patch])=>patch.madeBy),['conditional'],'only its origin mark (order-origin.cjs)');
+  assert.deepEqual(b.calls.annotate.map(([,patch])=>Object.keys(patch)),[['conditionalId']],'only its conditional order');assert.equal(b.book[0].madeBy,'conditional','its origin mark from the proposal (order-origin.cjs)');
 });
 test('a stop that reached the broker and then lapsed leaves its unfilled shares unprotected',()=>{
   let now=Date.parse('2026-10-28T01:00:00Z');const desk=new AgentDesk(new DatabaseSync(':memory:'),()=>now);const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:5};
@@ -315,10 +315,10 @@ test('a fired conditional order goes in at the best bid and gives the tracker it
   const {automation:a}=harness({engineCtx:()=>open});const notes=[];a.live.annotate=(id,patch)=>notes.push([id,patch]);
   a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:216000,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:a.config,universe:['005930']});
   const armed=a.desk.orders(a.watchScope())[0];await a.fireConditional(armed);assert.equal(a.calls.propose[0].limitPrice,217000,'the bid, above the floor');
-  assert.deepEqual(notes,[['P1',{madeBy:'conditional',conditionalId:armed.id,tracking:{bound:216000}}]],'its bound, with its origin mark');
+  assert.deepEqual(notes,[['P1',{conditionalId:armed.id,tracking:{bound:216000}}]],'its bound; the origin mark comes from the proposal');assert.deepEqual(a.calls.proposeOptions,[{conditional:true}],'proposed as the watch\'s order');
   const {automation:b}=harness({engineCtx:()=>open});const none=[];b.live.annotate=(id,patch)=>none.push(patch);
   b.desk.setOrder(b.watchScope(),{action:'add',id:'',symbol:'005930',side:'Sell',quantity:4,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:218000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Stop'},{config:b.config,universe:['005930']});
-  const armedB=b.desk.orders(b.watchScope())[0];await b.fireConditional(armedB);assert.deepEqual(none,[{madeBy:'conditional',conditionalId:armedB.id}],'no limitPrice: no bound, it fills at any price; only its origin mark');
+  const armedB=b.desk.orders(b.watchScope())[0];await b.fireConditional(armedB);assert.deepEqual(none,[{conditionalId:armedB.id}],'no limitPrice: no bound, it fills at any price; only its conditional order');
 });
 test('a combined review reasons from the account valuation: its low bound, and how much it may understate and why',async()=>{
   const {automation:a}=harness();a.configure({scope:'both'});
