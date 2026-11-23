@@ -531,7 +531,7 @@ install; the install is refused while trading is active.
 | Check | Automatic every 6 hours when `checkAutomatically` (default true); ticked 30 s after start and every 10 minutes; or the user presses Check | app-updates.cjs:4, 20, 27; main.cjs:642 |
 | Download | Never automatic (`autoDownload=false`); only from state `available` | app-updates.cjs:11, 24 |
 | Verification | electron-updater checks the file against `latest.yml` (SHA-512); the desktop test rejects a wrong checksum. Errors reach the screen as codes only (`NETWORK_UNAVAILABLE`, `RELEASE_NOT_FOUND`, `CHECKSUM_MISMATCH`, `SIGNATURE_INVALID`, `UPDATE_FAILED`). Code signing of the installer: not determined (no certificate setting in package.json) | app-updates.cjs:30-31; tests/update-desktop.cjs:1 |
-| Install | Only on the user's press, from state `downloaded`; `quitAndInstall(false, true)`. Refused with `AUTO_TRADING_ARMED`, `REVIEW_RUNNING` or `ORDERS_OPEN` (an order Submitting, Uncertain, Accepted or Partially filled). No install on quit (`autoInstallOnAppQuit=false`), no prerelease, no downgrade | app-updates.cjs:11, 25; main.cjs:640 |
+| Install | Only on the user's press, from state `downloaded`; `quitAndInstall(false, true)`. Refused with `AUTO_TRADING_ARMED`, `ORDERS_WATCHED` (armed orders watched while auto trading is stopped), `REVIEW_RUNNING` or `ORDERS_OPEN` (an order Submitting, Uncertain, Accepted or Partially filled). No install on quit (`autoInstallOnAppQuit=false`), no prerelease, no downgrade | app-updates.cjs:11, 25; main.cjs:640 |
 | User controls | One setting (`checkAutomatically`); buttons Check, Download, Install | app-updates.cjs:21; `AppUpdates.tsx` |
 | Home | "Version X is ready to install" once downloaded | main.cjs:627 |
 

@@ -4,6 +4,7 @@ import {Card,Row,Switch,NumberField,Limit} from './SettingsUI';
 import * as PR from './price-review-rows';
 import {Note} from './Note';
 import {Guardrails} from './Guardrails';
+import {KeepWorking} from './KeepWorking';
 import {TokenSaving} from './TokenSaving';
 import {useDraftState,setDraft} from './useDraftState';
 import {AGENT_KEYS as DRAFT_KEYS,claudeGateText,effortOptions} from './agentDraft.mjs';
@@ -75,7 +76,7 @@ function SeveralOrders({state,config,busy,edit}:{state:RuntimeState;config:Runti
       <li>{universeLine(lim?.scope)}</li></ul></details>}
   </>;
 }
-function TradingTab({state,config,busy,edit,onNavigate}:Props){
+function TradingTab({state,config,busy,edit,onNavigate,onState}:Props){
   return <>
     <Card id="eng-guidelines" title="Agent guidelines" label="Guidelines" hint="Your goals in plain language. The AI reads them on every review.">
       <label className="guidelines-editor"><textarea aria-label="Agent guidelines" rows={4} maxLength={6000} value={config.guidelines??''} placeholder="Example: Concentrated positions are fine; protect gains when the outlook weakens." onChange={e=>edit('guidelines',e.target.value)}/></label>
@@ -97,10 +98,11 @@ function TradingTab({state,config,busy,edit,onNavigate}:Props){
       <Row title="Follow the best price" hint={config.orderTracking?'Orders go in at the best bid (sell) or ask (buy) and move with it every 3 seconds until filled, within any bound the AI set. Orders you change in KIS are left to you.':'Orders stay at the price they were placed at.'}><Switch label="Follow the best price" disabled={busy} checked={config.orderTracking} onChange={v=>edit('orderTracking',v)}/></Row>
       <SeveralOrders state={state} config={config} busy={busy} edit={edit}/>
     </Card>
-    <Card id="eng-conditional" title="Conditional orders" label="Conditional order settings" hint="Stop-loss, take-profit and entry orders the AI arms with conditions. They fire only while auto trading is on and the market is open, and still pass every risk check.">
+    <Card id="eng-conditional" title="Conditional orders" label="Conditional order settings" hint="Stop-loss, take-profit and entry orders the AI arms with conditions. They fire while auto trading is on (or stopped, if you keep them working) and the market is open, and still pass every risk check.">
       <Row title="Let the AI set conditional orders" hint="Off by default."><Switch label="Let the AI set conditional orders" disabled={busy} checked={config.conditionalOrders} onChange={v=>edit('conditionalOrders',v)}/></Row>
       {config.conditionalOrders&&<>
         <Row title="Submit them automatically" hint={config.autoSubmit?'Otherwise each one waits for your approval.':'Needs automatic submission in Trading. Until then each one waits for approval.'}><Switch label="Submit conditional orders automatically" disabled={busy} checked={config.conditionalAutoSubmit} onChange={v=>edit('conditionalAutoSubmit',v)}/></Row>
+        <KeepWorking state={state} busy={busy} onState={onState}/>
         <Row title="Let stops trail" hint={config.trailingStops?'Stops the AI sets may follow the price up. Checked only while the app runs.':'Off by default.'}><Switch label="Let stops trail" disabled={busy} checked={config.trailingStops===true} onChange={v=>edit('trailingStops',v)}/></Row>
         <Row title="Armed at once" hint="Most orders waiting at one time."><NumberField label="Most armed conditional orders" min={1} max={10} value={config.conditionalMaxActive} disabled={busy} onChange={v=>edit('conditionalMaxActive',v)}/></Row>
         <Row title="Largest order" hint="Share of account equity for one buy."><NumberField label="Largest conditional order" min={1} max={50} step={1} unit="%" value={config.conditionalMaxOrderPct} disabled={busy} onChange={v=>edit('conditionalMaxOrderPct',v)}/></Row>

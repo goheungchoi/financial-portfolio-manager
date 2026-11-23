@@ -135,6 +135,7 @@ test('A6: an unsent failure releases its slot; an unclear reply keeps it; a prot
   const w=capWorld();w.outcome.next='throw-unsent';await w.a.fireConditional(w.arm());assert.equal(w.a.guardrails.autoOrdersToday(),0,'provably never sent: released');
   w.outcome.next='throw-uncertain';await w.a.fireConditional(w.arm());assert.equal(w.a.guardrails.autoOrdersToday(),1,'may be at the broker: counted');
   w.outcome.next='Accepted';await w.a.fireConditional(w.arm());assert.equal(w.submits(),0,'cap reached');
+  w.a.live.severalOpen=true;// the cap alone: the earlier orders stay open at this fake broker (one open order at a time would hold the sale)
   await w.a.fireConditional(w.arm('Sell'));assert.equal(w.submits(),1,'a stop-loss sale is still sent');assert.equal(w.a.guardrails.autoOrdersToday(),2,'and counted');
 });
 test('A6: a review and a conditional order share the cap; legacy review records count once',()=>{

@@ -30,9 +30,12 @@ const hasStops=stops=>Boolean(stops&&(stops.count!=null?stops.count>0:stops.any)
 // allow them (switched off they are fixed stops and do not catch up). On Start each catches up from the daily highs of
 // the time the app was closed, so one may sell at once: the notice says so before the user presses Start.
 const trailingText=n=>`${n} trailing stop${n===1?'':'s'} will catch up from daily highs when you press Start, and ${n===1?'it':'one'} may sell at once if its new level is at or above the price.`;
-function startNotice({previousStop,stops,wasRunning,trailing=0,now=Date.now()}){
+// watched (orders while stopped, B-4): the setting is on, so armed orders are watched once KIS connects, with no Start.
+function startNotice({previousStop,stops,wasRunning,trailing=0,watched=false,now=Date.now()}){
   if(!previousStop)return null;const armed=hasStops(stops)||trailing>0;if(!armed&&!wasRunning)return null;
   const how=stopSentence(previousStop,now);
+  if(watched&&armed){const n=stops.count;const what=n!=null?`${n} stop order${n===1?' is':'s are'} watched`:'Your stop orders are watched';
+    return {title:n!=null?`Paused: ${n} stop order${n===1?'':'s'} watched`:'Paused: stop orders watched',message:[how,`The app started and auto trading is paused. ${what} once KIS connects, with your other armed orders.`,'Press Start auto trading to resume reviews.'].filter(Boolean).join(' '),how,armedStops:hasStops(stops)?stops.count:0,...(trailing>0?{trailingStops:trailing}:{}),wasRunning:Boolean(wasRunning),stopKind:previousStop.kind,watched:true};}
   const message=[how,`The app started and auto trading is paused.${hasStops(stops)?` ${stopsText(stops)}`:''}`,trailing>0?trailingText(trailing):null,'Open the app and press Start auto trading.'].filter(Boolean).join(' ');
   // Short enough for the Needs you row; the full sentence is the item's detail (tooltip) and the alerts.
   const title=!armed?'Auto trading paused after a restart':stops.count!=null?`Paused: ${stops.count} stop order${stops.count===1?'':'s'} not watched`:'Paused: stop orders not watched';

@@ -27,7 +27,7 @@ function decisionState(context){
   const lossLimits=Object.fromEntries(Object.entries(context.risk?.markets??{}).map(([m,r])=>[m,hash(r?.lossLimit)]));
   const candidates=[...new Set([...(context.scoutPlan?.targets??[]).filter(t=>t.role==='candidate'||t.role==='add').map(t=>t.symbol),...(context.reviewWatches??[]).map(w=>w.symbol)])].filter(s=>!(s in positions));
   return {quotes,positions,markets,cash,usdKRW:num(context.fx?.usdKRW),equity:num(context.equity),orders,
-    unprotected:(desk.unprotected??[]).map(u=>u.symbol),closedOrders:(desk.recent??[]).filter(o=>o.status!=='firing').map(o=>({id:o.id,symbol:o.symbol,purpose:o.purpose,status:o.status,at:Date.parse(o.at)})).filter(o=>Number.isFinite(o.at)),
+    unprotected:(desk.unprotected??[]).filter(u=>!u.held).map(u=>u.symbol),held:(desk.heldStops??[]).map(h=>`${h.symbol}|${h.stopOrderId}|${h.since}`),closedOrders:(desk.recent??[]).filter(o=>o.status!=='firing').map(o=>({id:o.id,symbol:o.symbol,purpose:o.purpose,status:o.status,at:Date.parse(o.at)})).filter(o=>Number.isFinite(o.at)),
     risk:{emergency:Boolean(context.emergency?.active),breached:Boolean(context.emergency?.loss?.breached),lossLimits},
     exposure:{investedPct:num(context.portfolioExposure?.investedPct),largestPct:num(context.portfolioExposure?.largest?.weightPct)},
     watches:(context.reviewWatches??[]).filter(w=>w.price!=null&&!w.priceFired).map(({symbol,price,direction})=>({symbol,price,direction})),
@@ -76,6 +76,8 @@ function compare(base,next,{trigger='Scheduled review',now=Date.now(),config={},
     if(base.risk.emergency!==next.risk.emergency||base.risk.breached!==next.risk.breached)add('risk',next.risk.emergency||next.risk.breached?'Daily loss limit reached':'Daily loss limit cleared',[],['account:risk']);
     for(const m of new Set([...Object.keys(base.risk.lossLimits??{}),...Object.keys(next.risk.lossLimits??{})]))if(base.risk.lossLimits?.[m]!==next.risk.lossLimits?.[m])add('risk',`${m} loss limit settings changed`,[],['account:risk']);
     const unprotected=next.unprotected.filter(s=>!base.unprotected.includes(s));if(unprotected.length)add('protection',`${unprotected.join(', ')} lost its stop loss`,unprotected,unprotected.map(s=>'orders:'+s));
+    // A stop hit and held (B-4 review 3): one review per held episode (its key carries when the hold began).
+    {const held=[...new Set((next.held??[]).filter(k=>!(base.held??[]).includes(k)).map(k=>k.split('|')[0]))];if(held.length)add('protection',`${held.join(', ')}: stop loss hit and waiting`,held,held.map(s=>'orders:'+s));}
     // Conditional orders closed after the decision, or while the review ran (after its context was read) without being
     // cancelled, such as a stop that expired or fired meanwhile; cancellations during the review are the review's own.
     const read=base.contextAt??base.at,closed=(next.closedOrders??[]).filter(o=>o.at>base.at||o.at>read&&o.status!=='cancelled');if(closed.length)add('protection',closed.map(o=>`${o.purpose} ${o.symbol} ${o.status}`).join('; '),[...new Set(closed.map(o=>o.symbol))],closed.map(o=>'orders:'+o.symbol));

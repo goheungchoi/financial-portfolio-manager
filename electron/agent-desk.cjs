@@ -219,13 +219,15 @@ class AgentDesk {
   dismissUnprotected(scope,orderId){const o=this.rows('conditional_orders',scope,'rejected').find(x=>x.id===orderId);if(!o)throw new Error('NOT_FOUND');this.update(o,{acknowledgedAt:this.clock()});}
   cancelOrder(scope,id){const o=this.orders(scope).find(x=>x.id===id);if(!o)throw new Error('NOT_FOUND');this.update(o,{status:'cancelled',closedAt:this.clock(),closedBy:'user'});}
   // What a review sees of its desk.
-  context(scope,config,symbols,positions={}){
+  // heldStops (orders while stopped, B-4 review 3): stop losses hit and held by the one-open rule, as facts.
+  context(scope,config,symbols,positions={},heldStops=[]){
     const unprotected=this.unprotected(scope,positions);const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString()}));
     return {notes:relevant,triggers:this.triggers(scope).map(t=>({id:t.id,name:t.name,conditions:t.conditions,combine:t.combine,expires:new Date(t.expiresAt).toISOString()})),
       conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxActive:config.conditionalMaxActive,maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours,...(trailingAllowed(config)?{trailing:{allowed:true}}:{})}:{}),
         armed:this.orders(scope).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString(),...(o.linkedBuy?{protectsPurchase:o.linkedBuy.id}:{}),...(o.trail?{trail:trailView(o,config)}:{}),...(o.trailNotUsed?{trailNotUsed:o.trailNotUsed}:{})})),
         ...((f=>f.length?{planStopsNotArmed:f.map(x=>({symbol:x.symbol,quantity:x.quantity,reason:x.reason,at:new Date(x.at).toISOString(),fact:`The plan stop for ${x.symbol} was not armed: ${x.reason}`}))}:{})(this.planStopFailures(scope))),
         recent:this.recentOrders(scope,5).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,purpose:o.purpose,status:o.status,outcome:o.outcome??null,at:new Date(o.closedAt??o.createdAt).toISOString()})),
+        ...(Array.isArray(heldStops)&&heldStops.length?{heldStops}:{}),
         ...(unprotected.length?{unprotected,unprotectedNote:'These holdings are not protected: their stop loss was rejected and nothing replaced it. A rejected order is not protection. Only a stop loss counts: a take-profit does not limit a fall. quantity is the shares the rejected stop was for and coveredQuantity what armed stop losses cover now (partial: true when some are). replacement is a later stop that has not protected it yet (status proposed: its sell awaits the user’s approval; brokerStatus is what the broker did with it). Re-arm a stop loss for the uncovered shares (temporary: true means the refusal was passing, such as another order being sent), sell, or say in this review why the position stays unprotected. This stays listed until stop losses cover those shares, the shares are gone, or the user dismisses it.'}:{})}};
   }
 }

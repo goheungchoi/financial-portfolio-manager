@@ -2,7 +2,7 @@ import {Note} from './Note';
 import {useEffect,useState} from 'react';
 export type UpdateState={status:'disabled'|'idle'|'checking'|'available'|'up-to-date'|'downloading'|'downloaded'|'error';current:string;available:{version:string;releaseDate:string|null;notes:string|null}|null;progress:number|null;error:string|null;checkedAt:number|null;settings:{checkAutomatically:boolean};blockedReason:string|null};
 export type UpdateReply={ok:boolean;error?:string;state:UpdateState};
-const BLOCKED:Record<string,string>={AUTO_TRADING_ARMED:'Stop auto trading first; updating restarts the app.',ORDERS_OPEN:'Wait until open broker orders are filled, canceled or reconciled.',REVIEW_RUNNING:'An AI review is running; try again when it finishes.'};
+const BLOCKED:Record<string,string>={AUTO_TRADING_ARMED:'Stop auto trading first; updating restarts the app.',ORDERS_OPEN:'Wait until open broker orders are filled, canceled or reconciled.',ORDERS_WATCHED:'Your armed orders are being watched while auto trading is stopped, and installing closes the app. Use Stop everything, then install.',REVIEW_RUNNING:'An AI review is running; try again when it finishes.'};
 const ERRORS:Record<string,string>={NETWORK_UNAVAILABLE:'Could not reach GitHub. Check the connection.',RELEASE_NOT_FOUND:'No published release was found for this app yet.',CHECKSUM_MISMATCH:'The download did not match its published checksum and was discarded.',SIGNATURE_INVALID:'The download signature did not verify and was discarded.',UPDATE_FAILED:'The update could not be completed.',...BLOCKED};
 export function AppUpdates(){
   const [state,setState]=useState<UpdateState|null>(null);const [notice,setNotice]=useState('');const [busy,setBusy]=useState(false);

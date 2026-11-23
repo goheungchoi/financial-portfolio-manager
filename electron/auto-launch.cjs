@@ -57,6 +57,17 @@ function startMessage(a){
 // orders remain active" was read as the stops staying at KIS): they are not watched until auto trading starts again.
 function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;try{a.refreshWatchRecord?.();}catch{}try{a.configure({enabled:false,autoSubmit:false});}finally{a.live?.stop();a.usLive?.stop();if(a.config.scope==='paper')a.paper.setPaused(true);}
   let armed=[];try{armed=a.config.conditionalOrders?a.desk.orders(a.watchScope()):[];}catch{armed=[];}if(!armed.length)return 'Auto trading stopped. Existing broker orders remain active.';
+  // Orders while stopped, B-4: with the setting on they are still watched; how they are sent; how to stop them too.
+  {let w=null;try{w=a.watchingWhileStopped?.()?a.whileStoppedState():null;}catch{w=null;}if(w)return `Auto trading stopped. Orders already at KIS stay. ${watchedWords(w)} To stop them too, use Stop everything.`;}
   const stops=armed.every(o=>o.purpose==='stop_loss'),n=armed.length,word=stops?(n===1?'stop':'stops'):(n===1?'conditional order':'conditional orders');
   return `Auto trading stopped. Orders already at KIS stay. Your ${n} armed ${word} (${[...new Set([...armed].sort((x,y)=>(x.createdAt??0)-(y.createdAt??0)).map(o=>o.symbol))].slice(0,4).join(', ')}) ${n===1?'is':'are'} not watched until you start it again.`;}
-module.exports={launchState,start,stop};
+// The watched orders while stopped, one sentence (the Stop reply and Home): how many, buys among them, and which are sent
+// by themselves and which only proposed for your approval.
+function watchedWords(w){const held=(w.waiting??[]).reduce((s,x)=>s+x.orders,0);const n=(w.sentByThemselves??0)+(w.proposedOnly??0),one=n===1;
+  const wait=[...(w.waiting??[]).map(x=>`${x.orders} ${x.orders===1?'waits':'wait'}: ${x.why}.`),w.notStarted?.length?`Not watched until you start auto trading on this account: ${w.notStarted.slice(0,4).join(', ')}.`:''].filter(Boolean).join(' ');
+  if(!n)return held?`Your ${held} armed ${held===1?'order is':'orders are'} still watched. ${wait}`:wait;
+  const b=w.buys?` (${w.buys} ${w.buys===1?'buy':'buys'})`:'';const head=`Your ${n} armed ${one?'order is':'orders are'} still watched${b}`;
+  const how=w.proposedOnly===0?(one?' and is sent by itself if its conditions are met.':' and are sent by themselves if their conditions are met.'):w.sentByThemselves===0?(one?': if its conditions are met it is only proposed for your approval.':': if their conditions are met they are only proposed for your approval.'):`: ${w.sentByThemselves} sent by themselves, ${w.proposedOnly} only proposed for your approval.`;
+  return head+how+(wait?' '+wait:'');}
+const EVERYTHING_STOPPED='Everything stopped. No order will be sent by the app; orders already at KIS stay.';
+module.exports={launchState,start,stop,watchedWords,EVERYTHING_STOPPED};

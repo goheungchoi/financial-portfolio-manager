@@ -43,6 +43,7 @@ test('firing: the lot is checked again and sized from what remains; it proposes 
   let o=await fire(a);assert.equal(o.status,'submitted');assert.deepEqual(calls.propose[0],{symbol:'005930',side:'Sell',quantity:2,limitPrice:217000,credit:{kind:'margin-sell',loanDate:'2026-10-15'}});
   // A partial fill of an earlier order on the lot leaves only its unfilled part reserved.
   ({a,calls,state}=harness());a.configure({creditProtectionApproved:true});arm(a);state.orders=[{symbol:'005930',side:'Sell',quantity:2,filled:1,status:'Partially filled',credit:{kind:'margin-sell',loanDate:'2026-10-01'}}];
+  a.live.severalOpen=true;// the lot sizing alone: with one open order at a time the earlier sale would hold this one (B-4 review)
   o=await fire(a);assert.equal(calls.propose[0].quantity,2,'3 in the lot, 1 still waiting');
   // A duplicate trigger: the lot is already taken by a waiting order, so nothing more is sent.
   ({a,calls,state}=harness());a.configure({creditProtectionApproved:true});arm(a);state.orders=[{symbol:'005930',side:'Sell',quantity:3,filled:0,status:'Accepted',credit:{kind:'margin-sell',loanDate:'2026-10-01'}}];

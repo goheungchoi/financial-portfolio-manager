@@ -345,6 +345,8 @@ app.whenReady().then(async () => {
   // The start notice (restart part 1, step 2): once per start, desktop and phone, when stop orders are armed or auto
   // trading was running at the last stop. Not on a first start. The Home item stays until Start or Dismiss.
   try{const N=require('./start-notice.cjs');restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),trailing:automation.config.trailingStops===true&&automation.config.conditionalOrders?N.armedTrailing(store.db,{scope:previousStop?.scope??null}):0,wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit)});
+  // Orders while stopped, B-4: with the setting on, the armed orders are watched once KIS connects (no Start needed; trailing stops catch up with the watch).
+  try{const N=require('./start-notice.cjs'),v=automation.watchStopped.get();if(restartNotice&&v&&!v.everythingStopped&&automation.config.conditionalOrders&&automation.config.scope!=='paper')restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit),watched:true});}catch{}
     if(restartNotice){const id='restart-notice:'+(exitRecord?.current?.startedAt??Date.now());setTimeout(()=>{try{notifier.notify(id,restartNotice.message);}catch{}},3000);}}catch{}
   agentBridge=require('./agent-bridge.cjs').startBridge(app.getPath('userData'),paper,decision=>automation.review('External agent',decision));
   automation.evidence=new (require('./market-evidence.cjs').MarketEvidence)(async(args,context)=>{
@@ -773,7 +775,9 @@ app.whenReady().then(async () => {
   // Only installer builds carry app-update.yml (and electron-updater); portable folder builds and source runs have no updates.
   const updateTest=Boolean(process.env.PORTFOLIO_UPDATE_TEST);const installed=app.isPackaged&&!process.env.PORTFOLIO_SMOKE_DATA&&require('node:fs').existsSync(path.join(process.resourcesPath,'app-update.yml'));
   const updates=new (require('./app-updates.cjs').AppUpdates)({updater:installed||updateTest?(()=>{const {autoUpdater}=require('electron-updater');if(updateTest){autoUpdater.forceDevUpdateConfig=true;autoUpdater.updateConfigPath=process.env.PORTFOLIO_UPDATE_TEST;}return autoUpdater;})():null,enabled:installed||updateTest,version:app.getVersion(),db:store.db,
-    canInstall:()=>{if(automation.config.enabled&&automation.sessionArmed)return 'AUTO_TRADING_ARMED';if(automation.busy)return 'REVIEW_RUNNING';for(const engine of [live,usLive]){try{if(engine.orders().some(o=>['Submitting','Uncertain','Accepted','Partially filled'].includes(o.status)))return 'ORDERS_OPEN';}catch{}}return null;},
+    canInstall:()=>{if(automation.config.enabled&&automation.sessionArmed)return 'AUTO_TRADING_ARMED';
+      // Orders while stopped, question B: an install closes the app, which halts every watched order.
+      try{if(automation.watchingWhileStopped()&&automation.desk.orders(automation.watchScope()).length>0)return 'ORDERS_WATCHED';}catch{}if(automation.busy)return 'REVIEW_RUNNING';for(const engine of [live,usLive]){try{if(engine.orders().some(o=>['Submitting','Uncertain','Accepted','Partially filled'].includes(o.status)))return 'ORDERS_OPEN';}catch{}}return null;},
     onChange:state=>{for(const win of BrowserWindow.getAllWindows())win.webContents.send('update:changed',state);}});
   setTimeout(()=>updates.tick(),30000).unref?.();setInterval(()=>updates.tick(),600000).unref();
   const updateAction=action=>async(event,...args)=>{authorize(event);try{return {ok:true,state:await action(...args)};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'UPDATE_FAILED',state:updates.view()};}};
@@ -855,6 +859,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('live:reconcile',liveAction(()=>live.reconcile()));
   ipcMain.handle('live:link',liveAction((id,brokerId,phrase)=>live.linkUncertain(id,brokerId,phrase)));
   ipcMain.handle('runtime:start',async(event,token)=>{authorize(event);try{const message=await require('./auto-launch.cjs').start(automation,token);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.text??error.message,state:runtimeState()};}});
+  // Orders while stopped, B-4: the setting (its confirmation names the environment) and Stop everything.
+  ipcMain.handle('runtime:watch-while-stopped',(event,on,phrase)=>{authorize(event);try{automation.setWatchWhileStopped(on===true,typeof phrase==='string'?phrase:undefined);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error.message,state:runtimeState()};}});
+  ipcMain.handle('runtime:stop-everything',event=>{authorize(event);try{const message=automation.stopEverything();return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.text??error.message,state:runtimeState()};}});
   ipcMain.handle('runtime:stop',event=>{authorize(event);try{const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.text??error.message,state:runtimeState()};}});
   ipcMain.handle('runtime:get',event=>{authorize(event);return runtimeState();});
   ipcMain.handle('runtime:history',event=>{authorize(event);return historyOf(automation.getState());});

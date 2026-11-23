@@ -23,6 +23,8 @@ const cases=[
   ["Stops not watched: the Home line and the words Stop returns",'s5-desktop.cjs',['--mode=stops'],data('s5-stops')],
   ["Buy-back blocked: the Activity list, the ticket line and Remove",'s5-desktop.cjs',['--mode=buyback'],data('s5-buyback')],
   ["Buy-back: Home's App buys wait line while the order history cannot be read",'s5-desktop.cjs',['--mode=buyback-wait'],data('s5-buyback-wait')],
+  ["Orders while stopped: the setting on after a restart, Home's watched line, Stop everything and its reply",'b4-desktop.cjs',['--mode=watch-on'],data('b4-watch-on')],
+  ["Orders while stopped: the setting off, its confirmation in Engine settings, then Home's watched line",'b4-desktop.cjs',['--mode=watch-off'],data('b4-watch-off')],
   ['In-app updates against a local release server','update-desktop.cjs',[],data('updates')]
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};

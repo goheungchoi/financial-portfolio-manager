@@ -27,7 +27,7 @@ test('finding 1 (second review): every reader but the watch sees the polled quot
   assert.equal(a.watchData().price('990777'),700,'the watch has it');
   const plan=a.priceTargets({targets:[{symbol:'990777'}]});assert.equal(plan.targets[0].priceWhenSet,undefined,'the scout\'s targets are not stamped from it');
   // Only the watch, its trailing stops and its own bookkeeping read the watch view (pinned by source).
-  const src=fs.readFileSync(path.join(__dirname,'../electron/automation.cjs'),'utf8');assert.equal((src.match(/this\.watchData\(/g)??[]).length,1);
+  const src=fs.readFileSync(path.join(__dirname,'../electron/automation.cjs'),'utf8');assert.equal((src.match(/this\.watchData\(/g)??[]).length,2,'the tick, and stopHeldNow (whether a held stop is hit now: B-4 review 3)');
   assert.deepEqual([...src.matchAll(/this\.watchQuotes\(now\)/g)].length,4,'watchData, armedNeeds, updateArmedWatch, trackTrailing');
 });
 test('finding 2 (second review): at fire time a stock that cannot be read fresh means no order: an hour-old copy or a polled one is never used',async()=>{

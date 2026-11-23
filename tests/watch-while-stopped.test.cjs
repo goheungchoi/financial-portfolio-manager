@@ -11,10 +11,10 @@ function world({db=new DatabaseSync(':memory:'),place=()=>({brokerOrderId:'9001'
   let snapshot={accountKey:'acct',environment:'mock',reportedTotal:10000000,cash:10000000,settledCash:10000000,holdings:[{symbol:SYM,name:'F',quantity:10,cost:1000,price:1000}]};
   const placed=[];const broker={request:async(op)=>{if(op==='prepare-order'){await hooks.prepare?.();}if(op==='place-order')await hooks.place?.();if(op==='prepare-order')return {ticket:'t',balance:{...snapshot,timestamp:new Date().toISOString()},checkedAt:Date.now()};if(op==='place-order'){const r=place();if(r instanceof Error)throw r;placed.push(r);return r;}return {};}};
   const live=new LiveEngine(db,broker,()=>({status:'connected',snapshot}));
-  live.context=async()=>({environment:'kis',market:'KR',currency:'KRW',equity:10000000,cash:10000000,positions:{[SYM]:{quantity:10}},universe:[{symbol:SYM,price:1000}],quotes:[{symbol:SYM,price:1000,timestamp:Date.now(),stale:false}],orders:[],marketSession:{open:true,status:'open'}});
+  live.context=async()=>({environment:'kis',market:'KR',currency:'KRW',equity:10000000,cash:10000000,positions:Object.fromEntries(snapshot.holdings.map(h=>[h.symbol,{quantity:h.quantity}])),universe:[{symbol:SYM,price:1000}],quotes:[{symbol:SYM,price:1000,timestamp:Date.now(),stale:false}],orders:[],marketSession:{open:true,status:'open'}});
   const ai={calls:0};const events=[];
   const a=new Automation(db,new PaperEngine(db,[{symbol:SYM,name:'F',price:1000}],()=>[]),{request:async()=>{ai.calls++;throw new Error('no AI call expected');}},(id,kind,title,body)=>events.push({title,body}));
-  a.live=live;a.usLive=null;const priced={n:0};a.placementPrice=async()=>{priced.n++;return {price:1000};};a.emergencyState=()=>({active:false});a.marketQuotes=()=>[{symbol:SYM,price:1000,timestamp:Date.now()}];
+  a.live=live;a.usLive=null;const priced={n:0};a.placementPrice=async()=>{priced.n++;return {price:1000};};a.emergencyState=()=>({active:false});const price={now:1000};a.marketQuotes=()=>[{symbol:SYM,price:price.now,timestamp:Date.now()}];
   a.configure({scope:'kis',conditionalOrders:true,conditionalAutoSubmit:true,...config});
   const policy=()=>live.configure({symbols:[SYM],maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null,lossLimit:{mode:'off',value:0}},'ENABLE MOCK');
   // Start, as auto-launch.start does it, without its AI and budget checks.
@@ -22,7 +22,7 @@ function world({db=new DatabaseSync(':memory:'),place=()=>({brokerOrderId:'9001'
   const arm=(side,{purpose=side==='Buy'?'entry':'stop_loss'}={})=>{a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:SYM,side,quantity:1,limitPrice:null,conditions:[{expr:`price("${SYM}")`,op:side==='Buy'?'>=':'<=',value:side==='Buy'?999:1001}],combine:'all',purpose,expiresInHours:24,reason:'Fixture'},{config:a.config,universe:[SYM]});
     return a.desk.orders(a.watchScope()).filter(o=>o.side===side).at(-1);};
   const fire=async order=>{a.syncConditionalPermits();await a.fireConditional(order);return a.desk.rows('conditional_orders',a.watchScope()).find(o=>o.id===order.id);};
-  return {db,a,live,ai,events,placed,priced,start,policy,arm,fire,on:()=>a.setWatchWhileStopped(true,'WATCH WHILE STOPPED MOCK'),setSnapshot:s=>{snapshot={...snapshot,...s};}};
+  return {db,a,live,ai,events,placed,priced,price,start,policy,arm,fire,on:()=>a.setWatchWhileStopped(true,'WATCH WHILE STOPPED MOCK'),setSnapshot:s=>{snapshot={...snapshot,...s};}};
 }
 // The Stop reply of 1.5.73, for the off pin.
 const reply173=n=>`Auto trading stopped. Orders already at KIS stay. Your ${n} armed ${n===1?'stop':'stops'} (${SYM}) ${n===1?'is':'are'} not watched until you start it again.`;
@@ -114,6 +114,7 @@ test('guardrails while stopped, for a Sell and a Buy, as while running',async()=
   {const w=world();w.on();w.start();AL.stop(w.a);w.live.buybackBlock=()=>({unknown:true,market:'KR',why:'not read yet'});
     const b=await w.fire(w.arm('Buy'));assert.equal(b.status,'armed');assert.equal(b.waiting,'the orders you made outside the app are not read yet');
     assert.equal((await w.fire(w.arm('Sell'))).status,'submitted');
+    w.live.save({...w.live.orders().find(x=>x.status==='Accepted'),status:'Filled',filled:1});// the Sell done: one open order at a time
     w.live.buybackBlock=s=>s===SYM?{symbol:SYM,soldOn:'2026-10-05',blockedUntil:'2026-11-04'}:null;const k=await w.fire(w.a.desk.orders(w.a.watchScope()).find(o=>o.side==='Buy'));assert.equal(k.status,'rejected');assert.match(k.outcome,/you sold 123450 outside the app/);}
   // Expiry: an armed order past its time is not watched or fired.
   {const w=world();w.on();w.start();AL.stop(w.a);const o=w.arm('Sell');w.db.prepare("UPDATE conditional_orders SET payload=json_set(payload,'$.expiresAt',?) WHERE id=?").run(Date.now()-1000,o.id);
@@ -233,4 +234,165 @@ test('review 3: while auto trading runs with the engine enabled, the live automa
   w=world();w.on();w.start();AL.stop(w.a);w.policy();o=await w.fire(w.arm('Sell'));assert.equal(o.status,'submitted');
   // A reconnect while running: the engine stopped, the record decides (sent by itself).
   w=world();w.on();w.start();w.live.stop();w.live.revokeConditional();o=await w.fire(w.arm('Sell'));assert.equal(o.status,'submitted');
+});
+// B-4: the words, the state Home reads, Stop everything, the install refusal, the start notice.
+const lines=()=>import('../src/unwatched-orders.mjs');
+test('B-4: the Stop reply with the setting on says what is watched and how it is sent; Stop everything has its own',async()=>{
+  const w=world();w.on();w.start();w.arm('Sell');w.arm('Buy');
+  assert.equal(AL.stop(w.a),'Auto trading stopped. Orders already at KIS stay. Your 2 armed orders are still watched (1 buy) and are sent by themselves if their conditions are met. To stop them too, use Stop everything.');
+  const p=world({config:{conditionalAutoSubmit:false}});p.on();p.start();p.arm('Sell');
+  assert.equal(AL.stop(p.a),'Auto trading stopped. Orders already at KIS stay. Your 1 armed order is still watched: if its conditions are met it is only proposed for your approval. To stop them too, use Stop everything.');
+  assert.equal(w.a.stopEverything(),'Everything stopped. No order will be sent by the app; orders already at KIS stay.');
+  assert.equal(AL.watchedWords({buys:1,sentByThemselves:2,proposedOnly:1,notStarted:['NASD:ABCD']}),'Your 3 armed orders are still watched (1 buy): 2 sent by themselves, 1 only proposed for your approval. Not watched until you start auto trading on this account: NASD:ABCD.');
+});
+test('B-4: Home: watched while stopped, the loss limit, Stop everything, not connected, the off pin, and the capacity line',async()=>{
+  const {whileStoppedLines,unwatchedLine,capacityLine}=await lines();const st=w=>({config:w.a.config,desk:w.a.deskState()});
+  const w=world();w.on();w.start();w.arm('Sell');AL.stop(w.a);
+  assert.deepEqual(whileStoppedLines(st(w)),{block:null,info:'Auto trading is stopped. Your 1 armed order is still watched and is sent by itself if its conditions are met.'});assert.equal(unwatchedLine(st(w)),null);
+  w.a.configure({conditionalAutoSubmit:false});w.a.configure({conditionalAutoSubmit:true});assert.equal(whileStoppedLines(st(w)).info.includes('takes effect'),false,'record on: nothing waits for Start');
+  const l=world({config:{lossAction:'stop'}});l.on();l.start();l.arm('Sell');l.arm('Buy');AL.stop(l.a);l.a.emergencyState=()=>({active:true,activeMarkets:['KR']});
+  assert.equal(whileStoppedLines(st(l)).block,'Daily loss limit reached: auto trading stopped. 1 closing order is still watched; 1 buy waits.');
+  w.a.stopEverything();assert.equal(whileStoppedLines(st(w)).block,'Everything stopped: no order is watched.');assert.equal(unwatchedLine(st(w)),null);
+  const d=world();d.on();d.start();d.arm('Sell');AL.stop(d.a);d.live.getConnection=()=>({status:'disconnected',snapshot:null});assert.equal(whileStoppedLines(st(d)).block,'Orders not watched: KIS is not connected.');
+  // "Submit them automatically" turned on while stopped after a Start with it off: it waits for the next Start.
+  const t=world({config:{conditionalAutoSubmit:false}});t.on();t.start();t.arm('Sell');AL.stop(t.a);t.a.configure({conditionalAutoSubmit:true});assert.match(whileStoppedLines(st(t)).info,/"Submit them automatically" takes effect at the next Start\.$/);
+  // Off: the 1.5.73 line, and no while-stopped line.
+  const o=world();o.start();o.arm('Sell');AL.stop(o.a);assert.deepEqual(whileStoppedLines(st(o)),{block:null,info:null});assert.equal(unwatchedLine(st(o)),'1 stop is not watched until auto trading is started.');
+  assert.equal(o.a.deskState().whileStopped.on,false);assert.equal('watchPermit' in o.live.getState(),false,'no permit, nothing new in the engine state');
+  assert.equal(capacityLine({desk:{monitoringActive:true,outsidePolls:{KR:12,US:3}}}),'Korea: 12 armed stocks are outside the app\'s price lists; about 10 can be kept current, so their prices may age.');
+  assert.equal(capacityLine({desk:{monitoringActive:true,outsidePolls:{KR:10,US:0}}}),null);assert.equal(w.a.deskState().outsidePolls.KR,0,'its stock is in the polled quotes');
+  const n=world();n.on();n.arm('Sell');assert.deepEqual(n.a.deskState().whileStopped.notStarted,[SYM]);assert.match(whileStoppedLines(st(n)).info??'',/Not watched until you start auto trading on this account: 123450\./);
+});
+test('B-4: Activity and the phone say "while auto trading was stopped"; not while it runs',async()=>{
+  const sent=[];const w=world();w.a.notify=(id,m)=>sent.push(m);w.on();w.start();AL.stop(w.a);const o=await w.fire(w.arm('Sell'));
+  assert.match(o.outcome,/ Sent while auto trading was stopped\.$/);assert.deepEqual(sent,['Stop for 123450 fired while auto trading was stopped: Sell 1 sent.']);
+  const p=world({config:{conditionalAutoSubmit:false}});const ps=[];p.a.notify=(id,m)=>ps.push(m);p.on();p.start();AL.stop(p.a);const q=await p.fire(p.arm('Buy'));
+  assert.match(q.outcome,/Proposed while auto trading was stopped\.$/);assert.deepEqual(ps,['Conditional order for 123450 fired while auto trading was stopped: Buy 1 awaits your approval.']);
+  const r=world();const rs=[];r.a.notify=(id,m)=>rs.push(m);r.on();r.start();const x=await r.fire(r.arm('Sell'));assert.doesNotMatch(x.outcome,/while auto trading was stopped/);assert.deepEqual(rs,[]);
+});
+test('B-4: the engine state shows the permit; the start notice says the orders are watched; installs are refused while watched',()=>{
+  const w=world();w.on();w.start();AL.stop(w.a);w.a.syncConditionalPermits();assert.deepEqual(w.live.getState().watchPermit,{auto:true});
+  const N=require('../electron/start-notice.cjs');const notice=N.startNotice({previousStop:{kind:'windows-shutdown',at:Date.now()-60000},stops:{count:2,any:true},wasRunning:false,watched:true});
+  assert.equal(notice.title,'Paused: 2 stop orders watched');assert.match(notice.message,/The app started and auto trading is paused\. 2 stop orders are watched once KIS connects, with your other armed orders\. Press Start auto trading to resume reviews\.$/);
+  assert.equal(N.startNotice({previousStop:{kind:'clean',at:Date.now()},stops:{count:1,any:true},wasRunning:false}).title,'Paused: 1 stop order not watched','off: unchanged');
+  const fs=require('fs'),path=require('path'),main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8');
+  assert.match(main,/if\(automation\.watchingWhileStopped\(\)&&automation\.desk\.orders\(automation\.watchScope\(\)\)\.length>0\)return 'ORDERS_WATCHED';/);
+  assert.match(fs.readFileSync(path.join(__dirname,'..','src','AppUpdates.tsx'),'utf8'),/ORDERS_WATCHED:'Your armed orders are being watched while auto trading is stopped, and installing closes the app\. Use Stop everything, then install\.'/);
+  assert.match(main,/ipcMain\.handle\('runtime:stop-everything'/);assert.match(main,/automation\.setWatchWhileStopped\(on===true,/);
+  assert.match(fs.readFileSync(path.join(__dirname,'..','src','KeepWorking.tsx'),'utf8'),/setWatchWhileStopped\(value,value\?`WATCH WHILE STOPPED \$\{env\.toUpperCase\(\)\}`:undefined\)/,'the phrase names the environment the user was shown');
+  assert.match(fs.readFileSync(path.join(__dirname,'..','src','AgentDesk.tsx'),'utf8'),/' · watched while stopped'/);
+});
+// B-4 review: passing causes under one open order at a time keep the order armed, running or stopped, and Home says why.
+test('B-4 review 1: an unclear order or another open order in the market: the order waits armed (stopped and running), and Home says why',async()=>{
+  const {whileStoppedLines}=await lines();const st=w=>({config:w.a.config,desk:w.a.deskState()});
+  // Stopped: an unclear order in Korea.
+  let w=world({place:()=>new Error('TIMEOUT')});w.on();w.start();AL.stop(w.a);await w.fire(w.arm('Sell'));assert.equal(w.live.orders()[0].status,'Uncertain');
+  let o=await w.fire(w.arm('Sell'));assert.equal(o.status,'armed');assert.equal(o.waiting,'an earlier order in Korea is unclear');assert.ok(o.nextCheckAt>Date.now()+20000);
+  let s=w.a.deskState().whileStopped;assert.equal(s.sentByThemselves,0);assert.deepEqual(s.waiting,[{why:'an earlier order in Korea is unclear',orders:1}]);
+  assert.equal(whileStoppedLines(st(w)).info,'Auto trading is stopped. Your 1 armed order is still watched. 1 waits: an earlier order in Korea is unclear.');
+  // Stopped: another app order open.
+  w=world();w.on();w.start();AL.stop(w.a);assert.equal((await w.fire(w.arm('Sell'))).status,'submitted');o=await w.fire(w.arm('Sell'));
+  assert.equal(o.status,'armed','the same stock with shares left: it waits, not priced');assert.equal(o.waiting,'another order in Korea is open');assert.equal(w.priced.n,1,'only the first sale was priced');
+  o=await w.fire(w.arm('Buy'));assert.equal(o.status,'armed');assert.equal(o.waiting,'another order in Korea is open');assert.equal(w.placed.length,1);
+  s=w.a.deskState().whileStopped;assert.deepEqual(s.waiting,[{why:'another order in Korea is open',orders:2}]);assert.equal(s.sentByThemselves,0);
+  // Running (1.5.73 closed it as rejected): the same wait.
+  w=world();w.start();assert.equal((await w.fire(w.arm('Sell'))).status,'submitted');o=await w.fire(w.arm('Buy'));assert.equal(o.status,'armed');assert.equal(o.waiting,'another order in Korea is open');
+  w=world({place:()=>new Error('TIMEOUT')});w.start();await w.fire(w.arm('Sell'));o=await w.fire(w.arm('Buy'));assert.equal(o.status,'armed');assert.equal(o.waiting,'an earlier order in Korea is unclear');
+  // An order opened between the check and the send: the engine's refusal keeps it armed, its proposal retired.
+  w=world();w.start();w.live.autoSubmit=async()=>{throw new Error('RECONCILIATION_REQUIRED');};o=await w.fire(w.arm('Sell'));assert.equal(o.status,'armed');
+  assert.equal(w.live.orders().find(x=>x.status==='Ready')?.reason,'SUPERSEDED');
+});
+test('B-4 review 2-5: another account shows the 1.5.73 line; the loss line counts closing orders; not on paper; the confirmation says restart and closing',async()=>{
+  const {unwatchedLine}=await lines();const w=world();w.on();w.start();w.arm('Sell');AL.stop(w.a);w.setSnapshot({accountKey:'other'});
+  w.a.desk.orders=()=>[{symbol:SYM,side:'Sell',purpose:'stop_loss'}];assert.equal(unwatchedLine({config:w.a.config,desk:{...w.a.deskState(),monitoringActive:false}}),'1 stop is not watched until auto trading is started.','before the next sync voids the row');
+  const l=world({config:{lossAction:'stop'}});l.on();l.start();AL.stop(l.a);l.a.emergencyState=()=>({active:true,activeMarkets:['KR']});
+  l.a.desk.orders=()=>[{symbol:SYM,side:'Sell'},{symbol:SYM,side:'Buy',credit:{kind:'cover'}},{symbol:SYM,side:'Buy'}];assert.deepEqual(l.a.whileStoppedState().lossLimit,{closing:2,buysWait:1},'a cover is a closing order');
+  const p=world({config:{scope:'paper'}});assert.throws(()=>p.on(),/PAPER_SCOPE/);
+  const src=require('fs').readFileSync(require('path').join(__dirname,'..','src','KeepWorking.tsx'),'utf8');
+  assert.match(src,/Stop everything halts all of them, and so does closing the app\. After the app restarts, they are watched again as soon as KIS connects, without pressing Start\./);
+});
+// B-4 second review: a stop hit and held counts as not covering; a waiting re-check makes no KIS request.
+test('B-4 review 2-1: a stop hit and held behind another order is an unprotected holding, running and stopped, on the Desk and Home',async()=>{
+  const {heldStopsLine}=await lines();
+  for(const stopped of [false,true]){const w=world();if(stopped)w.on();w.start();
+    const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:1,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',brokerOrderId:'9100'});if(stopped)AL.stop(w.a);
+    const o=await w.fire(w.arm('Sell'));assert.equal(o.status,'armed');assert.equal(o.waiting,'another order in Korea is open');
+    const u=w.a.deskState().unprotected.find(x=>x.symbol===SYM);assert.deepEqual({held:u.held,waiting:u.waiting,quantity:u.quantity},{held:true,waiting:'another order in Korea is open',quantity:1},stopped?'stopped':'running');
+    assert.equal(heldStopsLine({desk:w.a.deskState()}),'123450 has no working stop loss: its stop was hit and is waiting (another order in Korea is open).');
+    // Once the other order is done the stop is sent and the holding is no longer listed.
+    w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Filled',filled:1});const s=await w.fire(w.a.desk.orders(w.a.watchScope()).find(x=>x.id===o.id));assert.equal(s.status,'submitted');
+    assert.equal(w.a.deskState().unprotected.some(x=>x.held),false);}
+  const src=require('fs').readFileSync(require('path').join(__dirname,'..','electron','review-gate.cjs'),'utf8');assert.match(src,/unprotected:\(desk\.unprotected\?\?\[\]\)\.filter\(u=>!u\.held\)\.map\(u=>u\.symbol\)/);
+});
+test('B-4 review 2-2: a waiting re-check reads no account context (no KIS request) and does not hold the fire flag through one',async()=>{
+  const w=world();w.on();w.start();let reads=0;const ctx=w.live.context;w.live.context=async(...x)=>{reads++;return ctx(...x);};
+  const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:1,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',brokerOrderId:'9101'});AL.stop(w.a);
+  const stop=w.arm('Sell');for(let i=0;i<3;i++){const o=await w.fire(w.a.desk.orders(w.a.watchScope()).find(x=>x.id===stop.id));assert.equal(o.waiting,'another order in Korea is open');}
+  assert.equal(reads,0);assert.equal(w.priced.n,0);
+});
+test('B-4 review 2: a linked plan stop behind its own partly filled purchase: the row, the Desk and Home',async()=>{
+  const {heldStopsLine}=await lines();const w=world();w.start();
+  const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:4,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Partially filled',filled:1,brokerOrderId:'9102'});
+  const stop=w.arm('Sell');w.a.desk.update(stop,{linkedBuy:{id:buy.id,market:'KR'}});const o=await w.fire(w.a.desk.orders(w.a.watchScope()).find(x=>x.id===stop.id));
+  assert.equal(o.status,'armed');assert.equal(o.waiting,'its purchase is still open');
+  assert.equal(heldStopsLine({desk:w.a.deskState()}),'123450 has no working stop loss: its stop was hit and is waiting (its purchase is still open).');
+  // Unfilled: the earlier words, and the stop has nothing to cover yet.
+  w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',filled:0});const u=await w.fire(w.a.desk.orders(w.a.watchScope()).find(x=>x.id===stop.id));assert.equal(u.waiting,'its purchase has not filled');
+});
+// B-4 third review: held is decided live and the stored words go when it ends; the review context and the gate get the
+// held stop as facts; a review's sale cannot double up with the waiting stop.
+const tickOnce=async a=>{a.lastDeskCheck=0;a.tick();for(let i=0;i<50&&a.firing;i++)await new Promise(r=>setTimeout(r,2));await new Promise(r=>setImmediate(r));};
+test('B-4 review 3-1: the held line through the real tick: hit and held, price recovers, the other order fills, hit again and sent',async()=>{
+  const {heldStopsLine}=await lines();
+  for(const stopped of [false,true]){const w=world();if(stopped)w.on();w.start();
+    const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:1,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',brokerOrderId:'9200'});if(stopped)AL.stop(w.a);
+    const stop=w.arm('Sell');const row=()=>w.a.desk.rows('conditional_orders',w.a.watchScope()).find(x=>x.id===stop.id);const line=()=>heldStopsLine({desk:w.a.deskState()});
+    // 1. Hit with the Buy open: held, listed, the line shown.
+    await tickOnce(w.a);assert.equal(row().waiting,'another order in Korea is open');assert.match(line()??'',/123450 has no working stop loss/,'step 1');
+    // 2. The price recovers above the stop, the Buy still open: not hit now, so not held; the stored words cleared.
+    w.price.now=1200;await tickOnce(w.a);assert.equal(line(),null,'step 2');assert.equal(row().waiting,null);assert.equal(row().status,'armed');
+    // 3. The Buy fills, the price still above: nothing.
+    w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Filled',filled:1});await tickOnce(w.a);assert.equal(line(),null,'step 3');assert.equal(row().waiting,null);
+    // 4. Hit again with nothing open: not held, fired at once.
+    w.price.now=1000;await tickOnce(w.a);assert.equal(line(),null,'step 4');
+    // 5. Sent.
+    assert.equal(row().status,'submitted',stopped?'stopped':'running');assert.equal(w.placed.length,1);}
+});
+test('B-4 review 3-2: the review context names a held stop with its cause and the order holding it; the gate asks one review per held episode',()=>{
+  const RG=require('../electron/review-gate.cjs');const w=world();w.start();const ctxOf=()=>({agentDesk:w.a.desk.context(w.a.watchScope(),w.a.config,[SYM],{[SYM]:{quantity:10}},w.a.heldStopFacts())});
+  const none=ctxOf();assert.equal('heldStops' in none.agentDesk.conditionalOrders,false,'nothing held: no key, zero bytes');
+  const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:1,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',brokerOrderId:'9201'});const stop=w.arm('Sell');
+  w.a.syncHolds();assert.ok(w.a.desk.orders(w.a.watchScope()).find(x=>x.id===stop.id).heldSince>0,'the tick stamps the episode');
+  const held=ctxOf();const h=held.agentDesk.conditionalOrders.heldStops;assert.equal(h.length,1);
+  assert.deepEqual({symbol:h[0].symbol,stopOrderId:h[0].stopOrderId,quantity:h[0].quantity,waitsFor:h[0].waitsFor},{symbol:SYM,stopOrderId:stop.id,quantity:1,waitsFor:{id:buy.id,side:'Buy',symbol:SYM,status:'Accepted'}});
+  assert.equal(h[0].fact,`The stop loss for 123450 was hit and is still armed; it is not sent while another order in Korea is open (order ${buy.id}, Buy 123450, Accepted).`);
+  const bytes=JSON.stringify(held.agentDesk.conditionalOrders).length-JSON.stringify(none.agentDesk.conditionalOrders).length;assert.ok(bytes>0&&bytes<1000,'bytes added: '+bytes);
+  // The gate: a new held episode needs a review; once a review has seen it, not again while it lasts.
+  const at=Date.now();const base={...RG.decisionState(none),at},next=RG.decisionState(held);
+  const first=RG.compare(base,next,{now:at+1000});assert.ok(first.reasons.some(r=>r.kind==='protection'&&/123450: stop loss hit and waiting/.test(r.detail)),JSON.stringify(first.reasons));
+  const again=RG.compare({...next,at},RG.decisionState(ctxOf()),{now:at+1000});assert.equal(again.reasons.some(r=>r.kind==='protection'),false,'the same episode');
+  // No instruction text: the fingerprints are pinned elsewhere; nothing here adds a note.
+  assert.equal(Object.keys(h[0]).sort().join(','),'fact,heldQuantity,quantity,since,stopOrderId,symbol,waitsFor');
+});
+test('B-4 review 3-3: a review\'s sale cannot double up with the waiting stop',async()=>{
+  // A review sells every share: the stop ends "Not needed" (the existing free-shares rule), nothing more is sent.
+  let w=world();w.start();const all=w.live.propose({symbol:SYM,side:'Sell',quantity:10,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===all.id),status:'Accepted',brokerOrderId:'9300'});
+  let o=await w.fire(w.arm('Sell'));assert.equal(o.status,'cancelled');assert.match(o.outcome,/Not needed: a sale already waiting takes these shares/);assert.equal(w.placed.length,0);
+  // A review sells 9 of 10: the stop (2 shares) waits; once that sale fills it sends only what is left (1).
+  w=world();w.start();const part=w.live.propose({symbol:SYM,side:'Sell',quantity:9,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===part.id),status:'Accepted',brokerOrderId:'9301'});
+  w.a.desk.setOrder(w.a.watchScope(),{action:'add',id:'',symbol:SYM,side:'Sell',quantity:2,limitPrice:null,conditions:[{expr:`price("${SYM}")`,op:'<=',value:1001}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Fixture'},{config:w.a.config,universe:[SYM]});
+  const stop=w.a.desk.orders(w.a.watchScope()).find(x=>x.quantity===2);o=await w.fire(stop);assert.equal(o.status,'armed');assert.equal(o.waiting,'another order in Korea is open');
+  w.live.save({...w.live.orders().find(x=>x.id===part.id),status:'Filled',filled:9});w.setSnapshot({holdings:[{symbol:SYM,name:'F',quantity:1,cost:1000,price:1000}]});w.live.riskBalance=null;
+  o=await w.fire(w.a.desk.orders(w.a.watchScope()).find(x=>x.id===stop.id));assert.equal(o.status,'submitted');assert.equal(w.live.orders().find(x=>x.madeBy==='conditional').quantity,1,'only what is left');
+  // A review's own order is held by the same rule while the other order is open.
+  w=world();w.start();const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:1,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',brokerOrderId:'9302'});
+  const sale=w.live.propose({symbol:SYM,side:'Sell',quantity:1,limitPrice:1000});await assert.rejects(w.live.submit(sale.id,'PLACE MOCK ORDER'),/RECONCILIATION_REQUIRED/);assert.equal(w.placed.length,0);
+});
+test('B-4 review 4: a price hovering at the stop level is one held episode: one Activity line, one stamp, the same gate key; Home follows the live state',async()=>{
+  const {heldStopsLine}=await lines();const w=world();w.start();
+  const buy=w.live.propose({symbol:SYM,side:'Buy',quantity:1,limitPrice:1000});w.live.save({...w.live.orders().find(x=>x.id===buy.id),status:'Accepted',brokerOrderId:'9400'});
+  const stop=w.arm('Sell');const row=()=>w.a.desk.rows('conditional_orders',w.a.watchScope()).find(x=>x.id===stop.id);const stamps=new Set(),lines2=[];
+  for(let i=0;i<12;i++){w.price.now=i%2?1200:1000;await tickOnce(w.a);lines2.push(Boolean(heldStopsLine({desk:w.a.deskState()})));if(row().heldSince)stamps.add(row().heldSince);}
+  assert.equal(w.events.filter(e=>e.title==='Conditional order · waiting').length,1,'one Activity line');assert.equal(stamps.size,1,'one episode stamp');
+  assert.deepEqual(lines2,Array.from({length:12},(_,i)=>i%2===0),'Home follows the live state');assert.equal(row().status,'armed');assert.equal(w.placed.length,0);
 });

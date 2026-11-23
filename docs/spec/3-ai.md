@@ -245,7 +245,10 @@ arms it, including turning "Scheduled reviews" on, which saves the switch for th
 auto-stopped trip (which calls Stop) and a save with `enabled` off disarm it (`automation.cjs` `configure`). Until
 1.5.69 every Engine settings save carried the saved `enabled:true` and re-armed a paused session without Start. The start notice (`start-notice.cjs:2-4`) tells the user on launch that auto trading is
 paused, how many stop orders are not being watched and how the app last stopped. The app updater refuses to install
-while `enabled && sessionArmed` (`main.cjs:640`, `AUTO_TRADING_ARMED`).
+while `enabled && sessionArmed` (`main.cjs:640`, `AUTO_TRADING_ARMED`), and while armed orders are watched with auto
+trading stopped (`ORDERS_WATCHED`, orders while stopped). With "Keep them working while auto trading is stopped" on and
+the setting matching, the start notice says the stop orders are watched once KIS connects ("Paused: N stop orders
+watched") instead of not watched.
 
 **Guardrail stop.** `trip('auto-stopped', detail)` (`automation.cjs:320-325`) calls the same `stop()` and records and
 notifies a guardrail event; used for the daily loss limit with `lossAction==='stop'` and for

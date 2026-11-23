@@ -622,7 +622,8 @@ test('P1: an unreadable purchase record keeps the stop armed and retrying; reada
   a.desk.update(s,{unreadableSince:Date.now()-301000,nextCheckAt:0});await fire();const late=stops()[0];assert.ok(late.unreadableNoticeAt>0);
   assert.deepEqual(alerts.map(x=>x.message),['The stop order for 005930 cannot read its purchase record; it stays armed and keeps trying.']);assert.ok(events.some(e=>e.title==='Stop order cannot check its purchase'));
   a.desk.update(late,{nextCheckAt:0});await fire();assert.equal(alerts.length,1,'the notice is raised once');
-  a.live.orders=realOrders;records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:1,status:'Partially filled'});ctx.positions={'005930':{quantity:1}};a.desk.update(stops()[0],{nextCheckAt:0});await fire();
+  a.live.orders=realOrders;a.live.severalOpen=true;// its purchase is still open: sent beside it only with several open orders (one at a time holds it)
+  records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:1,status:'Partially filled'});ctx.positions={'005930':{quantity:1}};a.desk.update(stops()[0],{nextCheckAt:0});await fire();
   assert.equal(a.calls.propose.length,1);assert.deepEqual([a.calls.propose[0].side,a.calls.propose[0].quantity],['Sell',1],'the filled quantity');
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/main.cjs'),'utf8');assert.match(src,/o\.linkedBuy&&o\.unreadableSince&&now-o\.unreadableSince>300000/);
 });

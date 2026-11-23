@@ -563,13 +563,14 @@ class Automation {
   // ends Stop everything. Off removes the consent and the record.
   setWatchWhileStopped(on,confirmation){const W=this.watchStopped;
     if(on!==true){W.clear();this.syncConditionalPermits();return null;}
+    if(this.config.scope==='paper')throw new Error('PAPER_SCOPE');// the setting has no meaning on paper
     const c=this.connectedAccount();if(!c)throw new Error('KIS_NOT_CONNECTED');
     if(confirmation!==(c.environment==='live'?'WATCH WHILE STOPPED LIVE':'WATCH WHILE STOPPED MOCK'))throw new Error('APPROVAL_REQUIRED');
     const kept=W.matches(c)?W.get().record??null:null;const v=W.turnOn({...c,record:this.autoTradingRuns()?this.switchesRecord():kept});
     this.log(randomUUID(),'System','Conditional orders · kept working while stopped',`On for the ${c.environment} account.`);this.syncConditionalPermits();return v;}
   // Stop everything: auto trading stops as with Stop, and the watch while stopped pauses until Start or until the setting
   // is turned on again, across a restart.
-  stopEverything(){try{return require('./auto-launch.cjs').stop(this);}finally{this.watchStopped?.stopEverything();this.syncConditionalPermits();}}
+  stopEverything(){try{require('./auto-launch.cjs').stop(this);}finally{this.watchStopped?.stopEverything();this.syncConditionalPermits();}return require('./auto-launch.cjs').EVERYTHING_STOPPED;}
   // The record follows the switches while auto trading runs: called on every change of them (Engine settings, each
   // market's trading and automatic switch in main.cjs) and by Stop and every automatic stop before they are cleared, so it
   // is the switches as they were when auto trading stopped. Written only when they differ.
@@ -587,6 +588,69 @@ class Automation {
       let want=null;if(watching&&WS.inScope(this.config.scope,market)&&!this.unclearOpen(engine)){let account=null;try{account=engine.identity();}catch{}if(account)want={account,auto:WS.autoWhileStopped(row,this.config,market)};}
       const p=engine.conditionalPermit;if(!want){if(p)engine.revokeConditional();continue;}
       if(!p||p.account!==want.account||p.auto!==want.auto)engine.permitConditional(want);}}
+  // Orders while stopped, B-4: what Home, the Agent Desk and the setting's row say. Always an object, so the row knows the
+  // connected environment while the setting is off.
+  whileStoppedState(){const W=this.watchStopped,v=W?.get()??null,c=this.connectedAccount(),running=this.autoTradingRuns();
+    const base={on:Boolean(v),environment:v?.environment??c?.environment??null,connected:Boolean(c),running,
+      // Turned on now: sent by themselves only while auto trading runs with its switches on; otherwise proposed until Start.
+      sendsNow:Boolean(running&&this.config.conditionalAutoSubmit&&this.config.autoSubmit&&[['KR',this.live],['US',this.usLive]].some(([m,e])=>e&&e.enabled&&e.autoEnabled&&require('./watch-while-stopped.cjs').inScope(this.config.scope,m)))};
+    if(!v)return base;const matches=W.matches(c),watching=this.watchingWhileStopped();
+    // Disconnected: the consented account's armed orders, so Home can say they are not watched.
+    let orders=[];try{orders=this.config.conditionalOrders?this.desk.orders(c?this.watchScope():this.config.scope+':'+v.account):[];}catch{orders=[];}
+    const mk=s=>/:/.test(s)?'US':'KR',engineOf=m=>m==='US'?this.usLive:this.live;const auto={},notStarted={};
+    for(const m of ['KR','US']){const e=engineOf(m);let p=null;try{p=e?.policy?.();}catch{}notStarted[m]=Boolean(e&&!p);
+      auto[m]=Boolean(e&&(this.recordDecides(e,m)?this.autoWhileStopped(m):this.config.conditionalAutoSubmit&&this.config.autoSubmit&&e.autoEnabled!==false));}
+    let em={};try{em=this.emergencyState();}catch{}const lossMarkets=this.config.lossAction==='stop'?(em.activeMarkets??(em.active?['KR','US']:[])):[];
+    const held={KR:this.oneOpenWait(this.live,'KR'),US:this.oneOpenWait(this.usLive,'US')};
+    const live=orders.filter(o=>!notStarted[mk(o.symbol)]),ready=live.filter(o=>!held[mk(o.symbol)]);
+    const waitBuys=live.filter(o=>o.side==='Buy'&&!o.credit&&lossMarkets.includes(mk(o.symbol)));
+    const out={...base,matches,watching,everythingStopped:Boolean(v.everythingStopped),recorded:Boolean(v.record),
+      orders:orders.length,buys:live.filter(o=>o.side==='Buy').length,sentByThemselves:ready.filter(o=>auto[mk(o.symbol)]).length,proposedOnly:ready.filter(o=>!auto[mk(o.symbol)]).length,
+      waiting:['KR','US'].filter(m=>held[m]).map(m=>({why:held[m],orders:live.filter(o=>mk(o.symbol)===m).length})).filter(x=>x.orders>0),
+      notStarted:[...new Set(orders.filter(o=>notStarted[mk(o.symbol)]).map(o=>o.symbol))],
+      lossLimit:!running&&lossMarkets.length&&watching?{closing:live.filter(o=>!waitBuys.includes(o)).length,buysWait:waitBuys.length}:null,
+      // "Submit them automatically" on now but off in the record: it takes effect at the next Start.
+      takesEffectAtStart:Boolean(!running&&this.config.conditionalAutoSubmit&&(!v.record||v.record.conditionalAutoSubmit!==true))};return {...out,said:require('./auto-launch.cjs').watchedWords(out)};}
+  // Armed stocks outside the app's own price lists, per market: the reader keeps about 10 current (B-1, capacity).
+  outsidePolls(){const polled=new Set((()=>{try{return this.liveQuotes();}catch{return [];}})().map(q=>q?.symbol));const out={};for(const m of ['KR','US'])out[m]=this.watchedSymbols(m).filter(s=>!polled.has(s)).length;return out;}
+  // Why this order is held now under one open order at a time, from the engine's own records (no KIS request), or null:
+  // {why, blocking: the order that holds it (id, side, symbol, status) or null}. A sale of a stock an open or unclear sale
+  // already sells, with none of its shares left free, is not held (the shares check closes it as not needed); a plan
+  // stop held only by its own purchase says so.
+  holdReason(order,engine,market){const why0=this.oneOpenWait(engine,market);if(!why0)return null;let rows=[];try{rows=(engine.orders?.()??[]).filter(o=>typeof o.symbol==='string'&&(/:/.test(o.symbol)?'US':'KR')===market);}catch{rows=[];}
+    const open=rows.filter(o=>['Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'].includes(o.status)),sameSale=order.side==='Sell'&&open.some(o=>o.side==='Sell'&&o.symbol===order.symbol);
+    if(sameSale){if(order.credit)return null;let free=1;try{const bal=engine.riskBalance??engine.getConnection?.()?.snapshot;if(bal?.holdings)free=require('./credit-paths.cjs').remaining(bal,{symbol:order.symbol,side:'Sell'},engine.orders?.()??[]).available;}catch{}if(free<1)return null;}
+    let why=why0;if(order.linkedBuy&&!open.some(o=>o.id!==order.linkedBuy.id)){const lp=this.linkedPurchase(order);why=lp&&lp.filled<1?'its purchase has not filled':'its purchase is still open';}
+    const b=open.find(o=>o.status==='Uncertain')??open.find(o=>o.id!==order.linkedBuy?.id)??open[0]??null;
+    return {why,blocking:b?{id:b.id,side:b.side,symbol:b.symbol,status:b.status}:null};}
+  // A stop loss held now: armed, its conditions met on the watch's prices now, and held by the rule now (B-4 review 3).
+  stopHeldNow(order){if(order?.side!=='Sell'||order.purpose!=='stop_loss'||order.status!=='armed')return null;const market=/:/.test(order.symbol)?'US':'KR',engine=market==='US'?this.usLive:this.live;if(!engine)return null;
+    const hold=this.holdReason(order,engine,market);if(!hold||hold.why==='its purchase has not filled')return null;let met=false;try{met=require('./formula.cjs').checkConditions(order.conditions,order.combine,this.watchData()).met;}catch{met=false;}return met?hold:null;}
+  // Each tick: a stop held now is stamped with when its hold began (one episode: the review gate asks one review for it);
+  // a hold that ended has its words and stamp cleared (no stale line) and is checked again at once.
+  syncHolds(scope=this.watchScope()){const HELD=/^(another order in |an earlier order in |its purchase is still open)/;let orders=[];try{orders=this.desk.orders(scope);}catch{return;}
+    // A hold that resumes within 5 minutes of ending is the same episode (a price hovering at the stop): the stamp is kept,
+    // so the gate key is the same and the fire writes no new Activity line (B-4 review 4).
+    const now=Date.now(),SAME_MS=300000;
+    for(const o of orders){const held=this.stopHeldNow(o),words=HELD.test(o.waiting??'');
+      if(held){if(!o.heldSince||o.heldEndedAt&&now-o.heldEndedAt>SAME_MS)this.desk.update(o,{heldSince:now,heldEndedAt:null,lastHoldWhy:null});else if(o.heldEndedAt)this.desk.update(o,{heldEndedAt:null});}
+      else if(words)this.desk.update(o,{waiting:null,nextCheckAt:0,heldEndedAt:o.heldEndedAt??now,lastHoldWhy:o.waiting});
+      else if(o.heldSince&&!o.heldEndedAt)this.desk.update(o,{heldEndedAt:now});
+      else if(o.heldSince&&now-o.heldEndedAt>SAME_MS)this.desk.update(o,{heldSince:null,heldEndedAt:null,lastHoldWhy:null});}}
+  // The held stops as facts for a review (no instruction): what is true now.
+  heldStopFacts(scope=this.watchScope()){const positions=this.brokerPositions();let orders=[];try{orders=this.desk.orders(scope);}catch{return [];}
+    return orders.filter(o=>positions?.[o.symbol]?.quantity>0).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h).map(([o,h])=>({symbol:o.symbol,stopOrderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,since:Number.isFinite(o.heldSince)?new Date(o.heldSince).toISOString():null,
+      ...(h.blocking?{waitsFor:h.blocking}:{}),fact:`The stop loss for ${o.symbol} was hit and is still armed; it is not sent while ${h.why}${h.blocking&&h.why!=='its purchase is still open'?` (order ${h.blocking.id}, ${h.blocking.side} ${h.blocking.symbol}, ${h.blocking.status})`:''}.`}));}
+  // Unprotected holdings: the desk's (a stop rejected or lapsed), and a stop that was hit and is held by the one-open rule
+  // (held: it is sent once that order is done; until then the holding has no working stop), running or stopped.
+  unprotectedNow(scope){const positions=this.brokerPositions();const listed=this.desk.unprotected(scope,positions);const seen=new Set(listed.map(u=>u.symbol));
+    let held=[];try{held=this.desk.orders(scope).filter(o=>positions?.[o.symbol]?.quantity>0&&!seen.has(o.symbol)).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h);}catch{held=[];}
+    return [...listed,...held.map(([o,h])=>({symbol:o.symbol,orderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,coveredQuantity:0,held:true,waiting:h.why}))];}
+  // Why a market's orders wait under one open order at a time, or null: an earlier app order there is unclear, or another
+  // is open. A passing cause (B-4 review): an armed order waits and is checked again, never closed for it.
+  oneOpenWait(engine,market){if(!engine||engine.severalOpen)return null;let rows=[];try{rows=(engine.orders?.()??[]).filter(o=>typeof o.symbol==='string'&&(/:/.test(o.symbol)?'US':'KR')===market);}catch{return null;}const where=market==='US'?'the U.S.':'Korea';
+    if(rows.some(o=>o.status==='Uncertain'))return `an earlier order in ${where} is unclear`;
+    if(rows.some(o=>['Submitting','Accepted','Partially filled','Cancellation uncertain'].includes(o.status)))return `another order in ${where} is open`;return null;}
   unclearOpen(engine){if(engine.severalOpen)return false;try{return engine.orders().some(o=>o.status==='Uncertain');}catch{return true;}}
   // Orders while stopped, B-1 (electron/armed-quotes.cjs): every stock the armed conditional orders read (their own and
   // their conditions'), per market, while they are watched (none otherwise), for main.cjs's reader of their prices.
@@ -690,7 +754,7 @@ class Automation {
       // How a pending order is followed, so reviews do not keep re-deciding an order that is only waiting.
       {const pending=this.pendingOrders();if(pending.length)context.orderFollowUp={orders:pending.map(o=>this.openOrderView(o)),
         // M-1b: what the app does when an order updates follows the user's switch; the note says so either way.
-        note:`${this.config.orderUpdateReviews===true?`The app starts a review as soon as a pending order fills, partly fills or is cancelled, and otherwise routine reviews wait for it up to ${ORDER_BACKSTOP_MS/60000} minutes`:`Routine reviews wait for a pending order up to ${ORDER_BACKSTOP_MS/60000} minutes and resume at their scheduled time once it has filled or been cancelled; a fill or cancellation does not start a review of its own`} (price, news and agent triggers and market opens or closes still start reviews). Do not re-decide a pending order in each review: say only what would make you cancel or change it (a broken thesis, a price far from the limit, new evidence), and act if that has happened.`};}if(context.environment!=='local-paper'){const latestPlan=this.scoutStore.latest(watchScope);const plan=require('./scout.cjs').reviewContext(latestPlan,Date.now(),{stale:this.staleCarried(latestPlan?.plan?.targets,context.quotes),failed:(()=>{const f=this.scoutStore.failedAfter(watchScope,latestPlan);return f&&f.trigger!=='User request'?f:null;})()});if(plan){context.scoutPlan=plan;const gap=require('./plan-gap.cjs').planGap(context);if(gap)context.planGap=gap;}const brief=this.scoutBriefState(watchScope);if(brief)context.scoutBrief=brief;context.agentDesk=this.desk.context(watchScope,this.config,(context.universe??[]).map(r=>r.symbol),context.positions);if(context.agentDesk?.notes?.length){const flags=new Map(this.annotatedNotes(this.desk.notes(watchScope)).map(n=>[n.symbol,n]));context.agentDesk.notes=context.agentDesk.notes.map(n=>{const f=flags.get(n.symbol??'');return {...n,...(f?.accountStateConflict?{accountStateConflict:f.accountStateConflict}:{}),...(f?.orderClaimUnverified?{orderClaimUnverified:f.orderClaimUnverified}:{})};});}if(context.agentDesk?.conditionalOrders?.allowed)context.agentDesk.conditionalOrders.monitoring=this.conditionalMonitoringActive()?'active':'inactive: auto trading is paused, so armed orders do not fire until it is started';const story=this.storyContext();if(story.marketNarrative)context.marketNarrative=story.marketNarrative;if(story.similarEpisodes?.length)context.similarEpisodes=story.similarEpisodes;const risk=this.riskContext(context);Object.assign(context,risk);if(context.planGap)require('./plan-gap.cjs').addMinimumPositions(context);try{require('./outside-context.cjs').apply(context,this.outsideData?.()??null);}catch{}const events=this.calendarState(14,(context.universe??[]).map(r=>({symbol:r.symbol,name:r.name})));if(events.length)context.eventCalendar=events.slice(0,15).map(({date,kind,market,symbol,title,estimated})=>({date,kind,market,symbol,title,estimated}));}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];const usStarters=['us','both'].includes(this.config.scope)?this.discovery.usStarters?.()??[]:[];const starterCandidates=[...(starters.length?[{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[]),...(usStarters.length?[{market:'US',symbols:usStarters,source:'KIS NASDAQ and NYSE market-cap rankings',note:'The U.S. market has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[])];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starterCandidates.length?{starterCandidates}:{})};}if(EVIDENCE_TRIGGERS.includes(trigger))context.triggerEvidence=evidence===undefined?this.triggerEvidence:evidence;
+        note:`${this.config.orderUpdateReviews===true?`The app starts a review as soon as a pending order fills, partly fills or is cancelled, and otherwise routine reviews wait for it up to ${ORDER_BACKSTOP_MS/60000} minutes`:`Routine reviews wait for a pending order up to ${ORDER_BACKSTOP_MS/60000} minutes and resume at their scheduled time once it has filled or been cancelled; a fill or cancellation does not start a review of its own`} (price, news and agent triggers and market opens or closes still start reviews). Do not re-decide a pending order in each review: say only what would make you cancel or change it (a broken thesis, a price far from the limit, new evidence), and act if that has happened.`};}if(context.environment!=='local-paper'){const latestPlan=this.scoutStore.latest(watchScope);const plan=require('./scout.cjs').reviewContext(latestPlan,Date.now(),{stale:this.staleCarried(latestPlan?.plan?.targets,context.quotes),failed:(()=>{const f=this.scoutStore.failedAfter(watchScope,latestPlan);return f&&f.trigger!=='User request'?f:null;})()});if(plan){context.scoutPlan=plan;const gap=require('./plan-gap.cjs').planGap(context);if(gap)context.planGap=gap;}const brief=this.scoutBriefState(watchScope);if(brief)context.scoutBrief=brief;context.agentDesk=this.desk.context(watchScope,this.config,(context.universe??[]).map(r=>r.symbol),context.positions,(()=>{try{return this.heldStopFacts(watchScope);}catch{return [];}})());if(context.agentDesk?.notes?.length){const flags=new Map(this.annotatedNotes(this.desk.notes(watchScope)).map(n=>[n.symbol,n]));context.agentDesk.notes=context.agentDesk.notes.map(n=>{const f=flags.get(n.symbol??'');return {...n,...(f?.accountStateConflict?{accountStateConflict:f.accountStateConflict}:{}),...(f?.orderClaimUnverified?{orderClaimUnverified:f.orderClaimUnverified}:{})};});}if(context.agentDesk?.conditionalOrders?.allowed)context.agentDesk.conditionalOrders.monitoring=this.conditionalMonitoringActive()?'active':'inactive: auto trading is paused, so armed orders do not fire until it is started';const story=this.storyContext();if(story.marketNarrative)context.marketNarrative=story.marketNarrative;if(story.similarEpisodes?.length)context.similarEpisodes=story.similarEpisodes;const risk=this.riskContext(context);Object.assign(context,risk);if(context.planGap)require('./plan-gap.cjs').addMinimumPositions(context);try{require('./outside-context.cjs').apply(context,this.outsideData?.()??null);}catch{}const events=this.calendarState(14,(context.universe??[]).map(r=>({symbol:r.symbol,name:r.name})));if(events.length)context.eventCalendar=events.slice(0,15).map(({date,kind,market,symbol,title,estimated})=>({date,kind,market,symbol,title,estimated}));}if(context.environment!=='local-paper'&&this.discovery){const starters=this.discovery.starters?.()??[];const usStarters=['us','both'].includes(this.config.scope)?this.discovery.usStarters?.()??[]:[];const starterCandidates=[...(starters.length?[{market:'KR',symbols:starters,source:'KIS market-cap ranking',note:'Korea has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[]),...(usStarters.length?[{market:'US',symbols:usStarters,source:'KIS NASDAQ and NYSE market-cap rankings',note:'The U.S. market has no allowlist, watchlist or holdings, so the largest listed companies were added to the review universe as a starting point. They are not recommendations.'}]:[])];context.discovery={enabled:true,watchlist:this.discovery.list().map(({symbol,name,source,reason})=>({symbol,name,source,reason})),...(starterCandidates.length?{starterCandidates}:{})};}if(EVIDENCE_TRIGGERS.includes(trigger))context.triggerEvidence=evidence===undefined?this.triggerEvidence:evidence;
       try{await this.attachOrderBooks(context);}catch{}
       // The account valuation (electron/valuation.cjs, set by main) is the equity reviews reason from: its low bound, and
       // when it is an estimate, how much it may understate and why. Without both markets in it the engines' figure stays.
@@ -1645,7 +1709,10 @@ class Automation {
     if(quantity!=null&&quantity>r.available)return {ok:false,reason:`The ${order.symbol} lot of ${c.loanDate} has ${r.available} shares left after waiting orders (${r.reserved} reserved).`};
     return {ok:true,lot:r.lot,available:r.available,reserved:r.reserved,account:(()=>{try{return engine.identity();}catch{return null;}})()};}
   async fireConditional(order){
-    const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{if(order.trail)outcome+=require('./trailing-stops.cjs').firedText(order);const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),waiting:null,...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);
+    const scope=this.watchScope();if(order.scope!==scope)return;const note=(status,outcome,extra={})=>{if(order.trail)outcome+=require('./trailing-stops.cjs').firedText(order);
+      // Orders while stopped, B-4: sent or proposed while auto trading was stopped, in Activity and on the phone.
+      if(['submitted','proposed'].includes(status)&&!this.autoTradingRuns()&&this.watchingWhileStopped()){outcome+=status==='submitted'?' Sent while auto trading was stopped.':' Proposed while auto trading was stopped.';
+        try{this.notify?.('while-stopped-'+order.id,`${order.purpose==='stop_loss'?'Stop':order.purpose==='take_profit'?'Take-profit':'Conditional order'} for ${order.symbol} fired while auto trading was stopped: ${order.side} ${order.quantity} ${status==='submitted'?'sent':'awaits your approval'}.`);}catch{}}const saved=this.desk.update(order,{status,outcome,closedAt:Date.now(),waiting:null,...extra});this.log(order.id,'System','Conditional order · '+status,`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): ${outcome}`);
       if(status==='rejected'&&order.side==='Sell'&&order.purpose==='stop_loss')try{this.notify?.('stop-rejected-'+order.id,`Stop loss for ${order.symbol} was rejected: ${outcome} The position is not protected until a new one is armed.`);}catch{}return saved;};
     // The market comes once from the instrument (a U.S. symbol carries its exchange, as NASD:NVDA) and must be the
     // account's. Audit 2026-11-04: the Buy checks read an undeclared market, so every conditional Buy threw a
@@ -1666,6 +1733,14 @@ class Automation {
     const closed=()=>this.desk.update(order,{status:'armed',waiting:'market closed',nextCheckAt:Date.now()+300000});
     this.desk.update(order,{status:'firing',firingAt:Date.now()});
     try{
+      // One open order at a time: an unclear or open order in this market holds this one, kept armed (1.5.73 closed it).
+      // Checked from the engine's own records before any KIS request, so a waiting order costs none (B-4 review).
+      // A sale of a stock an open or unclear sale already sells, with none of its shares left free, goes on to the shares
+      // check below (closed as not needed).
+      {const hold=this.holdReason(order,engine,market),why=hold?.why;
+        // One Activity line per episode: not again when the same hold resumes within 5 minutes.
+        const resumed=Boolean(order.heldSince&&order.lastHoldWhy===why);
+        if(why){if(order.waiting!==why&&!resumed)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${why}; it stays armed and is checked again in 30 seconds.`);this.desk.update(order,{status:'armed',waiting:why,heldSince:order.heldSince??Date.now(),heldEndedAt:null,nextCheckAt:Date.now()+30000});return;}}
       let ctx=await engine.context(market==='US'?await this.refreshUS():null);
       if(!ctx.marketSession?.open)return closed();
       // Orders while stopped, B-1: every stock the order and its conditions read comes from a read made for this check (the
@@ -1734,6 +1809,8 @@ class Automation {
         // because the setting can change after the order was armed.
         {const refused=this.leveragedEntryRefusal(engine,order.symbol,order.side);if(refused)return note('rejected',refused+' Nothing was sent.',{results:check.results});}
       }
+      // A sale that went on past the wait above (its stock already in an open or unclear sale, with shares left): held here.
+      {const why=this.oneOpenWait(engine,market);if(why){if(order.waiting!==why)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${why}; it stays armed and is checked again in 30 seconds.`);this.desk.update(order,{status:'armed',waiting:why,nextCheckAt:Date.now()+30000});return;}}
       proposal=engine.propose({symbol:order.symbol,side:order.side,quantity,limitPrice:limit,...(order.credit?{credit:{kind:order.credit.kind,loanDate:order.credit.loanDate}}:{})},{conditional:true});engine.annotate?.(proposal.id,{conditionalId:order.id,...(order.limitPrice>0?{tracking:{bound:order.limitPrice}}:{})});
       // The same daily cap as reviews' (1.5.48 audit, A6), taken before the send; a closing order is not held back by it.
       const cap=this.config.maxAutoOrdersPerDay;const wanted=(this.recordDecides(engine,market)?this.autoWhileStopped(market):this.config.conditionalAutoSubmit&&this.config.autoSubmit&&engine.autoEnabled!==false)&&proposal.status==='Ready'&&!proposal.requiresApproval;
@@ -1761,6 +1838,8 @@ class Automation {
       if(f.code==='KIS_ORDER_BUSY')return busy();
       // The buy-back list not known yet (the user's rule: buys wait): the order stays armed and fires once it is known; one
       // Activity line, not one per check. Only a known block rejects it.
+      // Another order opened between the check above and the send: the same wait.
+      if(error?.message==='RECONCILIATION_REQUIRED'&&unsent){retire();const why=this.oneOpenWait(engine,market)??`another order in ${market==='US'?'the U.S.':'Korea'} is open`;if(order.waiting!==why)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${why}; it stays armed and is checked again in 30 seconds.`);this.desk.update(order,{status:'armed',waiting:why,nextCheckAt:Date.now()+30000});return;}
       if(error?.message==='BUYBACK_UNKNOWN'){retire();const w='the orders you made outside the app are not read yet';if(order.waiting!==w)this.log(order.id,'System','Conditional order · waiting',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): not sent: ${w}; it stays armed and fires once they are.`);this.desk.update(order,{status:'armed',waiting:w,nextCheckAt:Date.now()+60000});return;}
       if(f.kind==='temporary'&&unsent)return f.code==='SESSION_CLOSED'?(retire(),closed()):retry(f.code);
       const left=proposal?` Proposal ${proposal.id} was not sent${at==='Ready'?'':` (its status: ${at??'unknown'})`}.`:' Nothing was proposed.';
@@ -1881,7 +1960,7 @@ class Automation {
   stopNotices(now=Date.now()){let rows=[];try{const scope=this.watchScope();rows=[...this.desk.orders(scope),...this.desk.recentOrders(scope,20)];}catch{return [];}
     return rows.filter(o=>o.notice&&!o.notice.acknowledgedAt&&(o.notice.kind==='ask'?o.status==='armed':now-(o.notice.at??0)<86400000));}
   acknowledgeStopNotice(id){let rows=[];try{const scope=this.watchScope();rows=[...this.desk.orders(scope),...this.desk.recentOrders(scope,20)];}catch{return;}const o=rows.find(x=>x.id===id&&x.notice);if(o)this.desk.update(o,{notice:{...o.notice,acknowledgedAt:Date.now()}});}
-  deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.desk.unprotected(scope,this.brokerPositions()),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5),...(()=>{let stale=[];try{stale=this.staleWatched();}catch{}return stale.length?{stalePrices:stale,staleWhy:this.armedStaleWhy()}:{};})()};}
+  deskState(){const scope=this.watchScope();return {monitoringActive:this.conditionalMonitoringActive(),triggers:this.desk.triggers(scope),notes:this.desk.notes(scope),orders:this.desk.orders(scope),recentOrders:this.desk.recentOrders(scope,10),unprotected:this.unprotectedNow(scope),planStopFailures:this.desk.planStopFailures(scope),firedTriggers:this.desk.rows('agent_triggers',scope,'fired').slice(0,5),whileStopped:this.whileStoppedState(),outsidePolls:this.outsidePolls(),...(()=>{let stale=[];try{stale=this.staleWatched();}catch{}return stale.length?{stalePrices:stale,staleWhy:this.armedStaleWhy()}:{};})()};}
   // The purchase a plan stop is linked to (P1): its engine record, the shares it filled, and whether it has ended (filled,
   // cancelled, rejected, or a proposal that expired unsent). null when the record cannot be read.
   linkedPurchase(order,now=Date.now()){const l=order?.linkedBuy;if(!l)return null;const engine=(l.market??(/:/.test(order.symbol)?'US':'KR'))==='US'?this.usLive:this.live;let rec=null;try{rec=engine?.orders?.().find(r=>r.id===l.id)??null;}catch{rec=null;}if(!rec)return null;
@@ -2264,6 +2343,7 @@ class Automation {
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
     if(deskDue&&this.config.scope!=='paper')try{this.syncLinkedStops();}catch{}
     if(deskDue)try{this.syncConditionalPermits();}catch{}
+    if(deskDue&&this.config.scope!=='paper')try{this.syncHolds();}catch{}
     if(deskDue)try{this.updateArmedWatch();}catch{}
     if(deskDue&&this.conditionalMonitoringActive()&&!this.firing){
       const scope=this.watchScope();const data=this.watchData();const formula=require('./formula.cjs');

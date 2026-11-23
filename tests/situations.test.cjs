@@ -10,11 +10,11 @@ const statusOf=(h,symbol)=>h.kr.orders().find(o=>o.symbol===symbol);
 const stop=h=>h.arm({symbol:'000660',side:'Sell',quantity:5,conditions:[{expr:'price("000660")',op:'<=',value:210000}],purpose:'stop_loss'});
 const entry=h=>h.arm({symbol:'035420',side:'Buy',quantity:1,conditions:[{expr:'price("035420")',op:'>=',value:190000}],purpose:'entry'});
 
-test('situation 1: a review\'s buy rests and a stop fires: on, the stop is sent; off (today), it is refused and the position waits unprotected',async()=>{
+test('situation 1: a review\'s buy rests and a stop fires: on, the stop is sent; off, it waits armed until the buy is done (1.5.73 refused and closed it)',async()=>{
   for(const on of [true,false]){const h=rig(on);h.decide({action:'Buy',symbol:'005930',quantity:10});await h.a.review('User request');assert.equal(statusOf(h,'005930').status,'Accepted');
     const s=await h.fire(stop(h).id);
     if(on){assert.equal(s.status,'submitted');assert.equal(statusOf(h,'000660').status,'Accepted');}
-    else{assert.equal(s.status,'rejected');assert.match(s.outcome,/RECONCILIATION_REQUIRED/);assert.equal(h.mock.book.KR.length,1,'nothing more reached KIS');}}
+    else{assert.equal(s.status,'armed');assert.equal(s.waiting,'another order in Korea is open');assert.equal(h.mock.book.KR.length,1,'nothing more reached KIS');}}
 });
 test('situation 2: a later review decides another stock while the earlier order rests: on, placed; off, refused as today',async()=>{
   for(const on of [true,false]){const h=rig(on);h.decide({action:'Buy',symbol:'005930',quantity:10});await h.a.review('User request');
@@ -24,9 +24,9 @@ test('situation 2: a later review decides another stock while the earlier order 
     assert.equal(r,null,'the review completes');if(on)assert.equal(o.status,'Accepted');else assert.notEqual(o?.status??'none','Accepted');
     assert.equal(statusOf(h,'005930').status,'Accepted','the first order is untouched');}
 });
-test('situation 3: two conditional orders fire within minutes: on, both sent; off, the second is refused',async()=>{
+test('situation 3: two conditional orders fire within minutes: on, both sent; off, the second waits armed (1.5.73 refused and closed it)',async()=>{
   for(const on of [true,false]){const h=rig(on);const a=await h.fire(stop(h).id),b=await h.fire(entry(h).id);
-    assert.equal(a.status,'submitted');assert.equal(b.status,on?'submitted':'rejected');if(!on)assert.match(b.outcome,/RECONCILIATION_REQUIRED/);}
+    assert.equal(a.status,'submitted');assert.equal(b.status,on?'submitted':'armed');if(!on)assert.equal(b.waiting,'another order in Korea is open');}
 });
 test('situation 4: your own order in KIS rests while the app trades: on, another stock is placed and yours of the same stock blocks it (D3); off, any open order at KIS refuses',async()=>{
   for(const on of [true,false]){const h=rig(on);h.mock.userOrder('KR',{symbol:'035420',side:'Buy',quantity:1,orderPrice:200000});

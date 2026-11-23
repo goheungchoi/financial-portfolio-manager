@@ -886,6 +886,24 @@ live quotes; the first one met fires. One fires at a time.
   still matches (question C).
 - **Stop everything** (`stopEverything`): stops auto trading as Stop does and pauses the watch while stopped, kept across
   a restart, until Start or until the setting is turned on again.
+- **Passing holds** (B-4 review): with one open order at a time, an armed order of a market with another app order open,
+  or an unclear one, waits armed (checked every 30 s from the engine's own records, with no KIS request), running or
+  stopped; Home counts it as waiting, not as sent. A stop loss held this way leaves its holding without a working stop.
+  Held is decided live (`stopHeldNow`: its conditions met on the watch's prices now and the rule holding it now); each
+  tick stamps when a hold began and, once it ends (the price recovered, the other order done), clears its words and
+  checks it again at once (`syncHolds`), so no line goes stale. A hold that resumes within 5 minutes of ending is the
+  same episode (a price hovering at the stop): its stamp, gate key and single Activity line are kept. While held it is listed with the unprotected holdings
+  (`unprotectedNow`, `held`, with its cause), Home says "<stock> has no working stop loss: its stop was hit and is
+  waiting (<cause>).", and the review context lists it as facts beside the unprotected holdings
+  (`agentDesk.conditionalOrders.heldStops`: the stock, the stop, the shares, when the hold began, the order holding it
+  and one `fact` sentence; no key when nothing is held, so no instruction text and no fingerprint change). The review
+  gate asks one review per held episode ("<stock>: stop loss hit and waiting"), not again while it lasts; it is not a
+  lost stop. A review's sale cannot double up with it: the shares a waiting sale takes are not sold again (the stop
+  ends "Not needed" or sends what is left), and a review's own order is held by the same rule. A plan stop held only
+  by its own purchase says "its purchase is still open" ("its purchase has not filled" while nothing has filled).
+- **Words** (B-4): an order sent or proposed while auto trading is stopped says so in Activity ("Sent while auto trading
+  was stopped." / "Proposed while auto trading was stopped.") and on the phone ("Stop for <stock> fired while auto trading
+  was stopped: Sell N sent."); Home, the Stop reply, Stop everything, the setting and the install refusal are in 1-ui.
 - **Every way auto trading stops without your Stop**, with the setting on: the daily loss limit with response "stop"
   (the watch goes on: Sells are sent as before; a Buy that opens or adds waits, "the daily loss limit is reached",
   checked again every 5 minutes while the limit applies, within its expiry, before any order book is read, with one
@@ -1125,6 +1143,7 @@ batch is not sent; the review fails), per `order-outcomes.cjs`. "Words" are from
 | Daily automatic-order cap | Opening orders at the cap | `automation.cjs:1178`, `:1513` | `maxAutoOrdersPerDay` | "Guardrail: the daily limit of N automatic orders is reached. Proposal awaits manual approval." |
 | App `autoSubmit` off / market automatic off | — | `automation.cjs:1174`, `:1194` | Start / the switches | "… automatic execution is off. Proposal awaits manual approval." |
 | Fired conditional without auto-submit | `conditionalAutoSubmit` off; while stopped, the switches record (§6.5) | `automation.cjs:1509-1513` | "Submit them automatically" | "Not executed: proposal … awaits your approval" |
+| Conditional order under one open order at a time | Another app order open in its market, or an unclear one (several open orders off); running or stopped | `oneOpenWait`, `fireConditional` | "Several open orders" | the order stays armed, "another order in <market> is open" / "an earlier order in <market> is unclear", checked again every 30 s, before any order book is read (a sale whose shares are all in an open sale is still closed as not needed); 1.5.73 closed it as refused |
 | Conditional Buy while stopped at the loss limit | Watched while stopped, response "stop", the limit reached in its market | `fireConditional` | loss limit + `lossAction` | the order stays armed: "the daily loss limit is reached" |
 | Loss guardrails (not proposed at all) | 5.3 | `automation.cjs:1140-1143` | loss limit + `lossAction` | "Guardrail: new buys are blocked / restricted…" |
 | Credit draft | Any credit decision | `automation.cjs:1146` | fixed | "Draft only: …" |

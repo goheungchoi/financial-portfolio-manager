@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('portfolio', {
   refreshMacro:()=>ipcRenderer.invoke('macro:refresh'),
   startAutoTrading:token=>ipcRenderer.invoke('runtime:start',token),
   stopAutoTrading:()=>ipcRenderer.invoke('runtime:stop'),
+  stopEverything:()=>ipcRenderer.invoke('runtime:stop-everything'),
+  setWatchWhileStopped:(on,phrase)=>ipcRenderer.invoke('runtime:watch-while-stopped',on,phrase),
   getRuntime: () => ipcRenderer.invoke('runtime:get'),
   configureRuntime: value => ipcRenderer.invoke('runtime:configure',value),
   reviewRuntime: () => ipcRenderer.invoke('runtime:review'),
