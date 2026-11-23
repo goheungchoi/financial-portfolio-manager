@@ -20,15 +20,18 @@ function onClaude(){const a=harness();a.completedClaudeDryRun=()=>record(RI.fing
 
 test('fix 2: the several-orders fingerprint counts as well as the single-order one; an older one does not',()=>{
   const a=harness();const use=r=>{a.completedClaudeDryRun=()=>r;return a.claudeTradingDryRun();};
-  assert.equal(RI.fingerprint(undefined,{orders:true}),'a5bc46e95c6a5a98');assert.equal(RI.fingerprint(),'56da3eb8fe72bacc');
-  assert.ok(use(record('a5bc46e95c6a5a98')),'the user\'s 11-10 20:41 record (review 2026-11-10 orders)');
-  assert.ok(use(record('56da3eb8fe72bacc')),'a single-order dry run');
+  assert.equal(RI.fingerprint(undefined,{orders:true}),'ecd1189f47a389f2');assert.equal(RI.fingerprint(),'bdfca4388d263737');
+  assert.ok(use(record('ecd1189f47a389f2')),'a several-orders dry run under today\'s text');
+  assert.ok(use(record('bdfca4388d263737')),'a single-order dry run');
+  // S4 ('review 2026-11-24'): reviews are offered run_screen in place of compute, so a dry run under 'review 2026-11-21'
+  // (its single and several-orders fingerprints) no longer counts: Start on Claude asks for a new one.
+  assert.equal(use(record('56da3eb8fe72bacc')),null,'a 2026-11-21 single-order dry run');assert.equal(use(record('a5bc46e95c6a5a98')),null,'a 2026-11-21 several-orders dry run');
   assert.equal(use(record('d50342a570a47586')),null,'an older fingerprint: a new dry run is needed');
   assert.equal(use(record(RI.fingerprint('proposed',{orders:true}))),null,'the proposed set does not count');
   assert.equal(use(null),null);});
 
 test('fix 2: the switch to Claude saves with a several-orders dry run on record; the advice uses the same check',()=>{
-  M.setClaudeTradingForTests(true);try{const a=harness();a.completedClaudeDryRun=()=>record('a5bc46e95c6a5a98');
+  M.setClaudeTradingForTests(true);try{const a=harness();a.completedClaudeDryRun=()=>record('ecd1189f47a389f2');
     a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});assert.equal(a.config.openaiModel,'claude-opus-5-5');
     a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'Start\'s save goes through');}finally{M.setClaudeTradingForTests(false);}
   // automation.cjs: the Review F1 advice is shown when claudeTradingDryRun() is null, so it follows fix 2.

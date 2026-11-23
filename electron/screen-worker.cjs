@@ -12,7 +12,8 @@ function handle(msg){
   const {HistoryStore}=require('./history-store.cjs');const {UsSizeOrder}=require('./us-size.cjs');const U=require('./screen-universe.cjs');const R=require('./screen-run.cjs');
   const env=msg.env??{};const d=open(env.dbPath);const now=Number.isFinite(env.now)?env.now:Date.now();
   const deps={db:d,store:new HistoryStore(d,{readOnly:true}),usSize:new UsSizeOrder(d,()=>now,{readOnly:true}),own:k=>Array.isArray(env.own?.[k])?env.own[k]:[],
-    settings:()=>env.settings??{perExchange:300,etfs:true},closedDays:()=>new Set(Array.isArray(env.closedDays)?env.closedDays:[]),clock:()=>now};
+    settings:()=>env.settings??{perExchange:300,etfs:true},closedDays:()=>new Set(Array.isArray(env.closedDays)?env.closedDays:[]),clock:()=>now,
+    ...(Array.isArray(env.allowed)?{allowed:new Set(env.allowed),fallback:s=>{const row=d.prepare("SELECT at,payload FROM research_cache WHERE symbol=? AND source='daily'").get(s);if(!row)return null;const v=JSON.parse(row.payload);return Array.isArray(v?.closes)?{closes:v.closes,at:Number(row.at)}:null;}}:{})};
   const c=U.screenContext(deps);
   if(msg.kind==='plan')return R.planStep(msg.text,c.ctx);
   return {...R.finalStep(msg.text,c.ctx,{quotes:msg.quotes,why:msg.why}),asOf:c.asOf,missing:c.missingList()};}

@@ -11,7 +11,7 @@ const guard=require('./guard.cjs').install();
 const fs=require('node:fs'),path=require('node:path');const {DatabaseSync}=require('node:sqlite');
 const STATEMENT='Provider schema acceptance and tool handling only: not a validation of accounting, valuation, settlement or strategy.';
 // Tool paths covered offline by tests/provider-test.test.cjs, whether or not the provider exercises them in this run.
-const OFFLINE=['recorded fixture served','recording cut off: unavailable','unrecorded request: unavailable','write tools not applied','compute unavailable (it would fetch daily history)','context detail read locally','retry through the meter','condensing through the meter','budget stop before sending','redirect and destination refused','provider rejection reported apart from local validation'];
+const OFFLINE=['recorded fixture served','recording cut off: unavailable','unrecorded request: unavailable','write tools not applied','compute and run_screen unavailable (they would read daily history)','context detail read locally','retry through the meter','condensing through the meter','budget stop before sending','redirect and destination refused','provider rejection reported apart from local validation'];
 const RETRYABLE=['AI_REQUEST_FAILED','AI_SERVER_ERROR','AI_TIMEOUT'];
 async function runTest({dir,send,key,model='gpt-6-sol',effort='medium',routineModel='gpt-6-luna',routineEffort='none',live,limits={requests:6,usd:0.5},mode}){
   const P=require('./paths.cjs'),S=require('./state.cjs'),F=require('./fixture.cjs');
@@ -36,7 +36,7 @@ async function runTest({dir,send,key,model='gpt-6-sol',effort='medium',routineMo
   const offered=reviewTools(shaped.context).map(t=>t.name);
   const evidence={get:async args=>tools.lookup('get_market_evidence',args)};
   const discovery={get_company_research:args=>tools.lookup('get_company_research',args),get_market_overview:args=>tools.lookup('get_market_overview',args??{}),screen_market:args=>tools.lookup('screen_market',args),search_securities:args=>tools.lookup('search_securities',args),update_watchlist:tools.inert('update_watchlist')};
-  const desk=shaped.context.agentDesk?Object.fromEntries(offered.filter(n=>['compute','set_review_trigger','save_note','save_assessment','set_conditional_order'].includes(n)).map(n=>[n,n==='compute'?async args=>tools.lookup('compute',args):tools.inert(n)])):null;
+  const desk=shaped.context.agentDesk?Object.fromEntries(offered.filter(n=>['compute','run_screen','set_review_trigger','save_note','save_assessment','set_conditional_order'].includes(n)).map(n=>[n,n==='compute'||n==='run_screen'?async args=>tools.lookup(n,args):tools.inert(n)])):null;
   const request=async options=>{options={...options,openaiModel:model,reasoningEffort:effort,validation};
     // A local stop is never retried, and is reported as itself, not as the client's request failure.
     try{return await ai.decide(shaped.context,options);}catch(error){const local=localStop();if(local)throw local;if(!RETRYABLE.includes(error?.message))throw error;log('System','Retry',error.message);

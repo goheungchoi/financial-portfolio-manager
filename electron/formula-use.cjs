@@ -7,16 +7,22 @@ const VERSION=1;
 function functionsOf(expr){try{const out=new Set();const walk=node=>{if(!node||typeof node!=='object')return;if(node.fn)out.add(node.fn);for(const v of [node.a,node.b,...(node.args??[])])walk(v);};walk(require('./formula.cjs').parse(expr).ast);return [...out].sort();}catch{return [];}}
 const add=(map,key,n=1)=>{map[key]=(map[key]??0)+n;};
 class FormulaUse{
-  constructor(){this.computeCalls=0;this.formulas=0;this.functions={};this.errors={};this.items=[];this.failed=false;}
+  constructor(){this.computeCalls=0;this.formulas=0;this.functions={};this.errors={};this.items=[];this.failed=false;this.screenCalls=0;this.scripts=[];}
   guard(fn){try{fn();}catch{this.failed=true;}}
   // One compute call: its parsed formulas and the results it returned.
   compute(parsed,results){this.guard(()=>{this.computeCalls++;for(const p of parsed??[]){this.formulas++;if(p.ast)for(const f of functionsOf(p.expr))add(this.functions,f);}
     for(const r of results??[])if(r?.error)add(this.errors,String(r.error).split(':')[0]);});}
+  // One run_screen call (S4): the script and what it returned, kept for the Journal (4 a review, the script cut to 2,000
+  // characters and its printed lines to 2,000 bytes; no values beyond what the review saw).
+  screen(script,facts){this.guard(()=>{this.screenCalls++;if(this.scripts.length>=4)return;const {keptScript}=require('./scout.cjs');let lines=[],size=0;
+    for(const l of Array.isArray(facts?.lines)?facts.lines:[]){const b=Buffer.byteLength(String(l));if(size+b>2000)break;lines.push(String(l));size+=b;}
+    const text=Array.from(keptScript(script??''));this.scripts.push({script:text.length>2000?text.slice(0,2000).join('')+'\n… cut':text.join(''),status:facts?.status??'error',words:facts?.stopped?.words??facts?.words??null,lines,
+      coverage:(facts?.coverage??[]).map(c=>({line:c.line,universe:c.universe,size:c.size,evaluated:c.evaluated,noHistory:c.noHistory,stale:c.stale,errors:c.errors,noLive:c.noLive??0})),live:facts?.live??null});});}
   // A trigger or conditional order this review saved or armed.
   item(kind,id,conditions){this.guard(()=>{this.items.push({kind,id:id??null,functions:[...new Set((conditions??[]).flatMap(c=>functionsOf(c.expr)))].sort()});});}
   // The summary saved on the review; the final decision's execution.cancelIf conditions are read here.
   summary(decision){let out=null;try{const cancelIf=(Array.isArray(decision?.execution?.cancelIf)?decision.execution.cancelIf:[]);const items=[...this.items];if(cancelIf.length)items.push({kind:'cancelIf',id:null,functions:[...new Set(cancelIf.flatMap(c=>functionsOf(c?.expr)))].sort()});
-    out={version:VERSION,computeCalls:this.computeCalls,formulas:this.formulas,functions:{...this.functions},errors:{...this.errors},items,...(this.failed?{incomplete:true}:{})};}catch{out=null;}return out;}
+    out={version:VERSION,computeCalls:this.computeCalls,formulas:this.formulas,functions:{...this.functions},errors:{...this.errors},items,...(this.screenCalls?{screenCalls:this.screenCalls,scripts:this.scripts}:{}),...(this.failed?{incomplete:true}:{})};}catch{out=null;}return out;}
 }
 // A stored review's formula use, or null when it was not recorded (reviews before T0): never read as zero.
 const recordedUse=review=>review?.formulaUse&&typeof review.formulaUse==='object'?review.formulaUse:null;

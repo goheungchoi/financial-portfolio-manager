@@ -1289,6 +1289,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   - Each list row: click selects the review (`aria-current="true"` on the selected one) (src/JournalView.tsx:52).
   - Link button "More" / "Less" on the explanation (aria-labels "Show the whole explanation" / "Show less of the explanation"); shown only when the explanation has more than three sentences; renderer-only state (src/JournalView.tsx:26, :31).
   - Disclosure "More" (`aria-label="More about this decision"`); its open state is draft `journal:detailMore` (src/JournalView.tsx:26, :34).
+  - Inside "More", when the review ran scripts (S4): a collapsed "Scripts (`<n>`)" (`aria-label="Scripts of this review"`), n = every run_screen call; each kept script (the first 4) as in the Scout panel's Screens list (`ScreenList`, src/ScoutScreens.tsx): its first line, the script, what it printed, its stop or words, coverage and live reads; "The first `<k>` are kept." when more ran. From `review.formulaUse.scripts`.
   - Link button "Review lessons →": opens the Lessons sub-tab; shown only when the review has lessons (src/JournalView.tsx:37, :54).
   - Button "Open conversation": sets draft `console:focus` to the review id and navigates to 'AI console'; shown only when `onNavigate` is given (src/JournalView.tsx:38). The Console takes that value once and opens the run with that id (src/AiConsole.tsx:61, :64).
 - **Calls and channels**: none directly (state from `runtime:get` + `runtime:history`, see Shared loader).

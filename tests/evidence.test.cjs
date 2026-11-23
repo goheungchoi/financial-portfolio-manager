@@ -30,7 +30,7 @@ test('AI client returns validated read-only tool requests and replays function o
   const context={universe:[{symbol:'005930'}]};let request;
   const client=new AiClient('fake_key_12345',async(_url,options)=>{request=JSON.parse(options.body);return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'function_call',name:'get_market_evidence',call_id:'c1',arguments:JSON.stringify({symbol:'005930',dataset:'company'})}],usage:{input_tokens:10,output_tokens:5}})};});
   const result=await client.decide(context,{research:true});assert.equal(result.toolCalls[0].args.dataset,'company');assert.equal(request.tools.length,3);assert.equal(request.parallel_tool_calls,true,'up to four requests per round');assert.equal(request.store,false);assert.ok(!JSON.stringify(result).includes('fake_key'));
-  await assert.rejects(client.decide(context,{research:true,final:true}),/INVALID_AI_RESPONSE/);
+  assert.equal((await client.decide(context,{research:true,final:true})).finalToolUse,true,'S4: returned flagged, answered by the loop');
 });
 test('research rounds are bounded, cached, logged and accumulate token usage',async()=>{
   let requests=0,reads=0;const events=[];const context={universe:[{symbol:'005930'}]};

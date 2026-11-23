@@ -418,8 +418,9 @@ class Automation {
         if(!shapedDry.fits){const failure=require('./review-context.cjs').sizeFailure(shapedDry,{stage:'dry-run first request'});this.saveSizeFailure(id,failure,{report:size,steps:shapedDry.steps,input:providerContext});throw failed(failure);}
         const noop=name=>async()=>({status:'not-applied',reason:`Dry run: ${name} was not applied.`});
         const read=this.discovery?{...(this.discovery.research?{get_company_research:args=>this.discovery.research(args)}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:noop('update_watchlist')}:null;
-        // Every desk tool is a no-op except compute, which only reads prices.
-        const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'?real.compute:noop(k)]));})():null;
+        // Every desk tool is a no-op except run_screen (and the older compute), which only read prices; in a dry run live()
+        // uses the review's own quotes and reads nothing from KIS.
+        const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{},null,{dryRun:true});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'||k==='run_screen'?real[k]:noop(k)]));})():null;
         const model=override??this.agentModel('trading');const models=require('./ai-models.cjs');let calls=0;const callIds=[];
         const request=async options=>{options={...options,...model,validation:dryValidation,...(dryOrders>1?{moreOrders:dryOrders-1}:{})};
           requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options,model)});
@@ -616,7 +617,9 @@ class Automation {
           ...((d.action==='Buy'||d.action==='Sell')&&!d.withheld?{sent:Boolean(r.orderId)&&!['Rejected','Ready','Uncertain','Submitting'].includes(r.orderOutcome?.status),...(/^(Not sent|Rejected by KIS):/.test(r.executionNote??'')?{notPlaced:String(r.executionNote).slice(0,240)}:{})}:{}),verdicts:Object.fromEntries((d.planVerdicts??[]).map(v=>[v.symbol,v.verdict])),explanation:String(d.explanation??'').slice(0,400),
           // M-6 part 3: the previous review's further orders, and whether each was sent (only when it had them).
           ...(Array.isArray(r.orders)&&r.orders.length?{moreOrders:r.orders.map(o=>({action:o.action,symbol:o.symbol,quantity:o.quantity,sent:Boolean(o.orderId)&&!['Rejected','Uncertain','Submitting'].includes(o.orderOutcome?.status)}))}:{})};}}
-    return {context,emergency,usValue,execution,lessonIds};
+    // The review's own stocks join the nightly screening set (screen-universe own list "review").
+     try{this.lastReviewUniverse=(context.universe??[]).map(r=>r.symbol).filter(s=>typeof s==='string');}catch{}
+     return {context,emergency,usValue,execution,lessonIds};
   }
   // Repeated format failures (1.5.48 audit, A5): after the second in a row, automatic reviews wait 15 minutes, doubling
   // with each further failure up to 6 hours, kept in the database so a restart does not reset it. Your own review
@@ -1457,6 +1460,35 @@ class Automation {
   // targets keep theirs.
   priceTargets(plan,now=Date.now()){const data=this.formulaData();return {...plan,targets:plan.targets.map(t=>{if(t.carriedFrom)return t;const p=data.price(t.symbol);return p>0?{...t,priceWhenSet:p,priceWhenSetAt:now}:t;})};}
   async warmSeries(symbols){for(const sym of symbols.slice(0,6))try{await this.series?.ensure(sym);}catch{}}
+  // A review's scripts (S4): one time budget for all of them (warm-up included; REVIEW_SCRIPTS.ms), after which a script
+  // is answered "this review spent its script time"; a script cut off by it is cancelled (no further pass or live read).
+  // A complete, successful answer of a script without live() is reused for the same text (nothing stopped or in error,
+  // no stock without history, stale, not computable or without a live price, and no daily read still running).
+  // Before a script that reads daily history, the daily history of the review stocks it names is read when the nightly
+  // store is not current for them: every stock named by its code (codes in upper case), at most warmNamed a script; for a
+  // universe all the review's stocks, at most warmMax a review; each stock once, within warmMs a script. A dry run reads
+  // nothing.
+  reviewScreens({screenRun,allowed,dryRun=false,clock=Date.now,budget=Automation.REVIEW_SCRIPTS}){const B=budget;const FS=require('./formula-script.cjs'),SR=require('./screen-run.cjs');
+    const mine=new Set(allowed);const warmed=new Set();const cache=new Map();let spent=0,byUniverse=0,reading=0;
+    const timeUp=()=>Object.assign(new Error('REVIEW_SCRIPT_TIME'),{code:'REVIEW_SCRIPT_TIME',words:`this review spent its script time (${Math.round(B.ms/1000)} seconds)`});
+    const within=(p,ms,onTimeout=null)=>new Promise((resolve,reject)=>{const t=setTimeout(()=>{try{onTimeout?.();}catch{}reject(timeUp());},Math.max(0,ms));t.unref?.();p.then(v=>{clearTimeout(t);resolve(v);},e=>{clearTimeout(t);reject(e);});});
+    const current=s=>{try{const H=require('./history-store.cjs');const sc=this.screens;if(!sc?.store)return false;const day=H.asOfDay(H.marketOf(s),clock(),sc.closedDays?.()??new Set());const n=sc.store.progress(s)?.newest;return Boolean(day&&n&&n>=day);}catch{return false;}};
+    const codes=text=>[...new Set([...text.matchAll(/"(\d{6}|(?:NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})"/gi)].map(m=>m[1].toUpperCase()))].filter(s=>mine.has(s));
+    const needs=text=>{if(dryRun||!B.history.test(text))return {named:[],all:[]};const fresh=s=>!warmed.has(s)&&!current(s);
+      const named=codes(text).filter(fresh).slice(0,B.warmNamed);const all=/\buniverse\s*\(/i.test(text)?[...mine].filter(s=>fresh(s)&&!named.includes(s)).slice(0,Math.max(0,B.warmMax-byUniverse)):[];return {named,all};};
+    // A read that outlives its script's time goes on in the background (it cannot be cancelled); answers wait for it.
+    const ensure=s=>{reading++;return Promise.resolve().then(()=>this.series?.ensure(s)).finally(()=>{reading--;});};
+    const warm=async(symbols,until)=>{let done=true;for(const s of symbols){if(clock()>=until){done=false;break;}warmed.add(s);try{await within(ensure(s),until-clock());}catch{done=false;break;}}return done;};
+    const complete=r=>Boolean(r&&typeof r==='object'&&!r.stopped&&r.status!=='error'&&(Array.isArray(r.coverage)?r.coverage:[]).every(c=>!(c?.noHistory>0||c?.stale>0||c?.errors>0||c?.noLive>0)));
+    return async text=>{let key=null;try{if(!SR.usesLive(FS.parseScript(text)))key=text;}catch{key=text;}
+      if(key!==null&&cache.has(key))return cache.get(key);
+      if(spent>=B.ms)throw timeUp();const start=clock();
+      try{const {named,all}=needs(text);byUniverse+=all.length;let warmDone=true;
+        if(named.length||all.length)warmDone=await warm([...named,...all],start+Math.min(B.warmMs,B.ms-spent));
+        const left=B.ms-spent-(clock()-start);if(left<=0)throw timeUp();let cut=false;
+        const r=await within(screenRun(text,{cancelled:()=>cut}),left,()=>{cut=true;});
+        if(key!==null&&warmDone&&reading===0&&complete(r))cache.set(key,r);return r;}
+      finally{spent+=clock()-start;}};}
   // The desk tools a review may call; every write checks that the account and settings are unchanged.
   // Why a Buy of a leveraged or inverse product may not open now (fact check X2), or null: the AI may consider these
   // products only with the switch on and broker eligibility confirmed. Sells (closing or protecting) are never refused here.
@@ -1466,10 +1498,19 @@ class Automation {
     let access;try{access=require('./exposure.cjs').leveragedAccess(ex.policy(engine.identity()).leveragedEtps);}catch{return `A ${product.kind} product (${product.factor}x daily): could not read the leveraged-product setting; nothing was sent.`;}
     return access.allowed?null:`A ${product.kind} product (${product.factor}x daily) is not permitted for this account: ${access.reason}`;}
   // use: the review's FormulaUse counter (T0), or null; it only counts and never changes a reply.
-  deskActions(scope,context,reviewId,guard,use=null){
+  deskActions(scope,context,reviewId,guard,use=null,{dryRun=false}={}){
     const count=fn=>{try{if(use)fn();}catch{}};
     const universe=(context.universe??[]).map(r=>r.symbol);const formula=require('./formula.cjs');
+    // run_screen (S4): the script tool over this review's own stocks (its universe and the holdings of its own scope), in
+    // place of compute; one screen run per review (its live bound and wait budget), live() from the review's fresh quotes
+    // first. It never throws.
+    const held=Array.isArray(context.positions)?context.positions.filter(p=>!(Number(p?.quantity)<=0)).map(p=>p?.symbol):Object.entries(context.positions??{}).filter(([,p])=>!(Number(p?.quantity)<=0)).map(([s])=>s);
+    const allowedStocks=[...new Set([...universe,...held].filter(s=>typeof s==='string'))];
+    let screenRun=null;try{screenRun=typeof this.openScreenRun==='function'?this.openScreenRun({guard,review:{allowed:allowedStocks,quotes:context.quotes??[],dryRun}}):null;}catch{screenRun=null;}
+    const runScreen=screenRun?this.reviewScreens({screenRun,allowed:allowedStocks,dryRun}):null;
+    const screenTool=require('./scout.cjs').screenTool({screen:runScreen,guard,onRecord:(script,facts)=>count(()=>use.screen(script,facts)),noRoomWords:'the script was not run: this review has no room left for another screen result; decide with what you have'});
     return {
+      run_screen:(args,options)=>screenTool(args,options),
       compute:async args=>{
         const list=Array.isArray(args?.formulas)?args.formulas.slice(0,5):[];if(!list.length)return {status:'rejected',reason:'Give 1 to 5 formulas.'};
         const parsed=list.map(f=>{try{return {name:String(f.name??'').slice(0,40)||'value',expr:f.expr,...formula.parse(f.expr)};}catch(e){return {name:f.name,expr:f.expr,error:e.code+(e.detail?`: ${e.detail}`:'')};}});
@@ -2165,4 +2206,7 @@ function opportunityNote(accounts,usTradable){
   const manualOnly=accounts.filter(a=>a.status!=='unavailable'&&a.automaticExecutionEnabled===false).map(a=>a.market==='US'?'U.S.':'Korean');
   return (usTradable?'Both Korean and U.S. listings can be bought; compare them on the same footing. A U.S. buy is also counted against Korean won cash (wonRule on the U.S. account).':'Only Korean listings can be bought now. Korean-listed ETFs give exposure to foreign indexes (S&P 500, Nasdaq, China, Japan), commodities (gold, oil), bonds and the dollar.')
     +(manualOnly.length?` Automatic orders are off for the ${manualOnly.join(' and ')} account${manualOnly.length>1?'s':''} (automaticExecutionEnabled): a buy there is proposed to the user, not sent.`:'');}
+// S4: a review's script budget (all its scripts, warm-up included), the daily-history warm-up's bounds, and the functions
+// that read daily history.
+Automation.REVIEW_SCRIPTS=Object.freeze({ms:60000,warmMs:10000,warmMax:24,warmNamed:6,history:/\b(close|change|ret|sma|ema|std|high|low|rsi|zscore|ratio_z|corr|avgvalue|atr|adx|macd|cci|stochrsi|ultimate|at)\s*\(/});
 module.exports={loggableContext,dryRunSummary,dryRunMeasurement,answerRule,Automation,DEFAULTS,opportunityNote};

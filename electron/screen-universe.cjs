@@ -11,10 +11,10 @@
 // - The nightly set: your holdings, plan targets, watchlist and allowlists, then symbols scripts asked for, then the
 //   largest N stocks of each exchange (N the setting), taken in turn by rank so a part-filled night covers every
 //   exchange, and the largest N Korean ETFs when the ETF switch is on.
-const {asOfDay,marketOf,KEEP}=require('./history-store.cjs');
+const {asOfDay,marketOf,KEEP,closeAt,MARGIN_MS}=require('./history-store.cjs');
 const SYMBOL=/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/;
 const KR_MARKETS=['KOSPI','KOSDAQ'],US_EXCHANGES=['NASD','NYSE','AMEX'];
-const OWN=['holdings','watchlist','plan','allowlist'];
+const OWN=['holdings','watchlist','plan','allowlist','review'];
 const MAX=400,SIZE_OLD_DAYS=7;
 const valid=list=>[...new Set((list??[]).filter(s=>typeof s==='string'&&SYMBOL.test(s)))];
 // deps: {db (the security master's), store (HistoryStore), usSize (UsSizeOrder), own(kind) → symbols, settings() →
@@ -30,23 +30,41 @@ function nightlySet(deps){const {perExchange,etfs}=deps.settings();const n=Math.
 // symbols a script named with no history (the next night reads them, at most 100).
 function screenContext(deps){const now=deps.clock();const closed=deps.closedDays?.()??new Set();
   const asOf={KR:asOfDay('KR',now,closed),US:asOfDay('US',now,closed)};const missing=new Set();const rowsOf=new Map();
-  const rows=s=>{if(rowsOf.has(s))return rowsOf.get(s);const day=asOf[marketOf(s)];const r=day?deps.store.closes(s).filter(x=>x.date<=day):[];if(!r.length)missing.add(s);rowsOf.set(s,r);return r;};
+  // A review (deps.allowed): for its own stocks whose stored history is missing or behind the market's as-of day, the
+  // review's own daily history (deps.fallback(s) → {closes, at}, the rows compute uses), cut to completed closes up to that day, is used
+  // when it is newer than the store's; the fresher of the two is read. Either is stale when it ends before the as-of day.
+  const fallbackSet=new Set();
+  const rows=s=>{if(rowsOf.has(s))return rowsOf.get(s);const day=asOf[marketOf(s)];let r=day?deps.store.closes(s).filter(x=>x.date<=day):[];
+    if(day&&(!r.length||r.at(-1).date<day)&&typeof deps.fallback==='function'&&deps.allowed?.has(s)){let f=null;try{f=deps.fallback(s);}catch{f=null;}
+      // {closes, at}: the history and when it was read. A row dated on the as-of day counts only when it was read after
+      // that day's close plus the margin; read earlier (during the session, kept in the cache for hours) it may be a
+      // partial bar and is left out. A history without its read time never gives the as-of day's row.
+      const list=Array.isArray(f?.closes)?f.closes:[];let at=Number(f?.at);if(!Number.isFinite(at))at=null;let closed=false;try{closed=at!=null&&at>=closeAt(marketOf(s),day)+MARGIN_MS;}catch{closed=false;}
+      const kept=list.filter(x=>typeof x?.date==='string'&&(x.date<day||(x.date===day&&closed))&&typeof x.close==='number'&&Number.isFinite(x.close)&&x.close>0);
+      if(kept.length&&(!r.length||kept.at(-1).date>r.at(-1).date)){r=kept;fallbackSet.add(s);}}
+    if(!r.length)missing.add(s);rowsOf.set(s,r);return r;};
   // The closes up to and including the as-of day; the latest price inside ret, change, zscore and ratio_z is that day's close.
   const data={price:s=>rows(s).at(-1)?.close??null,closes:s=>{const r=rows(s);return r.length?r:null;},previousClose:s=>rows(s).at(-2)?.close??null};
   const isStale=s=>{const r=rows(s);return Boolean(r.length&&r.at(-1).date<asOf[marketOf(s)]);};
+  // asOfFor(s): the day a stock's history really ends (a stale one is labelled with it, not the market's day).
+  const reviewHooks={asOfFor:s=>rows(s).at(-1)?.date??null,...(deps.allowed?{allowSymbol:s=>deps.allowed.has(s),isFallback:s=>{rows(s);return fallbackSet.has(s);}}:{})};
   const names=s=>{try{return deps.db.prepare('SELECT name FROM securities WHERE symbol=?').get(s)?.name??null;}catch{return null;}};
   const universe=spec=>universeFor(deps,spec,now);
   // Only codes the security master lists are asked for, so an unknown code never reaches the nightly reads.
   const finish=()=>recordMissing(deps,[...missing],now);
-  return {ctx:{data,isStale,names,universe,asOf},asOf,depth:symbols=>deps.store.depth(symbols),finish,missingList:()=>[...missing].slice(0,400),keep:KEEP};}
+  return {ctx:{data,isStale,names,universe,asOf,...reviewHooks},asOf,depth:symbols=>deps.store.depth(symbols),finish,missingList:()=>[...missing].slice(0,400),keep:KEEP};}
 // The symbols a script named with no history, recorded for the next night: only codes the security master lists and that
 // the nightly set does not already hold, at most 100.
 function recordMissing(deps,missing,now=deps.clock()){const outside=new Set(nightlySet(deps));const ask=(Array.isArray(missing)?missing:[]).filter(s=>typeof s==='string'&&SYMBOL.test(s)&&!outside.has(s)&&listed(deps.db,s)).slice(0,100);if(ask.length)deps.store.request(ask,now);return ask.length;}
 function universeFor(deps,spec,now){const n=Math.min(MAX,spec.top_cap??deps.settings().perExchange);const type=spec.type??'stock';
+  // A review screens its own stocks only: universe(own="review"), the own lists limited to them, and list(...).
+  // universe(own="review") takes market, type and top_cap like any own list (an unknown one refused; a cut noted).
+  if(deps.allowed&&spec.own==null)return {refused:'REVIEW_UNIVERSE_ONLY'};
   if(!['stock','etf','any'].includes(type))return {refused:'UNKNOWN_UNIVERSE'};
   // Your own lists, optionally by market and type; cut to top_cap (default the setting) with a note saying so.
   if(spec.own!=null){if(!OWN.includes(spec.own))return {refused:'UNKNOWN_UNIVERSE'};const m=spec.market;
-    if(m!=null&&!['KR','US',...KR_MARKETS,...US_EXCHANGES].includes(m))return {refused:'UNKNOWN_UNIVERSE'};let list=[];try{list=valid(deps.own(spec.own));}catch{}
+    if(m!=null&&!['KR','US',...KR_MARKETS,...US_EXCHANGES].includes(m))return {refused:'UNKNOWN_UNIVERSE'};let list=[];try{list=valid(spec.own==='review'&&deps.allowed?[...deps.allowed]:deps.own(spec.own));}catch{}
+    if(deps.allowed)list=list.filter(s=>deps.allowed.has(s));
     if(m)list=list.filter(s=>m==='KR'?marketOf(s)==='KR':m==='US'?marketOf(s)==='US':US_EXCHANGES.includes(m)?s.startsWith(m+':'):marketOf(s)==='KR'&&krMarket(deps.db,s)===m);
     if(spec.type&&type!=='any')list=list.filter(s=>typeOf(deps.db,s)===type);
     return {name:spec.own,symbols:list.slice(0,n),...(list.length>n?{note:`${n} of the ${list.length} in ${spec.own} (top_cap)`}:{})};}

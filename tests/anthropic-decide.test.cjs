@@ -100,8 +100,13 @@ test('through the research loop: five calls, four run, the fifth answered as not
 });
 test('protocol refusals name their rule; no order path is reached',async()=>{
   const ask=(calls,opts)=>client(transport(claudeReply({content:[thinking,...calls],stop_reason:'tool_use'}))).decide(FULL,{...OPTS,...opts});
-  for(const [calls,opts,rule] of [[[toolUse('a')],{research:true,final:true},/final round/],[[toolUse('a')],{},/without research/],[[toolUse('a','place_order',{})],{research:true},/not offered/],[Array.from({length:13},(_,i)=>toolUse('t'+i)),{research:true},/ceiling of 12/],[[toolUse('a','get_context_detail',{section:'x'.repeat(2100)})],{research:true},/malformed or oversized/],[[toolUse('x'.repeat(201))],{research:true},/malformed or oversized/]])
+  for(const [calls,opts,rule] of [[[toolUse('a')],{},/without research/],[[toolUse('a','place_order',{})],{research:true},/not offered/],[Array.from({length:13},(_,i)=>toolUse('t'+i)),{research:true},/ceiling of 12/],[[toolUse('a','get_context_detail',{section:'x'.repeat(2100)})],{research:true},/malformed or oversized/],[[toolUse('x'.repeat(201))],{research:true},/malformed or oversized/]])
     await assert.rejects(ask(calls,opts),e=>e.message==='INVALID_AI_RESPONSE'&&rule.test(e.detail.rule)&&Number.isInteger(e.detail.toolCount)&&e.usage?.outputTokens===400);
+  // S4: a tool request on a final request comes back flagged, not thrown; the review loop answers it once and a second one
+  // fails the review with the final-round rule (round ROUNDS+1).
+  const flagged=await ask([toolUse('a')],{research:true,final:true});assert.equal(flagged.finalToolUse,true);assert.equal(flagged.toolCalls.length,1);
+  const {researchReview,ROUNDS}=require('../electron/research-review.cjs');const c=client(transport(claudeReply({content:[thinking,toolUse('a')],stop_reason:'tool_use'})));
+  await assert.rejects(researchReview({context:FULL,evidence:{get:async()=>({status:'ok'})},log:()=>{},compact:async x=>x,detail:()=>({status:'complete',complete:true}),request:o=>c.decide(FULL,{...OPTS,...o})}),e=>e.message==='INVALID_AI_RESPONSE'&&/final round/.test(e.detail.rule)&&e.detail.round===ROUNDS+1);
 });
 test('stop reasons: max_tokens, refusal and pause_turn; not-JSON, oversized decision and oversized body',async()=>{
   await assert.rejects(client(transport(claudeReply({stop_reason:'max_tokens',content:[thinking]}))).decide(CTX,OPTS),e=>e.message==='AI_OUTPUT_LIMIT'&&e.usage.outputTokens===400);

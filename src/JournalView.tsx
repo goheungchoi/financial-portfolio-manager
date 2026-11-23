@@ -7,6 +7,7 @@ import {setDraft,useDraftState} from './useDraftState';
 import {AccountScope,accountName,type HistoryScope} from './AccountScope';
 import {AgentDesk} from './AgentDesk';
 import {ReplayPanel} from './ReplayPanel';
+import {ScreenList,type ScreenRecord} from './ScoutScreens';
 import type {DeskState} from './RuntimeSettings';
 import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill,ordersOf,batchCounts,batchAction,matchesAction} from './journalTabs';
 type Review=RuntimeState['reviews'][number];
@@ -18,6 +19,11 @@ const withheldOf=(r:Review)=>(r.decision as {withheld?:{symbol:string}}).withhel
 const tone=(r:Review)=>(batchAction(r as never)??r.decision.action).toLowerCase();
 const title=(r:Review)=>batchCounts(r as never)??(withheldOf(r)?`Buy withheld: incomplete plan (${withheldOf(r)!.symbol})`:r.decision.action==='Hold'?'No trade':`${r.decision.symbol}${r.decision.quantity>0?` ×${r.decision.quantity}`:''}`);
 const money=(value:number|null,currency:string)=>value==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2,signDisplay:'exceptZero'}).format(value);
+// The scripts a review ran with run_screen (S4), kept with the review (4 at most), collapsed under More; nothing when none ran.
+export function DecisionScripts({review}:{review:Review}){
+  const use=(review as {formulaUse?:{screenCalls?:number;scripts?:ScreenRecord[]}}).formulaUse;const scripts=Array.isArray(use?.scripts)?use!.scripts!:[];
+  if(!scripts.length)return null;const calls=use?.screenCalls??scripts.length;
+  return <details className="detail-block" aria-label="Scripts of this review"><summary>Scripts ({calls})</summary><ScreenList loaded={{failed:false,at:null,screens:scripts}}/>{calls>scripts.length&&<p className="muted">The first {scripts.length} are kept.</p>}</details>;}
 // The selected decision with what came of it: the order, its outcome and any lesson drawn from it.
 function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state:RuntimeState;onNavigate?(tab:string):void;onLessons():void}){
   const outcomes=(state.outcomes??[]).filter(o=>o.reviewId===review.id);
@@ -35,6 +41,7 @@ function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state
     {review.executionNote&&<div className="meta-line"><b>Execution</b><span>{review.executionNote}</span></div>}
     {outcomes.length>0&&<div className="detail-block"><div className="thread-label">Outcome</div>{outcomes.map(o=><div key={o.id} className="meta-line"><b>{o.side} {o.quantity}/{o.requested}</b><span>{o.side==='Sell'?`${money(o.gainAfterFees,o.currency)} after fees`:`Bought at ${money(o.averagePrice,o.currency).replace('+','')}`}{o.assessment?` · ${o.assessment.category}`:''}</span><time>{day(o.timestamp)}</time></div>)}</div>}
     {lessons.length>0&&<div className="detail-block"><div className="thread-label">Lessons</div>{lessons.map(l=><div key={l.id} className="meta-line"><b>{l.lifecycle?.status??(l.approved?'approved':'pending')}</b><span>{l.text}</span></div>)}<button className="link-button" onClick={onLessons}>Review lessons →</button></div>}
+    <DecisionScripts review={review}/>
     <div className="detail-actions">{onNavigate&&<button onClick={()=>{setDraft('console:focus',review.id);onNavigate('AI console');}}>Open conversation</button>}<small className="muted">Review {review.id.slice(0,8)}{review.proposalId?` · proposal ${review.proposalId.slice(0,8)}`:''}{review.orderId?` · order ${review.orderId.slice(0,8)}`:''}</small></div>
     </details>
   </article>;

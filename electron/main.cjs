@@ -456,7 +456,7 @@ app.whenReady().then(async () => {
   // Screening history (note 6, S2): the U.S. size order from Nasdaq's public screener and the nightly read-only KIS
   // reads of daily closes for the screening set. Public market data only.
   const screenStore=new (require('./history-store.cjs').HistoryStore)(store.db),usSize=new (require('./us-size.cjs').UsSizeOrder)(store.db);
-  const screenOwn=kind=>{if(kind==='holdings')return [...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].map(r=>r.symbol);if(kind==='watchlist')return automation.discovery.list().map(r=>r.symbol);
+  const screenOwn=kind=>{if(kind==='review')return automation.lastReviewUniverse??[];if(kind==='holdings')return [...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].map(r=>r.symbol);if(kind==='watchlist')return automation.discovery.list().map(r=>r.symbol);
     if(kind==='plan')return [...scoutTargets('KR'),...scoutTargets('US')];if(kind==='allowlist'){const out=[];try{out.push(...(live.policy()?.symbols??[]));}catch{}try{out.push(...(usLive.getState().policy?.symbols??[]));}catch{}return out;}return [];};
   automation.screens={db:store.db,store:screenStore,usSize,own:screenOwn,settings:()=>({perExchange:automation.config.screenStocksPerExchange,etfs:automation.config.screenEtfs}),
     closedDays:()=>new Set([...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])]),clock:Date.now};
@@ -489,7 +489,10 @@ app.whenReady().then(async () => {
   const screenEnv=()=>({dbPath:path.join(app.getPath('userData'),'portfolio.sqlite'),now:Date.now(),settings:automation.screens.settings(),closedDays:[...automation.screens.closedDays()],
     own:Object.fromEntries(require('./screen-universe.cjs').OWN.map(k=>{try{return [k,screenOwn(k)??[]];}catch{return [k,[]];}}))});
   // guard(): the scout run's account check; symbols are recorded for the next night only while the run's account is current.
-  automation.openScreenRun=({guard}={})=>require('./screen-run.cjs').openRun({readLive:automation.screenLive,exec:(kind,payload)=>screenEngine.exec(kind,payload,screenEnv()),
+  // A review's run (S4): its own stocks only (env.allowed), live() from its quotes that are fresh by the app's own rule
+  // (not stale, under 90 s, the session open), the rest through the reader; a dry run reads nothing from KIS.
+  const reviewReader=review=>require('./screen-run.cjs').reviewReader({...review,sessionOpen:(m,t)=>automation.sessionOpen(m,t),readLive:(s,o)=>automation.screenLive(s,o)});
+  automation.openScreenRun=({guard,review=null}={})=>require('./screen-run.cjs').openRun({readLive:review?reviewReader(review):automation.screenLive,exec:(kind,payload)=>screenEngine.exec(kind,payload,{...screenEnv(),...(review?{allowed:review.allowed}:{})}),
     finish:missing=>{guard?.();require('./screen-universe.cjs').recordMissing(automation.screens,missing);},orderSending,cancelled:()=>closing||Boolean(automation.disposed)});
   if(!process.env.PORTFOLIO_SMOKE_DATA){
     setInterval(()=>{try{screenRefresher.tick();}catch{}},1000).unref();

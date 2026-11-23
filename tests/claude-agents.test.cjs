@@ -33,7 +33,7 @@ test('the scout: tools with auto, then the plan with none on the final round; th
   const last=await c.scout({brief:'x'},{...OPTS,continuation:cont,final:true});assert.deepEqual(last.plan.targets,[]);
   const b2=t.sent[1].body;assert.deepEqual(b2.tool_choice,{type:'none'});assert.deepEqual(b2.messages.slice(0,b1.messages.length),b1.messages,'the earlier messages are sent unchanged');assert.deepEqual(b2.cache_control,{type:'ephemeral'});
   for(const k of ['any','tool'])assert.ok(!JSON.stringify([b1,b2]).includes(`"type":"${k}"`),'never a forced tool_choice');
-  await assert.rejects(new A.AnthropicClient(KEY,transport(reply([{type:'tool_use',id:'x',name:'screen_market',input:{}}],{stop_reason:'tool_use'}))).scout({},{...OPTS,final:true}),e=>e.message==='INVALID_AI_RESPONSE');
+  const stray=await new A.AnthropicClient(KEY,transport(reply([{type:'tool_use',id:'x',name:'screen_market',input:{}}],{stop_reason:'tool_use'}))).scout({},{...OPTS,final:true});assert.equal(stray.finalToolUse,true,'S4: a final-round tool request is returned flagged; the loop answers it');
 });
 
 test('stop reasons per agent: max_tokens, refusal with its category, a tool request from an agent without tools',async()=>{

@@ -10,9 +10,10 @@ test('step 1: today\'s texts, whatever parts apply',()=>{
   assert.deepEqual(ids,['two-markets','extended','leveraged','credit','discovery','scout-plan','scout-brief','interval','conditional','desk']);
   // Step 2: the 1.5.57 text (31,533 characters, b0afae298315cefb) without its complexity sentence (530 characters).
   // A ('review 2026-11-21'): the leveraged sentence changed; with the earlier text put back, the core is the step-2 text.
-  {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');let core=RI.REVIEW_CORE;for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
+  // S4 ('review 2026-11-24'): the compute sentence became the run_screen sentences; put back first, the same check holds.
+  {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');const S4=require('./fixtures/s4-text.cjs');assert.ok(S4.coreHasNewSentence());let core=RI.REVIEW_CORE.replace(S4.NEW_SENTENCE,S4.OLD_SENTENCE);for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
     assert.equal(core.length,31003);assert.equal(sha(core),'137131132eea8ab3');}
-  assert.equal(RI.REVIEW_CORE.length,31317);assert.equal(sha(RI.REVIEW_CORE),'e98aa2a71a73dd7a');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
+  assert.equal(RI.REVIEW_CORE.length,31563);assert.equal(sha(RI.REVIEW_CORE),'fe872efd61e04606');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
   // A: the scout core's leveraged sentence (a defined view held up to maxHoldingDays, or a hedge) and the single-stock
   // clause; with both put back, the earlier core is ed636750c54c3942.
   assert.equal(RI.SCOUT_CORE.length,9499);assert.equal(sha(RI.SCOUT_CORE),'7d1654b0af466ec4');

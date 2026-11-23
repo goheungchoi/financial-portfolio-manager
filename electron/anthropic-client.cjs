@@ -283,12 +283,12 @@ class AnthropicClient {
       const calls=blocks.filter(b=>b?.type==='tool_use');
       if(calls.length){
         const names=calls.map(c=>String(c.name).slice(0,40)),invalid=rule=>fail(rule,{toolCount:calls.length,tools:[...new Set(names)].slice(0,8),status:'tool_use'});
-        if(!tools)throw invalid(`a tool request from the ${kind}, which has no tools`);if(final)throw invalid('a tool request on the final round');
+        if(!tools)throw invalid(`a tool request from the ${kind}, which has no tools`);
         if(calls.length>12)throw invalid(`${calls.length} tool requests at once`);
         // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never treated as a failed run.
         if(calls.some(c=>typeof c.id!=='string'||c.id.length>200||c.name!=='run_screen'&&(!c.input||typeof c.input!=='object'||Array.isArray(c.input)||JSON.stringify(c.input).length>2000)))throw invalid('a malformed or oversized tool request');
         const offered=tools.map(t=>t.name);
-        return {...base,toolCalls:calls.map(c=>({name:offered.includes(c.name)?c.name:'unknown:'+String(c.name).slice(0,40),callId:c.id,args:c.name==='run_screen'?require('./scout.cjs').screenArgs(c.input):c.input})),continuation:[...input,{type:'anthropic_turn',content:blocks},...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};}
+        return {...base,...(final?{finalToolUse:true}:{}),toolCalls:calls.map(c=>({name:offered.includes(c.name)?c.name:'unknown:'+String(c.name).slice(0,40),callId:c.id,args:c.name==='run_screen'?require('./scout.cjs').screenArgs(c.input):c.input})),continuation:[...input,{type:'anthropic_turn',content:blocks},...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};}
       if(reply.stop_reason!=='end_turn')throw fail(`a response that stopped with ${String(reply.stop_reason??'no reason').replace(/[^a-z_ ]/g,'').slice(0,30)}`,{status:String(reply.stop_reason??'missing').slice(0,30)});
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');
       let parsed;if(textFormat)parsed=onlyObject(output,{empty:`no ${kind} answer`,invalid:`a ${kind} answer that is not one JSON object`});
@@ -383,12 +383,11 @@ class AnthropicClient {
         // tools only, bounded ids and arguments. Each refusal names its rule, the count and the tool names only.
         const names=calls.map(c=>String(c.name).slice(0,40)),invalid=rule=>fail(rule,{toolCount:calls.length,tools:[...new Set(names)].slice(0,8),status:String(reply.stop_reason??'missing').slice(0,30)});
         if(!options.research)throw invalid('a tool request in a review without research');
-        if(options.final)throw invalid('a tool request on the final round');
         if(calls.length>require('./research-review.cjs').HARD_MAX_CALLS)throw invalid(`more tool requests at once than the ceiling of ${require('./research-review.cjs').HARD_MAX_CALLS}`);
         const offered=C.offeredToolNames(context);if(calls.some(c=>!offered.includes(c.name)))throw invalid('a tool that was not offered');
-        if(calls.some(c=>typeof c.id!=='string'||c.id.length>200||!c.input||typeof c.input!=='object'||Array.isArray(c.input)||JSON.stringify(c.input).length>(c.name==='save_assessment'?6000:2000)))throw invalid('a malformed or oversized tool request');
+        if(calls.some(c=>typeof c.id!=='string'||c.id.length>200||c.name!=='run_screen'&&(!c.input||typeof c.input!=='object'||Array.isArray(c.input)||JSON.stringify(c.input).length>(c.name==='save_assessment'?6000:2000))))throw invalid('a malformed or oversized tool request');
         const turn={type:'anthropic_turn',content:blocks};
-        return {...base,toolCalls:calls.map(c=>({name:c.name,callId:c.id,args:c.input})),continuation:[...input,turn,...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};
+        return {...base,...(options.final?{finalToolUse:true}:{}),toolCalls:calls.map(c=>({name:c.name,callId:c.id,args:c.name==='run_screen'?require('./scout.cjs').screenArgs(c.input):c.input})),continuation:[...input,turn,...calls.map(c=>({type:'function_call',call_id:c.id,name:c.name,arguments:JSON.stringify(c.input),vendor:'anthropic'}))]};
       }
       if(reply.stop_reason!=='end_turn')throw fail(`a response that stopped with ${String(reply.stop_reason??'no reason').replace(/[^a-z_ ]/g,'').slice(0,30)}`,{status:String(reply.stop_reason??'missing').slice(0,30)});
       const output=blocks.filter(b=>b?.type==='text').map(b=>String(b.text??'')).join('');

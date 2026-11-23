@@ -46,4 +46,4 @@ test('the KIS order guard reads the same window; the table is dated, sourced and
   for(const [day,d] of Object.entries(K.SHIFTED_DAYS)){assert.match(day,/^\d{4}-\d{2}-\d{2}$/);assert.ok(d.source);assert.ok(fs.readFileSync(path.join(__dirname,'../docs/EXTERNAL-FACTS.md'),'utf8').includes('`'+d.source+'`'),d.source);}});
 
 test('the review instructions and their fingerprints are unchanged',()=>{
-  assert.equal(RI.fingerprint(),'56da3eb8fe72bacc');assert.equal(RI.fingerprint(undefined,{orders:true}),'a5bc46e95c6a5a98');});
+  assert.equal(RI.fingerprint(),'bdfca4388d263737');assert.equal(RI.fingerprint(undefined,{orders:true}),'ecd1189f47a389f2');});

@@ -54,7 +54,7 @@ const fmt=v=>{if(v===0)return '0';if(Number.isInteger(v)&&Math.abs(v)<1e15)retur
   return a>=1e-6&&a<1e8?String(r):r.toExponential(7).replace(/\.?0+e/,'e');};
 const CMP=['>','<','>=','<=','==','!='];
 // The app's fixed refusals for a universe (screen-universe.cjs), in this module's words.
-const REFUSALS=Object.freeze(Object.assign(Object.create(null),{SIZE_ORDER_UNAVAILABLE:'no size order is available for that market or type',UNKNOWN_UNIVERSE:'no such universe'}));
+const REFUSALS=Object.freeze(Object.assign(Object.create(null),{SIZE_ORDER_UNAVAILABLE:'no size order is available for that market or type',UNKNOWN_UNIVERSE:'no such universe',REVIEW_UNIVERSE_ONLY:'a review screens only its own stocks: use universe(own="review"), an own list or list(...) of its stocks'}));
 // Tokens: numbers, text, names, and the operators of the language.
 function tokenize(text,line){const out=[];let i=0;
   while(i<text.length){const c=text[i];
@@ -178,7 +178,8 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
     if(typeof v!=='string')throw new ScriptError('WRONG_ARGUMENTS','live needs a stock: S or a code in quotes',line);if(!SYMBOL.test(sym))throw new ScriptError('BAD_SYMBOL','in live',line);
     // at(live(S), k ≥ 1) is close(S, k-1): the live price as of the close k completed days ago is that day's close, so one
     // day back from now is the last completed close.
-    if(sc.k>0){closeMarkets.add(marketOf(sym));const p=view(sc.k-1).price(sym);if(p==null)throw soft('NO_PRICE',line,true);return p;}
+    if(a.t!=='stock')allowed(sym,line);
+    if(sc.k>0){readFrom(sym);const p=view(sc.k-1).price(sym);if(p==null)throw soft('NO_PRICE',line,true);return p;}
     if(a.t!=='stock'){const st=staleOf(sym);if(st===FAIL)notes.add(`freshness unknown: ${sym}`);}
     if(planning){try{planner.call(ctx,sym);}catch{}return U;}
     const q=liveOf(sym);if(!q){let why=null;try{const r=typeof ctx.liveWhy==='function'?ctx.liveWhy(sym):null;if(typeof r==='string'&&r)why=clean(r,60);}catch{}const reason=why??liveStopped;if(liveStopped)notes.add(liveStopped);
@@ -187,13 +188,21 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
   const truth=(v,line)=>{if(v===U)return U;if(typeof v!=='boolean')throw new ScriptError('NOT_A_CONDITION','use a comparison such as rsi(S,14) < 30',line);return v;};
   const comparable=(a,b,line)=>{const ok=t=>t==='number'||t==='string'||t==='boolean';if(!ok(typeof a)||typeof a!==typeof b)throw new ScriptError('NOT_COMPARABLE','== and != compare two numbers, two texts or two conditions',line);};
   const symbolOf=v=>typeof v==='string'?v.trim().toUpperCase():'';
+  // ctx.allowSymbol(s) (a review): a symbol outside the review's own stocks is refused wherever it enters the script.
+  let allowFn=null;try{if(typeof ctx.allowSymbol==='function')allowFn=ctx.allowSymbol;}catch{}
+  const allowed=(s,line)=>{if(!allowFn)return;let ok=false;try{ok=allowFn.call(ctx,s)===true;}catch{}if(!ok)throw new ScriptError('NOT_IN_UNIVERSE',`${s} is not one of this review's stocks`,line);};
+  // ctx.isFallback(s), ctx.asOfFor(s) (a review): a stock read from the review's own daily history, with its own as-of day.
+  const isFallback=s=>{try{return typeof ctx.isFallback==='function'&&ctx.isFallback(s)===true;}catch{return false;}};
+  const ownDay=s=>{try{const d=typeof ctx.asOfFor==='function'?ctx.asOfFor(s):null;return typeof d==='string'?d:null;}catch{return null;}};
+  // A stale stock's value is labelled with the day its history really ends (ctx.asOfFor), never the market's day.
+  const fallbackDays=new Set(),staleDays=new Set();const readFrom=sym=>{const d=ownDay(sym);if(isFallback(sym)&&d&&!(staleOf(sym)===true))fallbackDays.add(d);else if(staleOf(sym)===true&&d){if(isFallback(sym))fallbackDays.add(d);else staleDays.add(d);}else closeMarkets.add(marketOf(sym));};
   // A formula function: its arguments evaluated here, then a formula.cjs tree with numbers and symbols, evaluated there.
   const formula=(n,line,sc)=>{if(n.fn==='price')throw new ScriptError('PRICE_AMBIGUOUS','use live(S) for the live price or close(S,0) for the last completed close',line);
     const [kinds,required]=F.FUNCS[n.fn];const variadic=kinds.endsWith('*');let unknownArg=false;
     if(n.named.length||n.args.length<required||n.args.length>(variadic?BOUNDS.args:kinds.length))throw new ScriptError('WRONG_ARGUMENTS',formulaUsage(n.fn),line);
     let argErr=null;const args=n.args.map((a,i)=>{if(!variadic&&kinds[i]==='s'){const v=value(a,line,sc);const sym=symbolOf(v);
         if(typeof v!=='string')throw new ScriptError('WRONG_ARGUMENTS',`${n.fn} needs a stock: S or a code in quotes`,line);if(!SYMBOL.test(sym))throw new ScriptError('BAD_SYMBOL',`in ${n.fn}`,line);
-        if(a.t!=='stock'){const st=staleOf(sym);if(st===FAIL)notes.add(`freshness unknown: ${sym}`);else if(st)marks.add(sym);}closeMarkets.add(marketOf(sym));return {sym};}
+        if(a.t!=='stock'){allowed(sym,line);const st=staleOf(sym);if(st===FAIL)notes.add(`freshness unknown: ${sym}`);else if(st)marks.add(sym);}readFrom(sym);return {sym};}
       const r=side(a,line,sc,x=>number(x,line,`${n.fn} needs numbers`));if(r.err){argErr??=r.err;return {num:0};}const v=r.v;if(v===U){unknownArg=true;return {num:0};}const w=own(WINDOWS,n.fn)?WINDOWS[n.fn]:null;
       if(w&&w[0]===i&&!usesStock(a)&&!(Number.isInteger(v)&&v>=w[1]&&v<=w[2]))throw new ScriptError('BAD_WINDOW',`${n.fn} takes ${w[1]} to ${w[2]} days, a whole number`,line);
       return {num:v};});
@@ -206,7 +215,7 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
       if(NO_HISTORY.has(code))throw soft(code,line,true);throw soft(code==='DIVIDE_BY_ZERO'?code:code==='DATA_ERROR'?code:'NO_VALUE',line);}};
   const countUniverse=line=>{if(++universes>BOUNDS.universes)throw new ScriptError('TOO_MANY_UNIVERSES',`at most ${BOUNDS.universes}`,line);};
   const makeList=(items,line,sc)=>{countUniverse(line);if(items.length>BOUNDS.universeSize)throw new ScriptError('UNIVERSE_TOO_LARGE',`at most ${BOUNDS.universeSize} stocks`,line);
-    const symbols=[],seen=new Set();items.forEach((item,i)=>{const s=symbolOf(value(item,line,sc));if(!SYMBOL.test(s))throw new ScriptError('BAD_SYMBOL',`item ${i+1} of the list is not a stock code`,line);if(!seen.has(s)){seen.add(s);symbols.push(s);}});
+    const symbols=[],seen=new Set();items.forEach((item,i)=>{const s=symbolOf(value(item,line,sc));if(!SYMBOL.test(s))throw new ScriptError('BAD_SYMBOL',`item ${i+1} of the list is not a stock code`,line);allowed(s,line);if(!seen.has(s)){seen.add(s);symbols.push(s);}});
     return Object.freeze({universe:true,name:'list',symbols});};
   const fromApp=(spec,line)=>{countUniverse(line);let fn=null;try{fn=ctx.universe;}catch{}if(typeof fn!=='function')throw new ScriptError('BAD_UNIVERSE','no universes here',line);
     let u;try{u=fn.call(ctx,Object.freeze(spec));}catch{throw new ScriptError('BAD_UNIVERSE','the app could not list it',line);}
@@ -215,7 +224,7 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
       const note=u!==null&&typeof u==='object'?u.note:null;if(typeof note==='string'&&note.trim())notes.add(clean(note.trim(),80));
       const list=u!==null&&typeof u==='object'?u.symbols:null;if(!Array.isArray(list))throw new ScriptError('BAD_UNIVERSE','no such universe',line);
       if(list.length>BOUNDS.universeSize)throw new ScriptError('UNIVERSE_TOO_LARGE',`at most ${BOUNDS.universeSize} stocks`,line);
-      symbols=[...new Set(list)];if(!symbols.every(s=>typeof s==='string'&&SYMBOL.test(s)))throw new ScriptError('BAD_UNIVERSE','a listed code is not a stock code',line);
+      symbols=[...new Set(list)];if(!symbols.every(s=>typeof s==='string'&&SYMBOL.test(s)))throw new ScriptError('BAD_UNIVERSE','a listed code is not a stock code',line);for(const s of symbols)allowed(s,line);
       name=typeof u.name==='string'&&u.name.trim()?clean(u.name.trim(),BOUNDS.name):'universe';}
     catch(error){if(error instanceof ScriptError)throw error;throw new ScriptError('BAD_UNIVERSE','the app could not list it',line);}
     return Object.freeze({universe:true,name,symbols:Object.freeze(symbols)});};
@@ -235,10 +244,10 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
   // cannot be computed are counted, never given a value; each stock lands in exactly one count.
   const screen=(u,expr,line,check)=>{if(!usesStock(expr))throw new ScriptError('NO_S_IN_EXPRESSION','the expression must use S, or every stock gets the same value',line);
     if(coverage.length>=BOUNDS.screens)throw new ScriptError('TOO_MANY_SCREENS',`at most ${BOUNDS.screens}`,line);
-    const c={line,universe:u.name,size:u.symbols.length,evaluated:0,noHistory:0,stale:0,errors:0,noLive:0},vals=[];const liveReasons=new Set();
+    const c={line,universe:u.name,size:u.symbols.length,evaluated:0,noHistory:0,stale:0,errors:0,noLive:0,fallback:0},vals=[];const liveReasons=new Set();
     for(const symbol of u.symbols){tick(line);const st=staleOf(symbol);if(st===FAIL){c.errors++;continue;}if(st){c.stale++;continue;}
       let v;try{v=value(expr,line,{k:0,stock:symbol});}catch(error){if(error instanceof ScriptError&&error.soft){if(error.noLive){c.noLive++;if(error.detail)liveReasons.add(error.detail);continue;}else if(error.noHistory)c.noHistory++;else c.errors++;continue;}throw error;}
-      check(v);vals.push({symbol,v});c.evaluated++;}
+      check(v);vals.push({symbol,v});c.evaluated++;if(isFallback(symbol))c.fallback++;}
     if(c.noLive&&c.evaluated){const why=[...liveReasons].filter(r=>r!==liveStopped);notes.add(`${c.noLive} no live price${why.length?`: ${why.slice(0,2).join(', ')}`:''}`);}
     addOutput(bytes(JSON.stringify(c))+1,line);coverage.push(Object.freeze(c));vals.coverage=c;return vals;};
   // When no stock of a screen was evaluated the printed value says so, with the reasons, so a script mistake or an
@@ -266,7 +275,7 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
         const vals=screen(u,n.args[1],line,v=>{if(v!==U&&typeof v!=='number')throw new ScriptError('NOT_A_NUMBER','the expression to rank must give a number',line);});
         // An unknown value or n (the first pass only): every stock is a candidate, so the ranking keeps them all.
         const unknown=wantV===U||vals.some(x=>x.v===U);if(!unknown)vals.sort((a,b)=>dir==='highest'?b.v-a.v:a.v-b.v);
-        return Object.freeze({ranked:true,name:short(`${fn} of ${u.name}`),coverage:vals.coverage,rows:(unknown?vals:vals.slice(0,want)).map(x=>{const q=liveCache.get(x.symbol);return Object.freeze({symbol:x.symbol,name:nameOf(x.symbol),value:x.v,...(q?{live:q.price,liveAt:q.readAt,closed:q.closed,us:marketOf(x.symbol)==='US'}:{price:livePrice(x.symbol),asOf:asOfOf(x.symbol)})});})});}
+        return Object.freeze({ranked:true,name:short(`${fn} of ${u.name}`),coverage:vals.coverage,rows:(unknown?vals:vals.slice(0,want)).map(x=>{const q=liveCache.get(x.symbol);return Object.freeze({symbol:x.symbol,name:nameOf(x.symbol),value:x.v,...(q?{live:q.price,liveAt:q.readAt,closed:q.closed,us:marketOf(x.symbol)==='US'}:{price:livePrice(x.symbol),asOf:isFallback(x.symbol)?`${ownDay(x.symbol)??'—'}, review history`:asOfOf(x.symbol)})});})});}
       case 'filter':{sig(n,line,2,2);const u=asUniverse(value(n.args[0],line,sc),line);const vals=screen(u,n.args[1],line,v=>truth(v,line));
         return Object.freeze({universe:true,name:short(`filter of ${u.name}`),coverage:vals.coverage,symbols:vals.filter(x=>x.v===true||x.v===U).map(x=>x.symbol)});}
       case 'count':{sig(n,line,1,2);const u=asUniverse(value(n.args[0],line,sc),line);if(n.args.length===1)return u.symbols.length;
@@ -296,7 +305,7 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
     switch(n.t){
       case 'num':case 'str':return n.v;
       case 'stock':if(!sc.stock)throw new ScriptError('NO_STOCK',null,line);return sc.stock;
-      case 'name':{if(!vars.has(n.v))throw new ScriptError('UNKNOWN_NAME',n.v,line);const m=varMarks.get(n.v);if(m)for(const s of m)marks.add(s);const o=varNotes.get(n.v);if(o)for(const s of o)notes.add(s);const l=varLive.get(n.v);if(l){for(const m of l.markets)closeMarkets.add(m);liveTimes.push(...l.times);}return vars.get(n.v);}
+      case 'name':{if(!vars.has(n.v))throw new ScriptError('UNKNOWN_NAME',n.v,line);const m=varMarks.get(n.v);if(m)for(const s of m)marks.add(s);const o=varNotes.get(n.v);if(o)for(const s of o)notes.add(s);const l=varLive.get(n.v);if(l){for(const d of l.fallback??[])fallbackDays.add(d);for(const d of l.stale??[])staleDays.add(d);for(const m of l.markets)closeMarkets.add(m);liveTimes.push(...l.times);}return vars.get(n.v);}
       case 'list':if(sc.stock||sc.k)throw new ScriptError('NESTED_UNIVERSE','a list cannot be used inside a per-stock expression or at()',line);return makeList(n.items,line,sc);
       case 'call':return call(n,line,sc);
       case 'op':return op(n,line,sc);}
@@ -320,14 +329,16 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
     if(liveTimes.length){const lo=times.length?clockOf(Math.min(...times)):null,hi=times.length?clockOf(Math.max(...times)):null;const span=lo?(lo===hi?lo:`${lo}–${hi}`)+' KST':'time unknown';
       const closed=[...new Set(liveTimes.filter(x=>x.closed).map(x=>x.market))];const us=liveTimes.some(x=>x.market==='US');
       mark+=` (live: read ${span}${closed.length?`; ${closed.join(' and ')} market closed, last price`:''}${us?'; U.S. unchecked':''})`;}
+    if(fallbackDays.size)mark+=` (as of close ${[...fallbackDays].sort().join(', ')}, from the review's daily history)`;
+    if(staleDays.size)mark+=` (as of close ${[...staleDays].sort().join(', ')}, older than the market's last close)`;
     const days=[...closeMarkets].map(m=>[m,asOf[m]]).filter(([,d])=>d);if(days.length)mark+=days.length===1?` (as of close ${days[0][1]})`:` (as of close ${days.map(([m,d])=>`${m} ${d}`).join(', ')})`;
     return mark;};
   const SUFFIX=200;// bytes kept for the marks and notes of a line
   try{const lines=splitScript(text);
-    for(let i=0;i<lines.length;i++){current=i+1;checkLine(lines[i],current);const st=parseLine(lines[i],current);if(!st)continue;marks.clear();notes.clear();closeMarkets.clear();liveTimes.length=0;
-      if(st.assign){const v=value(st.expr,current,TOP);vars.set(st.assign,v);varMarks.set(st.assign,new Set(marks));varNotes.set(st.assign,new Set(notes));varLive.set(st.assign,{markets:new Set(closeMarkets),times:[...liveTimes]});continue;}
+    for(let i=0;i<lines.length;i++){current=i+1;checkLine(lines[i],current);const st=parseLine(lines[i],current);if(!st)continue;marks.clear();notes.clear();closeMarkets.clear();liveTimes.length=0;fallbackDays.clear();staleDays.clear();
+      if(st.assign){const v=value(st.expr,current,TOP);vars.set(st.assign,v);varMarks.set(st.assign,new Set(marks));varNotes.set(st.assign,new Set(notes));varLive.set(st.assign,{markets:new Set(closeMarkets),times:[...liveTimes],fallback:[...fallbackDays],stale:[...staleDays]});continue;}
       let line=st.out==='log'?'log: ':'';
-      st.expr.args.forEach((a,j)=>{closeMarkets.clear();liveTimes.length=0;const v=value(a,current,TOP);line+=(j?' ':'')+show(v,current,BOUNDS.outputBytes-used-bytes(line)-SUFFIX)+sourceMark();});
+      st.expr.args.forEach((a,j)=>{closeMarkets.clear();liveTimes.length=0;fallbackDays.clear();staleDays.clear();const v=value(a,current,TOP);line+=(j?' ':'')+show(v,current,BOUNDS.outputBytes-used-bytes(line)-SUFFIX)+sourceMark();});
       if(marks.size){const stale=[...marks];line+=` (stale data: ${stale.slice(0,3).join(', ')}${stale.length>3?` and ${stale.length-3} more`:''})`;}
       const said=[...notes];if(said.length)line+=said.slice(0,3).map(s=>` (${clean(s,60)})`).join('')+(said.length>3?` (and ${said.length-3} more notes)`:'');
       addOutput(bytes(line)+1,current);out.push(line);}
@@ -336,7 +347,7 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
 const WORDS=Object.freeze(Object.assign(Object.create(null),{EMPTY_SCRIPT:'the script is empty',SCRIPT_TOO_LONG:'the script is too long',TOO_MANY_LINES:'too many lines',LINE_TOO_LONG:'the line is too long',
   SYNTAX_ERROR:'this line cannot be read',NOT_A_STATEMENT:'not a statement',RESERVED_NAME:'that name is a function, S or a reserved word',UNKNOWN_NAME:'no value has that name yet',
   UNKNOWN_FUNCTION:'no such function',NOT_HERE:'print and log are lines of their own',WRONG_ARGUMENTS:'wrong arguments',NO_STOCK:'S is used outside rank, top, bottom, filter or count',
-  NO_S_IN_EXPRESSION:'the per-stock expression does not use S',NESTED_UNIVERSE:'a universe function inside a per-stock expression or at()',NOT_A_NUMBER:'not a number',NOT_A_CONDITION:'not a condition',PRICE_AMBIGUOUS:'price() is not used in scripts',NO_LIVE:'no live price',
+  NO_S_IN_EXPRESSION:'the per-stock expression does not use S',NESTED_UNIVERSE:'a universe function inside a per-stock expression or at()',NOT_A_NUMBER:'not a number',NOT_A_CONDITION:'not a condition',PRICE_AMBIGUOUS:'price() is not used in scripts',NOT_IN_UNIVERSE:'not one of this review\'s stocks',NO_LIVE:'no live price',
   NOT_COMPARABLE:'these values cannot be compared',NOT_FINITE:'the result is not a finite number',NO_VALUE:'the function has no value here',DIVIDE_BY_ZERO:'divided by zero',DATA_ERROR:'the data for a stock could not be read',
   BAD_OFFSET:'the offset is out of range',BAD_N:'the count is out of range',BAD_SYMBOL:'not a stock code',NOT_A_UNIVERSE:'not a universe',BAD_UNIVERSE:'the universe cannot be listed',
   UNIVERSE_TOO_LARGE:'the universe is too large',TOO_MANY_UNIVERSES:'too many universes',TOO_MANY_SCREENS:'too many screens',TOO_MANY_EVALUATIONS:'too many evaluations',TOO_SLOW:'the script ran too long',
@@ -349,7 +360,7 @@ const HELP='Screening scripts: up to 40 lines (300 characters each, 4,000 in all
   +'Expressions: numbers, "text", + - * / ^ (minus binds looser than ^, so -2^2 is -4), > >= < <= (numbers), == != (two numbers, two texts or two conditions), and, or, not, and the formula functions below with a stock argument (S or a code in quotes). '
   +'at(expression, k): the expression as of the close k completed days before the last one; k is a whole number, at most 60 in all. '
   +'Universes: universe(market=…, type=…, top_cap=…, own=…), universe(list=[…]), list("code", …) or ["code", …], union(u1, u2, …). With S as each stock of a universe: rank(u, expression, "highest" or "lowest"[, n]), top(u, expression[, n]), bottom(u, expression[, n]) (n from 1 to 50, default 10), filter(u, condition), count(u[, condition]); the expression must use S, and none of these may be used inside it or inside at(). '
-  +'A stale stock, one without enough history and one whose value cannot be computed are counted in the coverage, never ranked; when no stock of a screen was evaluated the printed value says "0 of N evaluated" with the reasons; a line that read a stale stock by its code is marked. A constant window out of range is an error naming the line. '
+  +'A stale stock, one without enough history and one whose value cannot be computed are counted in the coverage, never ranked; when no stock of a screen was evaluated the printed value says "0 of N evaluated" with the reasons; a line that read a stale stock by its code is marked, and its value says the day that stock\'s history ends: "(as of close D, older than the market\'s last close)". A constant window out of range is an error naming the line. '
   +'Bounds: 3 universes of 400 stocks (lists included), 20 screens, 20,000 evaluations (each stock of a screen is one, plus one per value of its expression: over 400 stocks a 4-value expression uses 2,000), 2 seconds, 4,000 output bytes with the coverage (a long ranking is cut with "… N more not shown"); a run past a bound stops at that line and returns what it printed. '
   +'Numbers: whole numbers below 10^15 print in full; any other is rounded to 8 significant digits, in plain decimal from 1e-6 up to 1e8 (0.33333333) and in exponent form outside it (1.2345679e+11). '+FUNCTION_TEXT;
 module.exports={run,parseScript,stopFor,clean,BOUNDS,ScriptError,HELP,FUNCTION_TEXT};

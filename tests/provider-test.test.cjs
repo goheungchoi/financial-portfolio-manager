@@ -122,7 +122,7 @@ test('the report separates acceptance, local validation and tool coverage; a Hol
   assert.equal(r.statement.includes('not a validation of accounting'),true);assert.equal(r.state.live.unchanged,true);assert.deepEqual(r.state.files.after,['fixture.json','provider-test.sqlite','report.json','report.md','run.lock']);
   // Tools exercised: a recorded result, a cut-off recording, an unrecorded request and a write.
   x=prepared();let n=0;r=await runTest({...x,send:async()=>++n===1?reply([call('get_market_evidence',{symbol:'990020',dataset:'daily_technicals'},1),call('get_company_research',{symbol:'990020',sections:['events']},2),call('get_market_evidence',{symbol:'990020',dataset:'order_book'},3),call('save_note',{symbol:'990020',text:'n'},4)]):reply([hold]),key:'sk-fixture-key-123',mode:'test'});
-  assert.deepEqual(r.tools.calls.map(c=>c.served),['recorded','unavailable: recording cut off','unavailable: not recorded','not applied']);assert.ok(r.tools.notExercised.includes('compute'));assert.equal(r.cost.requests,2);
+  assert.deepEqual(r.tools.calls.map(c=>c.served),['recorded','unavailable: recording cut off','unavailable: not recorded','not applied']);assert.ok(r.tools.notExercised.includes('run_screen'));assert.equal(r.cost.requests,2);
   // A provider rejection is reported as the provider's; a budget stop as local, with nothing sent.
   x=prepared();r=await runTest({...x,send:async()=>new Response(JSON.stringify({error:{type:'invalid_request_error',code:'invalid_json_schema',message:'no'}}),{status:400}),key:'sk-fixture-key-123',mode:'test'});
   assert.equal(r.acceptance.providerAccepted,false);assert.equal(r.acceptance.requests[0].providerError.code,'invalid_json_schema');assert.equal(r.acceptance.failure.side,'provider rejected a request');

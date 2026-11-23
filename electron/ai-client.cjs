@@ -72,7 +72,7 @@ function offeredToolNames(context){return [...'get_market_evidence set_review_wa
 // OpenAI reasoning or output items in a Claude request, is refused before anything is sent.
 const fromAnthropic=item=>item?.type==='anthropic_turn'||item?.vendor==='anthropic';
 const fromOpenAI=item=>['reasoning','message'].includes(item?.type)||item?.type==='function_call'&&item?.vendor!=='anthropic';
-function deskTools(context){if(!context.agentDesk)return [];const d=require('./agent-desk.cjs');return [d.COMPUTE_TOOL,d.TRIGGER_TOOL,d.NOTE_TOOL,require('./assessments.cjs').TOOL,...(context.agentDesk.conditionalOrders?.allowed?[trailOn(context)?d.ORDER_TOOL_TRAIL:d.ORDER_TOOL]:[])];}
+function deskTools(context){if(!context.agentDesk)return [];const d=require('./agent-desk.cjs');return [require('./scout.cjs').REVIEW_SCREEN_TOOL,d.TRIGGER_TOOL,d.NOTE_TOOL,require('./assessments.cjs').TOOL,...(context.agentDesk.conditionalOrders?.allowed?[trailOn(context)?d.ORDER_TOOL_TRAIL:d.ORDER_TOOL]:[])];}
 // A Buy needs a thesis, an invalidation point, a stop and a horizon; without them it is held back as a Hold.
 // The longest trade-plan horizon accepted, in days (10 years). 2026-10-30: the limit was 1,000 days, silently dropping
 // three-year (1,095-day) horizons, so a long-term Buy was held back as having no horizon on every review.
@@ -284,12 +284,11 @@ class AiClient {
       if(calls.length){
         // Extra or unknown calls are answered by the research loop; only malformed calls end the run. Each failure says why.
         const invalid=detail=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail});
-        if(options.final)throw invalid('the model asked for a tool on the final round');
         if(calls.length>12)throw invalid(`the model asked for ${calls.length} tools at once`);
         // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never treated as a failed run.
         if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||call.name!=='run_screen'&&(typeof call.arguments!=='string'||call.arguments.length>2000)))throw invalid('a tool request was malformed');
         let toolCalls;try{toolCalls=calls.map(call=>({name:names.includes(call.name)?call.name:'unknown:'+String(call.name).slice(0,40),callId:call.call_id,args:call.name==='run_screen'?require('./scout.cjs').screenArgs(call.arguments):JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments were not valid JSON');}
-        return {toolCalls,continuation:[...input,...body.output],usage:reportedUsage,provider:'openai',model:returnedModel};
+        return {toolCalls,continuation:[...input,...body.output],usage:reportedUsage,provider:'openai',model:returnedModel,...(options.final?{finalToolUse:true}:{})};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       let parsed;try{parsed=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:output.trim()?'the plan was not valid JSON':'the model returned no plan and no tool request'});}
@@ -324,12 +323,12 @@ class AiClient {
         const offered=offeredToolNames(context);
         const names=calls.map(call=>String(call.name).slice(0,40)),invalid=rule=>Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule,toolCount:calls.length,tools:[...new Set(names)].slice(0,8),status:body.status}});
         if(!options.research)throw invalid('a tool request in a review without research');
-        if(options.final)throw invalid('a tool request on the final round');
         if(calls.length>require('./research-review.cjs').HARD_MAX_CALLS)throw invalid(`more tool requests at once than the ceiling of ${require('./research-review.cjs').HARD_MAX_CALLS}`);
         if(calls.some(call=>!offered.includes(call.name)))throw invalid('a tool that was not offered');
-        if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||typeof call.arguments!=='string'||call.arguments.length>(call.name==='save_assessment'?6000:2000)))throw invalid('a malformed or oversized tool request');
-        let toolCalls;try{toolCalls=calls.map(call=>({name:call.name,callId:call.call_id,args:JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments that are not valid JSON');}
-        return {toolCalls,continuation:[...input,...body.output],stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars};
+        // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never a failed review.
+        if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||call.name!=='run_screen'&&(typeof call.arguments!=='string'||call.arguments.length>(call.name==='save_assessment'?6000:2000))))throw invalid('a malformed or oversized tool request');
+        let toolCalls;try{toolCalls=calls.map(call=>({name:call.name,callId:call.call_id,args:call.name==='run_screen'?require('./scout.cjs').screenArgs(call.arguments):JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments that are not valid JSON');}
+        return {...(options.final?{finalToolUse:true}:{}),toolCalls,continuation:[...input,...body.output],stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       if(output.length>DECISION_OUTPUT_CHAR_LIMIT)throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:`a decision of ${kb(output.length)}, above the ${kb(DECISION_OUTPUT_CHAR_LIMIT)} limit`,status:body.status}});

@@ -7,9 +7,9 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');const fs=require('node:fs');const path=require('node:path');const os=require('node:os');
 const scout=require('../electron/scout.cjs');const AI=require('../electron/ai-client.cjs');const {HELP}=require('../electron/formula-script.cjs');
 const {ScreenEngine,threadSpawn}=require('../electron/screen-engine.cjs');const R=require('../electron/screen-run.cjs');
-test('run_screen is a scout tool only; the whole description is facts: no reading of a value, no how-to',()=>{
+test('run_screen is a scout tool (and, since S4, a review desk tool); the whole description is facts: no reading of a value, no how-to',()=>{
   const names=AI.scoutTools().map(t=>t.name);assert.equal(names.filter(n=>n==='run_screen').length,1);assert.equal(names.at(-1),'run_screen','added last, so the cached prefix before it is kept');
-  assert.ok(!AI.reviewTools({}).some(t=>t.name==='run_screen'),'the review gets it in S4');
+  assert.ok(!AI.reviewTools({}).some(t=>t.name==='run_screen'),'without the desk a review has no run_screen (tests/review-screen.test.cjs covers the desk)');
   const d=scout.SCREEN_TOOL.description;assert.ok(d.endsWith(HELP));
   for(const banned of [/above about/i,/means upward/i,/strong trend/i,/weak/i,/buying pressure/i,/stretched/i,/momentum/i,/narrow the universe/i,/for example filter on/i,/strategy/i,/\bbuy\b/i,/\bsell\b/i])assert.doesNotMatch(d,banned,String(banned));
   assert.match(d,/a universe can be reduced with filter, top or bottom before live\(S\) is used/);

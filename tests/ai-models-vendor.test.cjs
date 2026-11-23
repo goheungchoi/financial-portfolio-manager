@@ -12,6 +12,9 @@ test('pin: the OpenAI decide request body is byte-identical to 1.5.49',async()=>
   for(const [name,opts] of [['research',{research:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium'}],['final',{research:true,final:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium'}],['plain',{openaiModel:'gpt-6-luna',reasoningEffort:'none'}]]){
     let body;const c=new AiClient('fixture_key_123',async(_u,init)=>{body=init.body;return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,explanation:'x'})}]}]})};});
     try{await c.decide(CTX,opts);}catch{}
+    // S4 ('review 2026-11-24'): run_screen in place of compute, the trigger's neutral text and the core's run_screen
+    // sentences; those pieces are put back first (each present in a body with tools), every other byte still compared.
+    {const S4=require('./fixtures/s4-text.cjs');if(name!=='plain')assert.ok(body.includes('"name":"run_screen"')&&!body.includes('"name":"compute"'),name+': run_screen is offered, compute is not');body=S4.beforeS4(body);}
     // Agent tools T1 (instructions 'review 2026-11-04') added cci, stochrsi and ultimate to the formula help in the
     // compute tool's description; with exactly those entries taken out, the body must still be 1.5.49's byte for byte.
     const F=require('../electron/formula.cjs');const added=['cci','stochrsi','ultimate'].map(k=>`; ${k}(${F.FUNCS[k][0].split('').map(t=>t==='s'?'sym':'n').join(',')}): ${F.FUNCS[k][2]}`).join('');

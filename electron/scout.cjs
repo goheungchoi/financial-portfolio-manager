@@ -127,8 +127,17 @@ async function runScout({request,tools,log,maxRounds=3,maxCalls=6,maxBytes=SCOUT
     // The latest round's results give way only after every older one.
     if(continuation){await fitted(lastFrom,room);await fitted(continuation.length,room);const total=overheadBytes+cf.size(continuation);
       if(total>maxBytes)throw Object.assign(new Error('CONTEXT_OVER_BUDGET'),{detail:`the scout request would be ${total} bytes, over its ${maxBytes}-byte limit`});}
-    const result=await request({final:round===maxRounds-1,continuation});model=result.model??model;
+    let result=await request({final:round===maxRounds-1,continuation});model=result.model??model;
     usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;usage.cachedTokens+=result.usage?.cachedTokens??0;
+    // A tool request on the final round (both clients return it flagged): each call is answered "no tools in this round"
+    // and one more final request is made; a tool request in that one fails the run, as before.
+    if(result.finalToolUse&&result.toolCalls?.length&&Array.isArray(result.continuation)){
+      log('System','Tool request on the final round',`${result.toolCalls.length} (${[...new Set(result.toolCalls.map(c=>String(c.name).slice(0,40)))].slice(0,8).join(', ')}): answered "no tools in this round"; one more request`);
+      continuation=[...result.continuation,...result.toolCalls.map(c=>({type:'function_call_output',call_id:c.callId,output:JSON.stringify({status:'error',words:'no tools in this round: give your answer now'})}))];
+      const replace=new Map();for(const c of result.toolCalls)if(c.name==='run_screen')replace.set(c.callId,screenStandIn(c.args,{reason:'no tools in the final round'}));shrinkCalls(continuation,replace);
+      await fitted(continuation.length,room);result=await request({final:true,continuation});model=result.model??model;
+      usage.inputTokens+=result.usage?.inputTokens??0;usage.outputTokens+=result.usage?.outputTokens??0;usage.cachedTokens+=result.usage?.cachedTokens??0;
+      if(result.toolCalls?.length)throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the model asked for a tool on the final round'});}
     if(result.plan){let retried=false;const sent=continuation;
       // The retry needs the history the final call was sent; a plan from the very first call (no history) is not retried.
       const retry=sent?async reason=>{retried=true;const again=await request({final:true,continuation:[...sent,{role:'user',content:RETRY_NOTE(reason)}]});model=again.model??model;
@@ -207,12 +216,33 @@ function keptScript(script){const {clean}=require('./formula-script.cjs');const 
 // Once a screen is answered, its script in the conversation is replaced by a short stand-in on both continuation shapes
 // (OpenAI function_call arguments, Claude tool_use input), so a long script costs its bytes once; the result keeps what
 // it printed. A request answered as skipped keeps no arguments.
-function screenStandIn(args,{skipped=false}={}){const s=typeof args?.script==='string'?args.script:'';
+function screenStandIn(args,{skipped=false,reason=null}={}){const s=typeof args?.script==='string'?args.script:'';
   if(!s)return {script:`# not run: ${String(args?.invalid??'no script').slice(0,80)}`};
-  const first=(s.split('\n').find(l=>l.trim())??'').slice(0,60);return {script:`# ${skipped?'not run (over this round\'s tool limit)':'answered above'}: ${first} (${Buffer.byteLength(s)} bytes, sha256 ${require('node:crypto').createHash('sha256').update(s).digest('hex').slice(0,8)})`};}
+  const first=(s.split('\n').find(l=>l.trim())??'').slice(0,60);return {script:`# ${reason?`not run (${reason})`:skipped?'not run (over this round\'s tool limit)':'answered above'}: ${first} (${Buffer.byteLength(s)} bytes, sha256 ${require('node:crypto').createHash('sha256').update(s).digest('hex').slice(0,8)})`};}
 function shrinkCalls(items,replace){if(!replace.size)return;for(const it of items){
   if(it?.type==='function_call'&&replace.has(it.call_id))it.arguments=JSON.stringify(replace.get(it.call_id));
   else if(it?.type==='anthropic_turn'&&Array.isArray(it.content))it.content=it.content.map(b=>b?.type==='tool_use'&&replace.has(b.id)?{...b,input:replace.get(b.id)}:b);}}
+// The run_screen tool for the scout and the review (S4): every failure of a script comes back as a result with words, and
+// the run or review goes on; it never throws. The account guard is the same as update_watchlist's, answered in words.
+// screens: the scout run's kept scripts (12 at most); onRecord(script, facts): the review's formula-use record.
+function screenTool({screen,screens=null,guard=()=>{},onRecord=null,noRoomWords='the script was not run: this run has no room left for another screen result; write the plan with what you have'}){const usage=' (a script is at most 40 lines and 4,000 characters, sent as {"script": "..."})';
+  const record=(facts,script)=>{try{if(Array.isArray(screens)&&screens.length<SCREENS_KEPT)screens.push({at:Date.now(),script:keptScript(script),...facts});onRecord?.(script,facts);}catch{}return facts;};
+  const stale=()=>{try{guard();return false;}catch{return true;}};const STALE='the script was not run: the account or scope changed during this run';
+  return async(args,{noRoom=false,notRun=null}={})=>{
+    if(typeof notRun==='string')return record({status:'error',words:`the script was not run: ${notRun}`},typeof args?.script==='string'?args.script:'');
+    if(stale())return record({status:'error',words:STALE},typeof args?.script==='string'?args.script:'');
+    if(noRoom)return record({status:'error',words:noRoomWords},typeof args?.script==='string'?args.script:'');
+    if(args?.invalid)return record({status:'error',words:`the script was not run: ${args.invalid}${usage}`},'');
+    if(typeof args?.script!=='string')return record({status:'error',words:`the script was not run: the request had no script text${usage}`},'');
+    if(typeof screen!=='function')return record({status:'error',words:'the script was not run: screens are not available in this run'},args.script);
+    let r;try{r=await screen(args.script);}catch(error){if(typeof error?.words==='string')return record({status:'error',words:`the script was not run: ${error.words.slice(0,200)}`},args.script);const code=/^[A-Z_]{3,40}$/.test(String(error?.code??error?.message??''))?(error.code??error.message):'SCREEN_FAILED';return record({status:'error',words:`the script could not be run (${code})`},args.script);}
+    if(stale())return record({status:'error',words:STALE},args.script);return record(screenFacts(r),args.script);};}
+// The review's run_screen (S4): the same tool over the review's own stocks; its description is facts only.
+// The review's help: the language's HELP with the review's own run named, every replacement checked.
+const REVIEW_HELP=(()=>{let h=require('./formula-script.cjs').HELP;for(const [a,b] of [['Live reads stop for the rest of the scout run','Live reads stop for the rest of this review'],['120 and 40 a scout run','120 and 40 a review'],['Universes: universe(market=…, type=…, top_cap=…, own=…)','Universes: universe(own=…, market=…, type=…, top_cap=…) with own always given']]){if(h.split(a).length!==2)throw new Error('REVIEW_HELP: '+a);h=h.replace(a,b);}
+  return h+' In a review, its scripts share 60 seconds of script time, daily reads included; after that a script is answered without being run. Before a script that reads daily history, the history of the review\'s stocks it names by code (up to 6 a script) and, for a universe, of the review\'s stocks (up to 24 a review) is read when the stored history is not current. In a review: ret and change of the live quote are written with live(S) in place of the last close: (live(S) / close(S, n-1) - 1) * 100 is the % return from the close n sessions before today to the live quote, and (live(S) / close(S, 0) - 1) * 100 today\'s change; zscore and ratio_z of the live quote cannot be written, as no function gives the standard deviation of closes. A trigger or conditional order evaluates its formula on the latest quote, so a level read from a script\'s close-based value is compared there with the live one.';})();
+const REVIEW_SCREEN_TOOL={type:'function',name:'run_screen',strict:true,description:'Runs one screening script over this review\'s own stocks and returns its printed lines, with the coverage of each screen and the day each market\'s closes are as of. In a review the universes are universe(own="review") (this review\'s stocks), universe(own="holdings"), universe(own="watchlist"), universe(own="plan") and universe(own="allowlist") limited to them, and list("code", …) or ["code", …] of them; a stock outside them is refused, and universe(market=…) is not used. A stock whose nightly history is not yet stored (or stored only up to an older day) is read from this review\'s own daily history when that is newer, and marked with its own as-of day. '+REVIEW_HELP,
+  parameters:{type:'object',properties:{script:{type:'string',description:'The script, as lines separated by line breaks.'}},required:['script'],additionalProperties:false}};
 // What the scout gets back from a script: facts only, in a fixed order (status, the stop, the lines, the coverage, the days).
 function screenFacts(r){const out={status:r?.stopped?'stopped':'ok'};if(r?.stopped)out.stopped={line:r.stopped.line??null,words:String(r.stopped.words??'')};
   out.lines=Array.isArray(r?.lines)?r.lines:[];out.coverage=(Array.isArray(r?.coverage)?r.coverage:[]).map(c=>({line:c.line,universe:c.universe,size:c.size,evaluated:c.evaluated,noHistory:c.noHistory,stale:c.stale,errors:c.errors,noLive:c.noLive??0}));
@@ -237,18 +267,7 @@ function focusTools(discovery,focus,{reads=NEXT_SESSION_READS,guard=()=>{},reass
       left--;let result;try{result=await discovery.research(args);}catch(error){left++;throw error;}if(result?.status==='unavailable'){left++;return result;}
       return {nextSession:{market,awaitingOpen:true,readsLeft:left,note:`${name(market)} is closed: read for a next-session candidate only. Prices are from the last session; the candidate awaits fresh prices and confirmation at the open and gets no target in this plan.`},...result};},
     get_market_overview:()=>deferred('KR')?skip('KR'):discovery.marketOverview?discovery.marketOverview():{status:'unavailable',reason:'MARKET_OVERVIEW_UNAVAILABLE'},
-    // Every failure of a script comes back as a result with words; the run goes on. The account guard is the same as
-    // update_watchlist's.
-    run_screen:async(args,{noRoom=false}={})=>{const usage=' (a script is at most 40 lines and 4,000 characters, sent as {"script": "..."})';
-      const record=(facts,script)=>{if(Array.isArray(screens)&&screens.length<SCREENS_KEPT)screens.push({at:Date.now(),script:keptScript(script),...facts});return facts;};
-      const stale=()=>{try{guard();return false;}catch{return true;}};const STALE='the script was not run: the account or scope changed during this run';
-      if(stale())return record({status:'error',words:STALE},typeof args?.script==='string'?args.script:'');
-      if(noRoom)return record({status:'error',words:'the script was not run: this run has no room left for another screen result; write the plan with what you have'},typeof args?.script==='string'?args.script:'');
-      if(args?.invalid)return record({status:'error',words:`the script was not run: ${args.invalid}${usage}`},'');
-      if(typeof args?.script!=='string')return record({status:'error',words:`the script was not run: the request had no script text${usage}`},'');
-      if(typeof screen!=='function')return record({status:'error',words:'the script was not run: screens are not available in this run'},args.script);
-      let r;try{r=await screen(args.script);}catch(error){const code=/^[A-Z_]{3,40}$/.test(String(error?.code??error?.message??''))?(error.code??error.message):'SCREEN_FAILED';return record({status:'error',words:`the script could not be run (${code})`},args.script);}
-      if(stale())return record({status:'error',words:STALE},args.script);return record(screenFacts(r),args.script);},
+    run_screen:screenTool({screen,screens,guard}),
     update_watchlist:args=>{guard();return discovery.update_watchlist(args?.action==='add'&&Array.isArray(args.entries)?{...args,entries:args.entries.map(label)}:args);},
   };
 }
@@ -278,4 +297,4 @@ function staleCarried(targets,{reviews=[],price=()=>null,movePct=6}={}){
     if(then>0&&last>0){const m=(last/then-1)*100;if(Math.abs(m)>=movePct)reasons.push(`The price moved ${m>0?'+':''}${m.toFixed(1)}% since the target was written (${then} at ${day(t.priceWhenSetAt)}).`);}
     return reasons.length?[{symbol:t.symbol,role:t.role,setAt:t.carriedFrom,reasons}]:[];});
 }
-module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout,SCREEN_TOOL,screenFacts,SCREENS_KEPT,screenArgs,keptScript,screenStandIn,shrinkCalls,SCREEN_REQUEST_BYTES};
+module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout,SCREEN_TOOL,REVIEW_SCREEN_TOOL,REVIEW_HELP,screenTool,screenFacts,SCREENS_KEPT,screenArgs,keptScript,screenStandIn,shrinkCalls,SCREEN_REQUEST_BYTES};

@@ -45,5 +45,5 @@ test('the scout: each account says whether its orders go out automatically, and 
   assert.ok(!/Automatic orders are off/.test(opportunityNote([on[0],{market:'US',status:'unavailable',automaticExecutionEnabled:false}],false)),'an unread account says nothing');});
 
 test('context only: the review instruction fingerprints are unchanged',()=>{
-  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'56da3eb8fe72bacc');assert.equal(RI.fingerprint(undefined,{orders:true}),'a5bc46e95c6a5a98');
-  assert.equal(RI.fingerprint('proposed'),'2d0f8789698ff0fc');assert.equal(RI.fingerprint('proposed',{orders:true}),'3a16e204e2213560');});
+  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'bdfca4388d263737');assert.equal(RI.fingerprint(undefined,{orders:true}),'ecd1189f47a389f2');
+  assert.equal(RI.fingerprint('proposed'),'07d9d66f7954bf84');assert.equal(RI.fingerprint('proposed',{orders:true}),'0da5c379de492680');});
