@@ -86,7 +86,9 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
     await run(`document.querySelector('[aria-label="Scripts of this review"]').open=true`);const text=await run(`document.querySelector('[aria-label="Scripts of this review"]').innerText`);
     assert.match(text,/The first 3 are kept\./);assert.match(text,/Stopped: print\(close\("999980",0\)\)/);assert.match(text,/Not run: print\(2\)/);await capture('journal-scripts');}
 
-  if(mode==='stops'){await navigate('Home');await until(`document.body.innerText.includes('2 stops are not watched until auto trading is started.')`,'the Home line about unwatched stops');await capture('home-line');
+  if(mode==='stops'){await navigate('Home');await until(`document.body.innerText.includes('2 stops are not watched until auto trading is started.')`,'the Home line about unwatched stops');
+    // Needs you refreshes every 5 s; the window opened on Home before KIS was connected, so its first list asked for it.
+    await until(`!document.body.innerText.includes('Connect your KIS account')`,'Needs you after the connection',15000);await capture('home-line');
     const reply=await run('window.portfolio.stopAutoTrading()');assert.equal(reply.ok,true);
     assert.match(reply.message,/^Auto trading stopped\. Orders already at KIS stay\. Your 2 armed stops \(990010, 990020\) are not watched until you start it again\.$/,reply.message);
     await until(`document.body.innerText.includes('2 stops are not watched until auto trading is started.')`,'the Home line after Stop');}
