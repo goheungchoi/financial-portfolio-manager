@@ -771,6 +771,29 @@ determined here.
     a short open (above KIS's figure INSUFFICIENT_CAPACITY, unreadable INVALID_RESPONSE), and its record carries the
     fact for its screen ("a short is open; KIS's orderable cash is N").
   - Each refusal has words in Activity (`activity-today.cjs`).
+- **The cover stop and unprotected shorts** (B3d-2, `short-stops.cjs`, `Automation.syncShortStops`): each desk step,
+  when the app's short has filled and its lot (KIS's loan date) shows in the balance, a cover stop is armed for the lot:
+  an armed conditional Buy of kind cover, purpose stop_loss, for the lot's quantity, fired by a rise to the entry x (1 +
+  the short policy's stopLossPct, 15%), up to the grid. An app short lot with shares left and no live stop-loss cover
+  is always armed, listed as unprotected, or covered, never neither, decided from the lot's own record (`lotDecision`,
+  its cover stops by account, stock and loan date, `desk.lotStops`): armed when it never had one, the last expired, its
+  sent cover ended with shares left, its proposal ended unapproved, or the app closed it as not needed and the lot is
+  back; listed ("<stock> short", with the cause) when the last was rejected, its sent cover ended at KIS with nothing
+  filled, or you or the AI cancelled it, and named as held ("its stop was hit and waits for your approval") while its
+  proposal awaits your click, armed again once that proposal is past its time; covered while one is armed or firing or
+  its cover is open at KIS; a stop is armed only for the lot less the cover fills the balance does not show yet, none
+  when nothing is left; only a stop_loss cover is
+  the lot's stop (a take-profit cover does not replace it); raised (keeping its level, said in its line) and reduced with the lot (any armed cover is reduced,
+  one the AI armed on a short you opened included) and closed ("Not needed: its short lot is covered.") when it is gone; not armed (one Activity line) when the entry cannot be read or
+  the desk refuses it; a short you opened outside the app gets none from the app. A short lot whose cover stop was
+  rejected or lapsed and not replaced, or whose cover stop was hit and is held by the one-open rule, is listed with the
+  unprotected holdings as "<stock> short" (Home, the Agent Desk) and, when held, given to the review as a fact ("The
+  cover stop for the short of <stock> was hit and is still armed; …") only while short selling is enabled, with B-4's live
+  and episode rules; the Agent Desk's entry for a short makes no claim about a review. The list reads only the newest
+  rows (`recentRows`). Under orders
+  while stopped a cover stop is watched as any armed order, counted as a closing order at the loss limit, halted by
+  Stop everything, and held behind its own short sale while that is open. The short's trailing stop (a switch, off by
+  default) is its own step.
 
 ### 5.3 The daily loss limit and its responses
 

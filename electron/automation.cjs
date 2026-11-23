@@ -625,7 +625,7 @@ class Automation {
     const b=open.find(o=>o.status==='Uncertain')??open.find(o=>o.id!==order.linkedBuy?.id)??open[0]??null;
     return {why,blocking:b?{id:b.id,side:b.side,symbol:b.symbol,status:b.status}:null};}
   // A stop loss held now: armed, its conditions met on the watch's prices now, and held by the rule now (B-4 review 3).
-  stopHeldNow(order){if(order?.side!=='Sell'||order.purpose!=='stop_loss'||order.status!=='armed')return null;const market=/:/.test(order.symbol)?'US':'KR',engine=market==='US'?this.usLive:this.live;if(!engine)return null;
+  stopHeldNow(order){if(!(order?.side==='Sell'||require('./short-stops.cjs').isCover(order))||order.purpose!=='stop_loss'||order.status!=='armed')return null;const market=/:/.test(order.symbol)?'US':'KR',engine=market==='US'?this.usLive:this.live;if(!engine)return null;
     const hold=this.holdReason(order,engine,market);if(!hold||hold.why==='its purchase has not filled')return null;let met=false;try{met=require('./formula.cjs').checkConditions(order.conditions,order.combine,this.watchData()).met;}catch{met=false;}return met?hold:null;}
   // Each tick: a stop held now is stamped with when its hold began (one episode: the review gate asks one review for it);
   // a hold that ended has its words and stamp cleared (no stale line) and is checked again at once.
@@ -639,14 +639,53 @@ class Automation {
       else if(o.heldSince&&!o.heldEndedAt)this.desk.update(o,{heldEndedAt:now});
       else if(o.heldSince&&now-o.heldEndedAt>SAME_MS)this.desk.update(o,{heldSince:null,heldEndedAt:null,lastHoldWhy:null});}}
   // The held stops as facts for a review (no instruction): what is true now.
-  heldStopFacts(scope=this.watchScope()){const positions=this.brokerPositions();let orders=[];try{orders=this.desk.orders(scope);}catch{return [];}
-    return orders.filter(o=>positions?.[o.symbol]?.quantity>0).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h).map(([o,h])=>({symbol:o.symbol,stopOrderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,since:Number.isFinite(o.heldSince)?new Date(o.heldSince).toISOString():null,
-      ...(h.blocking?{waitsFor:h.blocking}:{}),fact:`The stop loss for ${o.symbol} was hit and is still armed; it is not sent while ${h.why}${h.blocking&&h.why!=='its purchase is still open'?` (order ${h.blocking.id}, ${h.blocking.side} ${h.blocking.symbol}, ${h.blocking.status})`:''}.`}));}
+  // B3d-2: a short's cover stop by its lot's quantity (a short is not a position).
+  heldStopFacts(scope=this.watchScope()){const positions=this.brokerPositions();const {shorts}=this.shortBalance();const SS=require('./short-stops.cjs');let orders=[];try{orders=this.desk.orders(scope);}catch{return [];}
+    // A held cover stop reaches the review only while short selling is enabled (until then the review sees nothing new).
+    const held=o=>SS.isCover(o)?(this.shortsEnabled()?(shorts.find(l=>l.symbol===o.symbol&&l.loanDate===o.credit.loanDate)?.quantity??0):0):o.side==='Sell'&&!SS.isCover(o)?(positions?.[o.symbol]?.quantity??0):0;
+    return orders.filter(o=>held(o)>0).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h).map(([o,h])=>({symbol:o.symbol,...(SS.isCover(o)?{short:true}:{}),stopOrderId:o.id,quantity:Math.min(held(o),o.quantity),heldQuantity:held(o),since:Number.isFinite(o.heldSince)?new Date(o.heldSince).toISOString():null,
+      ...(h.blocking?{waitsFor:h.blocking}:{}),fact:`The ${SS.isCover(o)?'cover stop for the short of':'stop loss for'} ${o.symbol} was hit and is still armed; it is not sent while ${h.why}${h.blocking&&h.why!=='its purchase is still open'?` (order ${h.blocking.id}, ${h.blocking.side} ${h.blocking.symbol}, ${h.blocking.status})`:''}.`}));}
+  // Whether short selling is enabled for the connected Korean account (Short & leverage).
+  shortsEnabled(){try{return this.live?.exposure?.policy?.(this.live.identity())?.short?.enabled===true;}catch{return false;}}
+  // Short selling B3d-2: the Korean balance's short lots, and whether they are known (a balance read with its shorts list).
+  shortBalanceRaw(){const e=this.live;try{return e?.riskBalance??e?.getConnection?.()?.snapshot??null;}catch{return null;}}
+  shortBalance(){const e=this.live;let bal=null;try{bal=e?.riskBalance??e?.getConnection?.()?.snapshot??null;}catch{bal=null;}return {shorts:Array.isArray(bal?.shorts)?bal.shorts:[],known:Array.isArray(bal?.shorts)};}
+  // Each desk step: a cover stop is armed for each lot of the app's filled shorts that has none (entry x (1 + the short
+  // policy's stopLossPct), the lot's quantity), reduced with its lot and closed when the lot is gone (short-stops.cjs).
+  syncShortStops(scope=this.watchScope()){if(this.config.scope==='paper'||!this.config.conditionalOrders||!this.live)return;const SS=require('./short-stops.cjs');const {shorts,known}=this.shortBalance();if(!known)return;
+    let appShorts=[],deskOrders=[];try{appShorts=this.live.orders().filter(o=>o.side==='Sell'&&o.credit?.kind==='short');deskOrders=this.desk.orders(scope);}catch{return;}
+    let pct=15;try{const p=this.live.exposure?.policy?.(this.live.identity())?.short?.stopLossPct;if(Number(p)>0)pct=Number(p);}catch{}
+    // From each app lot's own record (lotDecision): arm, list or covered; never neither.
+    const mine=new Set(appShorts.filter(o=>Number(o.filled)>0&&o.lotLoanDate).map(o=>`${o.symbol}|${o.lotLoanDate}`));
+    const toArm=shorts.filter(l=>Number(l.quantity)>0&&mine.has(`${l.symbol}|${l.loanDate}`)&&this.shortLotDecision(scope,l).arm);
+    for(const lot0 of toArm){let left=lot0.quantity;try{const bal=this.shortBalanceRaw();left=Math.max(0,lot0.quantity-require('./credit-paths.cjs').remaining(bal,{symbol:lot0.symbol,side:'Buy',credit:{kind:'cover',loanDate:lot0.loanDate}},this.live.orders()).reserved);}catch{left=0;}
+      // Covers filled or open that the balance has not shown yet take their shares: arm only for what is left, none at 0.
+      if(left<1)continue;const lot={...lot0,quantity:left};const entry=lot.entryPrice??appShorts.find(o=>o.symbol===lot.symbol&&o.lotLoanDate===lot.loanDate)?.fillPrice;const level=SS.coverStopLevel(entry,pct);
+      const said=k=>`Cover stop for the short of ${lot.quantity} ${lot.symbol} (loan ${lot.loanDate})${k}`;
+      if(level==null){if(this.shortStopNoted?.[lot.symbol+lot.loanDate]!=='entry'){(this.shortStopNoted??={})[lot.symbol+lot.loanDate]='entry';this.log(randomUUID(),'System','Cover stop not armed',said(': its entry price could not be read.'));}continue;}
+      const r=this.desk.setOrder(scope,{action:'add',id:'',symbol:lot.symbol,side:'Buy',quantity:lot.quantity,limitPrice:null,conditions:[{expr:`price("${lot.symbol}")`,op:'>=',value:level}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Cover stop at ${pct}% above the short's entry.`,credit:{kind:'cover',loanDate:lot.loanDate,source:lot.source??'distribution'}},{config:this.config,universe:[lot.symbol],lot:{ok:true,account:(()=>{try{return this.live.identity();}catch{return null;}})()}});
+      if(r?.status==='armed'||r?.status==='saved')this.log(r.id??randomUUID(),'System','Cover stop armed',said(` at ${level}.`));
+      else if(this.shortStopNoted?.[lot.symbol+lot.loanDate]!=='refused'){(this.shortStopNoted??={})[lot.symbol+lot.loanDate]='refused';this.log(randomUUID(),'System','Cover stop not armed',said(`: ${r?.reason??r?.error??'refused'}`));}}
+    const {reduce,close,raise}=SS.lotChanges({shorts,deskOrders,balanceKnown:known});
+    for(const {order,quantity} of raise){this.desk.update(order,{quantity});this.log(order.id,'System','Cover stop raised',`Buy ${order.symbol} (cover): ${order.quantity} → ${quantity}, the shares its short lot now holds; its level stays at ${order.conditions?.[0]?.value}.`);}
+    for(const {order,quantity} of reduce){this.desk.update(order,{quantity});this.log(order.id,'System','Cover stop reduced',`Buy ${order.symbol} (cover): ${order.quantity} → ${quantity}, the shares its short lot still holds.`);}
+    for(const {order} of close){this.desk.update(order,{status:'cancelled',outcome:'Not needed: its short lot is covered.',closedAt:Date.now(),closedBy:'app'});this.log(order.id,'System','Cover stop closed',`Buy ${order.quantity} ${order.symbol} (cover): not needed, its short lot is covered.`);}}
+  // The decision for one short lot from its own cover-stop record, with its order's state at KIS.
+  shortLotDecision(scope,lot){const SS=require('./short-stops.cjs');let rows=[];try{rows=this.desk.lotStops(scope,lot.symbol,lot.loanDate);}catch{return {list:{cause:'unreadable',words:'its cover stop record could not be read'}};}
+    const rec=o=>{try{return this.live?.orders?.().find(r=>r.id===o.proposalId)??null;}catch{return null;}};return SS.lotDecision(rows,{brokerStatus:o=>rec(o)?.status??null,brokerFilled:o=>rec(o)?.filled??0,brokerExpired:o=>{const r=rec(o);return Boolean(r&&Number.isFinite(r.expiresAt)&&r.expiresAt<Date.now());}});}
   // Unprotected holdings: the desk's (a stop rejected or lapsed), and a stop that was hit and is held by the one-open rule
   // (held: it is sent once that order is done; until then the holding has no working stop), running or stopped.
-  unprotectedNow(scope){const positions=this.brokerPositions();const listed=this.desk.unprotected(scope,positions);const seen=new Set(listed.map(u=>u.symbol));
+  unprotectedNow(scope){const positions=this.brokerPositions();const SS=require('./short-stops.cjs');const {shorts}=this.shortBalance();
+    // B3d-2: short lots whose cover stop was rejected or lapsed, and cover stops hit and held, as a long's.
+    let rows=[];try{rows=[...this.desk.recentRows('conditional_orders',scope)].sort((x,y)=>(y.closedAt??y.createdAt??0)-(x.closedAt??x.createdAt??0));}catch{rows=[];}
+    let appLots=new Set();try{appLots=new Set(this.live.orders().filter(o=>o.side==='Sell'&&o.credit?.kind==='short'&&Number(o.filled)>0&&o.lotLoanDate).map(o=>`${o.symbol}|${o.lotLoanDate}`));}catch{}
+    const appList=shorts.filter(l=>Number(l.quantity)>0&&appLots.has(`${l.symbol}|${l.loanDate}`)).map(l=>[l,this.shortLotDecision(scope,l)]).filter(([,d])=>d.list).map(([l,d])=>{const last=(()=>{try{return this.desk.lotStops(scope,l.symbol,l.loanDate)[0];}catch{return null;}})();return last?.acknowledgedAt?null:{symbol:l.symbol,short:true,loanDate:l.loanDate,orderId:last?.id??null,quantity:l.quantity,heldQuantity:l.quantity,coveredQuantity:0,cause:d.list.cause,...(d.list.held?{held:true,waiting:'your approval of its cover'}:{}),rejectedAt:new Date(last?.closedAt??Date.now()).toISOString(),outcome:d.list.words};}).filter(Boolean);
+    const shortList=[...appList,...SS.unprotectedShorts({shorts:shorts.filter(l=>!appLots.has(`${l.symbol}|${l.loanDate}`)),rows,lapsed:o=>{try{return ['Canceled','Rejected','Expired'].includes(this.desk.sellStatus?.(o));}catch{return false;}}})];
+    let heldCovers=[];try{heldCovers=this.desk.orders(scope).filter(o=>SS.isCover(o)&&!shortList.some(u=>u.symbol===o.symbol&&u.loanDate===o.credit.loanDate)).map(o=>[o,this.stopHeldNow(o),shorts.find(l=>l.symbol===o.symbol&&l.loanDate===o.credit.loanDate)]).filter(([,h,l])=>h&&l?.quantity>0);}catch{heldCovers=[];}
+    const shortsOut=[...shortList,...heldCovers.map(([o,h,l])=>({symbol:o.symbol,short:true,loanDate:l.loanDate,orderId:o.id,quantity:Math.min(l.quantity,o.quantity),heldQuantity:l.quantity,coveredQuantity:0,held:true,waiting:h.why}))];
+    const listed=this.desk.unprotected(scope,positions);const seen=new Set(listed.map(u=>u.symbol));
     let held=[];try{held=this.desk.orders(scope).filter(o=>positions?.[o.symbol]?.quantity>0&&!seen.has(o.symbol)).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h);}catch{held=[];}
-    return [...listed,...held.map(([o,h])=>({symbol:o.symbol,orderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,coveredQuantity:0,held:true,waiting:h.why}))];}
+    return [...listed,...held.map(([o,h])=>({symbol:o.symbol,orderId:o.id,quantity:Math.min(positions[o.symbol].quantity,o.quantity),heldQuantity:positions[o.symbol].quantity,coveredQuantity:0,held:true,waiting:h.why})),...shortsOut];}
   // Short selling B3d-1: a short's limit, its placement price raised to the uptick floor from the polled last trade (the
   // send checks it again against the price read then). No fresh last trade: the placement price, which the send refuses
   // if it is below the floor.
@@ -2371,6 +2410,7 @@ class Automation {
     if(this.sessionArmed&&this.config.enabled&&this.config.scope!=='paper'&&Date.now()-(this.lastScheduleObservation??0)>=30000){this.lastScheduleObservation=Date.now();try{this.scheduleObserver.observe(this.scheduleState());}catch{}}
     const deskDue=Date.now()-(this.lastDeskCheck??0)>=5000;if(deskDue)this.lastDeskCheck=Date.now();
     if(deskDue&&this.config.scope!=='paper')try{this.syncLinkedStops();}catch{}
+    if(deskDue&&this.config.scope!=='paper')try{this.syncShortStops();}catch{}
     if(deskDue)try{this.syncConditionalPermits();}catch{}
     if(deskDue&&this.config.scope!=='paper')try{this.syncHolds();}catch{}
     if(deskDue)try{this.updateArmedWatch();}catch{}
