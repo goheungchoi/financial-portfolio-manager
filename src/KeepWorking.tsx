@@ -25,6 +25,7 @@ export function KeepWorking({state,busy,onState}:{state:RuntimeState;busy:boolea
     {(on||asking)&&<details className="inline-help"><summary>More</summary>
       <p className="muted">They work exactly as while auto trading runs: the same checks and limits, and the switches in force when it last ran decide which are sent by themselves; the others wait for your approval.</p>
       <p className="muted">Two ways to halt every order: Stop everything on Home, or closing the app. Nothing is watched while the app is closed.</p>
+      <p className="muted">If you stop one market's trading by hand while auto trading runs, that market's armed orders keep being sent by themselves as before; Stop everything halts them.</p>
       <p className="muted">Prices: a stock in the app's price lists is seen within about 30 seconds (Korea) or 60 seconds (U.S.). About 10 stocks outside those lists can be kept current; past that, prices age and Home says so.</p>
       <p className="muted">It is for the KIS account connected when you turn it on; another account or environment turns it off. It goes on after a restart without Start.</p>
       <p className="muted">If another program takes a KIS token with the same key, prices and orders wait about a minute.</p>
