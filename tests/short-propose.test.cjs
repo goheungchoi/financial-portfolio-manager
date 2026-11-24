@@ -129,5 +129,5 @@ test('B3d-1 final: each open short order counts once in both several-open modes;
   // A short order you made outside the app (pending, yours) counts too.
   assert.throws(()=>e.checkCredit({...base,notional:500_000,openShorts:[{id:'S1',notional:1_500_000}],pending:[{credit:'short',notional:1,yours:true}]}),/SHORT_LIMIT/);
   const src=require('fs').readFileSync(require('path').join(__dirname,'..','electron','automation.cjs'),'utf8');
-  assert.match(src,/\(this\.shortCashWait\?\?=\{\}\)\[market\]=\{account:who,at:Date\.now\(\)\}/);assert.match(src,/if\(w0&&w0\.account!==who\)delete this\.shortCashWait\[market\]/,'another account: the wait ends');
+  assert.match(src,/\(this\.shortCashWait\?\?=\{\}\)\[market\]=\{account:who,at:Date\.now\(\)\}/);assert.match(src,/if\(w0&&w0\.account!==who\)delete this\[key\]\[market\]/,'another account: the wait ends');assert.match(src,/\[\['shortCashWait',SHORT_CASH_WAIT\],\['shortfallWait',SHORTFALL_WAIT\]\]/);
 });

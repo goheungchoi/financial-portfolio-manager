@@ -38,6 +38,12 @@ export function capacityLine(state){const d=state?.desk,o=d?.outsidePolls;if(!d|
 export function heldStopsLine(state){const u=(state?.desk?.unprotected??[]).filter(x=>x?.held);if(!u.length)return null;
   return u.map(x=>`${x.symbol}${x.short?' short':''} has no working stop loss: its stop was hit and is waiting (${x.waiting}).`).join(' ');}
 // Short selling B3d-1: a conditional buy waits because a short is open and KIS's orderable cash could not be read.
-export function shortCashWaitLine(state){const n=(state?.desk?.orders??[]).filter(o=>typeof o?.waiting==='string'&&o.waiting.startsWith('a short is open')).length;return n?`Buys wait: a short is open and KIS's orderable cash could not be read (${n} ${n===1?'order':'orders'}).`:null;}
+export function shortCashWaitLine(state){const n=(state?.desk?.orders??[]).filter(o=>typeof o?.waiting==='string'&&o.waiting.startsWith('a short is open and KIS\'s orderable cash')).length;return n?`Buys wait: a short is open and KIS's orderable cash could not be read (${n} ${n===1?'order':'orders'}).`:null;}
 // Short selling B3d-3: a short in its loan-end window that is not being covered, or whose cover waits for your approval.
+// The shortfall held back from the app's buys (the user's answer, 2026-11-24): how much and why, while it applies;
+// unreadable while a short is open: the app's buys wait. No short open, or nothing losing: no line.
+export function shortfallLine(state){const f=state?.desk?.shortfall;if(!f?.open)return {block:null,info:null};
+  if(!f.known)return {block:`Buys wait: a short is open and what buying it back costs beyond its proceeds could not be read (${f.missing.join(', ')}).`,info:null};
+  if(!(f.amount>0))return {block:null,info:null};const names=f.rows.map(r=>r.symbol);
+  return {block:null,info:`₩${f.amount.toLocaleString('en-US')} of your cash is held back from the app's buys: your ${names.length===1?'short of '+names[0]+' costs':'shorts of '+names.join(', ')+' cost'} more to buy back than ${names.length===1?'its sale':'their sales'} brought in.`};}
 export function shortLoanLine(state){const a=state?.desk?.shortLoanAlarms??[];if(!a.length)return null;return a.map(x=>x.cause==='approval'?`The short of ${x.symbol} ends its loan on ${x.end}: its cover waits for your approval.`:x.cause==='unwatched'?`${x.symbol} short ends its loan on ${x.end}: its cover is armed but not watched until auto trading is started.`:`The short of ${x.symbol} ends its loan on ${x.end} and is not being covered (${x.words}).`).join(' ');}

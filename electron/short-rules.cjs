@@ -155,4 +155,15 @@ function creditRowCheck(order,rows){const kind=order?.credit?.kind;if(!['short',
   if(kind==='cover'&&order.credit.loanDate){const dates=[...new Set(list.map(r=>r.loanDate).filter(Boolean))];if(dates.length&&!dates.includes(order.credit.loanDate))words.push(`its loan date at KIS is ${dates.join(', ')}, the app sent ${order.credit.loanDate}`);}
   return words.length?words.join('; ')+'.':null;}
 
-module.exports={MAX_BORROW_AGE_MS,LAST_TRADE_FRESH_MS,FUTURE_SKEW_MS,DEFAULT_MAX_PCT,VENUE,lendExchange,instrumentAllowed,parseBorrowable,borrowable,capBase,capCheck,upToTick,floorPrice,auctionFloor,floorNow,shortPrice,reviseShort,sessionAllowed,signedExposure,refusalWords,fresh,SHORT_LOAN_DATE_RULE,shortLoanDate,BALANCE_WAIT_WORDS_MS,balanceShows,unshownQuantity,shortQuantity,laggingShorts,balanceWaitWords,creditRowCheck};
+// The shortfall of open shorts (the user's answer, 2026-11-24: "Yes hold it back"): what buying each open short back
+// costs now beyond the proceeds KIS holds for it, max(0, quantity x price - proceeds), from the balance's own rows, for
+// every open short (the app's or one opened by hand). The sum is held back from the cash the app's own buys may use.
+// A short with no price or no proceeds figure makes the whole unknown (known false): the app's buys then wait.
+// No short open: amount 0, known, nothing held (as before).
+function shortfall(balance){const open=(balance?.shorts??[]).filter(s=>Number(s.quantity)>0);const rows=[],missing=[];
+  for(const s of open){const q=Number(s.quantity),p=Number(s.price),proceeds=s.proceeds;
+    if(!(p>0)||!(typeof proceeds==='number'&&Number.isFinite(proceeds)&&proceeds>=0)){missing.push(s.symbol);continue;}
+    const amount=Math.max(0,Math.round(q*p-proceeds));if(amount>0)rows.push({symbol:s.symbol,loanDate:s.loanDate??null,amount});}
+  return {open:open.length,known:missing.length===0,amount:rows.reduce((n,r)=>n+r.amount,0),rows,missing};}
+const SHORTFALL_UNKNOWN_WORDS='a short is open and what buying it back costs beyond its proceeds could not be read';
+module.exports={shortfall,SHORTFALL_UNKNOWN_WORDS,MAX_BORROW_AGE_MS,LAST_TRADE_FRESH_MS,FUTURE_SKEW_MS,DEFAULT_MAX_PCT,VENUE,lendExchange,instrumentAllowed,parseBorrowable,borrowable,capBase,capCheck,upToTick,floorPrice,auctionFloor,floorNow,shortPrice,reviseShort,sessionAllowed,signedExposure,refusalWords,fresh,SHORT_LOAN_DATE_RULE,shortLoanDate,BALANCE_WAIT_WORDS_MS,balanceShows,unshownQuantity,shortQuantity,laggingShorts,balanceWaitWords,creditRowCheck};

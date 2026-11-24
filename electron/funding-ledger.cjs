@@ -152,11 +152,20 @@ class FundingLedger {
   // alsoOpen (M-1.4, several orders open): the cost of open buys at KIS in this market the app did not place (yours), in
   // this market's currency. It must fit beside this order but is not reserved: it is not the app's. 0: as before.
   // other: see inputs (F1); without it the other market is read here, as before.
-  async admit({order,market,cost,balance,environment=null,alsoOpen=0,other}){
+  // holdShortfall (the user's answer, 2026-11-24): the shortfall of open shorts (short-rules.shortfall, from the fresh
+  // Korean balance) is held back from Korean cash for the app's own buys; false for your own ticket. Unknown while a
+  // short is open: SHORT_SHORTFALL_UNKNOWN, the buy waits. No short open: nothing changes. Only where Korean cash is
+  // drawn (planner review): a U.S. buy paid from separate USD is not held, whether the shortfall is known or not.
+  drawsKorean(market){return !(this.regime()==='separate'&&market==='US');}
+  static holdBack(i,hold){if(!hold)return i;const f=require('./short-rules.cjs').shortfall(i.kr);if(!f.open)return i;
+    if(!f.known)throw fail('SHORT_SHORTFALL_UNKNOWN',require('./short-rules.cjs').SHORTFALL_UNKNOWN_WORDS);
+    return f.amount>0?{...i,kCash:i.kCash-f.amount,shortfall:f}:i;}
+  async admit({order,market,cost,balance,environment=null,alsoOpen=0,other,holdShortfall=true}){
     return this.lock(async()=>{
-      const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment,...(other!==undefined?{other}:{})});
+      const account=baseAccount(order.accountKey);const i=FundingLedger.holdBack(await this.inputs(market,balance,{account,environment,...(other!==undefined?{other}:{})}),holdShortfall&&this.drawsKorean(market));
       const c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
       const check=this.check({market,cost:cost+(Number(alsoOpen)>0?Number(alsoOpen):0),commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);
+      if(i.shortfall)check.shortfallHeld=i.shortfall.amount;
       const prev=this.row(order.id);const reserved={...FundingLedger.commitment({...order,status:'Submitting'},prev),state:'reserved',reason:'reserved before submission'};
       this.write(reserved);this.event(order.id,{kind:'commitment',from:prev?.state??null,to:'reserved',amount:reserved.amount,currency:reserved.currency,check});return check;});
   }
@@ -166,7 +175,7 @@ class FundingLedger {
   // revision is sent. pendingRevision is the marker the engine then saves with the order.
   async admitRevision({order,market,price,balance,environment=null}){
     return this.lock(async()=>{
-      const account=baseAccount(order.accountKey);const i=await this.inputs(market,balance,{account,environment});
+      const account=baseAccount(order.accountKey);const i=FundingLedger.holdBack(await this.inputs(market,balance,{account,environment}),order.madeBy!=='ticket'&&this.drawsKorean(market));
       const c=this.commitments(account);if(c.overCommitted)throw fail('FUNDING_OVERCOMMITTED','a broker fill exceeded what was committed; review before new buys');
       const prev=this.row(order.id),next=FundingLedger.commitment({...order,pendingRevision:{price}},prev);const delta=Math.max(0,(next?.amount??0)-(prev?.amount??0));
       if(delta>0){const check=this.check({market,cost:delta,commitments:c,inputs:i});if(!check.fits)throw fail('INSUFFICIENT_CAPACITY',check.detail);}
@@ -183,7 +192,8 @@ class FundingLedger {
     else if(regime==='integrated-usd-first'){const usdShort=Math.max(0,us+(market==='US'?cost:0)-uCash);need=cKR+(market==='KR'?cost:0)+usdShort*rho;have=kCash;}
     else{need=cKR+(market==='KR'?cost:0)+(us+(market==='US'?cost:0))*rho;have=kCash;}
     const round=v=>Math.round(v*100)/100;
-    return {fits:need<=have+1e-6,regime,need:round(need),have:round(have),rate,rho,commitmentsUSD:round(us),commitmentsKRW:round(cKR),detail:`needs ${round(need)} against ${round(have)} (${regime} regime)`};
+    const held=inputs.shortfall?.amount>0?`, after ${inputs.shortfall.amount} held back for losing shorts`:'';
+    return {fits:need<=have+1e-6,regime,need:round(need),have:round(have),rate,rho,commitmentsUSD:round(us),commitmentsKRW:round(cKR),detail:`needs ${round(need)} against ${round(have)} (${regime} regime${held})`};
   }
   // Remaining capacity for a new buy in a market, for display and tests (same rule, solved for the cost).
   capacity({account,market,inputs}){const c=this.commitments(account);const z=this.check({market,cost:0,commitments:c,inputs});const r=this.regime();
@@ -196,7 +206,8 @@ class FundingLedger {
   // no freshness or account checks (those belong to the send), so it is an estimate as of the readings. kr, us: the
   // balances; rate: USD/KRW. Null when Korean cash or the rate is unknown.
   capacityFrom({account,market,kr,us=null,rate}){const kCash=Math.min(kr?.cash,Number.isFinite(kr?.settledCash)?kr.settledCash:kr?.cash);if(!Number.isFinite(kCash)||!(rate>0))return null;
-    return this.capacity({account,market,inputs:{kCash,uCash:us&&Number.isFinite(us.cash)?us.cash:0,reportedKRW:Math.max(0,Number(us?.unsettled?.buyKRW)||0),rate}});}
+    const f=this.drawsKorean(market)?require('./short-rules.cjs').shortfall(kr):{open:0};if(f.open&&!f.known)return null;
+    return this.capacity({account,market,inputs:{kCash:kCash-(f.open?f.amount:0),uCash:us&&Number.isFinite(us.cash)?us.cash:0,reportedKRW:Math.max(0,Number(us?.unsettled?.buyKRW)||0),rate}});}
   summary(account){const c=this.commitments(account);return {regime:this.regime(),commitments:{USD:c.usd,KRW:c.krw},overCommitted:c.overCommitted,rows:c.rows.map(({orderId,market,symbol,state,amount,currency,reason,pretracking,releasedUSD})=>({orderId,market,symbol,state,amount,currency,reason,pretracking,...(releasedUSD?{releasedUSD}:{})}))};}
 }
 module.exports={FundingLedger,FX_FRESH_MS,BALANCE_FRESH_MS,BUFFER,REGIMES};

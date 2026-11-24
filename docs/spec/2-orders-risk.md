@@ -771,6 +771,27 @@ determined here.
     a short open (above KIS's figure INSUFFICIENT_CAPACITY, unreadable INVALID_RESPONSE), and its record carries the
     fact for its screen ("a short is open; KIS's orderable cash is N").
   - Each refusal has words in Activity (`activity-today.cjs`).
+- **The shortfall held back** (the user's answer, 2026-11-24: "Yes hold it back"): for every open short in the Korean
+  balance (the app's or one opened by hand), the shortfall is max(0, quantity × price − the proceeds KIS holds), from
+  the balance's own rows (`short-rules.shortfall`). A winning short does not offset a losing one. The sum is taken off
+  Korean cash in the shared funding check (`FundingLedger.holdBack`, at `admit` and `admitRevision`), for the app's
+  own buys: reviews' and conditional buys, in Korea and U.S. buys paid from Korean cash (the integrated regimes; with
+  separate funds the U.S. cash is not touched). The room the reviews read (`capacityFrom`) is the same.
+  - **Not held back:** sales, covers and margin buys (they never reach the check), and your own order ticket
+    (`holdShortfall:false`, `madeBy:'ticket'`).
+  - **Unreadable** (a short open with no price or no proceeds figure): the app's buys are refused with
+    `SHORT_SHORTFALL_UNKNOWN`, which only stops that order. Unknown holds only what a known shortfall would hold:
+    Korean buys and U.S. buys paid from Korean cash; a U.S. buy paid from separate USD is not refused
+    (`drawsKorean`). A conditional buy waits, armed, by the orderable-cash wait's rule: the wait is kept per account
+    and market (`shortfallWait`), checked before any read, pricing or proposal, with one quiet attempt per 5 minutes
+    and one waiting line per episode. The reviews' room is not given.
+  - **The price** is the balance row's own, so it is as old as the Korean balance (read within two minutes for a
+    send); a short filled but not yet in the balance holds nothing; the buy-back's fee is not counted.
+  - **No short open, or only winning ones:** nothing changes.
+  - **Home:** "₩N of your cash is held back from the app's buys: your short of <stock> costs more to buy back than
+    its sale brought in." When unreadable, the red line says "Buys wait: a short is open and what buying it back
+    costs beyond its proceeds could not be read (<stock>)." (`shortfallLine`, from `deskState().shortfall`).
+  - The review gets the figure as a fact in B3e.
 - **A cover's cash and the loan's end** (B3d-3): a cover is paid from the short's collateral (its proceeds), so like a
   margin buy it reserves no cash in the funding ledger and has no cash check at the send. A short is lent for
   `short.maxDays` (90) calendar days from its loan date, with no extension; until B4 shows KIS's own figure, the last

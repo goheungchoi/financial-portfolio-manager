@@ -238,7 +238,7 @@ class LiveEngine {
       // Your own open buys at KIS in this market must fit beside it (at this order's fee factor); the app's are in the ledger.
       const yoursCost=pending.filter(o=>o.yours&&o.side==='Buy').reduce((n,o)=>n+o.notional,0)*FundingLedger.feeFactor(order);
       timings.checksMs=since(t);t=Date.now();
-      if(this.funding&&order.side==='Buy'&&!['margin-buy','cover'].includes(order.credit?.kind)){await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,...(yoursCost>0?{alsoOpen:yoursCost}:{}),...(other!==undefined?{other}:{})});timings.fundingMs=since(t);t=Date.now();}
+      if(this.funding&&order.side==='Buy'&&!['margin-buy','cover'].includes(order.credit?.kind)){await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,holdShortfall:order.madeBy!=='ticket',...(yoursCost>0?{alsoOpen:yoursCost}:{}),...(other!==undefined?{other}:{})});timings.fundingMs=since(t);t=Date.now();}
       // Rechecked immediately before sending, with no wait until the order is marked Submitting: trading may have been
       // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
       // been sent, so the reservation is released.
