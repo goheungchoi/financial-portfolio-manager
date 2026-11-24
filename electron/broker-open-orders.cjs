@@ -13,5 +13,6 @@ const sameStock=(a,b)=>tickerOf(a)===tickerOf(b)&&String(a??'').includes(':')===
 function openGuard(orders,command,{severalOpen=false,fail}){const open=(orders??[]).filter(OPEN);
   if(severalOpen!==true){if(open.length)throw fail();return {};}
   if(open.some(o=>sameStock(o.symbol,command.symbol)))throw fail();
-  return {openOrders:open.map(o=>({orderId:String(o.orderId),symbol:o.symbol,side:o.side,quantity:o.quantity??null,remaining:o.remaining,price:o.orderPrice??null}))};}
+  // creditName (B3e): KIS's name for the order's kind (유대신규 a short sale), so an open short of yours counts toward the cap.
+  return {openOrders:open.map(o=>({orderId:String(o.orderId),symbol:o.symbol,side:o.side,quantity:o.quantity??null,remaining:o.remaining,price:o.orderPrice??null,...(o.creditName?{creditName:o.creditName}:{})}))};}
 module.exports={openGuard,sameStock};

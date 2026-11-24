@@ -90,8 +90,13 @@ test('the facts while shorts are on: the loan rule, fee per day, shortfall, cap 
   const bad=engine(POLICY).productRisk({...value,balance:{...value.balance,shorts:[{...LOT,loanAmount:null}]}}).productRisk.credit.short;assert.equal(bad.capUsedPct,null);assert.equal(bad.capLeftPct,null);
   // capUsedPct is the cap check's own count: an open short order the app made, and one made outside the app as the send's
   // check sees it (a pending row with credit 'short' and yours), through exposure.shortWaiting.
-  const E=require('../electron/exposure.cjs');const w=engine(POLICY);w.openShortOrders=()=>[{notional:3000}];w.severalOpen=true;w.othersOpen=()=>[];w.pendingOrders=()=>[{credit:'short',notional:2000,yours:true},{credit:'short',notional:9999}];
-  assert.equal(w.productRisk(value).productRisk.credit.short.capUsedPct,17,'12,000 + 3,000 + 2,000 of 100,000');
+  // Your open short in KIS comes from the stored order history (KIS names it 유대신규); a cash sale, a cover and a row with
+  // no kind name are not shorts; a row the app sent is not yours; a finished or cancelled row is not open.
+  const E=require('../electron/exposure.cjs');const w=engine(POLICY);w.openShortOrders=()=>[{notional:3000}];w.pendingOrders=()=>[];
+  const row=(orderId,extra)=>({day:'2026-11-24',orderId,symbol:'990010',side:'Sell',quantity:2,remaining:2,orderPrice:1000,status:'Pending',timestamp:Date.parse('2026-11-24T01:00:00Z'),...extra});
+  w.historyRange=()=>[row('11',{creditName:'유대신규'}),row('12',{creditName:'현금매도'}),row('13',{}),row('14',{side:'Buy',creditName:'유대상환'}),row('15',{creditName:'유대신규',remaining:0,status:'Filled'}),row('16',{creditName:'유대신규',status:'Canceled'})];
+  assert.deepEqual(w.outsideOpenShorts().map(o=>[o.symbol,o.credit,o.notional,o.yours]),[['990010','short',2000,true]]);
+  assert.equal(w.productRisk(value).productRisk.credit.short.capUsedPct,17,'12,000 + 3,000 (the app) + 2,000 (yours in KIS) of 100,000');
   assert.deepEqual(E.shortWaiting({openShorts:[{notional:3000}],pending:[{credit:'short',notional:2000,yours:true},{credit:'short',notional:9999}],lagging:[{notional:1}]}),[{notional:3000},{notional:2000},{notional:1}]);
   });
 });
@@ -164,4 +169,29 @@ test('automatic, as the text names it, is what happens: the setting AND the path
       assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,true,'setting on and the path automatic: sent by itself');
       assert.equal(engine(POLICY).productRisk(value).productRisk.credit.short.automatic,false,'setting off: proposed');}finally{CP.pathStatus=was;}});
   assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,true,'paths closed: the field as before B3e (the setting), the text not sent');
+});
+test('the send\'s check counts your open short in KIS the same way: the open-order guard keeps KIS\'s kind name, pendingOrders marks it a short, and the cap counts it',()=>{
+  const {openGuard}=require('../electron/broker-open-orders.cjs');const E=require('../electron/exposure.cjs');
+  const kis=[{orderId:'0021',symbol:'990020',side:'Sell',quantity:3,remaining:3,orderPrice:1000,status:'Pending',creditName:'유대신규'},{orderId:'0022',symbol:'990030',side:'Sell',quantity:1,remaining:1,orderPrice:500,status:'Pending',creditName:'현금매도'},{orderId:'0023',symbol:'990040',side:'Sell',quantity:1,remaining:1,orderPrice:700,status:'Pending'}];
+  const prepared=openGuard(kis,{symbol:'990010'},{severalOpen:true,fail:()=>new Error('X')});assert.equal(prepared.openOrders[0].creditName,'유대신규');assert.equal('creditName' in prepared.openOrders[2],false);
+  const e=Object.assign(Object.create(LiveEngine.prototype),{severalOpenFixed:true,db:{prepare:()=>{throw new Error('no table');}},orders:()=>[]});
+  const pending=e.pendingOrders({id:'NEW'},prepared);assert.deepEqual(pending.map(o=>[o.symbol,o.credit,o.notional]),[['990020','short',3000],['990030',null,500],['990040',null,700]],'a row with no kind name is not a short (as today)');
+  assert.deepEqual(E.shortWaiting({pending,lagging:[]}),[{notional:3000}],'at the send (no openShorts): yours counted');assert.deepEqual(E.shortWaiting({openShorts:[],pending,lagging:[]}),[{notional:3000}],'at the proposal: yours counted');
+  // The cap refuses on it: 12,000 open + 3,000 yours + 6,000 new = 21% of 100,000 against 20%.
+  const ex=new E.Exposure(new DatabaseSync(':memory:'));ex.savePolicy('a',{short:{enabled:true,auto:true,maxGrossPctOfEquity:20}});
+  assert.throws(()=>ex.checkCredit({account:'a',kind:'short',symbol:'990010',notional:6000,equity:100000,balance:{shorts:[{loanAmount:12000}]},pending,lagging:[]}),/SHORT_LIMIT/);
+  assert.equal(ex.checkCredit({account:'a',kind:'short',symbol:'990010',notional:5000,equity:100000,balance:{shorts:[{loanAmount:12000}]},pending,lagging:[]}).type!=null,true,'20%: allowed');
+});
+test('a half-filled outside short counts its open remainder only (its filled part is in the balance); a fully filled one counts nothing; a cash order keeps its full quantity',()=>{
+  const row=(extra)=>({day:'2026-11-24',orderId:'31',symbol:'990020',side:'Sell',quantity:4,remaining:2,orderPrice:1000,status:'Partially filled',timestamp:Date.parse('2026-11-24T01:00:00Z'),creditName:'유대신규',...extra});
+  // 100,000 of value: the app's lot of 990010 (5,000 of obligation) and the filled half of yours (2,000) in the balance.
+  const bal={...value.balance,shorts:[{...LOT,loanAmount:5000},{symbol:'990020',quantity:2,price:1000,entryPrice:1000,proceeds:2000,loanAmount:2000,loanDate:'2026-11-26'}]};
+  withPathsOpen(()=>{const w=engine(POLICY);w.openShortOrders=()=>[];w.pendingOrders=()=>[];
+    w.historyRange=()=>[row({})];assert.deepEqual(w.outsideOpenShorts().map(o=>[o.quantity,o.notional]),[[2,2000]],'the open remainder');
+    assert.equal(w.productRisk({...value,balance:bal}).productRisk.credit.short.capUsedPct,9,'5,000 + 2,000 filled (balance) + 2,000 open = 9%, not 11%');
+    w.historyRange=()=>[row({remaining:0,status:'Filled'})];assert.deepEqual(w.outsideOpenShorts(),[]);assert.equal(w.productRisk({...value,balance:bal}).productRisk.credit.short.capUsedPct,7,'fully filled: the balance only');});
+  // At the send: the same remainder; a cash sale of yours keeps its full ordered quantity (M-1.4 F2, unchanged).
+  const {openGuard}=require('../electron/broker-open-orders.cjs');const prepared=openGuard([{orderId:'0031',symbol:'990020',side:'Sell',quantity:4,remaining:2,orderPrice:1000,status:'Partially filled',creditName:'유대신규'},{orderId:'0032',symbol:'990030',side:'Sell',quantity:4,remaining:2,orderPrice:500,status:'Partially filled',creditName:'현금매도'}],{symbol:'990010'},{severalOpen:true,fail:()=>new Error('X')});
+  const e=Object.assign(Object.create(LiveEngine.prototype),{severalOpenFixed:true,db:{prepare:()=>{throw new Error('no table');}},orders:()=>[]});
+  assert.deepEqual(e.pendingOrders({id:'NEW'},prepared).map(o=>[o.credit,o.quantity,o.notional]),[['short',2,2000],[null,4,2000]]);
 });

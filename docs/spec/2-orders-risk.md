@@ -714,7 +714,11 @@ determined here.
     tradable quantity (trad_psbl_qty2) at least the order's, a positive whole number;
   - the cap: all shorts together (open obligations, waiting short orders, this one) at most 20% of the account value,
     the low bound when it is a range; no value, no short; an open short or waiting order whose amount cannot be read
-    refuses; no per-stock cap;
+    refuses; no per-stock cap. The waiting short orders are one list (`exposure.shortWaiting`), used by the check and by
+    the review's `capUsedPct` (B3e): the app's open short orders, its filled shorts the balance does not show yet, and
+    your own open short orders in KIS, recognised by KIS's kind name 유대신규 on the order row (`yoursRow`, its open
+    remainder at its listed price, the filled part being in the balance): from the preparation's open-order read at the send, and from the stored order
+    history at the proposal and for the review. A row whose kind name cannot be read is not counted as a short;
   - freshness: a time more than 5 s ahead of the clock, or no readable clock, is not fresh;
   - the price: the uptick rule as the smallest valid price above the last trade on the Korean grid (the band's tick at
     each edge; an off-grid last trade too), never a market order; in the opening auction above the previous close by a tick; a new short goes at its placement price

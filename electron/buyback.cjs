@@ -57,7 +57,7 @@ function marketsInScope({scope,kr=false,us=false}){if(scope==='paper')return [];
 // Order numbers are compared through the one helper (order-chain norm, outside-fills keyOf).
 function openOutsideOrders(source,today){const {appOrderIds,keyOf}=require('./outside-fills.cjs'),{norm}=require('./order-chain.cjs');const mine=appOrderIds(source.rows??[],source.intents??[],source.market);
   return (source.rows??[]).filter(r=>r.day===today&&Number(r.remaining)>0&&!/cancel|reject/i.test(r.status??'')&&!mine.has(keyOf(r.day,r.orderId)))
-    .map(r=>({market:source.market,symbol:r.symbol,side:r.side,quantity:r.quantity,remaining:r.remaining,price:r.orderPrice??null,at:r.timestamp,orderId:norm(r.orderId)}));}
+    .map(r=>({market:source.market,symbol:r.symbol,side:r.side,quantity:r.quantity,remaining:r.remaining,price:r.orderPrice??null,at:r.timestamp,orderId:norm(r.orderId),...(r.creditName?{creditName:r.creditName}:{})}));}
 // What an order handler returns for a refused order: the code, and the dated words of the block's refusals.
 const refusalReply=(error,allowed)=>({error:allowed(error?.message)||['BUYBACK_BLOCKED','BUYBACK_UNKNOWN'].includes(error?.message)?error.message:null,...(['BUYBACK_BLOCKED','BUYBACK_UNKNOWN'].includes(error?.message)&&typeof error.detail==='string'?{detail:error.detail}:{})});
 // Which orders the block applies to: an app buy, a margin buy included; never a sale, a cover or your own ticket.

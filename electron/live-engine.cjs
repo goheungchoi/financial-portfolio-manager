@@ -8,6 +8,13 @@ const WON_RULE='The app checks every U.S. buy, automatic or yours, twice before 
 // An order request refused before it left the app by the KIS request limit (M-1a, M-1.5a).
 const notSentError=e=>e?.message==='ORDER_NOT_SENT'||e?.message==='RATE_LIMITED'&&e?.notSent===true;
 const LIMIT_FIELDS=new Set(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','maxDailyLossKRW','lossLimit','anyStock']);
+// One open order of yours in KIS as a pending row (M-1.4 F2: at its full ordered quantity, at its listed price). Its kind
+// (B3e): a Sell KIS names 유대신규 is a short sale and counts toward the short cap; a row whose kind cannot be read is not
+// counted as a short. Used by the send's check (pendingOrders) and by the review's capUsedPct alike.
+// A short counts its open remainder only: its filled part is in the balance's short rows (or the lagging rule), so the
+// full quantity would count it twice (planner review: a half-filled outside short showed 15% for a true 10%).
+function yoursRow(o){const short=o.side==='Sell'&&require('./outside-fills.cjs').kindOf(o)==='short';const q=short?Math.max(0,Number(o.remaining)||0):Number.isFinite(o.quantity)&&o.quantity>=o.remaining?o.quantity:o.remaining;
+  return {symbol:o.symbol,side:o.side,credit:short?'short':null,quantity:q,fullQuantity:q,price:o.price??0,notional:q*(o.price??0),extended:false,yours:true};}
 class LiveEngine {
   constructor(db,broker,getConnection,options={}) {
     this.market=options.market??'KR';this.day=this.market==='US'?require('./kis-overseas.cjs').localDate:seoulDate;this.validSymbol=symbol=>this.market==='US'?/^(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14}$/.test(symbol):/^\d{6}$/.test(symbol);this.validPrice=price=>Number.isFinite(price)&&price>=1&&(this.market==='US'?Math.abs(price*100-Math.round(price*100))<1e-7:Number.isSafeInteger(price));
@@ -147,7 +154,7 @@ class LiveEngine {
       const allowed=R.instrumentAllowed({market:inst?.market,type:inst?.type});if(!allowed.ok)throw Object.assign(new Error(allowed.code),{detail:allowed.words});
       if(credit.market!=null&&credit.market!==inst.market)throw new Error('INVALID_ORDER');shortMarket=inst.market;
       let session='other';try{session=this.shortSession?.()??'other';}catch{session='other';}if(!R.sessionAllowed(session))throw Object.assign(new Error('SHORT_SESSION_CLOSED'),{detail:'Short sales are sent in the regular session or the opening auction only.'});}
-    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:credit.kind==='short'?this.shortCapBase(balance):this.exposureBase(balance),balance,loanDate:credit.loanDate??null,...(credit.kind==='short'?{lagging:require('./short-rules.cjs').laggingShorts(this.orders(),balance),openShorts:this.openShortOrders()}:{}),pending});}
+    let creditGate=null;if(credit){if(!this.exposure)throw new Error('FEATURE_UNAVAILABLE');creditGate=this.exposure.checkCredit({account:this.identity(),kind:credit.kind,symbol:command.symbol,notional,equity:credit.kind==='short'?this.shortCapBase(balance):this.exposureBase(balance),balance,loanDate:credit.loanDate??null,...(credit.kind==='short'?{lagging:require('./short-rules.cjs').laggingShorts(this.orders(),balance),openShorts:this.openShortOrders()}:{}),pending:credit.kind==='short'?[...pending.filter(o=>!o.yours),...this.outsideOpenShorts()]:pending});}
     // A short cover reduces exposure: the product approval of a buy does not apply to it (1.5.48 review, R2).
     const productApproval=credit?.kind!=='cover'&&Boolean(gate?.requiresApproval);
     const intent={...(gate&&gate.product.kind!=='standard'?{product:gate.product,requiresApproval:productApproval}:{}),...(creditGate&&credit.kind==='short'?{borrowFeePct:this.exposure.policy(this.identity())?.short?.feePct??null}:{}),...(creditGate?{credit:{kind:credit.kind,type:creditGate.type,loanDate:credit.loanDate??null,...(shortMarket?{market:shortMarket}:{})},requiresApproval:creditGate.requiresApproval||productApproval||!path.automatic,...(path.label?{restriction:path.label}:{})}:{}),market:this.market,currency:this.market==='US'?'USD':'KRW',costPerShare,costSettings,costEstimate,id:randomUUID(),accountKey:this.identity(),source:'kis',environment:this.getConnection().snapshot.environment,...command,status:'Ready',createdAt:Date.now(),expiresAt:Date.now()+120000,day:this.day(),notional,brokerOrderId:null,filled:0,reason:null,...(conditional===true?{madeBy:'conditional'}:{})};this.save(intent);return intent;
@@ -308,7 +315,7 @@ class LiveEngine {
       return {symbol:o.symbol,side:o.side,credit:o.credit?.kind??null,quantity:left,fullQuantity:o.quantity??0,price:px(o),notional:left*px(o),extended:Boolean(o.session&&!/regular/.test(o.session))};});
     // F2 (M-1.4 review): yours count at their full ordered quantity. The Korean preparation reads the balance before the
     // order history, so a fill of yours between the two reads is in neither; the ordered quantity covers it.
-    const yours=this.othersOpen(prepared).map(o=>{const q=Number.isFinite(o.quantity)&&o.quantity>=o.remaining?o.quantity:o.remaining;return {symbol:o.symbol,side:o.side,credit:null,quantity:q,fullQuantity:q,price:o.price??0,notional:q*(o.price??0),extended:false,yours:true};});
+    const yours=this.othersOpen(prepared).map(yoursRow);
     return [...app,...yours];}
   // Why the current product and credit rules require your approval for an order, or null; their refusals throw.
   // Protective orders (sales, repayments, short covers) never need it (1.5.48 review, R2). Synchronous.
@@ -453,12 +460,16 @@ class LiveEngine {
   // and cover paths can be sent (credit-paths shortPathsOpen; not before B4), from readings
   // already held (no KIS read for the context): the loan's cover rule, the fee per day, the shortfall held back, the cap
   // used and left, and the last lending-list answer for each universe stock (null: not read).
+  // Your open short orders in KIS (B3e), from the stored order history (its rows keep KIS's kind name), as pending rows
+  // of the same form the send's check counts (yoursRow). Today's open orders the app did not send.
+  outsideOpenShorts(){let today=null;try{today=this.day();}catch{return [];}let rows=[];try{rows=this.historyRange(today);}catch{return [];}
+    return require('./buyback.cjs').openOutsideOrders({market:this.market,rows,intents:this.orders()},today).map(yoursRow).filter(o=>o.credit==='short');}
   shortFacts(credit,value,policy){const R=require('./short-rules.cjs'),bal=value.balance,s=credit.short;s.coverBeforeDays=policy.short.coverBeforeDays;
     // What happens to a short the review decides (planner, B3e): sent by itself only when the setting says so AND its path
     // is automatic (credit-paths: an opening is proposed for approval until then).
     s.automatic=s.automatic===true&&credit.effective?.short?.automatic===true;
     const f=R.shortfall(bal);s.shortfall={amountKRW:f.amount,known:f.known,rows:f.rows.map(r=>({symbol:r.symbol,loanDate:r.loanDate,amountKRW:r.amount})),...(f.missing.length?{missing:f.missing}:{})};
-    let use=null;try{use=R.capUse({value:{low:this.shortCapBase(bal)},shorts:bal.shorts??[],waiting:require('./exposure.cjs').shortWaiting({openShorts:this.openShortOrders(),pending:this.pendingOrders(null,null),lagging:R.laggingShorts(this.orders(),bal)}),maxPct:policy.short.maxGrossPctOfEquity});}catch{use=null;}
+    let use=null;try{use=R.capUse({value:{low:this.shortCapBase(bal)},shorts:bal.shorts??[],waiting:require('./exposure.cjs').shortWaiting({openShorts:this.openShortOrders(),pending:[...this.pendingOrders(null,null).filter(o=>!o.yours),...this.outsideOpenShorts()],lagging:R.laggingShorts(this.orders(),bal)}),maxPct:policy.short.maxGrossPctOfEquity});}catch{use=null;}
     s.capUsedPct=use?.capUsedPct??null;s.capLeftPct=use?.capLeftPct??null;
     if(Array.isArray(credit.shorts))credit.shorts=credit.shorts.map(p=>{const lot=(bal.shorts??[]).find(x=>x.symbol===p.symbol&&x.loanDate===p.loanDate);return {...p,feePerDay:Number.isFinite(lot?.proceeds)?Math.round(lot.proceeds*policy.short.feePct/100/365):null};});
     const reads=this.lendReads??new Map();s.candidates=(value.quotes??[]).map(q=>q.symbol).filter(sym=>/^[0-9A-Z]{6}$/.test(String(sym))).map(sym=>{const r=reads.get(sym);return {symbol:sym,borrowable:r?r.borrowable:null,readAt:r?new Date(r.at).toISOString():null};});}
