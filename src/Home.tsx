@@ -10,6 +10,7 @@ import {useDraftState} from './useDraftState';
 import {ValueChart,shortDay} from './PerfCharts';
 import {homeResult,resultSummary,periodNote} from './home-result.mjs';
 import {SectionBoundary} from './SectionBoundary';
+import {ShortPositions} from './ShortPositions';
 const krw=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const native=(n:number,currency:string)=>new Intl.NumberFormat('en-US',{style:'currency',currency,maximumFractionDigits:currency==='KRW'?0:2}).format(n);
 const compact=(n:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',notation:'compact',maximumFractionDigits:1}).format(n);
@@ -173,9 +174,9 @@ export function HomeHoldings({state,onCompany,onAll,onRefresh,busy}:{state:Portf
   const change=(row:PortfolioRow)=>row.cost>0?(row.price/row.cost-1)*100:null;
   return <div className="home-bottom">
     <section className="home-holdings" aria-label="Holdings"><div className="section-head"><h2>Holdings</h2><div className="actions"><button className="link-button" disabled={busy} onClick={onRefresh}>{busy?'Refreshing…':'Refresh'}</button><button className="link-button" onClick={onAll}>All {state.rows.length} →</button></div></div>
-      {rows.length?<ul className="compact-rows home-holdings-list">{rows.map(row=>{const c=change(row);return <li key={row.symbol}><button className="company-link" onClick={()=>onCompany(row.symbol)}>{row.name}</button><span className="num">{native(row.price,row.currency)}</span><span className={`num ${c==null||Math.abs(c)<.005?'muted':c>0?'positive':'negative'}`} title="Gain or loss against your average cost">{c==null||Math.abs(c)<.005?'—':pct(c)}</span><span className="num muted" title="Share of total equity">{equity>0&&row.valueKRW!=null?`${(row.valueKRW/equity*100).toFixed(0)}%`:'—'}</span></li>;})}</ul>:<p className="muted">No positions yet.</p>}
+      {rows.length?<ul className="compact-rows home-holdings-list">{rows.map(row=>{const c=change(row);return <li key={row.symbol}><button className="company-link" onClick={()=>onCompany(row.symbol)}>{row.name}</button><span className="num">{native(row.price,row.currency)}</span><span className={`num ${c==null||Math.abs(c)<.005?'muted':c>0?'positive':'negative'}`} title="Gain or loss against your average cost">{c==null||Math.abs(c)<.005?'—':pct(c)}</span><span className="num muted" title="Share of total equity">{equity>0&&row.valueKRW!=null?`${(row.valueKRW/equity*100).toFixed(0)}%`:'—'}</span></li>;})}</ul>:<p className="muted">No positions yet.</p>}<ShortPositions rows={state.shorts} compact/>
     </section>
-    <section className="home-allocation" aria-label="Allocation"><div className="section-head"><h2>Allocation</h2><select aria-label="Allocation grouping" value={group} onChange={e=>setGroup(e.target.value)}>{['Company','Sector','Region','Market','Currency'].map(label=><option key={label}>{label}</option>)}</select></div>{buckets.length?<AllocationChart buckets={buckets} equity={equity}/>:<p className="muted">Waiting for balances.</p>}</section>
+    <section className="home-allocation" aria-label="Allocation"><div className="section-head"><h2>Allocation</h2><select aria-label="Allocation grouping" value={group} onChange={e=>setGroup(e.target.value)}>{['Company','Sector','Region','Market','Currency'].map(label=><option key={label}>{label}</option>)}</select></div>{buckets.length?<AllocationChart buckets={buckets} equity={equity} shortsOpen={Boolean(state.shorts?.length)}/>:<p className="muted">Waiting for balances.</p>}</section>
   </div>;
 }
 // Shown on every page while an emergency review mode is active.

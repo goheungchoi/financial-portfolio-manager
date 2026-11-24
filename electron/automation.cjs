@@ -741,6 +741,29 @@ class Automation {
     for(const lot of shorts.filter(l=>Number(l.quantity)>0&&mine.has(`${l.symbol}|${l.loanDate}`))){const {end,lastDay}=SS.loanEnd(lot.loanDate,maxDays,isOpen);if(SS.businessDaysTo(today,lastDay,isOpen)>before)continue;const d=this.loanEndDecision(scope,lot);if(d.list)out.push({symbol:lot.symbol,loanDate:lot.loanDate,end,lastDay,cause:d.list.cause,words:d.list.words});
       else if(d.covered==='armed'&&!watched)out.push({symbol:lot.symbol,loanDate:lot.loanDate,end,lastDay,cause:'unwatched',words:'its cover is armed but not watched until auto trading is started'});}
     return out;}
+  // Short selling B3f-2 (rulings-b3f-plan.md 2): the rows of the "Short positions" section, one per open lot in the Korean
+  // balance: stock, quantity, sale price, price now, result so far (the proceeds KIS holds less buying it back now),
+  // loan date, KIS's end of the loan and the calendar days to it, and the stop: armed (its level), waiting (held, with
+  // why) or no working stop (with the cause). A lot the app did not sell (opened in the KIS app) is marked so, and no stop
+  // is claimed for it. No open short: [] (the section is absent). No KIS read: the balance and the app's own records.
+  shortPositionsView(scope=this.watchScope(),now=Date.now()){const c=this.shortViewCache;if(c&&c.scope===scope&&now-c.at>=0&&now-c.at<5000)return c.value;const value=this.shortPositionsRead(scope,now);this.shortViewCache={scope,at:now,value};return value;}
+  // Planner review: one read of the cover stops per call, cached 5 s (portfolioState is called often); a price of 0 is
+  // unreadable; a hand short shows a cover stop that exists (not the app's); the last buy-back day and the business days
+  // to it are the loan-end rule's own (the app's count), "past" never negative.
+  shortPositionsRead(scope,now){const {shorts}=this.shortBalance();const open=shorts.filter(l=>Number(l.quantity)>0);if(!open.length)return [];const SS=require('./short-stops.cjs');
+    let p=null;try{p=this.live?.exposure?.policy?.(this.live.identity())?.short;}catch{}const maxDays=Number(p?.maxDays)>0?Number(p.maxDays):90;
+    const today=require('./market-hours.cjs').seoulDay(now);let closed=new Set();try{closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);}catch{}const isOpen=d=>closed.has(d)?false:null;
+    let mine=new Set();try{mine=new Set(this.live.orders().filter(o=>o.side==='Sell'&&o.credit?.kind==='short'&&Number(o.filled)>0&&o.lotLoanDate).map(o=>`${o.symbol}|${o.lotLoanDate}`));}catch{}
+    let unprotected=[];try{unprotected=this.unprotectedNow(scope).filter(u=>u.short);}catch{unprotected=[];}
+    let stops=[];try{stops=this.desk.recentRows('conditional_orders',scope,500).filter(o=>o.side==='Buy'&&o.credit?.kind==='cover'&&o.purpose==='stop_loss'&&['armed','firing'].includes(o.status));}catch{stops=[];}
+    const num=v=>typeof v==='number'&&Number.isFinite(v)?v:null,pos=v=>num(v)!=null&&v>0?v:null;
+    return open.map(l=>{const byHand=!mine.has(`${l.symbol}|${l.loanDate}`);let lastDay=null,businessDaysLeft=null;try{if(l.loanDate){lastDay=SS.loanEnd(l.loanDate,maxDays,isOpen).lastDay;businessDaysLeft=SS.businessDaysTo(today,lastDay,isOpen);}}catch{}
+      const price=pos(l.price),result=num(l.proceeds)!=null&&price!=null?Math.round(l.proceeds-Number(l.quantity)*price):null;
+      const armed=stops.find(o=>o.symbol===l.symbol&&o.credit?.loanDate===l.loanDate)??null,level=Number(armed?.conditions?.[0]?.value);let stop=null;
+      if(byHand){if(armed)stop={state:'armed',level:Number.isFinite(level)?level:null,notApps:true};}
+      else{const u=unprotected.find(x=>x.symbol===l.symbol&&x.loanDate===l.loanDate);if(u)stop=u.held?{state:'waiting',why:u.waiting??'held'}:{state:'none',cause:u.outcome??u.cause??'its stop is not working'};
+        else stop=armed?{state:'armed',level:Number.isFinite(level)?level:null}:{state:'none',cause:'no cover stop is armed'};}
+      return {symbol:l.symbol,name:l.name??null,quantity:Number(l.quantity),entryPrice:num(l.entryPrice),price,result,loanDate:l.loanDate??null,lastDay,businessDaysLeft:businessDaysLeft!=null&&businessDaysLeft<0?null:businessDaysLeft,pastLastDay:businessDaysLeft!=null&&businessDaysLeft<0,byHand,stop};});}
   // The decision for one short lot from its own cover-stop record, with its order's state at KIS.
   shortLotDecision(scope,lot){const SS=require('./short-stops.cjs');let rows=[];try{rows=this.desk.lotStops(scope,lot.symbol,lot.loanDate);}catch{return {list:{cause:'unreadable',words:'its cover stop record could not be read'}};}
     const rec=o=>{try{return this.live?.orders?.().find(r=>r.id===o.proposalId)??null;}catch{return null;}};return SS.lotDecision(rows,{brokerStatus:o=>rec(o)?.status??null,brokerFilled:o=>rec(o)?.filled??0,brokerExpired:o=>{const r=rec(o);return Boolean(r&&Number.isFinite(r.expiresAt)&&r.expiresAt<Date.now());}});}

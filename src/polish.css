@@ -595,3 +595,10 @@ table.discover-table{table-layout:auto}
    inside its card below 920 px rather than squeezing the numbers together. */
 .activity-orders{min-width:920px}
 .activity-orders th{padding-right:12px}
+/* Short selling B3f-2: Home's short positions, part of the holdings card (no box of its own), each on two lines. */
+.home-shorts{margin-top:14px;padding-top:10px;border-top:1px solid var(--border)}
+.home-shorts-title{margin:0;font-size:13px;font-weight:600}
+.home-shorts-list>li{display:block}
+.home-shorts-list .short-line{display:flex;align-items:center;gap:12px;min-width:0}
+.home-shorts-list .short-line .num{white-space:nowrap}
+.home-shorts-list .short-detail{display:block;margin-top:3px;font-size:12px}

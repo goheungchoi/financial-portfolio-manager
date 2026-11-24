@@ -15,6 +15,7 @@ const cases=[
   ['A scout run that gave no plan: the card keeps the plan and says so','scout-failed-desktop.cjs',[],data('scout-failed')],
   ['Home Holdings card: every holding, 7 rows fit','home-holdings-desktop.cjs',['--count','7'],data('home-holdings-7')],
   ['Home Holdings card: every holding, 15 rows scroll inside the card','home-holdings-desktop.cjs',['--count','15'],data('home-holdings-15')],
+  ['Short positions: the section below the holdings on Home and the Holdings tab, an app short and one opened in the KIS app, both themes','short-positions-desktop.cjs',[],data('short-positions')],
   ['Claude trading with several orders: Start, Stop with a dry run that no longer counts, and the refusal sentence','claude-start-stop-desktop.cjs',[],data('claude-start-stop')],
   ['Activity: opens with rows, totals with a corrected order, Today and not-sent, From, a failed refresh keeps rows, both themes','activity-desktop.cjs',[],data('activity')],
   ["Scripts: the Scout panel's Screens section with a partly read history and a failed run's scripts",'s5-desktop.cjs',['--mode=screens'],data('s5-screens')],
