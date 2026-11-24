@@ -92,5 +92,8 @@ test('a closed-market run reads flagged targets without spending next-session re
   const previous={timestamp:Date.parse('2026-10-21T09:50:00Z'),plan:{targets:[{symbol:'NASD:CTSO',role:'hold',thesis:'old'},{symbol:'NASD:FBRK',role:'hold',thesis:'t'},{symbol:'NYSE:NWWR',role:'hold',thesis:'t'}]}};
   const plan={targets:[{symbol:'999001',role:'hold',thesis:'t'},{symbol:'NASD:CTSO',role:'trim',thesis:'Results cut the cash-flow case.'}]};const now=Date.parse('2026-10-22T00:10:00Z');
   assert.deepEqual(carryForward(plan,previous,['US'],now,{reassessed:['NASD:CTSO']}).targets.map(t=>`${t.symbol}:${t.role}`),['999001:hold','NASD:CTSO:trim','NASD:FBRK:hold','NYSE:NWWR:hold']);
-  assert.deepEqual(carryForward(plan,previous,['US'],now).targets.map(t=>t.symbol),['999001','NASD:CTSO'],'unasked, a U.S. target still covers the market');
+  // Carried scout targets (2026-11-24): unasked, a target for a symbol of the previous plan now replaces that one only
+  // (it covered the whole market before); a U.S. symbol not in the previous plan still covers the market.
+  assert.deepEqual(carryForward(plan,previous,['US'],now).targets.map(t=>t.symbol),['999001','NASD:CTSO','NASD:FBRK','NYSE:NWWR'],'unasked, a restated target replaces that one only');
+  assert.deepEqual(carryForward({targets:[{symbol:'999001',role:'hold',thesis:'t'},{symbol:'NASD:XYZ',role:'add',thesis:'t'}]},previous,['US'],now).targets.map(t=>t.symbol),['999001','NASD:XYZ'],'a U.S. symbol not in the previous plan still covers the market');
 });

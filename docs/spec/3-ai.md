@@ -508,13 +508,24 @@ or close; a scheduled run focuses on its slot's market. Tools are limited to the
 screening and the overview of a deferred market are refused, up to three company reads there are answered as
 "next-session". Targets for deferred markets are carried forward from the previous plan, dated, for at most three
 days (`carryForward`, `:200-203`); carried targets contradicted by a later review or a large price move are flagged
-for reassessment (`staleCarried`, `:209-213`).
+for reassessment (`staleCarried`, `:209-213`). Carried scout targets (2026-11-24, the user's "I like these ideas"):
+any run may restate a carried target from what it already has. A returned target for a deferred-market symbol that is
+in the previous plan replaces that target only (a new target: the run's time and price, no `carriedFrom`), as a
+reassessed one does; a deferred-market symbol not in the previous plan is handled as before (the run covers that
+market). The tools are unchanged, no role was added: there is none that means "no longer a target" (`exit` means selling the
+holding), so a restated target takes an existing role with a new thesis. The scout's text says so in two sentences ('scout 2026-11-25'); nothing gates on the scout's version.
+A later review's `passed` verdict flags a carried target whatever its role (before, hold, add and candidate only); the
+opposite-trade and price-move rules are unchanged.
 
 **What it is given** (`scout()`, `automation.cjs:1890-1897`): `today`, `userGuidelines`, `researchFocus`, `accounts`
 (per market: equity, cash, buying power, permitted leveraged products, positions with weights; a market that could
 not be read is `status:'unavailable'`), `sectorLeads`, `opportunitySet`, `watchlist`, `previousPlan`, `macro`, `news`,
 `topStories`, `briefs`, `scorecard`, `tradingVerdicts`, `openOrders`, `tradingNotes`, `marketNarrative`,
-`similarEpisodes`, `portfolioExposure`, `marketRegime`, `retrospectives`, `carriedNeedingReassessment`. With both
+`similarEpisodes`, `portfolioExposure`, `marketRegime`, `retrospectives`, `carriedNeedingReassessment`. The previous
+plan's targets in deferred markets carry their facts (`scout.carriedFacts`): `setAt`; `priceWhenSet` when stored;
+`priceNow`, the latest price the app has (none when it has none); `movePct` from one to the other, one decimal, only
+with both; `sessionsSince`, the regular sessions of that market started since it was set, from the session calendar
+with the closed days the app knows (`sessionsStarted`; none when it cannot be worked out). With both
 markets, a Korean account that cannot be read is left out unless the run focuses on Korea, in which case the run
 fails (`scoutAccount`, `:1858-1873`).
 
@@ -822,7 +833,7 @@ named.
 | `reviewWatches` | the model's own price watches | `:583` | always | P |
 | `sectorLeads` | sector moves in the other market | `sectorLeads` (set by main) `:585` | KIS, when available | B |
 | `orderFollowUp` | each pending order as the app follows it, and a note on when reviews wait for it | `:587-589` | a pending order exists | P |
-| `scoutPlan` | the latest scout plan ≤36 h old (2.4) | `scout.cjs` `reviewContext`; `:589` | KIS, plan exists | B |
+| `scoutPlan` | the latest scout plan ≤36 h old (2.4); a carried target has `setAt` and its facts `priceWhenSet`, `priceNow`, `movePct`, `sessionsSince` (`carriedFacts`; at most 1,312 bytes for 16 targets), with no instruction text (the review's text and fingerprints unchanged) | `scout.cjs` `reviewContext`; `:589` | KIS, plan exists | B |
 | `planGap` | cash and invested share per market and each target's planned vs held weight; `minimumPosition` per target: one share's value and weight, `checks` (`cash`, `sizing`, `companyCap`, `orderCap`, `marketOpen`: the target's market takes the app's orders now, from that market's `marketSession`; false for a market the context does not cover, null when no session is reported) and `feasible` (no check false and cash true; so false while the market is closed, since 1.5.70) | `plan-gap.cjs` `addMinimumPositions` | with `scoutPlan` | B |
 | `scoutBrief` | whether a scout run may be requested, remaining runs, scheduled runs, open briefs | `scoutBriefState` `:1809` | scout usable and in use | B |
 | `agentDesk` | notes, triggers, conditional orders (allowed, limits, armed, recent, `monitoring`) | `desk.context` `:589` | KIS | P |

@@ -150,6 +150,7 @@ tests/market-sessions.test.cjs
 tests/extended-sessions.test.cjs
 tests/account-history.test.cjs
 tests/scout-focus.test.cjs
+tests/scout-carried.test.cjs
 tests/us-calendar.test.cjs
 tests/routing-removal.test.cjs
 tests/agent-models.test.cjs

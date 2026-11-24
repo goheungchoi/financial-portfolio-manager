@@ -91,10 +91,11 @@ class ScoutStore {
 // stale: carried targets that need reassessment (staleCarried), shown on their targets.
 // failed (2026-11-18): a scheduled scout run that failed after this plan ({at, reason}); the review then sees
 // lastRunFailed, so it knows the plan predates that run. Absent otherwise.
-function reviewContext(record,now=Date.now(),{stale=[],failed=null}={}){
+// facts(target): the carried target's facts (carriedFacts), for carried targets only; absent, as before.
+function reviewContext(record,now=Date.now(),{stale=[],failed=null,facts=null}={}){
   if(!record||now-record.timestamp>36*3600000)return null;const p=record.plan;const flagged=new Map(stale.map(s=>[s.symbol,s.reasons]));
   const lastRunFailed=failed&&Number.isFinite(failed.at)&&failed.at>record.timestamp?{at:new Date(failed.at).toISOString(),reason:String(failed.reason??'SCOUT_FAILED').slice(0,60)}:null;
-  return {asOf:new Date(record.timestamp).toISOString(),...(lastRunFailed?{lastRunFailed}:{}),summary:p.summary,cashTargetPct:p.cashTargetPct,focus:p.focus,targets:p.targets.map(({symbol,name,role,targetWeightPct,thesis,carriedFrom})=>({symbol,name,role,targetWeightPct,thesis,...(carriedFrom?{setAt:carriedFrom}:{}),...(carriedFrom&&flagged.has(symbol)?{needsReassessment:flagged.get(symbol)}:{})})),...(record.answered?.length?{briefAnswers:record.answered}:{}),...(p.substitutions?.length?{substitutions:p.substitutions}:{})};
+  return {asOf:new Date(record.timestamp).toISOString(),...(lastRunFailed?{lastRunFailed}:{}),summary:p.summary,cashTargetPct:p.cashTargetPct,focus:p.focus,targets:p.targets.map(t=>({symbol:t.symbol,name:t.name,role:t.role,targetWeightPct:t.targetWeightPct,thesis:t.thesis})).map((x,i)=>{const t=p.targets[i],carriedFrom=t.carriedFrom;return {...x,...(carriedFrom?{setAt:carriedFrom}:{}),...(carriedFrom&&typeof facts==='function'?(()=>{try{const{setAt,...f}=facts(t)??{};return f;}catch{return {};}})():{}),...(carriedFrom&&flagged.has(x.symbol)?{needsReassessment:flagged.get(x.symbol)}:{})};}),...(record.answered?.length?{briefAnswers:record.answered}:{}),...(p.substitutions?.length?{substitutions:p.substitutions}:{})};
 }
 // Research rounds: the AI calls tools until it writes a plan; the last round must answer.
 // Three rounds of at most six requests: two research rounds (up to 12 tool calls), then the plan. maxBytes is the whole
@@ -274,9 +275,14 @@ function focusTools(discovery,focus,{reads=NEXT_SESSION_READS,guard=()=>{},reass
 // Targets for deferred markets come from the previous plan, keeping the date they were set; targets older than
 // three days are dropped. A deferred market the new plan does cover keeps the new targets. reassessed: carried symbols
 // the run was asked to reassess; a new target for one of them replaces that target only, and the market's other
-// targets still carry forward.
+// targets still carry forward. Carried scout targets (2026-11-24, the user's "I like these ideas"): any run may restate
+// a carried target, so a returned target for a deferred-market symbol that is in the previous plan replaces that target
+// only, as a reassessed one does (it is a new target: the run's time and price, no carriedFrom). A deferred-market
+// symbol not in the previous plan is handled as before (the run covers that market).
 function carryForward(plan,previous,deferred,now=Date.now(),{reassessed=[]}={}){
-  if(!previous||!deferred.length)return plan;const symbols=new Set(plan.targets.map(t=>t.symbol));const covered=new Set(plan.targets.filter(t=>!reassessed.includes(t.symbol)).map(t=>marketOf(t.symbol)));const prevAt=new Date(previous.timestamp).toISOString();
+  if(!previous||!deferred.length)return plan;const symbols=new Set(plan.targets.map(t=>t.symbol));
+  const before=new Set((previous.plan?.targets??[]).map(t=>t.symbol));const restated=plan.targets.filter(t=>deferred.includes(marketOf(t.symbol))&&before.has(t.symbol)).map(t=>t.symbol);
+  const replaceOnly=new Set([...reassessed,...restated]);const covered=new Set(plan.targets.filter(t=>!replaceOnly.has(t.symbol)).map(t=>marketOf(t.symbol)));const prevAt=new Date(previous.timestamp).toISOString();
   const carried=(previous.plan?.targets??[]).filter(t=>deferred.includes(marketOf(t.symbol))&&!covered.has(marketOf(t.symbol))&&!symbols.has(t.symbol)).map(t=>({...t,carriedFrom:t.carriedFrom??prevAt})).filter(t=>now-Date.parse(t.carriedFrom)<=72*3600000);
   return carried.length?{...plan,targets:[...plan.targets,...carried].slice(0,16)}:plan;
 }
@@ -287,14 +293,25 @@ function carryForward(plan,previous,deferred,now=Date.now(),{reassessed=[]}={}){
 // A morning plan once carried a hold thesis that accepted an earnings risk, after several
 // trading reviews had recommended selling on those results.
 const KEEPS=['hold','add','candidate'],CUTS=['trim','exit'];
+// A carried target's facts (2026-11-24), plain context data: setAt; priceWhenSet when stored; priceNow, the latest price
+// the app has (none when it has none); movePct from priceWhenSet to priceNow, one decimal, only with both; sessionsSince,
+// the regular sessions of its market started since it was set (none when that cannot be worked out).
+function carriedFacts(t,{price=()=>null,sessionsSince=()=>null}={}){const setAt=t?.carriedFrom??null;if(!setAt)return null;const out={setAt};
+  const then=Number(t.priceWhenSet);if(then>0)out.priceWhenSet=then;let now=null;try{now=Number(price(t.symbol));}catch{now=null;}if(now>0)out.priceNow=now;
+  if(then>0&&now>0)out.movePct=Math.round((now/then-1)*1000)/10;let n=null;try{n=sessionsSince(marketOf(t.symbol),Date.parse(setAt));}catch{n=null;}if(Number.isInteger(n)&&n>=0)out.sessionsSince=n;return out;}
+// Regular sessions of a market started after `since` and by `now`, from the session calendar (market-sessions sessionsOn:
+// a Korean closed day has none, a shifted or half day counts once). closedDays: Korean days the app knows are closed.
+function sessionsStarted(market,since,now=Date.now(),closedDays=new Set()){if(!Number.isFinite(since)||since>now)return null;const MS=require('./market-sessions.cjs');const tz=market==='US'?'America/New_York':'Asia/Seoul';
+  let day=MS.localDay(since,tz);const last=MS.localDay(now,tz);let n=0;for(let i=0;day<=last&&i<400;i++){for(const s of MS.sessionsOn(market,day,{closedDays}))if(s.regular&&s.startAt>since&&s.startAt<=now)n++;day=new Date(Date.parse(day+'T00:00:00Z')+86400000).toISOString().slice(0,10);}return n;}
 function staleCarried(targets,{reviews=[],price=()=>null,movePct=6}={}){
   const day=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
   return (targets??[]).filter(t=>t.carriedFrom).flatMap(t=>{const since=Date.parse(t.carriedFrom);const reasons=[];
     for(const r of reviews){if(!(r.timestamp>since))continue;const d=r.decision;
       if(d?.symbol===t.symbol&&(d.action==='Sell'&&KEEPS.includes(t.role)||d.action==='Buy'&&CUTS.includes(t.role))){reasons.push(`A trading review at ${day(r.timestamp)} recommended ${d.action}.`);break;}
-      const v=d?.planVerdicts?.find(x=>x.symbol===t.symbol);if(v?.verdict==='passed'&&KEEPS.includes(t.role)){reasons.push(`A trading review at ${day(r.timestamp)} passed on it: ${String(v.reason??'').slice(0,160)}`);break;}}
+      // A passed verdict flags the target whatever its role (2026-11-24: a carried trim target passed on was not flagged).
+      const v=d?.planVerdicts?.find(x=>x.symbol===t.symbol);if(v?.verdict==='passed'){reasons.push(`A trading review at ${day(r.timestamp)} passed on it: ${String(v.reason??'').slice(0,160)}`);break;}}
     const then=t.priceWhenSet,last=price(t.symbol);
     if(then>0&&last>0){const m=(last/then-1)*100;if(Math.abs(m)>=movePct)reasons.push(`The price moved ${m>0?'+':''}${m.toFixed(1)}% since the target was written (${then} at ${day(t.priceWhenSetAt)}).`);}
     return reasons.length?[{symbol:t.symbol,role:t.role,setAt:t.carriedFrom,reasons}]:[];});
 }
-module.exports={staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout,SCREEN_TOOL,REVIEW_SCREEN_TOOL,REVIEW_HELP,screenTool,screenFacts,SCREENS_KEPT,screenArgs,keptScript,screenStandIn,shrinkCalls,SCREEN_REQUEST_BYTES};
+module.exports={carriedFacts,sessionsStarted,staleCarried,researchFocus,carryForward,marketOf,focusTools,NEXT_SESSION_LABEL,SCOUT_REQUEST_BYTES,MARKET_TOOL,RESEARCH_SECTIONS,BRIEF_SCHEMA,REQUEST_LIMITS,SCHEMA,RESEARCH_TOOL,INSTRUCTIONS,SCHEDULES,ROLES,validatePlan,planProblem,skippedLine,RETRY_NOTE,dueSlot,ScoutStore,reviewContext,runScout,SCREEN_TOOL,REVIEW_SCREEN_TOOL,REVIEW_HELP,screenTool,screenFacts,SCREENS_KEPT,screenArgs,keptScript,screenStandIn,shrinkCalls,SCREEN_REQUEST_BYTES};

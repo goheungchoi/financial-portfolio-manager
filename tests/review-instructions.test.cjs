@@ -16,9 +16,14 @@ test('step 1: today\'s texts, whatever parts apply',()=>{
   assert.equal(RI.REVIEW_CORE.length,31563);assert.equal(sha(RI.REVIEW_CORE),'fe872efd61e04606');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
   // A: the scout core's leveraged sentence (a defined view held up to maxHoldingDays, or a hedge) and the single-stock
   // clause; with both put back, the earlier core is ed636750c54c3942.
-  assert.equal(RI.SCOUT_CORE.length,9499);assert.equal(sha(RI.SCOUT_CORE),'7d1654b0af466ec4');
+  // Carried scout targets ('scout 2026-11-25'): the carried-targets sentences; with the earlier sentence put back, the
+  // core is the earlier 9,499 characters, 7d1654b0af466ec4, so nothing else in it changed.
+  let beforeCarried;{const NEW=' the app carries forward the targets of the previous plan for those markets, dated and with their facts (priceWhenSet, priceNow, movePct, sessionsSince), until a run that focuses on them. A carried target can be restated in this plan when its facts show the condition it rests on has passed; it then replaces that target only. No new target can be added for those markets.';
+    assert.equal(RI.SCOUT_CORE.split(NEW).length,2);const back=RI.SCOUT_CORE.replace(NEW,' the app carries forward the targets of the previous plan for those markets, dated, until a run that focuses on them.');
+    assert.equal(back.length,9499);assert.equal(sha(back),'7d1654b0af466ec4');beforeCarried=back;}
+  assert.equal(RI.SCOUT_CORE.length,9754);assert.equal(sha(RI.SCOUT_CORE),'edef24348a4575f5');
   {const {SCOUT_PIECE:[before,after]}=require('./fixtures/leveraged-text-a.cjs');assert.equal(RI.SCOUT_CORE.split(after).length,2);
-    assert.equal(sha(RI.SCOUT_CORE.replace(' Single-stock ones only when products.leveragedOrInverseEtps.singleStockAllowed is true.','').replace(after,before)),'ed636750c54c3942');}
+    assert.equal(sha(beforeCarried.replace(' Single-stock ones only when products.leveragedOrInverseEtps.singleStockAllowed is true.','').replace(after,before)),'ed636750c54c3942');}
   for(const s of subsets(ids))assert.equal(RI.reviewText(s),RI.REVIEW_CORE);
   for(const s of subsets(RI.SCOUT_PARTS.map(p=>p.id)))assert.equal(RI.scoutText(s),RI.SCOUT_CORE);
   assert.equal(C.REVIEW_INSTRUCTIONS,RI.REVIEW_CORE);assert.equal(require('../electron/scout.cjs').INSTRUCTIONS,RI.SCOUT_CORE);

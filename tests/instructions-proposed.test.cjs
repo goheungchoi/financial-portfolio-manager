@@ -34,7 +34,7 @@ test('versions: the current pin is unchanged; the proposed set has its own versi
   assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-24');assert.equal(RI.fingerprint('proposed'),'07d9d66f7954bf84');
   assert.deepEqual(C.instructions(),{version:'review 2026-11-24',fingerprint:'bdfca4388d263737'});
   assert.deepEqual(C.instructions({environment:'kis-combined',extendedSessions:[],agentDesk:{}}),{version:'review 2026-11-24',fingerprint:'bdfca4388d263737',parts:['two-markets','desk']},'the review record keeps the parts');
-  assert.deepEqual(RI.scoutRecord({products:{leveragedOrInverseEtps:{allowed:true}}}),{version:'scout 2026-11-21',parts:['leveraged']});
+  assert.deepEqual(RI.scoutRecord({products:{leveragedOrInverseEtps:{allowed:true}}}),{version:'scout 2026-11-25',parts:['leveraged']});
   assert.match(src('automation.cjs'),/scoutStore\.save\(scope,plan,\{runId:id,trigger,focus:focus\.markets,instructions:require\('\.\/review-instructions\.cjs'\)\.scoutRecord\(context\)/,'each plan record keeps the scout version');
 });
 
