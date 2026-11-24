@@ -33,7 +33,10 @@ export function Connections({kis,kisBusy,onImport,onRefresh,onDisconnect,onNavig
   const data=kis.snapshot;const kisFile=runtime?.connections.kis;const providerFile=runtime?.connections.providers;const providers=runtime?.providerStatus;
   const kisTone=kis.error?'error':kis.status==='connected'||data?'ok':kis.status==='connecting'?'warn':'off';
   // The token fix: a sign-in waiting for KIS's one-a-minute rule says so, so the screen does not look hung.
-  const kisWait=kis.status==='connecting'&&Number.isFinite((kis as {signInWaitUntil?:number}).signInWaitUntil)?Math.max(1,Math.ceil(((kis as {signInWaitUntil?:number}).signInWaitUntil!-Date.now())/1000)):null;
+  // The main process puts the wait on the remembered file's state (runtime.connections.kis, remembered-files state()), not
+  // on the KIS connection state (found by the pre-release desktop case: the line never showed).
+  const waitUntil=(kisFile as {signInWaitUntil?:number}|undefined)?.signInWaitUntil;
+  const kisWait=kis.status==='connecting'&&Number.isFinite(waitUntil)?Math.max(1,Math.ceil((waitUntil!-Date.now())/1000)):null;
   const kisLabel=kis.error?'Needs attention':kis.status==='connecting'?(kisWait?`KIS allows one sign-in a minute; connecting in ${kisWait} s`:'Connecting…'):data?`Connected · ${data.environment.toUpperCase()}`:'Not connected';
   const providerCount=providers?[providers.aiConnected,providers.dartConnected,providers.pushConnected].filter(Boolean).length:0;
   const providerTone=providerFile?.error?'error':providerFile?.status==='connecting'?'warn':providerCount?'ok':'off';

@@ -28,6 +28,11 @@ const cases=[
   ["Buy-back: Home's App buys wait line while the order history cannot be read",'s5-desktop.cjs',['--mode=buyback-wait'],data('s5-buyback-wait')],
   ["Orders while stopped: the setting on after a restart, Home's watched line, Stop everything and its reply",'b4-desktop.cjs',['--mode=watch-on'],data('b4-watch-on')],
   ["Orders while stopped: the setting off, its confirmation in Engine settings, then Home's watched line",'b4-desktop.cjs',['--mode=watch-off'],data('b4-watch-off')],
+  ["The token fix: Home's KIS-not-answering line after KIS ended the sign-in",'token-desktop.cjs',['--mode=kis-down'],data('token-kis-down')],
+  ["The token fix: an unknown order holds Korean orders; KIS never took it, the market stopped: nothing is sent until Start",'token-desktop.cjs',['--mode=not-taken-halted'],data('token-not-taken-halted')],
+  ["The token fix: KIS never took it with orders watched while stopped: may be sent right away; the app never checked KIS",'token-desktop.cjs',['--mode=not-taken-watched'],data('token-not-taken-watched')],
+  ["The token fix: KIS never took it while trading runs: no before-line; KIS showed no order like it",'token-desktop.cjs',['--mode=not-taken-running'],data('token-not-taken-running')],
+  ["The token fix: Connections' one-sign-in-a-minute wait line",'token-desktop.cjs',['--mode=connections-wait'],data('token-connections-wait')],
   ['In-app updates against a local release server','update-desktop.cjs',[],data('updates')]
 ];
 const report={startedAt:new Date().toISOString(),status:'passed',cases:[],fixtureOnly:true};
