@@ -8,6 +8,8 @@ npm run test:ui        # Build + all Electron UI cases
 npm run validate       # Types, build, unit, UI, package, portable startup
 ```
 
+`npm test` runs the files listed in `tests/test-list.txt`, in order (`tests/run-tests.cjs`); a new test file is added there, one per line.
+
 `test:desktop` remains a compatible name for the desktop suite. The full validation command stops on failure and does not package a failed UI build. No extra testing dependency is required: the harness runs the installed Electron executable and the real compiled renderer.
 
 ## Reports

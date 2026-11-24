@@ -5,7 +5,7 @@
 // check: npm run test:hours.
 const fs=require('node:fs');const path=require('node:path');const {spawnSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..');
-const list=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).scripts.test.split(/\s+/).filter(f=>/^tests\/.+\.test\.(c|m)?js$/.test(f));
+const list=require('./test-list.cjs').testFiles();// the npm test list (tests/test-list.txt)
 const files=list.filter(f=>/\.scout\(|runScout\(|scoutTick\(/.test(fs.readFileSync(path.join(root,f),'utf8')));
 const HOURS=[['Korean regular hours (Wed 10:30 KST)','2026-11-18T01:30:00Z'],['both markets, evening extended sessions (Wed 18:30 KST)','2026-11-18T09:30:00Z'],
   ['U.S. regular hours (Thu 00:00 KST)','2026-11-18T15:00:00Z'],['no market open (Thu 07:30 KST)','2026-11-18T22:30:00Z'],['weekend (Sun 12:00 KST)','2026-11-22T03:00:00Z'],

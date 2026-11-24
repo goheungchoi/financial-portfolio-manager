@@ -203,6 +203,3 @@ test('the order rule: a missing engine is active; a U.S. order made in the KIS d
   const fri={...o,day:'2026-12-04',createdAt:ny('2026-12-04','21:00')};assert.equal(W.activeUntil(fri),ny('2026-12-07','20:00'),'Friday night: until Monday');
   assert.equal(W.activeUntil({status:'Accepted',market:'US',day:'2026-12-01',createdAt:ny('2026-12-01','10:00')}),ny('2026-12-01','20:00'));
 });
-// The provisional newest row (the store step, 2026-11-24 ruling): its tests, run with this file (npm test's command line is at
-// Windows' length limit, so no new file is added to the list).
-require('./screen-provisional.test.cjs');
