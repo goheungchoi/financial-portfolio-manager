@@ -75,7 +75,7 @@ test('staleCarried: a passed verdict flags a carried target whatever its role; t
   assert.equal(S.staleCarried([c('990010','trim')],{reviews:[{...passed('990010'),timestamp:Date.parse(setAt)-1}]}).length,0,'a verdict before the target counts for nothing');
 });
 test('carried targets add nothing to the review\'s text (its fingerprints are the risk-off step\'s, review 2026-11-25); the scout\'s text says what a run can do with carried targets',()=>{
-  assert.equal(RI.fingerprint(),'cb76073c9969edd4');assert.equal(RI.fingerprint(undefined,{orders:true}),'136bb024468c1184');
+  assert.equal(RI.fingerprint(),'cef9f646decfa59a');assert.equal(RI.fingerprint(undefined,{orders:true}),'c9ff8de188f65b22');
   for(const core of [RI.SCOUT_CORE,RI.PROPOSED_SCOUT_CORE])assert.match(core,/A carried target can be restated in this plan when its facts show the condition it rests on has passed; it then replaces that target only\. No new target can be added for those markets\./);
   assert.equal(RI.SCOUT_INSTRUCTIONS_VERSION,'scout 2026-11-25b');
 });

@@ -14,7 +14,7 @@ test('pin: the OpenAI decide request body is byte-identical to 1.5.49',async()=>
     try{await c.decide(CTX,opts);}catch{}
     // S4 ('review 2026-11-24'): run_screen in place of compute, the trigger's neutral text and the core's run_screen
     // sentences; those pieces are put back first (each present in a body with tools), every other byte still compared.
-    // Built-in preference text removed ('review 2026-11-25.2' and '.2'): every removal is put back first.
+    // Built-in preference text removed ('review 2026-11-25.3' and '.2'): every removal is put back first.
     body=require('./fixtures/risk-off-text.cjs').beforeRiskOff(body);
     {const S4=require('./fixtures/s4-text.cjs');if(name!=='plain')assert.ok(body.includes('"name":"run_screen"')&&!body.includes('"name":"compute"'),name+': run_screen is offered, compute is not');body=S4.beforeS4(body);}
     // Agent tools T1 (instructions 'review 2026-11-04') added cci, stochrsi and ultimate to the formula help in the

@@ -166,7 +166,7 @@ test('reviews get whole-holding quotes, and one scenario for selling every U.S. 
 });
 test('review instructions: use the app tax figures and their status; no flat 22%, no refund, no tax-free ETF assumption',()=>{
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','ai-client.cjs'),'utf8')+require('node:fs').readFileSync(require.resolve('../electron/review-instructions.cjs'),'utf8');
-  for(const re of [/never apply 22% to proceeds or to a gain yourself/,/never treat a loss as a guaranteed refund/,/never assume a Korean ETF is tax-free/,/it is not a reason to Hold and never a reason to drop a protective exit/,/one KRW 2\.5m deduction is shared by every sale this year/])assert.match(src,re);
+  for(const re of [/never apply 22% to proceeds or to a gain yourself/,/never treat a loss as a guaranteed refund/,/never assume a Korean ETF is tax-free/,/Unknown tax qualifies an after-tax claim\. /,/one KRW 2\.5m deduction is shared by every sale this year/])assert.match(src,re);assert.doesNotMatch(src,/it is not a reason to Hold and never a reason to drop a protective exit/,'review 2026-11-25.3: the clause is removed');
 });
 test('without a saved indicative rate, a quote uses the current market rate and says so',()=>{
   const {db,costs}=ledgerDb();costs.save({...DEFAULT_COSTS,annualRealizedKRW:0});costs.importTrades('a',[row('Buy',1,100,'2026-03-02','2026-03-03')]);costs.holdings=()=>[{symbol:'NASD:TEST',quantity:1}];
