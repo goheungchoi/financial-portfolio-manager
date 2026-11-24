@@ -613,7 +613,13 @@ rule (`docs/LEARNING-PIPELINE.md`, "Lesson lifecycle").
 - **Position memory** (`position-memory.cjs`): per held or recently traded symbol, the last *filled* entry and exit
   with the review that decided each (id, rationale, thesis, invalidation, stop), the fill, the quote seen and how many
   reviews ran since (`:1-5`); built at review time from `trade_outcomes` (`automation.cjs:571-574`) as
-  `positionMemory`. It is also the basis of the reversal rule (3.6).
+  `positionMemory`. It is also the basis of the reversal rule (3.6). A short sale's and a cover's rows are in it only
+  while shorts are enabled (`build({shorts})`, B3e).
+- **Covers** (B3e): while shorts are enabled, `sync({covers:true})` also makes a lesson from a cover ("N shares bought
+  back to cover a short; after-fee result … against the short sale's proceeds of …, borrow interest … included"), with
+  the short sales of its episode; `relevantLessons` gives one only while shorts are enabled. A cover's assessment is not
+  eligible (B3d-3), so its lesson cannot be approved yet and reaches no review by approval. With shorts off none is
+  made or given.
 - **Assessments** (`assessments.cjs`): the review's own research conclusions per symbol, saved with the
   `save_assessment` tool, returned to later reviews with the sections that have gone stale; kept per account and per
   version of the user's guidelines and objective (`assessments.cjs:19`, `version`), so a change of the guidelines
@@ -716,6 +722,7 @@ The parts, their conditions (`factsOf`, `:14-25`) and what the *proposed* text o
 | `extended` | `extendedSessions` non-empty (absent counts as on) | what an extended session is and its limits |
 | `leveraged` | some `productRisk.leveragedEtps.allowed` | what a trade in a leveraged/inverse product needs. Since 'review 2026-11-21' the current core says it may be held for any horizon up to `maxHoldingDays` (the session rule is gone), keeps the decay fact, allows an inverse index ETF as a hedge of the portfolio's own holdings within the same cap and days, and allows single-stock products only when `singleStockAllowed` is true; the proposed part and the scout say the same |
 | `credit` | some `productRisk.credit` present | margin and short rules, `credit` and `loanDate` |
+| `short` (kept apart, `SHORT_PART`, B3e) | some `productRisk.credit.short.allowed` (shorts enabled in Short & leverage) **and** `credit.effective.short` and `.cover` executable (not before B4: until then every user gets today's text, whatever the switch says) | the short-selling rules as facts: KOSPI/KOSDAQ stocks only (no ETF yet), KRX, the uptick rule and sessions, the lending list and what the app cannot see, KIS's 90-day term and the app's count, 120% maintenance, the estimated borrow fee, no limit to a loss, `automatic`, each short's fields and `coverStop`, `shortfall`, the cap on all shorts together (`capUsedPct`, `capLeftPct`), the credit kind of a stock held both ways; placed after `credit`; same text in both sets |
 | `discovery` | `discovery.enabled` | the discovery and research tools |
 | `scout-plan` | `scoutPlan.targets` non-empty | reading the plan, `planGap`, `planVerdicts`, waits, data gaps, `minimumPosition` |
 | `scout-brief` | `scoutBrief` present | how to brief the scout |
@@ -742,7 +749,14 @@ order:
 3. the eight variants of the decision schema (`decisionSchema(withBrief, withPlan, withTrail)`);
 4. the review tool definitions with every optional feature on (`reviewTools(all)`), and again with trailing stops on.
 
-The several-orders fingerprint adds the more-orders part and the eight schema variants with `moreOrders`. So the
+The several-orders fingerprint adds the more-orders part and the eight schema variants with `moreOrders`. The short
+fingerprint (`{short:true}`, B3e) then adds the short part's id and text, so with shorts off both fingerprints are
+unchanged (`bdfca4388d263737`, `ecd1189f47a389f2`), and with shorts on they are `ffd4693130994ec7` and
+`7c7206d0f1ccfcd4`, with the versions `… short` and `… orders short` (`proposed …` the same). A Claude dry run counts
+only under the fingerprints in force (`claudeTradingDryRun`, by `instructionsShort`: a Korean or combined scope, as only the Korean context has a credit block, with
+shorts enabled and both paths
+executable, `credit-paths.shortPathsOpen`), so switching shorts on once the paths can be sent asks a new one before
+Start; before B4 nothing changes. So the
 fingerprint changes when **the text, a part, the answer schema or a tool definition** changes. It does **not** cover
 the Claude request code (flat form, format text, message translation, output caps) — stated in
 `artifacts/reviews/2026-11-18-claude-dry-run-rule/note.md` §1 and confirmed: no `formFingerprint` exists in
@@ -794,7 +808,7 @@ named.
 | `positions`, `universe`, `quotes` | holdings; the ≤20 symbols per market the review may trade; their quotes | engine | always | M |
 | `orders`, `orderReconciliation` | open orders; unconfirmed statuses | engine | KIS | M |
 | `risk` | the limits ("policy"), baseline (Part 2 §3.12) | engine | always | M |
-| `productRisk` | permitted leveraged/inverse products with caps and warnings; for Korea the credit paths' real state | `live-engine.cjs:100` (`exposure.context`) | KIS, when the exposure module is set | M |
+| `productRisk` | permitted leveraged/inverse products with caps and warnings; for Korea the credit paths' real state; while shorts are enabled and their paths can be sent (B3e; not before B4) `credit.short.automatic` as what happens (the setting and the short path's own `automatic`), and also `credit.short.coverBeforeDays`, `shortfall`, `capUsedPct`, `capLeftPct` (the cap check's own count, `exposure.shortWaiting`), `candidates` (the last lending-list answer of a short's preparation per universe stock, null when not read; no KIS read for the context), and per short `feePerDay` and `coverStop` (`live-engine.shortFacts`, `automation.coverStopFacts`) | `live-engine.cjs:100` (`exposure.context`) | KIS, when the exposure module is set | M |
 | `emergency` | `active`, `scope`, `activeMarkets`, `loss` (limit, baseline, breach), `reviewIntervalSeconds:60`, a fixed `objective` sentence | `emergencyState()` `:274`; set `:577-581` | always | M |
 | `triggerEvidence` | what started this review: `kind` `price`/`watchlist`/`news`/`agent-trigger`/`order`/`placement`, with symbols, levels, events or orders | `tick()`; attached `:589` | evidence triggers | M |
 | `tradingCosts` | fee, levy and tax settings and estimates (per market; combined stated once) | `costs.context` `:567`, `:580-581` | always (paper: a fixed simulation row) | M (rows trimmed last) |

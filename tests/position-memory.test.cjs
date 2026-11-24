@@ -32,7 +32,9 @@ test('an opening within 30 days of a filled exit in the same direction is a reve
   const held=build([entry]);const sell=PM.reversalOf({action:'Sell',symbol:'990040',quantity:1,credit:'none'},held,{now:T});assert.equal(sell.required,false,'a reduction is never withheld');assert.equal(sell.kind,'reverses-entry');
   // A short sale after a cover reverses the cover; a cover after a short sale is a reduction.
   const cover=outcome('C1','Buy','CLOSE_SHORT',T-DAY,50000),short=outcome('S1','Sell','OPEN_SHORT',T-3*DAY,52000);
-  assert.equal(PM.reversalOf({action:'Sell',symbol:'990040',quantity:1,credit:'short'},build([short,cover]),{now:T}).required,true);assert.equal(PM.reversalOf({action:'Buy',symbol:'990040',quantity:1,credit:'cover'},build([short]),{now:T}).required,false);
+  assert.equal(PM.reversalOf({action:'Sell',symbol:'990040',quantity:1,credit:'short'},build([short,cover],{shorts:true}),{now:T}).required,true);assert.equal(PM.reversalOf({action:'Buy',symbol:'990040',quantity:1,credit:'cover'},build([short],{shorts:true}),{now:T}).required,false);
+  // B3e: with shorts off, a short sale's and a cover's rows reach no review (no memory row, so no reversal).
+  assert.deepEqual(build([short,cover]),[]);assert.equal(PM.reversalOf({action:'Sell',symbol:'990040',quantity:1,credit:'short'},build([short,cover]),{now:T}),null);
 });
 // A complete Buy (plan and evidence) of one Contoso Motors share at 92,400, above the 86,300 exit.
 const full={action:'Buy',symbol:'990040',quantity:1,explanation:'Re-enter Contoso Motors.',credit:'none',loanDate:'',plan:{...plan,targetPrice:null,confidence:'medium',portfolioImpact:{weightBeforePct:0,weightAfterPct:6.5,related:[],relatedBeforePct:0,relatedAfterPct:6.5,equityReliable:true,why:'small position'},

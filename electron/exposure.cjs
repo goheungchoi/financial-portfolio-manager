@@ -127,7 +127,7 @@ class Exposure {
     const p=policy.short;if(!p.enabled)throw new Error('SHORT_NOT_ENABLED');
     // B3d-1: all shorts together through short-rules capCheck: open shorts by their obligation (loanAmount), open and
     // lagging short orders, this one; at most the cap of the account value; an amount that cannot be read refuses.
-    const cap=require('./short-rules.cjs').capCheck({value:{low:equity},shorts:balance.shorts??[],waiting:[...(openShorts??[]),...(pending??[]).filter(o=>o.credit==='short'&&(openShorts==null||o.yours===true))].map(o=>({notional:o.notional})).concat(lagging??[]),notional,maxPct:p.maxGrossPctOfEquity});
+    const cap=require('./short-rules.cjs').capCheck({value:{low:equity},shorts:balance.shorts??[],waiting:shortWaiting({openShorts,pending,lagging}),notional,maxPct:p.maxGrossPctOfEquity});
     if(!cap.ok)throw new Error(cap.code==='SHORT_CAP_REACHED'?'SHORT_LIMIT':cap.code==='INVALID_ORDER'?'INVALID_ORDER':'SHORT_CAP_UNKNOWN');
     return {type:CREDIT_TYPES[kind][p.source],requiresApproval:!p.auto};
   }
@@ -152,4 +152,8 @@ class Exposure {
     return {leveragedEtps:{allowed:access.allowed,...(access.reason?{reason:access.reason}:{}),automatic:policy.leveragedEtps.auto,maxPctOfEquity:policy.leveragedEtps.maxPctOfEquity,maxHoldingDays:policy.leveragedEtps.maxHoldingDays,singleStockAllowed:policy.leveragedEtps.singleStock===true,...(summary.leveragedPct==null?{}:{roomPctOfEquity:Math.max(0,Math.round((policy.leveragedEtps.maxPctOfEquity-summary.leveragedPct)*10)/10)})},products,exposure:{leveragedPct:summary.leveragedPct==null?null:Math.round(summary.leveragedPct*10)/10,effectivePct:summary.effectivePct==null?null:Math.round(summary.effectivePct*10)/10},warnings};
   }
 }
-module.exports={Exposure,classifyName,singleStockName,leveragedAccess,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};
+// The short orders waiting on the cap (B3d-1), as notionals: the app's open short orders, open short orders in pending
+// (yours only when openShorts is given), and the app's filled shorts the balance does not show yet. The send's cap check
+// and the review's capUsedPct (B3e) both use it, so the two figures are the same.
+function shortWaiting({openShorts,pending,lagging}={}){return [...(openShorts??[]),...(pending??[]).filter(o=>o.credit==='short'&&(openShorts==null||o.yours===true))].map(o=>({notional:o.notional})).concat(lagging??[]);}
+module.exports={shortWaiting,Exposure,classifyName,singleStockName,leveragedAccess,DEFAULT_POLICY,US_KNOWN,CREDIT_TYPES};

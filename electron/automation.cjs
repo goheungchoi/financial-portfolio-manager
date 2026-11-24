@@ -647,6 +647,20 @@ class Automation {
     return orders.filter(o=>held(o)>0).map(o=>[o,this.stopHeldNow(o)]).filter(([,h])=>h).map(([o,h])=>({symbol:o.symbol,...(SS.isCover(o)?{short:true}:{}),stopOrderId:o.id,quantity:Math.min(held(o),o.quantity),heldQuantity:held(o),since:Number.isFinite(o.heldSince)?new Date(o.heldSince).toISOString():null,
       ...(h.blocking?{waitsFor:h.blocking}:{}),fact:`The ${SS.isCover(o)?'cover stop for the short of':'stop loss for'} ${o.symbol} was hit and is still armed; it is not sent while ${h.why}${h.blocking&&h.why!=='its purchase is still open'?` (order ${h.blocking.id}, ${h.blocking.side} ${h.blocking.symbol}, ${h.blocking.status})`:''}.`}));}
   // Whether short selling is enabled for the connected Korean account (Short & leverage).
+  // B3e (rulings-b3e-text.md): coverStop on each open short of the Korean context's productRisk.credit.shorts, only while
+  // shorts are enabled: armed with its level, unprotected with the cause (the B3d-2 rule: rejected, lapsed or held), or
+  // null when none was armed. Nothing changes with shorts off.
+  coverStopFacts(context,scope){if(!this.shortFactsInForce())return;const kr=context?.environment==='kis-combined'?(context.markets??[]).find(m=>m?.market==='KR'):context;
+    const shorts=kr?.productRisk?.credit?.shorts;if(!Array.isArray(shorts)||!shorts.length)return;let unprotected=[];try{unprotected=this.unprotectedNow(scope).filter(u=>u.short);}catch{unprotected=[];}
+    kr.productRisk.credit.shorts=shorts.map(p=>{const u=unprotected.find(x=>x.symbol===p.symbol&&x.loanDate===p.loanDate);if(u)return {...p,coverStop:{state:'unprotected',cause:u.held?`held: ${u.waiting}`:(u.outcome??u.cause??'its stop is not working')}};
+      let armed=null;try{armed=this.desk.lotStops(scope,p.symbol,p.loanDate).find(o=>o.status==='armed'||o.status==='firing')??null;}catch{armed=null;}const level=Number(armed?.conditions?.[0]?.value);
+      return {...p,coverStop:armed?{state:'armed',level:Number.isFinite(level)?level:null}:null};});}
+  // B3e: the short facts, short lessons and memory, and the instructions in force for the dry run apply only while shorts
+  // are enabled and their paths can be sent (credit-paths shortPathsOpen; not before B4).
+  shortFactsInForce(){if(!this.shortsEnabled())return false;try{return require('./credit-paths.cjs').shortPathsOpen({approved:this.live?.creditApproved?.()===true});}catch{return false;}}
+  // The instructions in force carry the short part when the review's context would get it: a Korean or combined scope
+  // (only the Korean context has a credit block) with the short facts in force. A U.S.-only or paper scope: today's text.
+  instructionsShort(){return ['kis','both'].includes(this.config.scope)&&this.shortFactsInForce();}
   shortsEnabled(){try{return this.live?.exposure?.policy?.(this.live.identity())?.short?.enabled===true;}catch{return false;}}
   // The short's trail (short.trailingStop, off by default): each armed stop-loss cover of the Korean account follows the
   // lowest fresh price (the watch's view, at most 60 s old, the regular session) since its fill, from its entry; its level
@@ -845,12 +859,14 @@ class Automation {
         if(this.config.provider==='openai'&&!this.consentFor(this.agentModel('trading').openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');
         if(this.config.scope==='both'){const kr=await this.live.context(),us=await this.usLive.context(usValue);kr.tradingCosts=this.costs?.context('KR',kr.universe,kr.positions);us.tradingCosts=this.costs?.context('US',us.universe,us.positions);context=require('./combined-context.cjs').combinedContext(kr,us,this.fx?.(),this.metadata?.());}else context=await execution.context(this.config.scope==='us'?usValue:null);context.news=this.newsContext();if(context.environment!=='local-paper'){const stories=this.storiesContext();if(stories.length)context.topStories=stories;}context.reviewedLessons=this.db.prepare('SELECT text FROM lessons WHERE approved=1 ORDER BY rowid DESC LIMIT 5').all().map(row=>row.text);
       }else context=this.context();
-      setStage('Local trade evidence');this.outcomes.sync();this.memory.sync();const accounts=[this.live,this.usLive].flatMap(engine=>{try{return [engine.identity()];}catch{return [];}});const lessons=this.memory.relevantLessons(context,accounts);context.reviewedLessons=lessons.map(row=>row.text);const lessonIds=lessons.map(row=>row.id);
+      // Short selling B3e: each open short's cover stop, as a fact, while shorts are enabled.
+      if(context.environment!=='local-paper')try{this.coverStopFacts(context,watchScope);}catch{}
+      setStage('Local trade evidence');const shorts=this.shortFactsInForce();this.outcomes.sync();this.memory.sync({covers:shorts});const accounts=[this.live,this.usLive].flatMap(engine=>{try{return [engine.identity()];}catch{return [];}});const lessons=this.memory.relevantLessons(context,accounts,{covers:shorts});context.reviewedLessons=lessons.map(row=>row.text);const lessonIds=lessons.map(row=>row.id);
       // The last filled entry and exit per held or recently traded symbol, with the reviews that decided them (audit 2026-11-04, Stage 4).
       if(context.environment!=='local-paper')try{const tag=this.accountTag()?.key??null;const outcomes=this.db.prepare('SELECT payload FROM trade_outcomes').all().map(r=>JSON.parse(r.payload));const ids=[...new Set(outcomes.map(o=>o.reviewId).filter(Boolean))];
         const reviewAt=new Map(ids.length?this.db.prepare(`SELECT id,json_extract(payload,'$.timestamp') AS t FROM reviews WHERE id IN (${ids.map(()=>'?').join(',')})`).all(...ids).map(r=>[r.id,r.t]):[]);
         const since=tag?this.db.prepare("SELECT count(*) AS n FROM reviews WHERE json_extract(payload,'$.account.key')=? AND json_extract(payload,'$.timestamp')>?"):null;
-        const memory=require('./position-memory.cjs').build(outcomes,{accounts,positions:context.positions,reviewAt,reviewsSince:(symbol,t)=>since?since.get(tag,t).n:null});if(memory.length)context.positionMemory=memory;}catch{}
+        const memory=require('./position-memory.cjs').build(outcomes,{accounts,positions:context.positions,reviewAt,reviewsSince:(symbol,t)=>since?since.get(tag,t).n:null,shorts});if(memory.length)context.positionMemory=memory;}catch{}
       const conflicts=this.scoreboard.conflicts().filter(c=>lessonIds.includes(c.a)&&lessonIds.includes(c.b));if(conflicts.length)context.lessonConflicts=conflicts.map(c=>({lessons:[lessonIds.indexOf(c.a)+1,lessonIds.indexOf(c.b)+1],symbol:c.symbol,note:c.reason+' Weigh both; neither is a validated rule.'}));
       if(context.environment!=='local-paper'){const board=this.scoreboard.context();if(board)context.decisionScoreboard=board;const macro=this.macro?.context();if(macro)context.macro=macro;}
       setStage('Portfolio context');const emergency=context.environment==='kis'?{...this.emergencyState(),active:false,loss:null}:this.emergencyState();
@@ -994,7 +1010,7 @@ class Automation {
         if(EVIDENCE_TRIGGERS.includes(trigger)&&this.triggerEvidence)this.restoreEvents(this.watchScope(),this.triggerEvidence);throw new Error('CLAUDE_FIRST_REVIEW_PENDING');}
       // Review F1: after an update whose instructions differ from those of the last Claude dry run, reviewing goes on; one
       // Journal line and one alert (once per instruction fingerprint in a run) advise a new dry run.
-      try{const fp=require('./review-instructions.cjs').fingerprint();if(this.claudeAdviceShown!==fp&&!this.claudeTradingDryRun()){this.claudeAdviceShown=fp;const text='The review instructions changed in this version; a Claude dry run on it is advised (Dashboard → Dry run).';
+      try{const fp=require('./review-instructions.cjs').fingerprint(undefined,{short:this.instructionsShort()});if(this.claudeAdviceShown!==fp&&!this.claudeTradingDryRun()){this.claudeAdviceShown=fp;const text='The review instructions changed in this version; a Claude dry run on it is advised (Dashboard → Dry run).';
         this.log(randomUUID(),'System','Claude dry run advised',text);try{this.notify?.('claude-dry-run-advised',text);}catch{}}}catch{}}
     // The evidence that started this review, captured before anything is awaited: a later trigger replaces
     // this.triggerEvidence, and a review that fails before its context is built (account data) still puts it back.
@@ -1258,7 +1274,8 @@ class Automation {
   // set's several-orders fingerprint (M-6 part 2); it counts too. Its inputs hold the single-order inputs unchanged and in
   // order, so a match vouches for both. Before, only the single-order fingerprint counted, so no such dry run ever did.
   claudeTradingDryRun(){const r=this.completedClaudeDryRun();if(!r)return null;
-    if(r.instructions?.fingerprint){const RI=require('./review-instructions.cjs');return [RI.fingerprint(),RI.fingerprint(undefined,{orders:true})].includes(r.instructions.fingerprint)?r:null;}
+    // B3e: the instructions in force: with the short part while shorts are enabled, so switching them on asks a new dry run.
+    if(r.instructions?.fingerprint){const RI=require('./review-instructions.cjs'),short=this.instructionsShort();return [RI.fingerprint(undefined,{short}),RI.fingerprint(undefined,{orders:true,short})].includes(r.instructions.fingerprint)?r:null;}
     if(r.appVersion)return versionAtLeast(r.appVersion,'1.5.60')?r:null;
     return r.timestamp>=CLAUDE_FORMS_SINCE&&r.answerForm?r:null;}
   // Why a Claude trading model may not trade, or null (D-0 note section 2). cfg: the settings being saved, or the saved
@@ -2439,7 +2456,7 @@ class Automation {
     }catch(error){this.scoutError=require('./ai-errors.cjs').publicCode(error)??(/^[A-Z_]{3,40}$/.test(error.message)?error.message:'SCOUT_FAILED');this.scoutErrorDetail=typeof error.detail==='string'?error.detail:null;this.log(id,'System','Scout failed',this.scoutError+(/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?' · KIS '+error.brokerCode:'')+(this.scoutErrorDetail?' · '+this.scoutErrorDetail:''));try{this.scoutStore.noteFailure(scope,{reason:this.scoutError,trigger});try{this.scoutStore.saveScreens(scope,{runId:id,failed:true,screens});}catch{}}catch{}if(error?.metrics)this.log(id,'System','Research metrics',JSON.stringify(error.metrics));throw error;}
     finally{this.scouting=false;}
   }
-  syncLearning(){try{if(!this.learningSynced||this.stateCacheOff||this.learningSynced!==this.learningKey()){this.outcomes.sync();this.memory.sync();this.reflections.sync();this.learningSynced=this.learningKey();}this.trials.observe(this.paper.getState().quotes,'paper');
+  syncLearning(){try{if(!this.learningSynced||this.stateCacheOff||this.learningSynced!==this.learningKey()){this.outcomes.sync();this.memory.sync({covers:this.shortFactsInForce()});this.reflections.sync();this.learningSynced=this.learningKey();}this.trials.observe(this.paper.getState().quotes,'paper');
       for(const [engine,quotes] of [[this.live,this.marketQuotes?.()??[]],[this.usLive,this.usQuotes??[]]]){if(engine){try{this.trials.observe(quotes,'broker',engine.identity());}catch(error){if(!['KIS_NOT_CONNECTED','ACCOUNT_CHANGED'].includes(error.message))throw error;}}}this.learningLastRun=Date.now();this.learningError=null;}catch{this.learningError='LOCAL_EVALUATION_FAILED';}}
   tick() {
     this.restoreClock();

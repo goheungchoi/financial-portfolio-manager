@@ -24,11 +24,12 @@ const PROCEDURAL={id:'procedural:reversal-check',
   applicability:'Thesis exits and re-entries in this account: a sale because the thesis changed, or a purchase after a recent exit of the same holding. Not stop-loss exits, risk-limit actions or other protective reductions.',
   support:'Low-confidence empirical support: one sale and re-entry of the same holding. A procedural reminder, not a validated trading rule.'};
 // The filled entries since the position was last flat before a sale, and the sale. outcomes: trade_outcomes rows.
-function episode(outcomes,sale,reviewAt){const {view}=require('./position-memory.cjs');const eff=o=>o.effect??effectOf(o);
-  const mine=outcomes.filter(o=>o.source===sale.source&&(o.accountKey??null)===(sale.accountKey??null)&&o.symbol===sale.symbol&&o.quantity>0&&o.status!=='Retracted'&&['OPEN_LONG','CLOSE_LONG'].includes(eff(o))).map(o=>({...o,effect:eff(o)})).sort((a,b)=>a.timestamp-b.timestamp||String(a.id).localeCompare(String(b.id)));
-  const at=mine.findIndex(o=>o.id===sale.id);let held=0,since=0;for(let i=0;i<at;i++){held+=mine[i].effect==='OPEN_LONG'?mine[i].quantity:-mine[i].quantity;if(held<=0){held=0;since=i+1;}}
-  const entries=(at<0?[]:mine.slice(since,at)).filter(o=>o.effect==='OPEN_LONG').slice(-3).map(o=>view(o,reviewAt));
-  return {entries,exit:view({...sale,effect:'CLOSE_LONG'},reviewAt),...(entries.length?{}:{entriesUnavailable:'No filled entry is recorded for this sale (it may predate the app).'})};}
+// short (B3e): a cover's episode, the short sales since the short was last flat and the cover.
+function episode(outcomes,sale,reviewAt,short=false){const {view}=require('./position-memory.cjs');const eff=o=>o.effect??effectOf(o);const OPEN=short?'OPEN_SHORT':'OPEN_LONG',CLOSE=short?'CLOSE_SHORT':'CLOSE_LONG';
+  const mine=outcomes.filter(o=>o.source===sale.source&&(o.accountKey??null)===(sale.accountKey??null)&&o.symbol===sale.symbol&&o.quantity>0&&o.status!=='Retracted'&&[OPEN,CLOSE].includes(eff(o))).map(o=>({...o,effect:eff(o)})).sort((a,b)=>a.timestamp-b.timestamp||String(a.id).localeCompare(String(b.id)));
+  const at=mine.findIndex(o=>o.id===sale.id);let held=0,since=0;for(let i=0;i<at;i++){held+=mine[i].effect===OPEN?mine[i].quantity:-mine[i].quantity;if(held<=0){held=0;since=i+1;}}
+  const entries=(at<0?[]:mine.slice(since,at)).filter(o=>o.effect===OPEN).slice(-3).map(o=>view(o,reviewAt));
+  return {entries,exit:view({...sale,effect:CLOSE},reviewAt),...(entries.length?{}:{entriesUnavailable:'No filled entry is recorded for this sale (it may predate the app).'})};}
 class LearningMemory {
   constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS lesson_evidence(id TEXT PRIMARY KEY,signature TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lesson_lifecycle(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lesson_history(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL,payload TEXT NOT NULL)');}
   lifecycle(id){const row=this.db.prepare('SELECT payload FROM lesson_lifecycle WHERE id=?').get(id);return row?JSON.parse(row.payload):null;}
@@ -42,20 +43,23 @@ class LearningMemory {
       this.db.prepare('INSERT INTO lessons(id,text,approved) VALUES(?,?,0) ON CONFLICT(id) DO NOTHING').run(p.id,p.text);
       this.saveLifecycle(p.id,{kind:'procedural',status:'pending',signature,createdAt:now,updatedAt:now,expiresAt:null,approvedAt:null,applicability:p.applicability,note:p.text,reviewDays:30,changeReason:'Proposed procedural lesson (audit 2026-11-04). It reaches reviews only after you approve it.',validation:'Not replay-validated'});
       this.history(p.id,'created',{signature});this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}}
-  sync(){
+  // covers (B3e): lessons from a cover (CLOSE_SHORT) too, only while shorts are enabled; with them off none is made.
+  sync({covers=false}={}){
     const outcomes=this.db.prepare('SELECT payload FROM trade_outcomes').all().map(row=>JSON.parse(row.payload));
     const ids=[...new Set(outcomes.map(o=>o.reviewId).filter(Boolean))];const reviewAt=new Map(ids.length&&this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reviews'").get()?this.db.prepare(`SELECT id,json_extract(payload,'$.timestamp') AS t FROM reviews WHERE id IN (${ids.map(()=>'?').join(',')})`).all(...ids).map(r=>[r.id,r.t]):[]);
     for(const outcome of outcomes){
       // Lessons come from exits only: a short sale opens a position (audit 2026-11-04, Stage 3); an unknown credit identity is no evidence.
-      if(outcome.side!=='Sell'||evaluate(outcome).effect!=='CLOSE_LONG')continue;
+      const cover=covers&&outcome.side==='Buy'&&evaluate(outcome).effect==='CLOSE_SHORT';
+      if(!cover&&(outcome.side!=='Sell'||evaluate(outcome).effect!=='CLOSE_LONG'))continue;
       const id='outcome:'+outcome.id;const assessment=outcome.assessment??evaluate(outcome);
       const evidence={evidenceVersion:EVIDENCE_VERSION,outcomeId:outcome.id,outcomeVersion:outcome.version??1,reviewId:outcome.reviewId,source:outcome.source,environment:outcome.environment,accountKey:outcome.accountKey??null,market:outcome.market,currency:outcome.currency,symbol:outcome.symbol,quantity:outcome.quantity,status:outcome.status,gross:outcome.gross??null,fees:outcome.fees??null,netCash:outcome.netCash??null,gainAfterFees:outcome.gainAfterFees,gainAfterEstimatedTax:outcome.gainAfterEstimatedTax,costBasis:outcome.costBasis,averagePrice:outcome.averagePrice,taxStatus:outcome.taxStatus,method:'Local outcome evaluation; no causal AI diagnosis',confidence:assessment.confidence,evaluation:outcome.evaluation,assessment,decisionContext:outcome.reviewEvidence?{guidelines:outcome.reviewEvidence.guidelines,environment:outcome.reviewEvidence.environment,marketSession:outcome.reviewEvidence.marketSession,quote:outcome.reviewEvidence.quote,position:outcome.reviewEvidence.position,emergency:outcome.reviewEvidence.emergency}:null,thesis:outcome.decision?.explanation??null,
         // A sale made by a conditional order (2026-11-18): the order and the decision of the review that armed it. Only when
         // present, and not a material change (materialChange compares facts and results), so no lesson is reflected on again.
-        ...(outcome.trigger?{trigger:outcome.trigger}:{}),...(outcome.armingDecision?{armingDecision:outcome.armingDecision}:{}),episode:episode(outcomes,outcome,reviewAt)};
+        ...(outcome.trigger?{trigger:outcome.trigger}:{}),...(outcome.armingDecision?{armingDecision:outcome.armingDecision}:{}),episode:episode(outcomes,outcome,reviewAt,cover),
+        ...(cover?{effect:'CLOSE_SHORT',shortProceeds:outcome.shortProceeds??null,shortCosts:outcome.shortCosts??null}:{})};
       const previous=this.db.prepare('SELECT signature,payload FROM lesson_evidence WHERE id=?').get(id);const lifecycle=this.lifecycle(id);const before=previous?JSON.parse(previous.payload):null;
       if(before&&JSON.stringify(before)===JSON.stringify(evidence)){if(lifecycle?.status==='approved'&&lifecycle.expiresAt<=Date.now()){this.saveLifecycle(id,{...lifecycle,status:'expired'});this.db.prepare('UPDATE lessons SET approved=0 WHERE id=?').run(id);this.history(id,'expired',{signature:previous.signature});}continue;}
-      const text=`${outcome.source==='paper'?'Simulation':'Broker '+outcome.environment} · ${outcome.symbol}: ${outcome.quantity} shares sold; after-fee result ${outcome.gainAfterFees??'unknown'} ${outcome.currency} (${outcome.costBasis} costs). ${assessment.recommendation} A gain or loss does not establish causation. This observation has not been replay-validated.`;
+      const text=`${outcome.source==='paper'?'Simulation':'Broker '+outcome.environment} · ${outcome.symbol}: ${outcome.quantity} shares ${cover?`bought back to cover a short; after-fee result ${outcome.gainAfterFees??'unknown'} ${outcome.currency} against the short sale's proceeds of ${outcome.shortProceeds??'unknown'}, borrow interest ${outcome.shortCosts?.interest??'unknown'} included`:`sold; after-fee result ${outcome.gainAfterFees??'unknown'} ${outcome.currency} (${outcome.costBasis} costs)`}. ${assessment.recommendation} A gain or loss does not establish causation. This observation has not been replay-validated.`;
       const material=materialChange(before,evidence);
       // Not material: the record is updated (its earlier version kept in the history), the signature, status and approval stay.
       if(previous&&!material){this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('UPDATE lesson_evidence SET payload=? WHERE id=?').run(JSON.stringify(evidence),id);this.db.prepare('UPDATE lessons SET text=? WHERE id=?').run(text,id);
@@ -86,11 +90,12 @@ class LearningMemory {
   list(){return this.db.prepare('SELECT * FROM lessons ORDER BY rowid DESC LIMIT 100').all().map(row=>({...row,evidence:this.describe(row.id),lifecycle:this.lifecycle(row.id)}));}
   summary(){const records=this.db.prepare('SELECT payload FROM lesson_lifecycle').all().map(r=>JSON.parse(r.payload));return {total:records.length,pending:records.filter(r=>['pending','needs-review'].includes(r.status)).length,approved:records.filter(r=>r.status==='approved'&&r.expiresAt>Date.now()).length,retired:records.filter(r=>r.status==='retired').length,expired:records.filter(r=>r.status==='expired'||r.status==='approved'&&r.expiresAt<=Date.now()).length,method:'Local evidence evaluation · no API calls',validation:'Paper replay not implemented; AI reflection requires review'};}
   relevant(context,accounts=[]){return this.relevantLessons(context,accounts).map(row=>row.text);}
-  relevantLessons(context,accounts=[]){
+  // covers (B3e): a cover's lesson only while shorts are enabled.
+  relevantLessons(context,accounts=[],{covers=false}={}){
     const paper=context.environment==='local-paper';const symbols=context.universe.map(row=>row.symbol);
     return this.db.prepare('SELECT lessons.id,lessons.text,lesson_evidence.payload FROM lessons LEFT JOIN lesson_evidence ON lessons.id=lesson_evidence.id WHERE approved=1 ORDER BY lessons.rowid DESC').all().flatMap(row=>{
       if(!row.payload)return paper?[{id:row.id,text:row.text,score:0}]:[];
-      const evidence=JSON.parse(row.payload),state=this.lifecycle(row.id);
+      const evidence=JSON.parse(row.payload),state=this.lifecycle(row.id);if(evidence.effect==='CLOSE_SHORT'&&!covers)return [];
       if(!state||state.status!=='approved'||!(state.expiresAt>Date.now()))return [];
       // An approved procedural lesson applies to this account's live reviews, in the user's reviewed wording.
       if(evidence.kind==='procedural')return paper?[]:[{id:row.id,text:`Procedural reminder (${evidence.confidence} empirical support): ${state.note||row.text} Applicability: ${state.applicability} Review by ${new Date(state.expiresAt).toISOString().slice(0,10)}.`,score:20}];

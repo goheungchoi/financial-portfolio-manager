@@ -31,8 +31,9 @@ function view(o,reviewAt){const d=o.decision??null,p=d?.plan??null,q=o.reviewEvi
 // The memory rows. outcomes: trade_outcomes rows; accounts: the account keys of this review; positions: context
 // positions; reviewAt: review id -> time; reviewsSince(symbol, time): reviews run since then.
 // A row written before outcomes carried their effect (Stage 3) gets it from its side and credit.
-function build(outcomes,{accounts=[],positions={},reviewAt=new Map(),reviewsSince=()=>null,now=Date.now()}={}){const {effectOf:eff}=require('./outcome-evaluation.cjs');
-  const filled=outcomes.map(o=>o.effect?o:{...o,effect:eff(o)}).filter(o=>o.source==='broker'&&accounts.includes(o.accountKey)&&o.quantity>0&&o.status!=='Retracted'&&/^(OPEN|CLOSE)_/.test(o.effect??'')).sort((a,b)=>a.timestamp-b.timestamp);
+// shorts (B3e): a short sale's and a cover's rows only while shorts are enabled; with them off none reaches a review.
+function build(outcomes,{accounts=[],positions={},reviewAt=new Map(),reviewsSince=()=>null,now=Date.now(),shorts=false}={}){const {effectOf:eff}=require('./outcome-evaluation.cjs');
+  const filled=outcomes.map(o=>o.effect?o:{...o,effect:eff(o)}).filter(o=>o.source==='broker'&&accounts.includes(o.accountKey)&&o.quantity>0&&o.status!=='Retracted'&&/^(OPEN|CLOSE)_/.test(o.effect??'')&&(shorts||!/_SHORT$/.test(o.effect))).sort((a,b)=>a.timestamp-b.timestamp);
   const symbols=[...new Set(filled.map(o=>o.symbol))].map(symbol=>{const mine=filled.filter(o=>o.symbol===symbol),held=positions?.[symbol]?.quantity>0,last=mine.at(-1);
     return {symbol,held,last:last.timestamp,mine};}).filter(s=>now-s.last<=(s.held?HELD_DAYS:RECENT_DAYS)*DAY).sort((a,b)=>Number(b.held)-Number(a.held)||b.last-a.last).slice(0,LIMIT);
   return symbols.map(({symbol,held,mine})=>{const entry=mine.filter(o=>o.effect.startsWith('OPEN_')).at(-1),exit=mine.filter(o=>o.effect.startsWith('CLOSE_')).at(-1),last=mine.at(-1);

@@ -57,6 +57,9 @@ const PATHS={
 const OPENINGS_LABEL='Automatic credit openings temporarily disabled pending validation.';
 const PROTECTION_LABEL='Requires approval—not automatic protection.';
 // Whether a credit path can be submitted and whether automatically. approved: the user approved Stage 3.
+// B3e (planner, 2026-11-24): whether both the short and cover paths can be sent. Until then (B4) the review is told
+// nothing about shorts and the instructions in force are today's, whatever the switch says.
+function shortPathsOpen({approved=false}={}){return ['short','cover'].every(k=>pathStatus(k,{approved}).executable===true);}
 function pathStatus(kind,{approved=false}={}){
   if(!kind||kind==='none')return {executable:true,automatic:true};const p=PATHS[kind];if(!p)return {executable:false,automatic:false,reason:'unknown credit kind'};
   const opening=kind==='margin-buy'||kind==='short';
@@ -66,4 +69,4 @@ function pathStatus(kind,{approved=false}={}){
 }
 // The stop a plan needs for its effect: below the price for a long, above it for a short.
 function stopSide(effect){return effect==='OPEN_SHORT'?'above':'below';}
-module.exports={effectOf,lots,remaining,check,pathStatus,stopSide,PATHS,OPENINGS_LABEL,PROTECTION_LABEL};
+module.exports={shortPathsOpen,effectOf,lots,remaining,check,pathStatus,stopSide,PATHS,OPENINGS_LABEL,PROTECTION_LABEL};

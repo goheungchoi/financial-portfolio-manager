@@ -16,6 +16,9 @@ function factsOf(c){return {
   extended:Array.isArray(c?.extendedSessions)?c.extendedSessions.length>0:true,
   leveraged:productRisks(c).some(p=>p?.leveragedEtps?.allowed===true),
   credit:productRisks(c).some(p=>has(p?.credit)),
+  // B3e: shorts enabled in Short & leverage (productRisk.credit.short.allowed) and both the short and cover paths
+  // executable (productRisk.credit.effective; not before B4), in a Korean or combined context.
+  short:productRisks(c).some(p=>p?.credit?.short?.allowed===true&&p.credit.effective?.short?.executable===true&&p.credit.effective?.cover?.executable===true),
   discovery:c?.discovery?.enabled===true,
   scoutPlan:Boolean(c?.scoutPlan?.targets?.length),
   scoutBrief:Boolean(c?.scoutBrief),
@@ -29,6 +32,25 @@ function factsOf(c){return {
 // carries ORDERS_VERSION and its own fingerprint (fingerprint(set,{orders:true})). Same text in both sets.
 const MORE_ORDERS_TEXT='context.ordersPerReview is the most orders this review may return. Put the first in the decision fields and the others in moreOrders, each a Buy or a Sell of a different stock with its own plan, execution and reversal. Where these instructions say one bounded trade, read up to ordersPerReview. Fewer orders, one order or Hold are complete answers, and each order needs the same evidence as a single one. The app checks each order on its own and holds back any that fails, with its reason; the others go on to be sent. An order for a stock that already has an open order is held back. Closing orders (sales, repayments and covers) are sent first, then the others in your order; limits and cash are checked as each is sent, so a later order can be refused when earlier ones have used the room.';
 const MORE_ORDERS_PART=Object.freeze({id:'more-orders',when:f=>f.moreOrders,text:MORE_ORDERS_TEXT});
+// Short selling B3e (rulings-b3e-text.md, 2026-11-24): the rules as facts, sent only while shorts are enabled. Kept apart
+// from REVIEW_PARTS like the more-orders part, so with shorts off every text, version and fingerprint stays byte for
+// byte; with shorts on the record carries the set's short version and fingerprint(set,{short:true}). Placed after the
+// credit part. Same text in both sets.
+const SHORT_TEXT=`SHORT SELLING
+These are the rules the app and KIS apply to a short (credit "short", a Sell of borrowed shares) and its cover (credit "cover", a Buy that repays it). They are facts, not reasons to short.
+- Instruments: stocks listed on KOSPI or KOSDAQ only; an ETF short is refused for now.
+- Price and venue: a short sale goes to KRX only, during the regular session or the opening auction, never as a market order. Its price must be above the last trade (in the auction, above the previous close). The app sends it at least one tick above, so it may not fill while the price is falling.
+- Borrowing: productRisk.credit.short.candidates says, for each universe stock, whether KIS's lending list showed it borrowable at the app's last short of it and when that was read (readAt). The list is read only when a short is prepared, so borrowable null means not read. The app cannot see the regulator's ban list or KIS's limit for this account, so a short that passes every check here can still be refused.
+- The loan: KIS lends for 90 days with no extension. daysToRepay is the app's count from loanDate, and the app covers by itself from coverBeforeDays business days before the last day it counts. KIS requires collateral of 120% of the borrowed value and may cover a short by itself below it.
+- Costs: the borrow fee is estimated at annualFeePct a year on the sale proceeds per calendar day (feePerDay, and estimatedFee so far); KIS's own figure replaces it when known. Fees and tax apply to the sale and to the cover. The loss of a short has no limit, because the price can keep rising.
+- Sending: productRisk.credit.short.automatic says whether a short you decide is sent by itself or proposed for approval.
+- Each open short in productRisk.credit.shorts: quantity, entryPrice, price, adversePct, loanDate, daysToRepay, the fees and coverStop. The app arms a cover stop at stopLossPct above the entry: coverStop.state "armed" with its level. coverStop.state "unprotected" means no stop is working for that short, with the cause. coverStop null means none was armed for it.
+- shortfall is the cash the app holds back from its own buys because buying the losing shorts back now would cost more than their proceeds. It lowers the cash a Buy can use.
+- maxGrossPctOfEquity caps all shorts together (open shorts, filled shorts the balance does not show yet and open short orders) as a share of the account value. capUsedPct is the share they use now and capLeftPct what is left.
+- A Sell or Buy of a stock held both as shares and short carries its credit kind: "none" sells shares, "short" opens a new short, "cover" with the short's loanDate buys it back. Without the kind the order is refused.`;
+const SHORT_PART=Object.freeze({id:'short',when:f=>f.short,text:SHORT_TEXT});
+// A set's parts in sending order: the short part after credit, the more-orders part last.
+const ordered=parts=>{const i=parts.findIndex(p=>p.id==='credit');return [...parts.slice(0,i+1),SHORT_PART,...parts.slice(i+1),MORE_ORDERS_PART];};
 // The parts in their fixed order. Step 1: no text yet.
 const REVIEW_PARTS=Object.freeze([
   {id:'two-markets',when:f=>f.twoMarkets,text:''},
@@ -46,9 +68,9 @@ function assemble(core,parts,ids){
   if(!Array.isArray(ids)||new Set(ids).size!==ids.length)throw new Error('INVALID_INSTRUCTION_PARTS');
   for(const id of ids)if(!parts.some(p=>p.id===id))throw new Error('INVALID_INSTRUCTION_PARTS');
   return [core,...parts.filter(p=>ids.includes(p.id)&&p.text).map(p=>p.text)].join('\n\n');}
-const partsFor=context=>{const f=factsOf(context);return [...REVIEW_PARTS,MORE_ORDERS_PART].filter(p=>p.when(f)).map(p=>p.id);};
+const partsFor=context=>{const f=factsOf(context);return ordered(REVIEW_PARTS).filter(p=>p.when(f)).map(p=>p.id);};
 const scoutPartsFor=context=>SCOUT_PARTS.filter(p=>p.when(context)).map(p=>p.id);
-const reviewText=ids=>assemble(REVIEW_CORE,[...REVIEW_PARTS,MORE_ORDERS_PART],ids);
+const reviewText=ids=>assemble(REVIEW_CORE,ordered(REVIEW_PARTS),ids);
 const scoutText=ids=>assemble(SCOUT_CORE,SCOUT_PARTS,ids);
 // Every part: the longest text, for size bounds and the fingerprint.
 const REVIEW_ALL=reviewText(REVIEW_PARTS.map(p=>p.id));
@@ -64,6 +86,8 @@ const SCOUT_ALL=scoutText(SCOUT_PARTS.map(p=>p.id));
 const INSTRUCTIONS_VERSION='review 2026-11-24';// S4: run_screen in place of compute
 // M-6 part 2: a review that may return several orders (the more-orders part, the decision schema with moreOrders).
 const ORDERS_VERSION='review 2026-11-24 orders';
+// B3e: the same, with the short part (shorts enabled).
+const SHORT_VERSION=INSTRUCTIONS_VERSION+' short',ORDERS_SHORT_VERSION=ORDERS_VERSION+' short';
 
 // Step 3: the proposed text, draft-2.md with the rulings of review.md (W1 to W6, the quantity and execution sentences,
 // the desk part, R1). No live review sends it: only the replay's "Built-in text: proposed" does, so the user can compare
@@ -71,6 +95,7 @@ const ORDERS_VERSION='review 2026-11-24 orders';
 // conditions as the current set, so a context gives the same part list under both.
 const PROPOSED_VERSION='proposed 2026-11-24';// trailing stops T2: the trail variants, as for the current set
 const PROPOSED_ORDERS_VERSION='proposed 2026-11-24 orders';// M-6 part 2, as ORDERS_VERSION
+const PROPOSED_SHORT_VERSION=PROPOSED_VERSION+' short',PROPOSED_ORDERS_SHORT_VERSION=PROPOSED_ORDERS_VERSION+' short';
 const PROPOSED_REVIEW_CORE=`TASK
 Review this portfolio for the goals in userGuidelines. Answer with one bounded trade or Hold. Count transaction costs and estimated taxes in every comparison.
 Hold is a complete answer when the evidence does not justify a trade. When uncertainty is the reason, name what is unknown and whether it could change the decision. A trade whose expected gain does not cover its costs is not justified.
@@ -320,11 +345,12 @@ They are permitted within the caps in products.leveragedOrInverseEtps, for a def
 
 // The two sets. 'current' is what every live request sends; 'proposed' is sent only by the replay's option.
 const SETS=Object.freeze({
-  current:Object.freeze({name:'current',version:INSTRUCTIONS_VERSION,ordersVersion:ORDERS_VERSION,core:REVIEW_CORE,parts:REVIEW_PARTS,scoutCore:SCOUT_CORE,scoutParts:SCOUT_PARTS}),
-  proposed:Object.freeze({name:'proposed',version:PROPOSED_VERSION,ordersVersion:PROPOSED_ORDERS_VERSION,core:PROPOSED_REVIEW_CORE,parts:PROPOSED_REVIEW_PARTS,scoutCore:PROPOSED_SCOUT_CORE,scoutParts:PROPOSED_SCOUT_PARTS})});
+  current:Object.freeze({name:'current',version:INSTRUCTIONS_VERSION,ordersVersion:ORDERS_VERSION,shortVersion:SHORT_VERSION,ordersShortVersion:ORDERS_SHORT_VERSION,core:REVIEW_CORE,parts:REVIEW_PARTS,scoutCore:SCOUT_CORE,scoutParts:SCOUT_PARTS}),
+  proposed:Object.freeze({name:'proposed',version:PROPOSED_VERSION,ordersVersion:PROPOSED_ORDERS_VERSION,shortVersion:PROPOSED_SHORT_VERSION,ordersShortVersion:PROPOSED_ORDERS_SHORT_VERSION,core:PROPOSED_REVIEW_CORE,parts:PROPOSED_REVIEW_PARTS,scoutCore:PROPOSED_SCOUT_CORE,scoutParts:PROPOSED_SCOUT_PARTS})});
 function setOf(name){if(name==null||name==='current')return SETS.current;if(name==='proposed')return SETS.proposed;throw new Error('INVALID_INSTRUCTION_SET');}
-// A set's parts with the more-orders part after them (M-6): it is in the text only when a context's ids include it.
-const withOrders=s=>[...s.parts,MORE_ORDERS_PART];
+// A set's parts with the short part after credit (B3e) and the more-orders part last (M-6): each is in the text only
+// when a context's ids include it.
+const withOrders=s=>ordered(s.parts);
 // The review text of a set, and the same text as two blocks for Claude's system (the core with a cache breakpoint, then
 // the parts, which change only with a setting): parts is '' when no part with text applies.
 const setReviewText=(ids,set)=>{const s=setOf(set);return assemble(s.core,withOrders(s),ids);};
@@ -336,16 +362,19 @@ const fingerprints={};
 // orders (M-6 part 2): the fingerprint of the set's several-orders version: the single-order inputs, unchanged and in
 // the same order, then the more-orders part and the decision schema variants with moreOrders (one further order stands
 // for any count: the count changes only maxItems, not the form).
-function fingerprint(set,{orders=false}={}){const s=setOf(set),key=s.name+(orders?':orders':'');if(fingerprints[key])return fingerprints[key];const C=require('./ai-client.cjs');
+// short (B3e): then the short part, after everything the off fingerprints hash, so those stay byte for byte.
+function fingerprint(set,{orders=false,short=false}={}){const s=setOf(set),key=s.name+(orders?':orders':'')+(short?':short':'');if(fingerprints[key])return fingerprints[key];const C=require('./ai-client.cjs');
   const all={reviewInterval:{auto:true},discovery:{enabled:true},agentDesk:{conditionalOrders:{allowed:true}}},trail={...all,agentDesk:{conditionalOrders:{allowed:true,trailing:{allowed:true}}}};
   const inputs=[s.core,s.parts.map(p=>[p.id,p.text]),[false,true].flatMap(a=>[false,true].flatMap(b=>[false,true].map(t=>C.decisionSchema(a,b,t)))),C.reviewTools(all),C.reviewTools(trail)];
   if(orders)inputs.push([MORE_ORDERS_PART.id,MORE_ORDERS_PART.text],[false,true].flatMap(a=>[false,true].flatMap(b=>[false,true].map(t=>C.decisionSchema(a,b,t,1)))));
+  if(short)inputs.push([SHORT_PART.id,SHORT_PART.text]);
   return fingerprints[key]=require('node:crypto').createHash('sha256').update(JSON.stringify(inputs)).digest('hex').slice(0,16);}
 // The review record's instructions: the set's version and fingerprint, and the parts this context was given. A context
 // that may return several orders carries the set's orders version and fingerprint.
-const record=(context,set)=>{const s=setOf(set),orders=factsOf(context).moreOrders;return {version:orders?s.ordersVersion:s.version,fingerprint:fingerprint(set,{orders}),parts:partsFor(context)};};
+const versionOf=(s,{orders,short})=>orders?(short?s.ordersShortVersion:s.ordersVersion):(short?s.shortVersion:s.version);
+const record=(context,set)=>{const s=setOf(set),{moreOrders:orders,short}=factsOf(context);return {version:versionOf(s,{orders,short}),fingerprint:fingerprint(set,{orders,short}),parts:partsFor(context)};};
 // The scout's version (design 6): each plan record keeps it with the parts it was given, so the scorecard can be split
 // by text later. The scout text has not changed since the parts machinery (step 1).
 const SCOUT_INSTRUCTIONS_VERSION='scout 2026-11-21';
 const scoutRecord=context=>({version:SCOUT_INSTRUCTIONS_VERSION,parts:scoutPartsFor(context)});
-module.exports={ORDERS_VERSION,PROPOSED_ORDERS_VERSION,MORE_ORDERS_TEXT,MORE_ORDERS_PART,INSTRUCTIONS_VERSION,PROPOSED_VERSION,SCOUT_INSTRUCTIONS_VERSION,fingerprint,record,scoutRecord,REVIEW_CORE,SCOUT_CORE,REVIEW_PARTS,SCOUT_PARTS,PROPOSED_REVIEW_CORE,PROPOSED_REVIEW_PARTS,PROPOSED_SCOUT_CORE,PROPOSED_SCOUT_PARTS,SETS,setOf,factsOf,partsFor,scoutPartsFor,reviewText,scoutText,setReviewText,setScoutText,reviewBlocks,REVIEW_ALL,SCOUT_ALL};
+module.exports={SHORT_TEXT,SHORT_PART,SHORT_VERSION,ORDERS_SHORT_VERSION,PROPOSED_SHORT_VERSION,PROPOSED_ORDERS_SHORT_VERSION,factsOf,ORDERS_VERSION,PROPOSED_ORDERS_VERSION,MORE_ORDERS_TEXT,MORE_ORDERS_PART,INSTRUCTIONS_VERSION,PROPOSED_VERSION,SCOUT_INSTRUCTIONS_VERSION,fingerprint,record,scoutRecord,REVIEW_CORE,SCOUT_CORE,REVIEW_PARTS,SCOUT_PARTS,PROPOSED_REVIEW_CORE,PROPOSED_REVIEW_PARTS,PROPOSED_SCOUT_CORE,PROPOSED_SCOUT_PARTS,SETS,setOf,factsOf,partsFor,scoutPartsFor,reviewText,scoutText,setReviewText,setScoutText,reviewBlocks,REVIEW_ALL,SCOUT_ALL};

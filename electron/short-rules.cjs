@@ -66,6 +66,10 @@ function capCheck({value,shorts=[],waiting=[],notional,maxPct=DEFAULT_MAX_PCT}){
   const used=[...open,...pending].reduce((n,v)=>n+v,0),usedPct=used/base*100,afterPct=(used+order)/base*100;
   return afterPct<=max+1e-9?{ok:true,usedPct,afterPct,maxPct:max}:{ok:false,code:'SHORT_CAP_REACHED',usedPct,afterPct,maxPct:max};}
 
+// B3e: the share of the account value all shorts use now and what is left under the cap, by capCheck's own rule (open
+// shorts, waiting short orders); null when any amount, the base or the cap cannot be read.
+function capUse({value,shorts=[],waiting=[],maxPct=DEFAULT_MAX_PCT}){const r=capCheck({value,shorts,waiting,notional:Number.MIN_VALUE,maxPct});
+  if(!Number.isFinite(r.usedPct))return null;const round=v=>Math.round(v*10)/10;return {capUsedPct:round(r.usedPct),capLeftPct:round(Math.max(0,r.maxPct-r.usedPct))};}
 // The next price on the Korean tick grid at or above p.
 function upToTick(p){let t=krTick(p);let v=Math.ceil(p/t)*t;t=krTick(v);return Math.ceil(v/t)*t;}
 // The uptick floor: the smallest valid price above the last trade (an off-grid last trade too: 2001 gives 2005).
@@ -166,4 +170,4 @@ function shortfall(balance){const open=(balance?.shorts??[]).filter(s=>Number(s.
     const amount=Math.max(0,Math.round(q*p-proceeds));if(amount>0)rows.push({symbol:s.symbol,loanDate:s.loanDate??null,amount});}
   return {open:open.length,known:missing.length===0,amount:rows.reduce((n,r)=>n+r.amount,0),rows,missing};}
 const SHORTFALL_UNKNOWN_WORDS='a short is open and what buying it back costs beyond its proceeds could not be read';
-module.exports={shortfall,SHORTFALL_UNKNOWN_WORDS,MAX_BORROW_AGE_MS,LAST_TRADE_FRESH_MS,FUTURE_SKEW_MS,DEFAULT_MAX_PCT,VENUE,lendExchange,instrumentAllowed,parseBorrowable,borrowable,capBase,capCheck,upToTick,floorPrice,auctionFloor,floorNow,shortPrice,reviseShort,sessionAllowed,signedExposure,refusalWords,fresh,SHORT_LOAN_DATE_RULE,shortLoanDate,BALANCE_WAIT_WORDS_MS,balanceShows,unshownQuantity,shortQuantity,laggingShorts,balanceWaitWords,creditRowCheck};
+module.exports={capUse,shortfall,SHORTFALL_UNKNOWN_WORDS,MAX_BORROW_AGE_MS,LAST_TRADE_FRESH_MS,FUTURE_SKEW_MS,DEFAULT_MAX_PCT,VENUE,lendExchange,instrumentAllowed,parseBorrowable,borrowable,capBase,capCheck,upToTick,floorPrice,auctionFloor,floorNow,shortPrice,reviseShort,sessionAllowed,signedExposure,refusalWords,fresh,SHORT_LOAN_DATE_RULE,shortLoanDate,BALANCE_WAIT_WORDS_MS,balanceShows,unshownQuantity,shortQuantity,laggingShorts,balanceWaitWords,creditRowCheck};

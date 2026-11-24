@@ -112,7 +112,7 @@ class LiveEngine {
     if(this.market==='KR'){const policy=this.exposure.policy(this.identity()),held=this.exposure.creditRisk(this.identity(),value.balance,this.day());
       // What each credit path can do now (credit-paths.cjs), beside the saved preferences: openings are drafts or need
       // approval whatever the automatic setting says, and unconfirmed paths cannot be sent at all.
-      if(policy.margin.enabled||policy.short.enabled||held){const CP=require('./credit-paths.cjs');risk.credit={liveAccountOnly:true,environment:value.balance.environment,effective:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,(({executable,automatic,reason,label})=>({executable,automatic,...(reason?{reason}:{}),...(label?{label}:{})}))(CP.pathStatus(k,{approved:this.creditApproved?.()===true}))])),margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,maxLoanPctOfEquity:policy.margin.maxLoanPctOfEquity,annualInterestPct:policy.margin.interestPct},short:{allowed:policy.short.enabled,automatic:policy.short.auto,maxGrossPctOfEquity:policy.short.maxGrossPctOfEquity,stopLossPct:policy.short.stopLossPct,annualFeePct:policy.short.feePct},...(held?{loans:held.margin.loans,estimatedCollateralPct:held.margin.estimatedCollateralPct,shorts:held.short.positions}:{})};if(held)risk.warnings.push(...held.warnings);}}
+      if(policy.margin.enabled||policy.short.enabled||held){const CP=require('./credit-paths.cjs');risk.credit={liveAccountOnly:true,environment:value.balance.environment,effective:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,(({executable,automatic,reason,label})=>({executable,automatic,...(reason?{reason}:{}),...(label?{label}:{})}))(CP.pathStatus(k,{approved:this.creditApproved?.()===true}))])),margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,maxLoanPctOfEquity:policy.margin.maxLoanPctOfEquity,annualInterestPct:policy.margin.interestPct},short:{allowed:policy.short.enabled,automatic:policy.short.auto,maxGrossPctOfEquity:policy.short.maxGrossPctOfEquity,stopLossPct:policy.short.stopLossPct,annualFeePct:policy.short.feePct},...(held?{loans:held.margin.loans,estimatedCollateralPct:held.margin.estimatedCollateralPct,shorts:held.short.positions}:{})};if(held)risk.warnings.push(...held.warnings);if(policy.short.enabled&&CP.shortPathsOpen({approved:this.creditApproved?.()===true}))this.shortFacts(risk.credit,value,policy);}}
     return risk.products.length||risk.warnings.length||risk.leveragedEtps.allowed||risk.credit?{productRisk:risk}:{};
   }
   get severalOpen(){if(this.severalOpenFixed)return true;try{return this.severalOpenSetting?.()===true;}catch{return false;}}
@@ -184,7 +184,7 @@ class LiveEngine {
       const held=fn=>typeof this.broker.hold==='function'?this.broker.hold(fn,{label:`${order.side} ${order.quantity} ${order.symbol}`}):fn({waitedMs:0,released:()=>false});
       return await held(async hold=>{timings.holdWaitMs=hold.waitedMs;const stamp=o=>({...o,timings:{...timings,...(hold.released()?{holdReleasedByLimit:true}:{})}});
       let t=Date.now();
-      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{}),...(order.madeBy==='ticket'?{yours:true}:{})},...(this.severalOpen?{severalOpen:true}:{})});
+      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{}),...(order.madeBy==='ticket'?{yours:true}:{})},...(this.severalOpen?{severalOpen:true}:{})}).then(p=>{this.noteLend(order,p,null);return p;},error=>{this.noteLend(order,null,error);throw error;});
       timings.checkMs=since(t);t=Date.now();
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
@@ -449,6 +449,22 @@ class LiveEngine {
   shortCapBase(balance){let v=null;try{v=this.netEquityOf?.(balance)??null;}catch{v=null;}return Number.isFinite(v?.low)&&v.low>0?v.low:0;}
   // The app's open short orders, every one whatever the several-open switch: unexpired proposals and orders at KIS, by
   // their unfilled notional.
+  // Short selling B3e (rulings-b3e-text.md): what the review is told about shorts while they are enabled and their short
+  // and cover paths can be sent (credit-paths shortPathsOpen; not before B4), from readings
+  // already held (no KIS read for the context): the loan's cover rule, the fee per day, the shortfall held back, the cap
+  // used and left, and the last lending-list answer for each universe stock (null: not read).
+  shortFacts(credit,value,policy){const R=require('./short-rules.cjs'),bal=value.balance,s=credit.short;s.coverBeforeDays=policy.short.coverBeforeDays;
+    // What happens to a short the review decides (planner, B3e): sent by itself only when the setting says so AND its path
+    // is automatic (credit-paths: an opening is proposed for approval until then).
+    s.automatic=s.automatic===true&&credit.effective?.short?.automatic===true;
+    const f=R.shortfall(bal);s.shortfall={amountKRW:f.amount,known:f.known,rows:f.rows.map(r=>({symbol:r.symbol,loanDate:r.loanDate,amountKRW:r.amount})),...(f.missing.length?{missing:f.missing}:{})};
+    let use=null;try{use=R.capUse({value:{low:this.shortCapBase(bal)},shorts:bal.shorts??[],waiting:require('./exposure.cjs').shortWaiting({openShorts:this.openShortOrders(),pending:this.pendingOrders(null,null),lagging:R.laggingShorts(this.orders(),bal)}),maxPct:policy.short.maxGrossPctOfEquity});}catch{use=null;}
+    s.capUsedPct=use?.capUsedPct??null;s.capLeftPct=use?.capLeftPct??null;
+    if(Array.isArray(credit.shorts))credit.shorts=credit.shorts.map(p=>{const lot=(bal.shorts??[]).find(x=>x.symbol===p.symbol&&x.loanDate===p.loanDate);return {...p,feePerDay:Number.isFinite(lot?.proceeds)?Math.round(lot.proceeds*policy.short.feePct/100/365):null};});
+    const reads=this.lendReads??new Map();s.candidates=(value.quotes??[]).map(q=>q.symbol).filter(sym=>/^[0-9A-Z]{6}$/.test(String(sym))).map(sym=>{const r=reads.get(sym);return {symbol:sym,borrowable:r?r.borrowable:null,readAt:r?new Date(r.at).toISOString():null};});}
+  // The last lending-list answer of a short's preparation, per stock: borrowable (tradable now covered the order or not).
+  noteLend(order,prepared,error){if(order?.credit?.kind!=='short')return;const code=error?.message;if(error&&!['SHORT_NOT_LENDABLE','SHORT_BORROW_SHORT'].includes(code))return;
+    (this.lendReads??=new Map()).set(order.symbol,{borrowable:!error,at:Date.now()});}
   openShortOrders(){const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];return this.orders().filter(o=>o.side==='Sell'&&o.credit?.kind==='short'&&OPEN.includes(o.status)&&!(o.status==='Ready'&&o.expiresAt<Date.now())).map(o=>({id:o.id,credit:'short',notional:Math.max(0,(o.quantity??0)-(o.filled??0))*(Number(o.currentPrice??o.limitPrice)||0)}));}
   exposureBase(balance,{buy=false}={}){if(!this.netEquityOf)return balance.reportedTotal;let v=null;try{v=this.netEquityOf(balance)??null;}catch{}
     if(Number.isFinite(v?.low))return Math.min(balance.reportedTotal,v.low);if(buy)throw new Error('RISK_DATA_UNAVAILABLE');return balance.reportedTotal;}
