@@ -64,7 +64,7 @@ test('the instruction text: no session rule, the decay fact, a hedge use, and th
   for(const t of [sentence,RI.PROPOSED_REVIEW_PARTS.find(p=>p.id==='leveraged').text]){assert.doesNotMatch(t,/this or the next session/);assert.match(t,/hedge/);assert.match(t,/singleStockAllowed is true/);assert.doesNotMatch(t,/stronger evidence/,'no evidence bar set by built-in text');}
   assert.match(RI.REVIEW_CORE,/Daily-reset leverage decays over longer and sideways holds\./);assert.match(RI.REVIEW_CORE,/held for any horizon up to maxHoldingDays/);
   assert.match(RI.SCOUT_CORE,/singleStockAllowed is true/);assert.match(RI.PROPOSED_SCOUT_PARTS[0].text,/singleStockAllowed is true/);
-  assert.deepEqual([RI.INSTRUCTIONS_VERSION,RI.ORDERS_VERSION,RI.PROPOSED_VERSION,RI.PROPOSED_ORDERS_VERSION,RI.SCOUT_INSTRUCTIONS_VERSION],['review 2026-11-25.3','review 2026-11-25.3 orders','proposed 2026-11-25','proposed 2026-11-25 orders','scout 2026-11-25b']);
+  assert.deepEqual([RI.INSTRUCTIONS_VERSION,RI.ORDERS_VERSION,RI.PROPOSED_VERSION,RI.PROPOSED_ORDERS_VERSION,RI.SCOUT_INSTRUCTIONS_VERSION],['review 2026-11-25.4','review 2026-11-25.4 orders','proposed 2026-11-25.2','proposed 2026-11-25.2 orders','scout 2026-11-25b']);
   // The fingerprint moved, so a Claude dry run of the earlier version no longer counts (claude-start-stop.test.cjs).
   assert.notEqual(RI.fingerprint(),'36fe9b8abbd1bbea');
 });
