@@ -37,8 +37,9 @@ test('live engine credit orders: unavailable on mock; unconfirmed paths are neve
   const mock=engine('mock');assert.throws(()=>mock.l.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:72000,credit:{kind:'margin-buy'}}),/FEATURE_UNAVAILABLE/);
   const {l,calls}=engine('live');assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:1,limitPrice:72000,credit:{kind:'margin-buy'}}),/INVALID_ORDER/,'side must match the credit kind');
   l.exposure.savePolicy('acct',{margin:{enabled:true,maxLoanPctOfEquity:40},short:{enabled:true,auto:true,maxGrossPctOfEquity:50}});l.enableAuto('ENABLE AUTO LIVE');l.creditApproved=()=>true;
-  for(const [side,credit,symbol] of [['Buy',{kind:'margin-buy'},'005930'],['Sell',{kind:'short'},'005930'],['Buy',{kind:'cover',loanDate:'2026-09-24'},'000660']])
-    assert.throws(()=>l.propose({symbol,side,quantity:1,limitPrice:72000,credit}),/CREDIT_PATH_UNVERIFIED/,`${credit.kind}: not proposed, whatever the settings and approval`);
+  assert.throws(()=>l.propose({symbol:'005930',side:'Buy',quantity:1,limitPrice:72000,credit:{kind:'margin-buy'}}),/CREDIT_PATH_UNVERIFIED/,'margin-buy: not proposed, whatever the settings and approval');
+  // Shorts on (2026-11-25): the short and cover paths are no longer refused as unverified (their own checks follow).
+  for(const [side,credit,symbol] of [['Sell',{kind:'short'},'005930'],['Buy',{kind:'cover',loanDate:'2026-09-24'},'000660']]){let code=null;try{l.propose({symbol,side,quantity:1,limitPrice:72000,credit});}catch(e){code=e.message;}assert.notEqual(code,'CREDIT_PATH_UNVERIFIED',credit.kind);}
   assert.throws(()=>l.propose({symbol:'005930',side:'Sell',quantity:5,limitPrice:72000,credit:{kind:'margin-sell',loanDate:'2026-08-25'}}),/CREDIT_PATH_UNVERIFIED/,'a repayment waits on U5 (Stage 4 correction)');
   // As it will work once U5 is confirmed:
   const P=require('../electron/credit-paths.cjs').PATHS['margin-sell'];P.executable=true;try{
@@ -64,9 +65,11 @@ test('client: only confirmed credit paths are sent; a margin repayment goes to o
   await assert.rejects(mock.prepareOrder({symbol:'005930',side:'Buy',quantity:1,limitPrice:100,credit:{kind:'short',type:'22'}}),/INVALID_ORDER/,'short is a sale');
   await assert.rejects(mock.prepareOrder({symbol:'005930',side:'Sell',quantity:1,limitPrice:100,credit:{kind:'margin-sell',type:'25'}}),/INVALID_ORDER/,'repayment needs its loan date');
   const calls=[];const client=new KisReadOnlyClient(live,async(url,options)=>{calls.push({url,options});if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'t',expires_in:3600});if(url.includes('order-credit'))return reply({rt_cd:'0',output:{ODNO:'0001234'}});throw new Error(url);},async()=>{});
-  for(const credit of [{kind:'margin-buy',type:'21'},{kind:'short',type:'22'},{kind:'cover',type:'28',loanDate:'2026-09-24'}])
-    await assert.rejects(client.placeOrder({symbol:'005930',side:credit.kind==='short'?'Sell':'Buy',quantity:1,limitPrice:100,credit}),/CREDIT_PATH_UNVERIFIED/,credit.kind);
+  await assert.rejects(client.placeOrder({symbol:'005930',side:'Buy',quantity:1,limitPrice:100,credit:{kind:'margin-buy',type:'21'}}),/CREDIT_PATH_UNVERIFIED/,'margin-buy');
   assert.equal(calls.filter(c=>c.url.includes('order-credit')).length,0,'nothing reached order-credit');
+  // Shorts on: a short and a cover reach order-credit.
+  for(const credit of [{kind:'short',type:'22'},{kind:'cover',type:'28',loanDate:'2026-09-24'}])await client.placeOrder({symbol:'005930',side:credit.kind==='short'?'Sell':'Buy',quantity:1,limitPrice:100,credit});
+  assert.deepEqual(calls.filter(c=>c.url.includes('order-credit')).map(c=>JSON.parse(c.options.body).CRDT_TYPE),['22','28']);calls.length=0;
   await assert.rejects(client.placeOrder({symbol:'005930',side:'Sell',quantity:2,limitPrice:100,credit:{kind:'margin-sell',type:'25',loanDate:'2026-08-25'}}),/CREDIT_PATH_UNVERIFIED/,'a repayment waits on U5');
   const P=require('../electron/credit-paths.cjs').PATHS['margin-sell'];P.executable=true;try{
   await client.placeOrder({symbol:'005930',side:'Sell',quantity:2,limitPrice:100,credit:{kind:'margin-sell',type:'25',loanDate:'2026-08-25'}});const sell=calls.filter(c=>c.url.includes('order-credit')).at(-1);

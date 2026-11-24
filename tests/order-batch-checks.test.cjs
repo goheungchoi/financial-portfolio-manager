@@ -18,7 +18,7 @@ test('1 the loss limit, read live: a breach after order 1 blocks the later openi
   assert.deepEqual(sent,['Buy 005930']);assert.match(note(1),/^Guardrail: new buys are blocked after the daily loss limit/);assert.match(note(2),/^Guardrail: new buys are blocked/);
 });
 test('2 a credit path not executable: that order is a draft; the others are sent',async()=>{
-  const {sent,note}=await batch({item:1,action:'Sell',symbol:'035720',quantity:1,credit:'short',loanDate:''});
+  const {sent,note}=await batch({item:1,action:'Buy',symbol:'035720',quantity:1,credit:'margin-buy',loanDate:''});// shorts on: margin buying is the closed path now
   assert.deepEqual(sent,['Buy 005930','Buy 000099']);assert.match(note(1),/^Draft only: /);
 });
 test('3 execution off for its market (the engine stopped after order 1): the later orders in it are not proposed',async()=>{

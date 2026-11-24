@@ -318,6 +318,7 @@ here; parts 2 and 3 describe them.
 | `live_policy` | live-engine.cjs:20 | accountKey PK, payload JSON | an account's trading policy | one per account |
 | `live_intents` | live-engine.cjs:20 | id PK, accountKey, payload JSON | one order the app proposed or sent | kept |
 | `broker_orders` | live-engine.cjs:20 | id PK, accountKey, day, seenAt, payload JSON | one order as KIS reported it, with KIS's kind name (`creditName`) and loan date (`loanDate`) when given | kept |
+| `short_loan_forms` | short-loan-date.cjs | id 1, payload JSON | the loan-date form KIS accepted for a short sale ('trade-day' or 'settlement') and for a cover ('balance' or 'trade-day'), with when it was learned; and a pending count of the other form (`shortPending`, `coverPending`: form, count, when, order; lapses after 10 days); written only when KIS accepts a short or cover (shorts on, 2026-11-25, stage 1b) |
 | `broker_order_charges` | live-engine.cjs:20 | id PK, accountKey, payload JSON | KIS's fee-and-tax figure for a Korean order made outside the app, or its read attempts | kept |
 | `buyback_removals` | buyback.cjs | account, market, symbol PK, removedAt | your Remove of a buy-back block (covers sales up to its time; a later sale outside the app blocks again) | kept |
 | `exposure_policy`, `product_overrides` | exposure.cjs:34 | see 2.2 | | |

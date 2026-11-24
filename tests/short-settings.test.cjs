@@ -39,7 +39,10 @@ test('the Short & leverage card: the two controls, the stop\'s label, and the co
   // The short paths in plain words while they cannot be sent; the engine's wording, which the review reads, is unchanged.
   assert.match(s,/'Opening a short: not available yet\. The app cannot send a short until one real test on your account has confirmed how KIS handles it\.'/);
   assert.match(s,/'Buying a short back: not available yet for the same reason; until then a cover the app proposes waits for your approval\.'/);
-  const CP=require('../electron/credit-paths.cjs');assert.match(CP.pathStatus('short').reason,/U1/,'credit-paths unchanged (the review context\'s copy)');
+  // Shorts on (2026-11-25): what each path does once it can be sent, from the user's switch and the path.
+  // (stage 1b: the saved switch, and covers as the conditional-order switches decide; pinned in shorts-on-1b)
+  assert.match(s,/k==='short'\?`Opening a short: sent \$\{data\.policy!\.short\.auto&&ps\.automatic\?'by itself':'after your approval'\}, within your cap\.`/);
+  const CP=require('../electron/credit-paths.cjs');assert.equal(CP.pathStatus('short',{shortsOn:true}).executable,true);assert.equal(CP.pathStatus('cover',{shortsOn:true}).executable,true);
   assert.match(s,/shortConfirmLines\(draft\.short,\{pathsOpen:paths\.short\?\.executable===true&&paths\.cover\?\.executable===true,automatic:paths\.short\?\.automatic===true\}\)/);
   assert.match(s,/role="dialog" aria-label="Turn on short selling"/);
 });

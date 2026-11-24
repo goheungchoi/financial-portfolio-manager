@@ -23,7 +23,9 @@ test('the U.S. reads are unchanged: an order code from a balance or quote read i
   assert.equal(relayCode('us-prepare-order',new Error('my-private-key')),'US_REQUEST_FAILED','no free text');
   assert.equal(relayCode('us-place-order',Object.assign(new Error('RATE_LIMITED'),{notSent:true})),'ORDER_NOT_SENT','M-1a unchanged');
   assert.equal(relayCode('prepare-order',new Error('SOMETHING_NEW')),'REQUEST_FAILED','Korea unchanged');
-  assert.ok(fs.readFileSync(require.resolve('../electron/kis-worker.cjs'),'utf8').includes("code:require('./worker-codes.cjs').relayCode(operation,error)"),'the worker uses it');
+  // Shorts on, stage 1b: the worker's whole reply is worker-codes errorReply, whose code is relayCode.
+  assert.ok(fs.readFileSync(require.resolve('../electron/kis-worker.cjs'),'utf8').includes("postMessage(require('./worker-codes.cjs').errorReply(id,operation,error))"),'the worker uses it');
+  assert.equal(require('../electron/worker-codes.cjs').errorReply(1,'us-balance',new Error('PRICE_MOVED')).code,'US_REQUEST_FAILED');
 });
 
 // The U.S. engine behind a broker that relabels its errors as the worker does.

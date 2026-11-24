@@ -35,7 +35,7 @@ test('the loan-end cover is decided from the lot\'s own record: one order at mos
   // Rejected: not re-armed, listed.
   let w=make();let [c]=exits(w.a);w.a.desk.update(c,{status:'rejected',outcome:'refused (fixture)',closedAt:Date.now()});steps(w);assert.equal(rows(w).length,1,'one order at most');
   assert.deepEqual(w.a.shortLoanAlarms(w.a.watchScope(),at('2026-09-21')).map(x=>[x.cause,x.end]),[['rejected','2026-09-29']]);
-  assert.equal(shortLoanLine({desk:{shortLoanAlarms:w.a.shortLoanAlarms(w.a.watchScope(),at('2026-09-21'))}}),'The short of 990010 ends its loan on 2026-09-29 and is not being covered (refused (fixture)).');
+  assert.equal(shortLoanLine({desk:{shortLoanAlarms:w.a.shortLoanAlarms(w.a.watchScope(),at('2026-09-21'))}}),'The short of 990010 ends its loan on 2026-09-29 and is not being covered (refused (fixture); buy it back in KIS\'s own app).');
   // You cancelled it: not re-armed, listed.
   w=make();[c]=exits(w.a);w.a.desk.cancelOrder(w.a.watchScope(),c.id);steps(w);assert.equal(rows(w).length,1);assert.equal(w.a.shortLoanAlarms(w.a.watchScope(),at('2026-09-21'))[0].cause,'cancelled');
   // Awaiting your approval: nothing new; named.
@@ -98,8 +98,8 @@ test('the loan-end cover armed but not watched: the line and Home say so; stoppe
   [line,home]=run(on);assert.match(line,/so it is covered now\.$/);assert.equal(home,null);
 });
 test('small: the loan-end cover\'s own words; coverBeforeDays a whole number; the warnings table made once, only with shorts, its rows removed with their lot',()=>{
-  const SS=require('../electron/short-stops.cjs');assert.equal(SS.lotDecision([{side:'Buy',purpose:'exit',credit:{kind:'cover',loanDate:'d'},status:'cancelled',closedBy:'user'}],{purpose:'exit'}).list.words,'you cancelled its loan-end cover');
-  assert.equal(SS.lotDecision([{side:'Buy',purpose:'stop_loss',credit:{kind:'cover',loanDate:'d'},status:'cancelled',closedBy:'user'}]).list.words,'you cancelled its cover stop');
+  const SS=require('../electron/short-stops.cjs');assert.equal(SS.lotDecision([{side:'Buy',purpose:'exit',credit:{kind:'cover',loanDate:'d'},status:'cancelled',closedBy:'user'}],{purpose:'exit'}).list.words,"you cancelled its loan-end cover; buy it back in KIS's own app");
+  assert.equal(SS.lotDecision([{side:'Buy',purpose:'stop_loss',credit:{kind:'cover',loanDate:'d'},status:'cancelled',closedBy:'user'}]).list.words,"you cancelled its cover stop; buy it back in KIS's own app");
   const E=require('../electron/exposure.cjs');const e=new E.Exposure(new DatabaseSync(':memory:'));assert.throws(()=>e.savePolicy('a',{short:{coverBeforeDays:2.5}}),/INVALID_SETTINGS/);e.savePolicy('a',{short:{coverBeforeDays:3}});assert.equal(e.policy('a').short.coverBeforeDays,3);
   const db=new DatabaseSync(':memory:');const none=app({db,shorts:[]});none.a.shortLoanEnds(none.a.watchScope(),[],[SHORT],at('2026-09-14'));assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='short_loan_warnings'").get(),undefined,'no shorts: no table');
   const w=app({db});w.a.shortLoanEnds(w.a.watchScope(),[LOT],[SHORT],at('2026-09-14'));assert.equal(db.prepare('SELECT count(*) n FROM short_loan_warnings').get().n,1);

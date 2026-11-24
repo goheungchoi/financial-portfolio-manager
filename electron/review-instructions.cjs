@@ -17,7 +17,7 @@ function factsOf(c){return {
   leveraged:productRisks(c).some(p=>p?.leveragedEtps?.allowed===true),
   credit:productRisks(c).some(p=>has(p?.credit)),
   // B3e: shorts enabled in Short & leverage (productRisk.credit.short.allowed) and both the short and cover paths
-  // executable (productRisk.credit.effective; not before B4), in a Korean or combined context.
+  // executable (productRisk.credit.effective; with the switch on since shorts on), in a Korean or combined context.
   short:productRisks(c).some(p=>p?.credit?.short?.allowed===true&&p.credit.effective?.short?.executable===true&&p.credit.effective?.cover?.executable===true),
   discovery:c?.discovery?.enabled===true,
   scoutPlan:Boolean(c?.scoutPlan?.targets?.length),

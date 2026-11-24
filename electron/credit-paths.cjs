@@ -51,21 +51,34 @@ function check(balance,order,orders=[]){const r=remaining(balance,order,orders);
 const PATHS={
   'margin-sell':{executable:false,requires:['U5'],evidence:'order_credit: CRDT_TYPE 25 own / 27 distribution margin repayment; LOAN_DT is the loan date of the stock sold (balance loan_dt)',reason:'which balance rows are margin loans and whether a loan is own or distribution (CRDT_TYPE 25 or 27) come from trad_dvsn_name text whose values are not confirmed (U5)'},
   'margin-buy':{executable:false,requires:['U4','U5'],reason:'a margin position is valued from KIS net assets (nass_amt), and what that figure deducts is not confirmed (U4); the loan rows it creates are recognized by unconfirmed trad_dvsn_name text (U5)'},
-  short:{executable:false,requires:['U1','U3','U5'],reason:'the loan date a new short sends (U1), the borrowable quantity (U3, lendable_by_company fields) and how a short row appears in the balance (U5) are not confirmed'},
-  cover:{executable:false,requires:['U2','U5'],reason:'how a cover names the short lot it repays (LOAN_DT for CRDT_TYPE 26/28, U2) and how the short row appears in the balance (U5) are not confirmed'},
+  // Shorts on (the user's word, 2026-11-25, replacing the B4 gate of one real short first): the short and cover paths
+  // can be sent. U1-U3 and U5 are met by the app's own handling, not by a real trade yet: the loan date (short-loan-date,
+  // one alternate on a refusal, remembered), KIS's lending list read before every short (CTSC2702R), and the short rows
+  // of the balance (normalizeBalance). A short opening follows the user's "Submit automatically" switch for short
+  // selling (exposure checkCredit); a cover is a protective close, sent automatically like a long's stop.
+  // Stage 1b: with the short-selling switch off (shortsOn false) both answer exactly as in 1.5.74 (closedReason), except
+  // a cover of a short the app itself opened (the engine's shortsOnFor), so the review and the screens see no change.
+  short:{executable:true,requires:[],autoOpening:true,closedReason:'the loan date a new short sends (U1), the borrowable quantity (U3, lendable_by_company fields) and how a short row appears in the balance (U5) are not confirmed',evidence:'order-credit TTTC0051U, CRDT_TYPE 22 distribution / 24 own; LOAN_DT by the remembered form (short-loan-date: the trade day or T+2), one alternate on a refusal; KIS lending list CTSC2702R read before each short'},
+  cover:{executable:true,requires:[],autoClose:true,closedReason:'how a cover names the short lot it repays (LOAN_DT for CRDT_TYPE 26/28, U2) and how the short row appears in the balance (U5) are not confirmed',evidence:'order-credit TTTC0052U, CRDT_TYPE 26 distribution / 28 own; LOAN_DT from the short lot in the KIS balance (loan_dt), one alternate on a refusal'},
 };
 const OPENINGS_LABEL='Automatic credit openings temporarily disabled pending validation.';
 const PROTECTION_LABEL='Requires approval—not automatic protection.';
-// Whether a credit path can be submitted and whether automatically. approved: the user approved Stage 3.
-// B3e (planner, 2026-11-24): whether both the short and cover paths can be sent. Until then (B4) the review is told
-// nothing about shorts and the instructions in force are today's, whatever the switch says.
-function shortPathsOpen({approved=false}={}){return ['short','cover'].every(k=>pathStatus(k,{approved}).executable===true);}
-function pathStatus(kind,{approved=false}={}){
+// Whether a credit path can be submitted and whether automatically. approved: the user approved Stage 3. shortsOn: the
+// short paths are open for this use (the switch on, or a cover of the app's own short); off by default, as in 1.5.74.
+// B3e (planner, 2026-11-24): whether both the short and cover paths can be sent. Without them the review is told nothing
+// about shorts and the instructions in force are those without shorts, whatever the switch says. Open since shorts on.
+// The code's paths (the switch is checked by the caller).
+function shortPathsOpen({approved=false}={}){return ['short','cover'].every(k=>pathStatus(k,{approved,shortsOn:true}).executable===true);}
+function pathStatus(kind,{approved=false,shortsOn=false}={}){
   if(!kind||kind==='none')return {executable:true,automatic:true};const p=PATHS[kind];if(!p)return {executable:false,automatic:false,reason:'unknown credit kind'};
   const opening=kind==='margin-buy'||kind==='short';
   if(!p.executable)return {executable:false,automatic:false,reason:p.reason,label:opening?OPENINGS_LABEL:PROTECTION_LABEL};
-  if(opening)return {executable:true,automatic:false,label:OPENINGS_LABEL};
-  return {executable:true,automatic:Boolean(approved),...(approved?{}:{label:PROTECTION_LABEL}),...(p.evidence?{evidence:p.evidence}:{})};
+  if(p.closedReason&&shortsOn!==true)return {executable:false,automatic:false,reason:p.closedReason,label:opening?OPENINGS_LABEL:PROTECTION_LABEL};
+  // autoOpening (short): automatic as far as the path goes; the user's own switch decides (exposure checkCredit).
+  if(opening)return p.autoOpening===true?{executable:true,automatic:true,...(p.evidence?{evidence:p.evidence}:{})}:{executable:true,automatic:false,label:OPENINGS_LABEL};
+  // autoClose (cover): a protective close needs no Stage 3 approval (margin-sell still does).
+  const auto=Boolean(approved)||p.autoClose===true;
+  return {executable:true,automatic:auto,...(auto?{}:{label:PROTECTION_LABEL}),...(p.evidence?{evidence:p.evidence}:{})};
 }
 // The stop a plan needs for its effect: below the price for a long, above it for a short.
 function stopSide(effect){return effect==='OPEN_SHORT'?'above':'below';}

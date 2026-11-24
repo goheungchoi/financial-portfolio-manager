@@ -123,7 +123,7 @@ class LiveEngine {
     if(this.market==='KR'){const policy=this.exposure.policy(this.identity()),held=this.exposure.creditRisk(this.identity(),value.balance,this.day());
       // What each credit path can do now (credit-paths.cjs), beside the saved preferences: openings are drafts or need
       // approval whatever the automatic setting says, and unconfirmed paths cannot be sent at all.
-      if(policy.margin.enabled||policy.short.enabled||held){const CP=require('./credit-paths.cjs');risk.credit={liveAccountOnly:true,environment:value.balance.environment,effective:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,(({executable,automatic,reason,label})=>({executable,automatic,...(reason?{reason}:{}),...(label?{label}:{})}))(CP.pathStatus(k,{approved:this.creditApproved?.()===true}))])),margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,maxLoanPctOfEquity:policy.margin.maxLoanPctOfEquity,annualInterestPct:policy.margin.interestPct},short:{allowed:policy.short.enabled,automatic:policy.short.auto,maxGrossPctOfEquity:policy.short.maxGrossPctOfEquity,stopLossPct:policy.short.stopLossPct,annualFeePct:policy.short.feePct},...(held?{loans:held.margin.loans,estimatedCollateralPct:held.margin.estimatedCollateralPct,shorts:held.short.positions}:{})};if(held)risk.warnings.push(...held.warnings);if(policy.short.enabled&&CP.shortPathsOpen({approved:this.creditApproved?.()===true}))this.shortFacts(risk.credit,value,policy);}}
+      if(policy.margin.enabled||policy.short.enabled||held){const CP=require('./credit-paths.cjs');risk.credit={liveAccountOnly:true,environment:value.balance.environment,effective:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,(({executable,automatic,reason,label})=>({executable,automatic,...(reason?{reason}:{}),...(label?{label}:{})}))(CP.pathStatus(k,{approved:this.creditApproved?.()===true,shortsOn:policy.short.enabled===true||k==='cover'&&this.holdsAppShort(value.balance)}))])),margin:{allowed:policy.margin.enabled,automatic:policy.margin.auto,maxLoanPctOfEquity:policy.margin.maxLoanPctOfEquity,annualInterestPct:policy.margin.interestPct},short:{allowed:policy.short.enabled,automatic:policy.short.auto,maxGrossPctOfEquity:policy.short.maxGrossPctOfEquity,stopLossPct:policy.short.stopLossPct,annualFeePct:policy.short.feePct},...(held?{loans:held.margin.loans,estimatedCollateralPct:held.margin.estimatedCollateralPct,shorts:held.short.positions}:{})};if(held)risk.warnings.push(...held.warnings);if(policy.short.enabled&&CP.shortPathsOpen({approved:this.creditApproved?.()===true}))this.shortFacts(risk.credit,value,policy);}}
     return risk.products.length||risk.warnings.length||risk.leveragedEtps.allowed||risk.credit?{productRisk:risk}:{};
   }
   get severalOpen(){if(this.severalOpenFixed)return true;try{return this.severalOpenSetting?.()===true;}catch{return false;}}
@@ -149,7 +149,8 @@ class LiveEngine {
     // Stage 3 (audit 2026-11-04): a credit path whose broker fields are not confirmed cannot be proposed at all (the app
     // records the idea as a draft instead), and a closing order is limited to what remains in its own lot after closing
     // orders already waiting on it, so it can never flip the position (electron/credit-paths.cjs).
-    const CP=require('./credit-paths.cjs');const path=CP.pathStatus(credit?.kind,{approved:this.creditApproved?.()===true});if(!path.executable)throw Object.assign(new Error('CREDIT_PATH_UNVERIFIED'),{detail:path.reason});
+    const CP=require('./credit-paths.cjs');const path=CP.pathStatus(credit?.kind,{approved:this.creditApproved?.()===true,shortsOn:this.shortsOnFor(credit,command.symbol)});if(!path.executable)throw Object.assign(new Error('CREDIT_PATH_UNVERIFIED'),{detail:path.reason});
+    {const lim=this.appCoverLimit(credit,command.symbol);if(lim!=null&&command.quantity>lim)throw Object.assign(new Error('EXCEEDS_LOT'),{detail:`With short selling off, the app buys back only the ${lim} shares it sold in this lot.`});}
     CP.check(balance,{symbol:command.symbol,side:command.side,quantity:command.quantity,credit},this.orders());
     // Short selling B3d-1: a short is for a KOSPI or KOSDAQ stock (the security master, instrumentOf; ETF short sales not
     // yet), in the regular session or the opening auction (shortSession, the app's Korean hours and calendar); its market
@@ -173,7 +174,8 @@ class LiveEngine {
       let order=this.orders().find(row=>row.id===id);if(!order)throw new Error('UNKNOWN_ORDER');
       if(order.status!=='Ready')return order;
       // The same contract checks again at submission: a path not confirmed now is never sent, approval or not.
-      if(order.credit&&!require('./credit-paths.cjs').pathStatus(order.credit.kind).executable)throw new Error('CREDIT_PATH_UNVERIFIED');
+      if(order.credit&&!require('./credit-paths.cjs').pathStatus(order.credit.kind,{shortsOn:this.shortsOnFor(order.credit,order.symbol)}).executable)throw new Error('CREDIT_PATH_UNVERIFIED');
+      {const lim=this.appCoverLimit(order.credit,order.symbol);if(lim!=null&&order.quantity>lim)throw new Error('EXCEEDS_LOT');}
       const environment=this.getConnection().snapshot.environment;
       if(confirmation!==(environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER'))throw new Error('APPROVAL_REQUIRED');
       if(!this.admits(order)||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
@@ -194,6 +196,9 @@ class LiveEngine {
       timings.aheadOfCheck=this.broker.ahead?.()??null;
       const held=fn=>typeof this.broker.hold==='function'?this.broker.hold(fn,{label:`${order.side} ${order.quantity} ${order.symbol}`}):fn({waitedMs:0,released:()=>false});
       return await held(async hold=>{timings.holdWaitMs=hold.waitedMs;const stamp=o=>({...o,timings:{...timings,...(hold.released()?{holdReleasedByLimit:true}:{})}});
+      // Shorts on (2026-11-25): a short or cover carries its loan-date plan (the remembered form first, one alternate), from
+      // the app's Korean calendar; the worker sends it as planned (short-loan-date).
+      if(['short','cover'].includes(order.credit?.kind)){const plan=this.loanDatePlan(order);if(plan)order={...order,credit:{...order.credit,send:plan}};}
       let t=Date.now();
       // The token fix, fourth review: a preparation refused for an ended sign-in (TOKEN_EXPIRED, before anything was sent)
       // is the same passing refusal as one at the order request: recorded not sent, so a stop stays armed and a review's
@@ -201,6 +206,8 @@ class LiveEngine {
       let prepared;try{prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{}),...(order.madeBy==='ticket'?{yours:true}:{})},...(this.severalOpen?{severalOpen:true}:{})}).then(p=>{this.noteLend(order,p,null);return p;},error=>{this.noteLend(order,null,error);throw error;});}
       catch(error){if(error?.message!=='TOKEN_EXPIRED')throw error;timings.checkMs=since(t);order=stamp({...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:'token-expired',notSentAt:Date.now()});this.save(order);return order;}
       timings.checkMs=since(t);t=Date.now();
+      // Shorts on, stage 1c: the order records the plan the ticket places (the preparation may have reduced it).
+      if(prepared?.sendPlan&&order.credit?.send)order={...order,credit:{...order.credit,send:prepared.sendPlan}};
       // The token fix, third review: an order the gateway refused for an ended sign-in may still have reached KIS. Before
       // another order of that stock and side is sent, KIS's orders of today are read (the preparation did); one the app
       // does not know, placed since that attempt (a minute's margin) or with no time, whatever its status, refuses the send
@@ -275,7 +282,7 @@ class LiveEngine {
       // sentBy (Activity step 4, 2026-11-19): sent automatically or submitted by the user; older orders carry no claim.
       order={...order,status:'Submitting',sentBy:automatic?'auto':'you'};this.save(order);
       timings.aheadOfPlace=this.broker.ahead?.()??null;t=Date.now();
-      try {const {ticketAgeMs,...result}=await this.broker.request('place-order',{ticket:prepared.ticket});timings.placeMs=since(t);if(Number.isFinite(ticketAgeMs))timings.ticketAgeMs=ticketAgeMs;order=stamp({...order,...result,status:'Accepted'});}
+      try {const {ticketAgeMs,...result}=await this.broker.request('place-order',{ticket:prepared.ticket});timings.placeMs=since(t);if(Number.isFinite(ticketAgeMs))timings.ticketAgeMs=ticketAgeMs;order=stamp({...order,...result,status:'Accepted'});this.noteLoanDate(order);}
       // SESSION_CLOSED comes from the session re-check before anything is sent to KIS, and CREDIT_PATH_UNVERIFIED from the
       // credit-path check before the request: the order was not placed.
       // M-1a: refused by the request limit before it left the app (ORDER_NOT_SENT from the worker, or the service's own
@@ -285,8 +292,9 @@ class LiveEngine {
       // M-1c: so is a prepared ticket the worker refused as missing or expired (15 s) before sending (TICKET_EXPIRED);
       // notSentCause says which.
       catch(error){timings.placeMs=since(t);if(Number.isFinite(error.ticketAgeMs))timings.ticketAgeMs=error.ticketAgeMs;order=stamp(order);
-        if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='TOKEN_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',...(error.message==='TOKEN_EXPIRED'?{tokenAttemptAt:Date.now()}:{}),notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':error.message==='TOKEN_EXPIRED'?'token-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
-        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN',...(error.message==='BROKER_REJECTED'&&/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?{brokerCode:error.brokerCode}:{}),...(error.message==='BROKER_REJECTED'&&typeof error.brokerMessage==='string'&&error.brokerMessage?{brokerMessage:error.brokerMessage.slice(0,120)}:{})};
+        const tried=require('./short-loan-date.cjs').tried(error.loanDateTried);
+        if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='TOKEN_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',...(tried?{loanDateTried:tried}:{}),...(error.message==='TOKEN_EXPIRED'?{tokenAttemptAt:Date.now()}:{}),notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':error.message==='TOKEN_EXPIRED'?'token-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
+        if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN',...(tried?{loanDateTried:tried}:{}),...(error.message==='BROKER_REJECTED'?(r=>({...(/^[A-Z0-9_-]{1,24}$/.test(r.brokerCode??'')?{brokerCode:r.brokerCode}:{}),...(typeof r.brokerMessage==='string'&&r.brokerMessage?{brokerMessage:r.brokerMessage.slice(0,120)}:{})}))(tried&&!tried[0].unclear?tried[0]:error):{})};
         // Rule U (M-1.2): with several orders open allowed, an unclear order blocks only its own stock (openBlock) and is
         // counted in full in every sum; the market's trading stays on. Off: the market stops, as before.
         if(!this.severalOpen){this.enabled=false;this.conditionalPermit=null;}}
@@ -294,6 +302,33 @@ class LiveEngine {
       });
     }finally{this.busy=false;}
   }
+  // Shorts on (2026-11-25): the loan dates a short or cover sends (short-loan-date candidates), from the remembered forms
+  // (loanForms, the app's LoanDateForms; without it the defaults) and the app's Korean calendar (closedKrDays). Null when
+  // a date cannot be made (the worker then refuses the order as invalid rather than guess).
+  // Stage 1b: the calendar unreadable gives no alternate that day (the first date on weekdays).
+  loanDatePlan(order){const LD=require('./short-loan-date.cjs');let closed=new Set(),calendar=true;try{closed=new Set(this.closedKrDays?.()??[]);}catch{calendar=false;}const isOpen=d=>closed.has(d)?false:null;
+    let forms=LD.DEFAULT_FORMS;try{forms=this.loanForms?.get?.()??forms;}catch{}
+    try{return LD.candidates(order.credit.kind,{today:require('./kis-activity.cjs').seoulDate(),loanDate:order.credit.loanDate??null,forms,isOpen,alternate:calendar});}catch{return null;}}
+  // After KIS accepted a short or cover: the forms in use learn from it (LoanDateForms.accepted: a first-attempt acceptance
+  // clears a pending count; the default taken on the alternate is put back at once; the other form taken on the
+  // alternate is used first only after it happens twice). One Activity line when the alternate was taken
+  // (onLoanDateLearned).
+  noteLoanDate(order){const s=order.loanDateSent;if(!s?.form||!['short','cover'].includes(order.credit?.kind))return;let r={changed:false,count:0};try{r=this.loanForms?.accepted?.(order.credit.kind,s.form,{alternate:s.alternate===true,orderId:order.id})??r;}catch{}
+    if(s.alternate===true){try{this.onLoanDateLearned?.(order,r);}catch{}}}
+  // Shorts on, stage 1c: the app's own short lots in a balance (default: the engine's), short-stops appLots.
+  appLots(balance=null){let bal=balance;try{bal=bal??this.riskBalance??this.getConnection().snapshot;}catch{bal=null;}let orders=[];try{orders=this.orders();}catch{orders=[];}
+    let closed=new Set();try{closed=new Set(this.closedKrDays?.()??[]);}catch{}const isOpen=d=>closed.has(d)?false:null;return require('./short-stops.cjs').appLots({orders,balance:bal,isOpen});}
+  appShortLots(balance=null){return new Set(this.appLots(balance).lots.keys());}
+  holdsAppShort(balance){return this.appLots(balance).lots.size>0;}
+  // Whether the short paths are open for this order: the short-selling switch on; with it off, only a cover of a short the
+  // app itself opened (appLots), so turning the switch off never strips a position's protection, and a short opened in
+  // KIS's app is handled as in 1.5.74.
+  shortsSwitchOn(){try{return this.exposure?.policy?.(this.identity())?.short?.enabled===true;}catch{return false;}}
+  shortsOnFor(credit,symbol){if(!credit||!['short','cover'].includes(credit.kind))return true;
+    return this.shortsSwitchOn()||credit.kind==='cover'&&this.appShortLots().has(`${symbol}|${credit.loanDate}`);}
+  // With the switch off, the app buys back no more of a lot than it sold there (a lot partly opened by hand); null when the
+  // switch is on or the order is not a cover.
+  appCoverLimit(credit,symbol){if(credit?.kind!=='cover'||this.shortsSwitchOn())return null;return this.appLots().lots.get(`${symbol}|${credit.loanDate}`)?.quantity??0;}
   // Rule U (M-1.2, several orders open allowed): why a new order may not be sent while others are open, or null.
   // - Order history unreadable while this account has an open order: no open order's state is known, so nothing is sent,
   //   protective sales included (D4, unchanged).
@@ -337,7 +372,7 @@ class LiveEngine {
     if(this.exposure&&order.credit?.kind!=='cover'){const g=this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:base,holdings:balance.holdings,pending});
       if(g.requiresApproval){product=g.product??null;why.push(g.product?.kind==='unclassified'?'the security master cannot classify this product now':`the ${g.product?.kind??'product'} rule requires your approval now`);}}
     if(order.credit&&['margin-buy','short'].includes(order.credit.kind)){const CP=require('./credit-paths.cjs');
-      if(!CP.pathStatus(order.credit.kind,{approved:this.creditApproved?.()===true}).automatic)why.push('this credit path requires your approval');
+      if(!CP.pathStatus(order.credit.kind,{approved:this.creditApproved?.()===true,shortsOn:this.shortsOnFor(order.credit,order.symbol)}).automatic)why.push('this credit path requires your approval');
       else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null,pending});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
     return why.length?{why:why.join('; '),product}:null;}
   // Why the daily-loss check holds an automatic order that opens exposure now, or null (1.5.48 review rounds 2-3): the
@@ -471,7 +506,7 @@ class LiveEngine {
   // The app's open short orders, every one whatever the several-open switch: unexpired proposals and orders at KIS, by
   // their unfilled notional.
   // Short selling B3e (rulings-b3e-text.md): what the review is told about shorts while they are enabled and their short
-  // and cover paths can be sent (credit-paths shortPathsOpen; not before B4), from readings
+  // and cover paths can be sent (credit-paths shortPathsOpen; open since shorts on), from readings
   // already held (no KIS read for the context): the loan's cover rule, the fee per day, the shortfall held back, the cap
   // used and left, and the last lending-list answer for each universe stock (null: not read).
   // Your open short orders in KIS (B3e), from the stored order history (its rows keep KIS's kind name), as pending rows
@@ -518,10 +553,12 @@ class LiveEngine {
     const closed=['Filled','Canceled','Rejected'].includes(res.status);
     // lotLoanDate: KIS's loan date for the app's credit order, from its history rows (a short's lot; a cover names it).
     // B3c: KIS's own names and loan date for the app's short or cover, checked against the app's record, in words.
-    const creditCheck=order.credit?require('./short-rules.cjs').creditRowCheck(order,res.chain):null;
+    // Stage 1b: the other short lots of the stock in the balance, so a KIS date naming one of them is said so.
+    const otherLots=order.credit?.kind==='cover'?(()=>{try{const b=this.riskBalance??this.getConnection().snapshot;return (b?.shorts??[]).filter(s=>s.symbol===order.symbol&&s.loanDate!==order.credit.loanDate).map(s=>s.loanDate);}catch{return [];}})():[];
+    const creditCheck=order.credit?require('./short-rules.cjs').creditRowCheck(order,res.chain,otherLots):null;
     const next={...order,resultCosts,fillPrice,...(res.loanDate?{lotLoanDate:res.loanDate}:{}),...(creditCheck?{creditCheck}:{}),reconciledAt:Date.now(),...((res.status==='Filled'||res.filled>0&&closed)&&!order.filledObservedAt?{filledObservedAt:Date.now()}:{}),filled:res.filled,status:res.status,reason:null,
       ...(res.closedReason?{closedReason:res.closedReason}:{}),currentBrokerOrderId:res.current,...(res.currentPrice?{currentPrice:res.currentPrice}:{}),chain:res.chain,...(res.outside.length&&!order.handsOff?{handsOff:{at:Date.now(),changes:res.outside}}:{})};
-    this.save(next);return next;}
+    this.save(next);if(creditCheck&&!order.creditCheck){try{this.onCreditCheck?.(next);}catch{}}return next;}
   orderReconciliation(){
     if(!this.orders().some(row=>['Accepted','Uncertain','Submitting','Partially filled'].includes(row.status)))return null;const h=this.reconcileHealth??{failures:0};
     return {status:h.failures?'unconfirmed':'confirmed',lastConfirmedAt:h.lastSuccessAt?new Date(h.lastSuccessAt).toISOString():null,...(h.failures?{failedChecks:h.failures,failingSince:new Date(h.since).toISOString(),error:h.error,

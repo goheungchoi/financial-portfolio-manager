@@ -8,10 +8,12 @@ const PATHS=open=>({short:{executable:open,automatic:false},cover:{executable:op
 const ON={environment:'kis',universe:[{symbol:'990010'}],positions:{},productRisk:{products:[],warnings:[],credit:{effective:PATHS(true),short:{allowed:true}}}};
 const OFF={...ON,productRisk:{...ON.productRisk,credit:{effective:PATHS(true),short:{allowed:false}}}};
 const ALLOWED_PATH_OFF={...ON,productRisk:{...ON.productRisk,credit:{effective:PATHS(false),short:{allowed:true}}}};
-// Opens the short and cover paths for a test (they are executable:false until B4).
+// Opens the short and cover paths for a test (open in the code since shorts on, 2026-11-25; kept for the nested cases).
 function withPathsOpen(fn){const CP=require('../electron/credit-paths.cjs'),was=CP.shortPathsOpen;CP.shortPathsOpen=()=>true;try{return fn();}finally{CP.shortPathsOpen=was;}}
-test('allowed while the short and cover paths cannot be sent (today, until B4) is shorts off byte for byte: text, record, both providers\' requests, the dry-run gate, the context',async()=>{
-  const CP=require('../electron/credit-paths.cjs');assert.equal(CP.shortPathsOpen(),false,'today: not executable');assert.equal(CP.shortPathsOpen({approved:true}),false);
+// Closes them for a test: the behaviour before shorts on, still pinned (a path closed again must restore it exactly).
+async function withPathsClosed(fn){const CP=require('../electron/credit-paths.cjs'),was=CP.shortPathsOpen,ps=CP.pathStatus;CP.shortPathsOpen=()=>false;CP.pathStatus=(k,o)=>['short','cover'].includes(k)?{executable:false,automatic:false,reason:'closed in this test'}:ps(k,o);try{return await fn();}finally{CP.shortPathsOpen=was;CP.pathStatus=ps;}}
+test('allowed while the short and cover paths cannot be sent (closed in this test; open since shorts on) is shorts off byte for byte: text, record, both providers\' requests, the dry-run gate, the context',()=>withPathsClosed(async()=>{
+  const CP=require('../electron/credit-paths.cjs');assert.equal(CP.shortPathsOpen(),false,'closed here');
   const offAllowedFalse={...OFF,productRisk:{...OFF.productRisk,credit:{effective:PATHS(false),short:{allowed:false}}}};
   assert.deepEqual(RI.record(ALLOWED_PATH_OFF),RI.record(offAllowedFalse));assert.deepEqual(RI.partsFor(ALLOWED_PATH_OFF),RI.partsFor(offAllowedFalse));
   assert.deepEqual(RI.reviewBlocks(RI.partsFor(ALLOWED_PATH_OFF)),RI.reviewBlocks(RI.partsFor(offAllowedFalse)),'Claude\'s system blocks');
@@ -22,6 +24,12 @@ test('allowed while the short and cover paths cannot be sent (today, until B4) i
   const {Automation}=require('../electron/automation.cjs');const a=Object.create(Automation.prototype);a.config={scope:'kis'};a.shortsEnabled=()=>true;a.live={creditApproved:()=>true};assert.equal(a.shortFactsInForce(),false);
   a.completedClaudeDryRun=()=>({instructions:{fingerprint:'1004c642ceabd60d'}});assert.ok(a.claudeTradingDryRun(),'today\'s dry run keeps counting');
   withPathsOpen(()=>{assert.equal(a.shortFactsInForce(),true);assert.equal(a.claudeTradingDryRun(),null,'with the paths open: a new dry run');});
+}));
+test('shorts on: both paths open in the code; the switch alone decides whether the review is told about shorts',()=>{
+  const CP=require('../electron/credit-paths.cjs');assert.equal(CP.shortPathsOpen(),true);assert.equal(CP.shortPathsOpen({approved:true}),true);
+  const {Automation}=require('../electron/automation.cjs');const a=Object.create(Automation.prototype);a.config={scope:'kis'};a.live={creditApproved:()=>false};
+  a.shortsEnabled=()=>false;assert.equal(a.shortFactsInForce(),false,'switch off: as 1.5.74');a.completedClaudeDryRun=()=>({instructions:{fingerprint:'1004c642ceabd60d'}});assert.ok(a.claudeTradingDryRun(),'switch off: the 1.5.74 dry run keeps counting');
+  a.shortsEnabled=()=>true;assert.equal(a.shortFactsInForce(),true,'switch on: in force');assert.equal(a.claudeTradingDryRun(),null,'switch on: one new dry run');
 });
 test('the off pin: both fingerprints, versions and the text exactly as before; on: the short part after CREDIT, its own versions and fingerprints',()=>{
   assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
@@ -77,7 +85,7 @@ const value={quotes:[{symbol:'990010',price:1200},{symbol:'990020',price:800},{s
 test('the facts while shorts are on: the loan rule, fee per day, shortfall, cap used and left, lending answers; none with shorts off',()=>{
   const at=Date.parse('2026-11-24T01:00:00Z');
   // Allowed, but the paths cannot be sent (today): none of the facts.
-  const closed=engine(POLICY).productRisk(value).productRisk.credit;for(const k of ['coverBeforeDays','shortfall','capUsedPct','capLeftPct','candidates'])assert.equal(k in closed.short,false,k);assert.equal('feePerDay' in closed.shorts[0],false);
+  {const CP=require('../electron/credit-paths.cjs'),was=CP.shortPathsOpen;CP.shortPathsOpen=()=>false;try{const closed=engine(POLICY).productRisk(value).productRisk.credit;for(const k of ['coverBeforeDays','shortfall','capUsedPct','capLeftPct','candidates'])assert.equal(k in closed.short,false,k);assert.equal('feePerDay' in closed.shorts[0],false);}finally{CP.shortPathsOpen=was;}}
   withPathsOpen(()=>{const c=engine(POLICY,{lend:new Map([['990010',{borrowable:true,at}]])}).productRisk(value).productRisk.credit;
   assert.equal(c.short.coverBeforeDays,5);assert.deepEqual(c.short.shortfall,{amountKRW:2000,known:true,rows:[{symbol:'990010',loanDate:'2026-09-03',amountKRW:2000}]});
   assert.equal(c.short.capUsedPct,12);assert.equal(c.short.capLeftPct,8,'12,000 of 100,000 against 20%');
@@ -161,14 +169,14 @@ test('the review step itself: a Korean review\'s context carries each short\'s c
   assert.deepEqual(context.productRisk.credit.shorts[0].coverStop,{state:'armed',level:1150});
   a.shortFactsInForce=()=>false;({context}=await a.assembleReviewContext({watchScope:a.watchScope(),trigger:'User request'}));assert.equal('coverStop' in context.productRisk.credit.shorts[0],false,'not in force: as before');
 });
-test('automatic, as the text names it, is what happens: the setting AND the path\'s own automatic (an opening is proposed until then)',()=>{
+test('automatic, as the text names it, is what happens: the setting AND the path\'s own automatic',async()=>{
   const CP=require('../electron/credit-paths.cjs'),was=CP.pathStatus;const auto={...POLICY,short:{...POLICY.short,auto:true}};
-  withPathsOpen(()=>{
-    assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,false,'paths open, the opening not automatic: proposed');
-    CP.pathStatus=(k,o)=>k==='short'?{executable:true,automatic:true}:was(k,o);try{
-      assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,true,'setting on and the path automatic: sent by itself');
-      assert.equal(engine(POLICY).productRisk(value).productRisk.credit.short.automatic,false,'setting off: proposed');}finally{CP.pathStatus=was;}});
-  assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,true,'paths closed: the field as before B3e (the setting), the text not sent');
+  // Shorts on: the short path's own automatic is true, so the user's "Submit automatically" decides.
+  assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,true,'setting on: sent by itself');
+  assert.equal(engine(POLICY).productRisk(value).productRisk.credit.short.automatic,false,'setting off: proposed');
+  CP.pathStatus=(k,o)=>k==='short'?{executable:true,automatic:false}:was(k,o);try{
+    assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,false,'a path whose opening is not automatic: proposed whatever the setting');}finally{CP.pathStatus=was;}
+  await withPathsClosed(()=>{assert.equal(engine(auto).productRisk(value).productRisk.credit.short.automatic,true,'paths closed: the field as before B3e (the setting), the text not sent');});
 });
 test('the send\'s check counts your open short in KIS the same way: the open-order guard keeps KIS\'s kind name, pendingOrders marks it a short, and the cap counts it',()=>{
   const {openGuard}=require('../electron/broker-open-orders.cjs');const E=require('../electron/exposure.cjs');

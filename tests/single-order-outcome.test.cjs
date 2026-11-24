@@ -48,7 +48,7 @@ test('BROKER_REJECTED at placement (the send returns the order Rejected): "Rejec
   const {error,record,events}=await review(null,{returned:{status:'Rejected',reason:'BROKER_REJECTED',brokerCode:'APBK0919'}});
   assert.equal(error,null);assert.equal(record.executionNote,'Rejected by KIS: Sell 1 NASD:GOOGL (KIS APBK0919).');assert.ok(events.some(e=>e.title==='Order rejected by KIS'));
   assert.ok(fs.readFileSync(require.resolve('../src/Dashboard.tsx'),'utf8').includes("/^Rejected by KIS:/.test(n)?'Rejected by KIS'"),'Home');
-  assert.ok(fs.readFileSync(require.resolve('../electron/live-engine.cjs'),'utf8').includes("...(error.message==='BROKER_REJECTED'&&/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?{brokerCode:error.brokerCode}:{})"),'the send keeps KIS\'s code');});
+  assert.ok(fs.readFileSync(require.resolve('../electron/live-engine.cjs'),'utf8').includes("...(error.message==='BROKER_REJECTED'?(r=>({...(/^[A-Z0-9_-]{1,24}$/.test(r.brokerCode??'')?{brokerCode:r.brokerCode}:{})"),'the send keeps KIS\'s code (shorts on: the first refusal\'s when the loan date was tried twice)');});
 
 for(const code of ['AUTH_FAILED','BROKER_UNAVAILABLE','ACCOUNT_CHANGED','SOMETHING_NEW'])
   test(`${O.classOf(code).toUpperCase()} ${code}: the review fails as before`,async()=>{

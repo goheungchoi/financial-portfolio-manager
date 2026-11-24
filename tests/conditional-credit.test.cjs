@@ -6,13 +6,14 @@ const CP=require('../electron/credit-paths.cjs');
 // 9 shares of 005930: 4 cash, a self loan of 3 (2026-10-01) and a distribution loan of 2 (2026-10-15).
 const balance={holdings:[{symbol:'005930',quantity:9,availableQuantity:9,loans:[{quantity:3,loanDate:'2026-10-01',availableQuantity:3,source:'self'},{quantity:2,loanDate:'2026-10-15',availableQuantity:2,source:'distribution'}]}],
   shorts:[{symbol:'000660',quantity:5,loanDate:'2026-10-02',availableQuantity:5,source:'self'}]};
-function harness({account='acct',orders=[],ctx={}}={}){
+// shortsOn: the engine's rule for the short paths (the switch, or a cover of the app's own short); off by default.
+function harness({account='acct',orders=[],ctx={},shortsOn=false}={}){
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
   a.marketQuotes=()=>[{symbol:'005930',price:217000,timestamp:Date.now(),retrievedAt:Date.now()},{symbol:'000660',price:180000,timestamp:Date.now(),retrievedAt:Date.now()}];
   a.series={closes:()=>null,ensure:async()=>{}};a.configure({scope:'kis',autoSubmit:true,conditionalOrders:true,conditionalAutoSubmit:true});
-  const calls={propose:[],submit:[]};const state={account,orders};
-  a.live={market:'KR',identity:()=>state.account,autoEnabled:true,enabled:true,riskBalance:balance,orders:()=>state.orders,
+  const calls={propose:[],submit:[]};const state={account,orders,shortsOn};
+  a.live={market:'KR',identity:()=>state.account,shortsOnFor:()=>state.shortsOn===true,autoEnabled:true,enabled:true,riskBalance:balance,orders:()=>state.orders,
     context:async()=>({marketSession:{open:true},quotes:a.marketQuotes(),positions:{'005930':{quantity:9}},equity:10000000,cash:5000000,...ctx}),
     propose:cmd=>{calls.propose.push(cmd);return {id:'P'+calls.propose.length,status:'Ready'};},autoSubmit:async id=>{calls.submit.push(id);return {id:'O1'};},getState:()=>({})};
   return {a,db,calls,state};}
@@ -24,7 +25,11 @@ const fire=async a=>{await a.fireConditional(a.desk.orders(a.watchScope())[0]);r
 function enabled(fn,kinds=['margin-sell']){const was=kinds.map(k=>CP.PATHS[k].executable);kinds.forEach(k=>{CP.PATHS[k].executable=true;});return Promise.resolve().then(fn).finally(()=>kinds.forEach((k,i)=>{CP.PATHS[k].executable=was[i];}));}
 test('now: a credit-lot conditional order is refused with what blocks it; the lot stays unprotected',async()=>{
   const {a}=harness();a.configure({creditProtectionApproved:true});const r=arm(a);assert.equal(r.status,'rejected');assert.match(r.reason,/U5/);assert.match(r.reason,/stays unprotected/);
-  assert.equal(a.desk.orders(a.watchScope()).length,0,'nothing armed');assert.match(arm(a,{side:'Buy',symbol:'000660',credit:{kind:'cover',loanDate:'2026-10-02',source:'self'}}).reason,/U2/);
+  assert.equal(a.desk.orders(a.watchScope()).length,0,'nothing armed');
+  // Shorts on (2026-11-25): a cover is no longer refused for its path; its lot is checked like any other.
+  // Stage 1b: with the short-selling switch off, a cover of a short the app did not open is refused as in 1.5.74.
+  const cov=x=>arm(x,{side:'Buy',symbol:'000660',credit:{kind:'cover',loanDate:'2026-10-02',source:'self'}});assert.match(cov(a).reason,/U2/,'switch off: as 1.5.74');
+  const on=harness({shortsOn:true}).a;on.configure({creditProtectionApproved:true});const c2=cov(on);assert.doesNotMatch(String(c2.reason??''),/U2|not confirmed/);assert.equal(c2.status,'armed',"switch on (or the app's own short): armed");
   const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');assert.match(src,/lot:args\?\.action!=='cancel'&&args\?\.credit\?this\.creditLot\(args,\{quantity:args\.quantity\}\):null/,'the review tool checks the lot the same way');
 });
 test('an executable path still needs the Stage 3 approval for an automatic protective close',()=>enabled(()=>{
@@ -59,7 +64,7 @@ test('a restart keeps the lot identity; the lot is checked against the account a
   const {AgentDesk}=require('../electron/agent-desk.cjs');const again=new AgentDesk(db).orders(a.watchScope())[0];assert.deepEqual(again.credit,{kind:'margin-sell',loanDate:'2026-10-01',source:'self',account:'acct'});
 }));
 test('a cover is a reduction: once its path is confirmed it is not blocked by the daily loss limit',()=>enabled(async()=>{
-  const {a,calls}=harness();a.configure({creditProtectionApproved:true});a.emergencyState=()=>({active:true,activeMarkets:['KR']});
+  const {a,calls}=harness({shortsOn:true});a.configure({creditProtectionApproved:true});a.emergencyState=()=>({active:true,activeMarkets:['KR']});
   assert.equal(arm(a,{side:'Buy',symbol:'000660',quantity:5,conditions:[{expr:'price("000660")',op:'>=',value:179000}],credit:{kind:'cover',loanDate:'2026-10-02',source:'self'}}).status,'armed');
   const o=await fire(a);assert.equal(o.status,'submitted');assert.deepEqual(calls.propose[0].credit,{kind:'cover',loanDate:'2026-10-02'});
 },['cover']));

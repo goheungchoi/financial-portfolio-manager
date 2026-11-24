@@ -8,6 +8,7 @@
 //   rejected or lapsed (as a long's sale stop), or when its cover stop was hit and is held (B-4's held rule).
 const {upToTick}=require('./short-rules.cjs');
 const LIVE=new Set(['armed','firing']);
+const KIS_APP="; buy it back in KIS's own app";
 const isCover=o=>o?.side==='Buy'&&o.credit?.kind==='cover';
 const isCoverStop=o=>isCover(o)&&o.purpose==='stop_loss';
 const sameLot=(o,lot)=>o.symbol===lot.symbol&&o.credit?.loanDate===lot.loanDate;
@@ -44,10 +45,13 @@ function lotDecision(rows,{brokerStatus=()=>null,brokerFilled=()=>0,brokerExpire
   // A proposal waiting for your click is not protection: named as held until you approve it; once past its time, armed again.
   if(last.status==='proposed')return s==='Ready'&&!brokerExpired(last)?{list:{cause:'approval',held:true,words:'its stop was hit and waits for your approval'}}:{arm:'its proposal ended unapproved'};
   if(last.status==='submitted'){if(OPEN_AT_KIS.has(s))return {covered:'its cover is at KIS'};if(Number(brokerFilled(last))>0)return {arm:'its cover filled with shares left'};
-    return {list:{cause:'lapsed',words:'its cover order ended at KIS with nothing filled'}};}
+    return {list:{cause:'lapsed',words:`its cover order ended at KIS with nothing filled${KIS_APP}`}};}
   const name=purpose==='exit'?'its loan-end cover':'its cover stop';
-  if(last.status==='rejected')return {list:{cause:'rejected',words:last.outcome?String(last.outcome).slice(0,200):`${name} was refused`}};
-  if(last.status==='cancelled'){if(last.closedBy==='app')return {arm:'the lot is back'};return {list:{cause:'cancelled',words:last.closedBy==='user'?`you cancelled ${name}`:`${name} was cancelled`}};}
+  // Stage 1b: every listed cause (refused, lapsed, cancelled) says what to do; a held one waits for your approval.
+  // Shorts on (2026-11-25): a refused cover is never retried by the app beyond its one alternate loan date; the short is
+  // listed with what to do.
+  if(last.status==='rejected')return {list:{cause:'rejected',words:`${last.outcome?String(last.outcome).slice(0,200).replace(/[.\s]+$/,''):`${name} was refused`}${KIS_APP}`}};
+  if(last.status==='cancelled'){if(last.closedBy==='app')return {arm:'the lot is back'};return {list:{cause:'cancelled',words:(last.closedBy==='user'?`you cancelled ${name}`:`${name} was cancelled`)+KIS_APP}};}
   return {list:{cause:'other',words:`${name.replace('its ','its last ')} is ${String(last.status)}`}};}
 // The short's trail (B3d-2 trail step; short.trailingStop, off by default): the lowest fresh price since the fill, and the
 // cover stop's level at that low plus the short's own stop distance; the level only moves down. null: no move.
@@ -60,4 +64,21 @@ function loanEnd(loanDate,maxDays,isOpen=()=>null){const BD=require('./business-
   let d=end;do{d=new Date(Date.parse(d+'T00:00:00Z')-86400000).toISOString().slice(0,10);}while(!BD.isBusinessDay('KR',d,{krOpen:isOpen}));return {end,lastDay:d};}
 // Business days from today to lastDay (0 on it; negative once past it).
 function businessDaysTo(today,lastDay,isOpen=()=>null){const BD=require('./business-days.cjs');return today<=lastDay?BD.businessDaysBetween('KR',today,lastDay,{krOpen:isOpen}):-BD.businessDaysBetween('KR',lastDay,today,{krOpen:isOpen});}
-module.exports={loanEnd,businessDaysTo,trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};
+// Shorts on, stage 1c: the app's own short lots in a balance. An app short with shares filled is tied to a balance lot of
+// the same stock whose loan date is any of: KIS's date on its order row (lotLoanDate), the date the app sent
+// (loanDateSent, or the plan's first date before the reply was read), or either one's counterpart in the other form (two
+// Korean business days before or after). Exact dates are tried before counterparts. False-match risk: a short of the same
+// stock opened in KIS's app whose loan date is one of those dates (the same day, or two business days apart) is taken for
+// the app's lot, wholly. Returns {lots: Map 'symbol|loanDate' -> {quantity (the app's shares sold there less its covers
+// filled on that lot), fillPrice}, unmatched: [{symbol, orderId}]: an app short filled before a balance read that shows
+// no lot it ties to}. isOpen(day): the app's calendar.
+function appLots({orders=[],balance=null,isOpen=null}={}){const LD=require('./short-loan-date.cjs');const lots=new Map(),unmatched=[];
+  const shorts=Array.isArray(balance?.shorts)?balance.shorts.filter(s=>Number(s.quantity)>0&&LD.realDate(s.loanDate)):[];const list=Array.isArray(orders)?orders:[];
+  for(const o of list.filter(o=>o?.side==='Sell'&&o.credit?.kind==='short'&&Number(o.filled)>0)){const exact=[...new Set([o.lotLoanDate,o.loanDateSent?.date,o.loanDateSent?null:o.credit?.send?.first?.date].filter(LD.realDate))];
+    const near=[...new Set(exact.flatMap(d=>LD.counterparts(d,isOpen)))];const mine=shorts.filter(s=>s.symbol===o.symbol);
+    const lot=mine.find(s=>exact.includes(s.loanDate))??mine.find(s=>near.includes(s.loanDate));
+    if(!lot){const at=Date.parse(balance?.timestamp??''),seen=Number.isFinite(o.filledObservedAt)?o.filledObservedAt:o.reconciledAt;if(Array.isArray(balance?.shorts)&&Number.isFinite(at)&&Number.isFinite(seen)&&at>seen)unmatched.push({symbol:o.symbol,orderId:o.id});continue;}
+    const key=`${lot.symbol}|${lot.loanDate}`,e=lots.get(key)??{quantity:0,fillPrice:null};e.quantity+=Number(o.filled);e.fillPrice??=Number(o.fillPrice)>0?Number(o.fillPrice):null;lots.set(key,e);}
+  for(const o of list.filter(o=>o?.side==='Buy'&&o.credit?.kind==='cover'&&Number(o.filled)>0)){const e=lots.get(`${o.symbol}|${o.credit.loanDate}`);if(e)e.quantity=Math.max(0,e.quantity-Number(o.filled));}
+  return {lots,unmatched};}
+module.exports={appLots,loanEnd,businessDaysTo,trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};

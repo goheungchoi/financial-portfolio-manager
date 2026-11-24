@@ -17,5 +17,6 @@ export function shortConfirmLines(short,{pathsOpen=false,automatic=false}={}){
     'Short sales go to KRX only, for KOSPI and KOSDAQ stocks; an ETF short is refused for now.',
     'The borrowing cost is an estimate until KIS reports it.',
     'While a short is losing, the app holds the difference back from the cash its own buys may use.',
-    'The app cannot see the short-selling ban list or your KIS loan limit, so KIS may still refuse a short.'];
+    'The app cannot see the short-selling ban list or your KIS loan limit, so KIS may still refuse a short.',
+    ...(pathsOpen?['No short has been sent by this app yet, so the first one is also the first test with KIS. If KIS refuses a buy-back, the app tries the other loan date once, then lists the short on Home. A short can always be bought back in KIS\'s own app.']:[])];
   return {main,more};}

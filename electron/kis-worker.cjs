@@ -56,7 +56,9 @@ process.parentPort.on('message',async ({data})=>{
     if(data.operation==='prepare-order') {
       for(const [key,entry] of prepared)if(entry.expiresAt<Date.now())prepared.delete(key);
       const sess=require('./market-sessions.cjs').tradableNow('KR',Date.now(),{environment:client.overseasIdentity().environment,enabled:data.sessions??{}});
-      const check=await client.prepareOrder(data.command,sess,{severalOpen:data.severalOpen===true});const ticket=require('node:crypto').randomUUID();prepared.set(ticket,{command:data.command,session:sess,expiresAt:Date.now()+15000});
+      const check=await client.prepareOrder(data.command,sess,{severalOpen:data.severalOpen===true});const ticket=require('node:crypto').randomUUID();// Shorts on, stage 1b: a cover's plan as the preparation checked it against the balance (its alternate dropped when
+      // it names another lot) is the one placed.
+      prepared.set(ticket,{command:check.sendPlan&&data.command?.credit?{...data.command,credit:{...data.command.credit,send:check.sendPlan}}:data.command,session:sess,expiresAt:Date.now()+15000});
       process.parentPort.postMessage({id,ok:true,snapshot:{...check,ticket,session:sess}});return;
     }
     if(data.operation==='place-order') {
@@ -119,6 +121,6 @@ process.parentPort.on('message',async ({data})=>{
     process.parentPort.postMessage({id,ok:true,snapshot});
   } catch(error) {
     // The code the app receives (worker-codes.cjs: not-sent orders, Korea's allowed codes, the U.S. public codes).
-    process.parentPort.postMessage({id,ok:false,retryAt:Number.isFinite(error.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?error.brokerCode:null,brokerMessage:typeof error.brokerMessage==='string'?error.brokerMessage.slice(0,120):null,...(Number.isFinite(error.ticketAgeMs)?{ticketAgeMs:error.ticketAgeMs}:{}),code:require('./worker-codes.cjs').relayCode(operation,error)});
+    process.parentPort.postMessage(require('./worker-codes.cjs').errorReply(id,operation,error));
   } finally {busy=false;}
 });

@@ -1,7 +1,7 @@
 'use strict';
 // Short selling by the app, B3b (artifacts/reviews/2026-11-24-short-selling; design note-3-b3.md): the rules a short sale
-// must pass before it is sent. Pure: no I/O, no clock of its own. Nothing here sends anything, and every credit path stays
-// not executable until B4 (credit-paths.cjs). Every rule fails closed: a figure, time or input it cannot read refuses.
+// must pass before it is sent. Pure: no I/O, no clock of its own. Nothing here sends anything; the short and cover paths
+// can be sent since shorts on, 2026-11-25 (credit-paths.cjs). Every rule fails closed: a figure, time or input it cannot read refuses.
 // - Instrument: KOSPI and KOSDAQ stocks. ETF short sales are refused until KRX's ETF tick table is confirmed from its own
 //   rules and written here with its source.
 // - Borrowable: KIS's per-stock lending list (CTSC2702R) for the stock's market, read just before the order, at most a
@@ -110,9 +110,9 @@ function refusalWords({symbol,name=null,quantity,price,checked={}}){const fmt=n=
   const done=[...(wholePositive(checked.borrowable)&&wholePositive(quantity)?[`borrowable ${fmt(checked.borrowable)} ≥ ${fmt(quantity)}`]:[]),...(checked.floorOk===true?['price above the last trade']:[]),VENUE,...(num(checked.capAfterPct)!=null&&num(checked.capAfterPct)>=0?[`cap ${pct(num(checked.capAfterPct))} of ${pct(positive(checked.capMaxPct)??DEFAULT_MAX_PCT)}`]:[])];
   return `Short of ${qty}${what}${at} refused by KIS (no reason given). The app checked: ${done.join(', ')}. Not checkable here: the exchange's short-sale ban list for today, and your KIS stock-loan limit.`;}
 
-// B3c. The loan date a new short (CRDT_TYPE 22) sends: B4 decides which one KIS's API accepts, from the order row it
-// reads back. 'trade-day' (what the code sent before B3c) or 'settlement' (T+2 Korean business days, what KIS's own app
-// recorded in the hand test). One constant, so B4 can try one and, on a refusal, the other.
+// B3c. The loan date a new short (CRDT_TYPE 22) sends: 'trade-day' (what the code sent before B3c) or 'settlement' (T+2
+// Korean business days, what KIS's own app recorded in the hand test). The constant is the default form; since shorts on,
+// short-loan-date.cjs sends it first and the other once on a refusal, and learns which one KIS accepts.
 const SHORT_LOAN_DATE_RULE='trade-day';
 const nextDay=d=>new Date(Date.parse(d+'T00:00:00Z')+86400000).toISOString().slice(0,10);
 // today: the Seoul trade day (YYYY-MM-DD); isOpen(day): true or false when known (the KIS calendar), else weekdays.
@@ -150,13 +150,19 @@ function laggingShorts(orders,balance){const shorts=(Array.isArray(orders)?order
 function balanceWaitWords(order,now){const seen=seenAt(order);return !Number.isFinite(seen)||!Number.isFinite(now)||now-seen>BALANCE_WAIT_WORDS_MS?'waiting for KIS\'s balance to show the cover':null;}
 // B3c reconcile: KIS's order rows for the app's short or cover say what KIS did; a name or loan date that does not match
 // the app's record is reported in words (null when it matches or there is nothing to compare).
-function creditRowCheck(order,rows){const kind=order?.credit?.kind;if(!['short','cover'].includes(kind))return null;const list=(Array.isArray(rows)?rows:[]).filter(r=>r&&typeof r.creditName==='string');if(!list.length)return null;
+function creditRowCheck(order,rows,otherLots=[]){const kind=order?.credit?.kind;if(!['short','cover'].includes(kind))return null;const list=(Array.isArray(rows)?rows:[]).filter(r=>r&&typeof r.creditName==='string');if(!list.length)return null;
   // Only KIS's known names are printed; anything else is "an unknown kind".
   const KNOWN=new Set(['현금매수','현금매도','유대신규','유대상환','유대매도','유대매도거부','자대신규','자대상환','유통융자신규','유통융자상환','자기융자신규','자기융자상환']);
   const names=[...new Set(list.map(r=>KNOWN.has(r.creditName)?r.creditName:'an unknown kind'))],words=[];
   if(kind==='short'&&!names.some(n=>/대/.test(n)&&/(신규|매도)/.test(n)))words.push(`KIS recorded it as ${names.join(', ')}, not a new short sale`);
   if(kind==='cover'&&!names.some(n=>/대/.test(n)&&/상환/.test(n)))words.push(`KIS recorded it as ${names.join(', ')}, not a cover`);
-  if(kind==='cover'&&order.credit.loanDate){const dates=[...new Set(list.map(r=>r.loanDate).filter(Boolean))];if(dates.length&&!dates.includes(order.credit.loanDate))words.push(`its loan date at KIS is ${dates.join(', ')}, the app sent ${order.credit.loanDate}`);}
+  // Stages 1b-1c: a cover accepted on its alternate date carries that date at KIS (loanDateSent); either matches. A KIS
+  // date that is another short lot of the stock (otherLots) is named so, even when it is the date the app sent: KIS may
+  // have bought back that lot.
+  if(kind==='cover'&&order.credit.loanDate){const sent=typeof order.loanDateSent?.date==='string'?order.loanDateSent.date:order.credit.loanDate;const dates=[...new Set(list.map(r=>r.loanDate).filter(Boolean))];
+    const other=dates.filter(d=>d!==order.credit.loanDate&&(Array.isArray(otherLots)?otherLots:[]).includes(d));
+    if(other.length)words.push(`its loan date at KIS is ${dates.join(', ')}, the app sent ${sent} for its lot of ${order.credit.loanDate}; ${other.join(', ')} is another short lot of this stock, so KIS may have bought that one back: check both lots in KIS's app`);
+    else if(dates.length&&!dates.includes(order.credit.loanDate)&&!dates.includes(sent))words.push(`its loan date at KIS is ${dates.join(', ')}, the app sent ${sent}`);}
   return words.length?words.join('; ')+'.':null;}
 
 // The shortfall of open shorts (the user's answer, 2026-11-24: "Yes hold it back"): what buying each open short back

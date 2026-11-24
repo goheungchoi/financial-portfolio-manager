@@ -26,7 +26,7 @@ test('a closing order takes only what remains in its own lot after orders alread
   // Partial fills: KIS's balance already shows the shares sold; only the unfilled part of a waiting order is reserved.
   const after={...balance,holdings:[{...balance.holdings[0],quantity:8,availableQuantity:8}]};assert.equal(C.remaining(after,{symbol:'005930',side:'Sell'},[{symbol:'005930',side:'Sell',quantity:3,filled:1,status:'Partially filled'}]).available,1);
 });
-test('credit paths: unconfirmed execution fields block submission even with approval; openings are never automatic',()=>{
+test('credit paths: unconfirmed margin fields block submission even with approval; shorts on: the short and cover paths can be sent',()=>{
   assert.deepEqual(C.pathStatus('none'),{executable:true,automatic:true});
   // Stage 4 correction: a margin repayment waits on U5 too (its rows and loan source come from unconfirmed text).
   const repay=C.pathStatus('margin-sell',{approved:true});assert.equal(repay.executable,false);assert.match(repay.reason,/U5/);assert.deepEqual(C.PATHS['margin-sell'].requires,['U5']);
@@ -34,9 +34,14 @@ test('credit paths: unconfirmed execution fields block submission even with appr
   const was=C.PATHS['margin-sell'].executable;C.PATHS['margin-sell'].executable=true;try{
     assert.equal(C.pathStatus('margin-sell').automatic,false,'before the user approves Stage 3');assert.equal(C.pathStatus('margin-sell').label,C.PROTECTION_LABEL);
     assert.equal(C.pathStatus('margin-sell',{approved:true}).automatic,true);assert.equal(C.pathStatus('margin-sell',{approved:true}).label,undefined);}finally{C.PATHS['margin-sell'].executable=was;}
-  assert.deepEqual(Object.fromEntries(Object.entries(C.PATHS).map(([k,p])=>[k,p.requires])),{'margin-sell':['U5'],'margin-buy':['U4','U5'],short:['U1','U3','U5'],cover:['U2','U5']},'what blocks each path');
-  for(const kind of ['short','cover','margin-buy']){const s=C.pathStatus(kind,{approved:true});assert.equal(s.executable,false,kind);assert.equal(s.automatic,false);assert.ok(s.reason,kind);}
-  assert.equal(C.pathStatus('short').label,C.OPENINGS_LABEL);assert.equal(C.pathStatus('cover').label,C.PROTECTION_LABEL);assert.match(C.pathStatus('cover').reason,/U2/);assert.match(C.pathStatus('short').reason,/U1.*U3/);
+  assert.deepEqual(Object.fromEntries(Object.entries(C.PATHS).map(([k,p])=>[k,p.requires])),{'margin-sell':['U5'],'margin-buy':['U4','U5'],short:[],cover:[]},'what blocks each path');
+  {const s=C.pathStatus('margin-buy',{approved:true});assert.equal(s.executable,false);assert.equal(s.automatic,false);assert.ok(s.reason);assert.equal(s.label,C.OPENINGS_LABEL);}
+  // Shorts on (the user's word, 2026-11-25): both short paths can be sent, with or without the Stage 3 approval. The
+  // opening's automatic is the path's part only: the user's "Submit automatically" switch decides (exposure checkCredit);
+  // a cover is a protective close, automatic like a long's stop.
+  // Stage 1b: open for a use only with shortsOn (the switch, or a cover of the app's own short); without, as in 1.5.74.
+  for(const approved of [false,true]){for(const kind of ['short','cover']){assert.equal(C.pathStatus(kind,{approved}).executable,false,kind+' without shortsOn');const s=C.pathStatus(kind,{approved,shortsOn:true});assert.equal(s.executable,true,kind);assert.equal(s.automatic,true,kind);assert.equal(s.label,undefined,kind);assert.equal(s.reason,undefined,kind);assert.ok(s.evidence,kind);}}
+  assert.equal(C.shortPathsOpen(),true);assert.equal(C.shortPathsOpen({approved:true}),true);
   assert.equal(C.stopSide('OPEN_SHORT'),'above');assert.equal(C.stopSide('OPEN_LONG'),'below');
 });
 test('a proposal never sent stops reserving shares once it has expired',()=>{

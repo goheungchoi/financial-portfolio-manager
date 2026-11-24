@@ -94,7 +94,7 @@ test('review 2: the reviewer\'s four cases: armed again or listed, never neither
   w.live.riskBalance.shorts=[{...LOT,quantity:4}];w.a.syncShortStops();assert.deepEqual(w.a.desk.orders(w.a.watchScope()).map(o=>o.quantity),[4],'the lot is back');
   // You cancelled the stop: not re-armed, listed with that cause.
   w=app({orders:[SHORT_ORDER]});w.a.syncShortStops();[stop]=w.a.desk.orders(w.a.watchScope());w.a.desk.cancelOrder(w.a.watchScope(),stop.id);w.a.syncShortStops();
-  assert.equal(w.a.desk.orders(w.a.watchScope()).length,0,'not re-armed');assert.deepEqual(w.a.unprotectedNow(w.a.watchScope()).map(u=>[u.symbol,u.cause,u.outcome]),[['990010','cancelled','you cancelled its cover stop']]);
+  assert.equal(w.a.desk.orders(w.a.watchScope()).length,0,'not re-armed');assert.deepEqual(w.a.unprotectedNow(w.a.watchScope()).map(u=>[u.symbol,u.cause,u.outcome]),[['990010','cancelled',"you cancelled its cover stop; buy it back in KIS's own app"]]);
   // A rejected stop behind 250 newer rows: still listed, not re-armed.
   w=app({orders:[SHORT_ORDER]});w.a.syncShortStops();[stop]=w.a.desk.orders(w.a.watchScope());w.a.desk.update(stop,{status:'rejected',outcome:'refused (fixture)',closedAt:Date.now()});
   for(let i=0;i<250;i++)w.a.desk.write('conditional_orders',{id:'N'+i,scope:w.a.watchScope(),status:'cancelled',symbol:'990020',side:'Sell',quantity:1,purpose:'stop_loss'});

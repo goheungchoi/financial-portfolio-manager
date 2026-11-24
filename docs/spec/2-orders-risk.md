@@ -690,13 +690,48 @@ determined here.
 
 ### 5.2 Margin and short selling (Korea, live accounts) — `exposure.cjs`, `credit-paths.cjs`
 
-- Four credit paths: margin buy, margin repayment sale, short sale, cover. **All four are `executable:false`**
-  (`credit-paths.cjs:45-50`), each waiting on unconfirmed KIS fields (U1–U5). So no credit order can be proposed
-  (`CREDIT_PATH_UNVERIFIED`, `live-engine.cjs:121`), sent (`:138`), or placed (`kis-client.cjs:297`), whatever the
-  switches say. A review that decides one gets "Draft only: …" (`automation.cjs:1146`).
+- Four credit paths: margin buy, margin repayment sale, short sale, cover (`credit-paths.cjs PATHS`).
+  - **Margin buy and margin repayment are `executable:false`**, waiting on unconfirmed KIS fields (U4, U5): no such
+    order can be proposed (`CREDIT_PATH_UNVERIFIED`, `live-engine.cjs propose`), sent, or placed
+    (`kis-client.cjs placeCreditOrder`), whatever the switches say. A review that decides one gets "Draft only: …".
+  - **Short sale and cover are executable** since shorts on (the user's word, 2026-11-25, replacing the earlier gate of
+    one real short first; no real short has been sent by the app yet). The short path's own `automatic` is true, so
+    whether an app short is sent by itself is the user's "Submit automatically" switch for short selling
+    (`exposure.checkCredit`, `requiresApproval:!short.auto`); off, it is proposed for approval. The cover path is
+    automatic as a protective close (`autoClose`), without the Stage 3 approval that a margin repayment still needs.
+  - The review is told about shorts only while short selling is switched on (`shortPathsOpen` is now true, so the
+    switch alone decides; 3-ai.md).
+  - **With the switch off** (stages 1b-1c): `pathStatus` answers for the short and cover paths exactly as in 1.5.74
+    (`closedReason`, executable false), unless `shortsOn` is given. The engine gives it (`shortsOnFor`) when the switch is
+    on, or for a cover of a short the app itself opened (`appLots`, below). So with the switch off: no new short; a short
+    opened in KIS's app is not bought back by the app (refused `CREDIT_PATH_UNVERIFIED`, as in 1.5.74); the app's own
+    short keeps its cover stop, its loan-end cover, your ticket's cover and a review's cover, for no more of the lot than
+    the app sold there less its covers filled (`appCoverLimit`, `EXCEEDS_LOT` "With short selling off, the app buys back
+    only the N shares it sold in this lot."). The review's context shows both paths as in 1.5.74 when no app short is
+    held; while one is (`holdsAppShort`) only the cover path reads open, so the review may buy back that short but never
+    open one. The worker checks the code's paths (`shortsOn:true`), the switch being the engine's.
+  - **The app's own short lots** (`short-stops appLots`, stage 1c; the engine and automation both call it): an app short
+    with shares filled is tied to a balance lot of the same stock whose loan date is any of KIS's date on its order row
+    (`lotLoanDate`), the date the app sent (`loanDateSent`, or the plan's first date before the reply was read), or either
+    one's counterpart in the other form (two Korean business days before or after); exact dates first. False-match risk:
+    a short of the same stock opened in KIS's app with one of those loan dates (the same day, or two business days apart)
+    is taken for the app's lot, wholly, so it gets the app's cover stop for the whole lot (a lot partly opened by hand on
+    the same day counts wholly as the app's); with the switch off its buy-back is limited to what the app sold. The cover
+    stop, the loan-end cover, Short positions' "opened in the KIS app" mark and the unprotected list use these lots.
+  - **A lot the app cannot tie**: while the app has a filled short of a stock that ties to no lot in a balance read after
+    its fill, every lot of that stock that is not the app's is listed on Home as unprotected (cause `unmatched`): "the
+    app sold a short of this stock but cannot tie it to this lot's loan date, so it has no cover stop; buy it back in
+    KIS's own app". Never silently without a stop.
+  - **Turning short selling on while auto trading runs on Claude is refused** (`automation.shortsSwitchRefusal`,
+    `CLAUDE_SHORTS_RUNNING`): "Stop auto trading first: turning short selling on changes what Claude is sent, so Start
+    asks one new dry run." A review checks the dry run only at a settings save, so without this the next reviews would
+    be sent the short part with no dry run under its fingerprints. Turning it off is never refused: the fingerprints in
+    force go back to those without shorts, so the dry run made without shorts counts again. OpenAI and a stopped app:
+    not refused (Start on Claude asks the dry run).
 - The switches still exist and can be on (`exposure.cjs:9`): margin (cap 30% of equity as loans, collateral floor
   140%), short (cap 20% gross, stop 15%, 90 days). Their limits (`MARGIN_NOT_ENABLED`, `MARGIN_LIMIT`,
-  `SHORT_NOT_ENABLED`, `SHORT_LIMIT`, `checkCredit`, `:91-106`) are unreachable today (inferred from the above).
+  `SHORT_NOT_ENABLED`, `SHORT_LIMIT`, `checkCredit`) are unreachable for margin (its paths are closed) and reached
+  for shorts since shorts on.
   `main.cjs:322` refuses saving margin or short settings for the U.S. account (`FEATURE_UNAVAILABLE`).
 - **Lots** (`credit-paths.cjs:18-39`): a closing order may take only what is free in its lot after closing orders
   already waiting on it (`EXCEEDS_LOT`, `NO_SUCH_LOT`). This also applies to plain cash sales, so two orders never sell
@@ -704,8 +739,8 @@ determined here.
 - `effectOf` (`:12-15`) says whether an order opens or closes exposure; the loss rules and the daily order cap use it.
 - Screen text beside the switches: quoted in the implementer note, items 5–6 (`src/ShortLeverage.tsx:39-46`; not
   re-read).
-- **The rules a short sale must pass** (`short-rules.cjs`, B3b; pure, not yet called by any order path, and the short
-  and cover paths stay not executable until B4). Every rule fails closed: a figure, time or input it cannot read
+- **The rules a short sale must pass** (`short-rules.cjs`, B3b; pure, called by the engine and the client on the short
+  path, which can be sent since shorts on). Every rule fails closed: a figure, time or input it cannot read
   refuses.
   - instruments: KOSPI and KOSDAQ stocks; ETF short sales are refused ("ETF short sales are not yet enabled.") until
     KRX's ETF tick table is confirmed from its own rules; a stock whose kind is unknown is not shorted;
@@ -731,16 +766,58 @@ determined here.
     inverse product counts as long exposure;
   - a refusal (KIS gives no reason): "Short of N <stock> at <price> refused by KIS (no reason given). The app checked:
     <what passed>. Not checkable here: the exchange's short-sale ban list for today, and your KIS stock-loan limit."
-- **The short and cover order path** (B3c; still not executable: `placeCreditOrder` refuses before any request while
-  the path is not confirmed):
+- **The short and cover order path** (B3c; executable since shorts on; a path closed again is still refused by
+  `placeCreditOrder` before any request):
   - preparation: an order on a credit path that is not confirmed is refused after its fields are checked and before
     any request; a short's capacity is KIS's lending list for the stock, read then (`getLendable`, CTSC2702R
     lendable-by-company, the stock's market code), checked by `borrowable`; TTTC8909R is no longer used for a short
     (it answers new margin loans only). A short's command carries its market (KOSPI or KOSDAQ; the engine accepts that
     key for a short only);
-  - the request: every credit order sends EXCG_ID_DVSN_CD KRX; a new short's LOAN_DT follows one rule,
-    `SHORT_LOAN_DATE_RULE` ('trade-day' now, or 'settlement', T+2 Korean business days), which B4 settles; a cover
-    sends its lot's loan date;
+  - the request: every credit order sends EXCG_ID_DVSN_CD KRX;
+  - the loan date (`short-loan-date.cjs`, shorts on, stage 1b): the engine gives each short or cover a plan, a first
+    date and at most one alternate, from the forms in use and the app's Korean calendar (`loanDatePlan`):
+    - a new short: 'trade-day' (today) or 'settlement' (T+2 Korean business days); first the form in use,
+      `SHORT_LOAN_DATE_RULE` ('trade-day') by default;
+    - a cover: 'balance', the lot's loan date as KIS's balance reports it (loan_dt; every cover names a lot read from
+      the balance, so the rule constant is not used for a cover), or 'trade-day', two Korean business days before it;
+      first 'balance' by default;
+    - the calendar unreadable: no alternate that day (the first date counted on weekdays);
+    - no cover date other than the lot's own balance date, first or alternate, may be the loan date of another short
+      lot of the stock in the balance read at the preparation; when one is, or the short rows cannot be read, the lot's
+      own balance date is sent first and nothing else (`guardPlan`, stage 1c; with 'trade-day' in use this replaces the
+      first date). The ticket carries that plan and the order records it (`credit.send` as placed);
+    - a cover with no plan from the engine is sent with its lot's balance date and no alternate;
+    - the plan is checked in the worker (`validPlan`: the kind's forms, real dates, two different ones; a copy);
+      otherwise the order is refused `INVALID_ORDER` before any request;
+    - KIS's codes for a wrong loan date are not known. A refusal the app can name as not about the date sends no
+      alternate (`notAboutDate`): for both, no rt_cd, a gateway code (EGW…), no credit agreement (APBK1617), or KIS
+      words about the session; for a short also words about the credit account or agreement (신용약정, 약정이 없…),
+      quantities (수량, not 수량단위), amounts, balances, limits, the lending pool, a halt, the price or a short-sale ban.
+      For a cover, balance, quantity and repayable words never suppress it: they are how a wrong date is likely worded
+      (no lot with that date). A word about a date always allows it. Any other refusal sends the alternate once; never a
+      third request. An unclear first reply is the order's outcome
+      (Uncertain), with no alternate;
+    - the forms in use are learned with care (`LoanDateForms.accepted`, `short_loan_forms`, one row, across restarts):
+      the default taken on the alternate is put back at once; the other form taken on the alternate counts once and is
+      used first only when it happens again on a different order within 10 days (an older count lapses; the count is read
+      strictly, a whole number); a first-attempt acceptance of the form in use clears the count, so one accident is kept
+      nowhere;
+    - accepted with the alternate: the order keeps `loanDateSent` (date, form, the first refusal's code and words), and
+      one Activity line "Short loan date": "<Short sale|Buy-back> N <stock>: KIS refused the loan date <date> (<form>)
+      ("<KIS words>") and accepted <date> (<form>)." followed by " The app sends <form> first from now on." or " Kept
+      as once only: the app still sends <form> first, and changes only if KIS takes <form> this way again.";
+    - refused twice: Rejected with both attempts (`loanDateTried`: date, form, KIS's code and words), the order's code
+      and words being the first refusal's; the alternate unclear: Uncertain with the first refusal and the date that may
+      be at KIS (`unclear`); the alternate not sent: not sent, saying so. The record crosses the worker and the service
+      (`worker-codes errorReply`, `kisErrorFields`). A margin buy sends today and a margin repayment its loan's date,
+      with no alternate;
+    - KIS's record of a cover: a KIS loan date that is another short lot of the stock is kept in words even when it is
+      the date sent (`creditCheck`: "KIS may have bought that one back: check both lots in KIS's app"); a date matching
+      neither the lot nor the date sent is kept too; one Activity line "Short order at KIS" the first time. The lots'
+      stops follow the balance (`lotChanges`);
+  - a refused, lapsed or cancelled cover stop or loan-end cover is never re-armed: the short is listed as unprotected
+    with its cause followed by "; buy it back in KIS's own app" (`short-stops.lotDecision`), on Home and in the
+    review's facts;
   - the tracker: an open short sale is revised only by `reviseShort` (at or above the uptick floor read then, raised
     when the floor passes its price, not moved because the floor rose while its price meets it, not on a last trade
     older than 60 s, not in the auction or outside the regular session: `krShortSession`, from the app's Korean
@@ -798,7 +875,7 @@ determined here.
   - The review gets the figure as a fact in B3e.
 - **A cover's cash and the loan's end** (B3d-3): a cover is paid from the short's collateral (its proceeds), so like a
   margin buy it reserves no cash in the funding ledger and has no cash check at the send. A short is lent for
-  `short.maxDays` (90) calendar days from its loan date, with no extension; until B4 shows KIS's own figure, the last
+  `short.maxDays` (90) calendar days from its loan date, with no extension; until a real short shows KIS's own figure, the last
   day a cover can be made is taken as the last business day strictly before the end (`loanEnd`, the app's calendar), and
   the countdown is in business days to that day. For the app's own lots: from `short.coverBeforeDays` + 5 days before it
   the app writes one "Short loan ends soon" line a day (the day kept on the lot's record, `short_loan_warnings`, so a
@@ -1240,8 +1317,8 @@ batch is not sent; the review fails), per `order-outcomes.cjs`. "Words" are from
 | `CONCENTRATION_LIMIT` | O | Stock would exceed the per-company share (buys) | `:194`, `:559` | per-company share | "it would go over the per-company limit" |
 | `LEVERAGED_NOT_ENABLED` | O | Leveraged/inverse buy with the switch off | `exposure.cjs:80` | Short & leverage → leveraged ETFs | "leveraged and inverse products are off" |
 | `LEVERAGED_EXPOSURE_LIMIT` | O | Leveraged value would exceed the cap | `exposure.cjs:82` | leveraged cap (default 20%) | "it would go over the leveraged-product limit" |
-| `MARGIN_NOT_ENABLED`, `MARGIN_LIMIT`, `SHORT_NOT_ENABLED`, `SHORT_LIMIT` | O | Credit rules | `exposure.cjs:97-104` | margin / short settings | "margin trading is off" etc. Unreachable today (5.2) |
-| `CREDIT_PATH_UNVERIFIED` | O | Any Korean credit order | `:121`, `:138`; `kis-client.cjs:297` | **fixed; the Allow switches do not control it** | "its credit path is not verified" |
+| `MARGIN_NOT_ENABLED`, `MARGIN_LIMIT`, `SHORT_NOT_ENABLED`, `SHORT_LIMIT` | O | Credit rules | `exposure.cjs:97-104` | margin / short settings | "margin trading is off" etc. Margin: unreachable (5.2); short: reached since shorts on |
+| `CREDIT_PATH_UNVERIFIED` | O | A margin order; a short or cover with the short-selling switch off (except a cover of the app's own short) | `:121`, `:138`; `kis-client.cjs:297` | **fixed; the Allow switches do not control it** | "its credit path is not verified" |
 | `EXCEEDS_LOT`, `NO_SUCH_LOT` | O | A closing order larger than what is free in its lot | `credit-paths.cjs:34,39` | fixed | "it is more than the shares free in its lot" / "its lot was not found" |
 | `FEATURE_UNAVAILABLE` | O | Credit on mock or in an extended session; revising an extended-session order; daytime on mock | `:110`, `:506`; `kis-client.cjs:264,268`; `kis-overseas.cjs:136` | fixed | "this account does not offer it" |
 | `RISK_DATA_UNAVAILABLE` | S | A buy while the app's valuation cannot be read | `:413` | fixed | "the risk data could not be read" |

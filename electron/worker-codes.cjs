@@ -18,4 +18,11 @@ function relayCode(operation,error){
   const code=SENDS.includes(operation)&&error?.notSent===true&&!['TICKET_EXPIRED','TOKEN_EXPIRED'].includes(error.code)?'ORDER_NOT_SENT':error?.code??error?.message;
   if(String(operation).startsWith('us-')){const U=require('./us-errors.cjs');return U.publicUSCode(code,{order:U.ORDER_OPERATIONS.includes(operation)});}
   return KR_ALLOWED.includes(code)?code:'REQUEST_FAILED';}
-module.exports={relayCode,KR_ALLOWED};
+// The worker's reply for a failed operation: only checked fields cross (stage 1b: the loan-date record too).
+function errorReply(id,operation,error){const tried=require('./short-loan-date.cjs').tried(error?.loanDateTried);
+  return {id,ok:false,retryAt:Number.isFinite(error?.retryAt)?error.retryAt:null,httpStatus:Number.isInteger(error?.httpStatus)&&error.httpStatus>=100&&error.httpStatus<=599?error.httpStatus:null,brokerCode:/^[A-Z0-9_-]{1,24}$/.test(error?.brokerCode??'')?error.brokerCode:null,brokerMessage:typeof error?.brokerMessage==='string'?error.brokerMessage.slice(0,120):null,...(Number.isFinite(error?.ticketAgeMs)?{ticketAgeMs:error.ticketAgeMs}:{}),...(tried?{loanDateTried:tried}:{}),code:relayCode(operation,error)};}
+// The service's side: the KIS fields of that reply put back on the error the engine sees, checked again.
+function kisErrorFields(error,message){if(Number.isFinite(message?.retryAt))error.retryAt=message.retryAt;if(Number.isFinite(message?.ticketAgeMs))error.ticketAgeMs=message.ticketAgeMs;if(Number.isInteger(message?.httpStatus)&&message.httpStatus>=100&&message.httpStatus<=599)error.httpStatus=message.httpStatus;
+  if(/^[A-Z0-9_-]{1,24}$/.test(message?.brokerCode??''))error.brokerCode=message.brokerCode;if(typeof message?.brokerMessage==='string'&&message.brokerMessage)error.brokerMessage=message.brokerMessage.slice(0,120);
+  const t=require('./short-loan-date.cjs').tried(message?.loanDateTried);if(t)error.loanDateTried=t;return error;}
+module.exports={relayCode,KR_ALLOWED,errorReply,kisErrorFields};

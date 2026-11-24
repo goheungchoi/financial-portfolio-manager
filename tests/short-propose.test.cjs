@@ -32,7 +32,9 @@ test('the engine: a KOSPI or KOSDAQ stock from the master, in the regular sessio
     for(const s of ['other','closing','nxt'])assert.throws(()=>engine({session:s}).propose(SHORT),/SHORT_SESSION_CLOSED/,String(s));
     const none=engine();none.shortSession=()=>undefined;assert.throws(()=>none.propose(SHORT),/SHORT_SESSION_CLOSED/,'no session given');const thrower=engine();thrower.shortSession=()=>{throw new Error('calendar');};assert.throws(()=>thrower.propose(SHORT),/SHORT_SESSION_CLOSED/);
   });
-  assert.throws(()=>engine().propose(SHORT),/CREDIT_PATH_UNVERIFIED/,'with the path off: refused as before');
+  // Shorts on (2026-11-25): the path is open; closed here only, it is refused as before.
+  {const real=CP.pathStatus;CP.pathStatus=(kind,o)=>kind==='short'?{executable:false,automatic:false,reason:'closed in this test'}:real(kind,o);try{assert.throws(()=>engine().propose(SHORT),/CREDIT_PATH_UNVERIFIED/,'with the path off: refused as before');}finally{CP.pathStatus=real;}}
+  assert.doesNotThrow(()=>engine().propose(SHORT),'open now');
   const main=require('fs').readFileSync(require('path').join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(main,/live\.instrumentOf=symbol=>\{const row=master\.get\(symbol\);return row\?\{market:row\.market,type:row\.type\}:null;\};live\.shortSession=/);
 });
 function korea({price='1000',shorts=[],psbl={nrcvb_buy_amt:'100000',nrcvb_buy_qty:'100'}}={}){const calls=[];const c=new KisReadOnlyClient(credentials,async url=>{calls.push(url);if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'t',expires_in:3600});

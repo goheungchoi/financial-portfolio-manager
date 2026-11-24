@@ -331,11 +331,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('portfolio:metadata',(event,symbol,value)=>{authorize(event);portfolioView.save(symbol,value);return portfolioState();});
   ipcMain.handle('portfolio:refresh',async event=>{authorize(event);await refreshKisBalance();if(kisState.snapshot){try{await automation.refreshUS();}catch(error){usLive.refreshError=require('./us-errors.cjs').publicUSCode(error.message);}}return portfolioState();});
   const exposureState=()=>{const accounts={KR:kisState.snapshot?.accountKey??null,US:usSnapshot?.accountKey&&kisState.snapshot&&usSnapshot.accountKey===kisState.snapshot.accountKey+':US'?usSnapshot.accountKey:null};
-    const market=(key,snapshot)=>accounts[key]?{account:true,policy:exposure.policy(accounts[key]),summary:exposure.summary(snapshot?.holdings??[],snapshot?.reportedTotal??0,Date.now(),symbol=>(key==='KR'?live:usLive).firstBought(symbol)),...(key==='KR'?{credit:exposure.creditRisk(accounts.KR,snapshot??{},require('./kis-activity.cjs').seoulDate()),creditPaths:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,require('./credit-paths.cjs').pathStatus(k,{approved:automation.config.creditProtectionApproved===true})]))}:{})}:{account:false};
+    const market=(key,snapshot)=>accounts[key]?{account:true,policy:exposure.policy(accounts[key]),summary:exposure.summary(snapshot?.holdings??[],snapshot?.reportedTotal??0,Date.now(),symbol=>(key==='KR'?live:usLive).firstBought(symbol)),...(key==='KR'?{credit:exposure.creditRisk(accounts.KR,snapshot??{},require('./kis-activity.cjs').seoulDate()),creditPaths:Object.fromEntries(['margin-buy','margin-sell','short','cover'].map(k=>[k,require('./credit-paths.cjs').pathStatus(k,{approved:automation.config.creditProtectionApproved===true,shortsOn:true})]))}:{})}:{account:false};
     return {markets:{KR:market('KR',kisState.snapshot),US:market('US',usSnapshot)},overrides:exposure.overrides(),kinds:exposure.kindOverrides(),environment:kisState.snapshot?.environment??null};};
   const exposureAction=action=>async(event,...args)=>{authorize(event);try{await action(...args);return {ok:true,state:exposureState()};}catch(error){return {ok:false,error:/^[A-Z_]{3,40}$/.test(error.message)?error.message:'REQUEST_FAILED',state:exposureState()};}};
   ipcMain.handle('exposure:get',exposureAction(()=>{}));
-  ipcMain.handle('exposure:save-policy',exposureAction((market,value)=>{const account=exposureState().markets[market]?.account?(market==='KR'?kisState.snapshot.accountKey:usSnapshot.accountKey):null;if(!account)throw new Error('KIS_NOT_CONNECTED');if(market==='US'&&value&&(value.margin||value.short))throw new Error('FEATURE_UNAVAILABLE');exposure.savePolicy(account,value);}));
+  ipcMain.handle('exposure:save-policy',exposureAction((market,value)=>{const account=exposureState().markets[market]?.account?(market==='KR'?kisState.snapshot.accountKey:usSnapshot.accountKey):null;if(!account)throw new Error('KIS_NOT_CONNECTED');if(market==='US'&&value&&(value.margin||value.short))throw new Error('FEATURE_UNAVAILABLE');
+    // Shorts on, stage 1c: not turned on while auto trading runs on Claude (automation shortsSwitchRefusal).
+    if(market==='KR'&&value?.short){const refused=automation.shortsSwitchRefusal({was:exposure.policy(account).short.enabled===true,next:value.short.enabled===true});if(refused)throw new Error(refused);}
+    exposure.savePolicy(account,value);}));
   ipcMain.handle('exposure:set-override',exposureAction((symbol,factor)=>exposure.setOverride(symbol,factor)));
   ipcMain.handle('exposure:set-single-stock',exposureAction((symbol,value)=>exposure.setSingleStock(symbol,value)));
   ipcMain.handle('costs:get',event=>{authorize(event);return costs.saved();});
@@ -649,7 +652,17 @@ app.whenReady().then(async () => {
   const marketValue=(market,snapshot)=>{const k=kisState.snapshot;if(!k?.accountKey)return null;const kr=market==='KR'?snapshot:k,us=market==='US'?snapshot:(usSnapshot?.accountKey===k.accountKey+':US'?usSnapshot:null);
     if(market==='KR'&&snapshot?.accountKey!==k.accountKey||market==='US'&&snapshot?.accountKey!==k.accountKey+':US')return null;
     return require('./valuation.cjs').marketValue(market,{korea:kr,us,fx:automation.fx?.(),inFlight:inFlightOf(k.accountKey),funding:fundingOf(k.accountKey)});};
-  live.netEquityOf=snapshot=>marketValue('KR',snapshot);live.creditApproved=()=>automation.config.creditProtectionApproved===true;usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
+  live.netEquityOf=snapshot=>marketValue('KR',snapshot);live.creditApproved=()=>automation.config.creditProtectionApproved===true;
+  // Shorts on (2026-11-25): the loan-date form KIS accepted, kept across restarts, and the app's Korean calendar for the
+  // dates; one Activity line when KIS took the alternate date.
+  {const LD=require('./short-loan-date.cjs');live.loanForms=new LD.LoanDateForms(store.db);live.closedKrDays=()=>[...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])];
+    // Stage 1b: what the app keeps from it (LoanDateForms.accepted): back to the default at once, the other form only on
+    // its second time, else once only.
+    live.onLoanDateLearned=(order,{changed,count})=>{const s=order.loanDateSent,f=s.firstRefusal??{};const what=order.credit.kind==='short'?'Short sale':'Buy-back';const w=form=>LD.FORM_WORDS[form]??form;
+      const kept=changed?` The app sends ${w(s.form)} first from now on.`:count===1?` Kept as once only: the app still sends ${w(f.form)} first, and changes only if KIS takes ${w(s.form)} this way again.`:'';
+      try{automation.log(order.id,'System','Short loan date',`${what} ${order.quantity} ${order.symbol}: KIS refused the loan date ${f.date} (${w(f.form)})${f.brokerMessage?` ("${f.brokerMessage}")`:''} and accepted ${s.date} (${w(s.form)}).${kept}`);}catch{}};
+    // Stage 1b: KIS's record of the app's short or cover differs from what the app sent (short-rules creditRowCheck).
+    live.onCreditCheck=order=>{try{automation.log(order.id,'System','Short order at KIS',`${order.credit.kind==='short'?'Short sale':'Buy-back'} ${order.quantity} ${order.symbol}: ${order.creditCheck}`);}catch{}};}usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   // C1c (W5): after a failed U.S. refresh, the day's record waits while a U.S. buy may be awaiting settlement
   // (integrated-settlement.cjs usFundingMayBeOpen): the Korean value would leave out the KRW KIS holds for it. The day

@@ -38,7 +38,7 @@ const tokenExpired=brokerCode=>Object.assign(new KisError('TOKEN_EXPIRED'),{notS
 function brokerText(body){const t=typeof body?.msg1==='string'?body.msg1:'';const c=t.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\d{6,}/g,'…').replace(/\s+/g,' ').trim().slice(0,120);return c||null;}
 function brokerFields(body){return {...(/^[A-Z0-9_-]{1,24}$/.test(String(body?.msg_cd??''))?{brokerCode:body.msg_cd}:{}),...(brokerText(body)?{brokerMessage:brokerText(body)}:{})};}
 function rejected(body){return Object.assign(new KisError('BROKER_REJECTED'),brokerFields(body));}
-function orderError(error){if(error?.code==='BROKER_REJECTED')return Object.assign(new KisError('BROKER_REJECTED'),error.brokerCode?{brokerCode:error.brokerCode}:{},error.brokerMessage?{brokerMessage:error.brokerMessage}:{});
+function orderError(error){if(error?.code==='BROKER_REJECTED')return Object.assign(new KisError('BROKER_REJECTED'),error.brokerCode?{brokerCode:error.brokerCode}:{},error.brokerMessage?{brokerMessage:error.brokerMessage}:{},Array.isArray(error.loanDateTried)?{loanDateTried:error.loanDateTried}:{});
   // The token fix (artifacts/reviews/2026-11-24-kis-token): KIS's gateway refused the order's expired sign-in, so it is not
   // at KIS; it keeps its own code so a stop stays armed and is tried again with the renewed sign-in.
   if(error?.code==='TOKEN_EXPIRED')return Object.assign(new KisError('TOKEN_EXPIRED'),{notSent:true});
@@ -339,7 +339,8 @@ class KisReadOnlyClient {
       if(this.#credentials.environment!=='live')throw new KisError('FEATURE_UNAVAILABLE');
     }
     // A credit path whose fields are not confirmed is refused before any request, after the order is checked (as propose, send and placeCreditOrder).
-    if(command?.credit!=null&&!require('./credit-paths.cjs').pathStatus(command.credit?.kind).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
+    // The worker checks the code's paths (shortsOn); the engine checks the switch.
+    if(command?.credit!=null&&!require('./credit-paths.cjs').pathStatus(command.credit?.kind,{shortsOn:true}).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
     await this.checkSession(session);const {seoulDate}=require('./kis-activity.cjs');const today=seoulDate();
     const quoteBody=await this.quotation('inquire-price','FHKST01010100',{FID_COND_MRKT_DIV_CODE:session?.route?.quote==='NX'?'NX':'J',FID_INPUT_ISCD:command.symbol});const output=quoteBody.output;
     const price=amount(output?.stck_prpr),unit=amount(output?.aspr_unit);
@@ -349,7 +350,7 @@ class KisReadOnlyClient {
     // the opening auction KIS's current price is the previous close).
     if(command.credit?.kind==='short'){const floor=require('./short-rules.cjs').floorPrice(price);if(floor==null||command.limitPrice<floor)throw new KisError('SHORT_BELOW_UPTICK');}
     // capacity (M-1.5b): KIS's orderable answer for this order, numeric fields only, for broker_capacity (broker-raw.cjs).
-    const balance=await this.getBalance();let availableQuantity;let capacity=null,shortCash=null;const numeric=require('./broker-raw.cjs').numericFields;
+    const balance=await this.getBalance();let availableQuantity;let capacity=null,shortCash=null,sendPlan=null,alternateDropped=null;const numeric=require('./broker-raw.cjs').numericFields;
     if(command.credit) {
       // New margin loans and short sales: the broker's credit capacity. Repayments: the matching loan or short position.
       const {kind,type,loanDate}=command.credit;
@@ -360,7 +361,10 @@ class KisReadOnlyClient {
         if(!ok.ok)throw new KisError(ok.code);availableQuantity=ok.tradable;capacity={tr:'CTSC2702R',fields:{trad_psbl_qty2:read.tradable,lmt_qty1:read.limit,use_qty1:read.used}};}
       else if(kind==='margin-buy'){const body=await this.tradingQuery('inquire-credit-psamount','TTTC8909R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'00',CRDT_TYPE:type,CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});availableQuantity=amount(body.output?.max_buy_qty);capacity={tr:'TTTC8909R',fields:numeric(body.output)};}
       else if(kind==='margin-sell'){const loan=balance.holdings.find(row=>row.symbol===command.symbol)?.loans?.find(row=>row.loanDate===loanDate);availableQuantity=loan?loan.availableQuantity??loan.quantity:null;}
-      else {const short=balance.shorts?.find(row=>row.symbol===command.symbol&&row.loanDate===loanDate);availableQuantity=short?short.availableQuantity??short.quantity:null;}
+      else {const short=balance.shorts?.find(row=>row.symbol===command.symbol&&row.loanDate===loanDate);availableQuantity=short?short.availableQuantity??short.quantity:null;
+        // Shorts on, stages 1b-1c: no date sent for a cover, first or alternate, names another short lot of this stock in
+        // this balance (guardPlan).
+        if(command.credit.send!=null){const LD=require('./short-loan-date.cjs');const plan=LD.validPlan('cover',command.credit.send);if(!plan)throw new KisError('INVALID_ORDER');const d=LD.guardPlan(plan,{symbol:command.symbol,loanDate,balance});sendPlan=d.plan;if(d.dropped)alternateDropped=d.dropped;}}
       if(availableQuantity==null||command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');
     } else if(command.side==='Buy') {
       const body=await this.tradingQuery('inquire-psbl-order',this.#credentials.environment==='live'?'TTTC8908R':'VTTC8908R',{PDNO:command.symbol,ORD_UNPR:String(command.limitPrice),ORD_DVSN:'01',CMA_EVLU_AMT_ICLD_YN:'N',OVRS_ICLD_YN:'N'});
@@ -376,7 +380,7 @@ class KisReadOnlyClient {
     const open=require('./broker-open-orders.cjs').openGuard(orders,command,{severalOpen,fail:()=>new KisError('OPEN_BROKER_ORDERS')});
     // The token fix, third review: today's orders at KIS (orders, not revisions), whatever their status, for the resend check.
     const todayOrders=(orders??[]).filter(o=>!o.originalOrderId).map(o=>({orderId:String(o.orderId),symbol:o.symbol,side:o.side,quantity:Number.isFinite(o.quantity)?o.quantity:null,timestamp:Number.isFinite(o.timestamp)?o.timestamp:null,status:o.status}));
-    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,todayOrders,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{}),...(shortCash?{shortCash}:{})};
+    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,todayOrders,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{}),...(shortCash?{shortCash}:{}),...(sendPlan?{sendPlan}:{}),...(alternateDropped?{alternateDropped}:{})};
   }
   // B3c: KIS's lending list for one stock (CTSC2702R, lendable-by-company), read just before a short: the row for this
   // stock as short-rules reads it, or one that is not open when the stock is not listed (not lendable now).
@@ -386,18 +390,32 @@ class KisReadOnlyClient {
   // Credit order (order-credit): margin buy/repay and short sale/cover. Live accounts only; KIS does not support it on mock.
   async placeCreditOrder(command) {
     // Only a credit path whose fields are confirmed is ever sent (electron/credit-paths.cjs, audit 2026-11-04 Stage 3).
-    if(!require('./credit-paths.cjs').pathStatus(command.credit?.kind).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
+    if(!require('./credit-paths.cjs').pathStatus(command.credit?.kind,{shortsOn:true}).executable)throw new KisError('CREDIT_PATH_UNVERIFIED');
     await this.authenticate();await this.wait(550);const {seoulDate}=require('./kis-activity.cjs');
-    // B3c: a new short's loan date by the one rule B4 settles (short-rules SHORT_LOAN_DATE_RULE); a cover sends its lot's.
-    const loanDate=(command.credit.kind==='margin-buy'?seoulDate():command.credit.kind==='short'?require('./short-rules.cjs').shortLoanDate(seoulDate()):command.credit.loanDate).replaceAll('-','');
+    // Shorts on (2026-11-25): a short or cover sends the loan date of its plan (short-loan-date: the engine's, with the
+    // app's calendar and the remembered form; without one, the default form on weekdays and no alternate), and on a KIS
+    // refusal the plan's alternate once. A margin buy sends today, a margin repayment its loan's date, with no alternate.
+    const kind=command.credit.kind,LD=require('./short-loan-date.cjs');
+    const plan=kind==='short'||kind==='cover'?(command.credit.send!=null?LD.validPlan(kind,command.credit.send):LD.candidates(kind,{today:seoulDate(),loanDate:command.credit.loanDate,alternate:false})):{first:{form:null,date:kind==='margin-buy'?seoulDate():command.credit.loanDate},alternate:null};
+    if(!plan)throw new KisError('INVALID_ORDER');
     // KRX always: short sales go to KRX only (never NXT or SOR), and every credit order with them.
-    const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:loanDate,EXCG_ID_DVSN_CD:require('./short-rules.cjs').VENUE,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};
+    const post=async loanDate=>{const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,CRDT_TYPE:command.credit.type,LOAN_DT:String(loanDate).replaceAll('-',''),EXCG_ID_DVSN_CD:require('./short-rules.cjs').VENUE,ORD_DVSN:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice)};
+      const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-credit',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:command.side==='Buy'?'TTTC0052U':'TTTC0051U',custtype:'P'},body:JSON.stringify(params)});return body;};
+    const accepted=(body,sent,more={})=>{if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
+      return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString(),...(sent.form?{loanDateSent:{date:sent.date,form:sent.form,alternate:false,...more}}:{})};};
     try {
-      const {body}=await this.request('/uapi/domestic-stock/v1/trading/order-credit',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+this.#token,appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret,tr_id:command.side==='Buy'?'TTTC0052U':'TTTC0051U',custtype:'P'},body:JSON.stringify(params)});
-      if(body.rt_cd!=='0')throw rejected(body);
-      if(typeof body.output?.ODNO!=='string' || !/^\d+$/.test(body.output.ODNO))throw new KisError('ORDER_UNCERTAIN');
-      return {brokerOrderId:body.output.ODNO,organization:body.output.KRX_FWDG_ORD_ORGNO??'',acceptedAt:new Date().toISOString()};
-    }catch(error){throw orderError(error);}
+      const body=await post(plan.first.date);
+      if(body.rt_cd==='0')return accepted(body,plan.first);
+      // Stage 1b: no alternate when there is none (the calendar, another lot's date) or the refusal names another reason.
+      if(!plan.alternate||LD.notAboutDate(body,kind))throw rejected(body);
+      // The first refusal was a refusal: nothing was placed, so the one alternate is sent. Any other outcome of it (no
+      // answer, an unclear reply) is the order's own outcome, unclear as always, and keeps the first refusal and the date
+      // that may be at KIS.
+      const first={date:plan.first.date,form:plan.first.form,...brokerFields(body)};await this.wait(550);
+      let again;try{again=await post(plan.alternate.date);if(again.rt_cd==='0'){const r=accepted(again,plan.alternate);return {...r,loanDateSent:{...r.loanDateSent,alternate:true,firstRefusal:first}};}}
+      catch(error){const e=orderError(error);throw Object.assign(e,{loanDateTried:[first,{date:plan.alternate.date,form:plan.alternate.form,...(e.code==='ORDER_UNCERTAIN'?{unclear:true}:{notSent:true})}]});}
+      throw Object.assign(rejected(again),{loanDateTried:[first,{date:plan.alternate.date,form:plan.alternate.form,...brokerFields(again)}]});
+    }catch(error){if(error instanceof KisError&&Array.isArray(error.loanDateTried)&&error.code!=='BROKER_REJECTED')throw error;throw orderError(error);}
   }
   // session.route picks the exchange (KRX or NXT) and order type (00 limit).
   placeOrder(...args){return SEND.run(true,()=>this.placeOrderNow(...args));}

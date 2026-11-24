@@ -1,5 +1,5 @@
-// Short selling B3c: the order path, still not executable (the short and cover paths stay executable:false). The request
-// fields are shown by switching the path on inside this test only. Fake transport and fake engines; made-up codes, prices,
+// Short selling B3c: the order path. Since shorts on (2026-11-25) the short and cover paths can be sent; a closed path
+// (closed inside a test only) still sends nothing. Fake transport and fake engines; made-up codes, prices,
 // quantities and dates.
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
 const fs=require('fs'),path=require('path');const {KisReadOnlyClient}=require('../electron/kis-client.cjs');const CP=require('../electron/credit-paths.cjs');const R=require('../electron/short-rules.cjs');
@@ -17,8 +17,92 @@ test('the order request: a short (22) sends KRX and the loan date by the one rul
   const k=client(()=>({rt_cd:'0',output:{ODNO:'0000124'}}));await executable(()=>k.c.placeCreditOrder({symbol:'990010',side:'Buy',quantity:2,limitPrice:1100,credit:{kind:'cover',type:'26',loanDate:'2026-10-07'}}));
   const cover=JSON.parse(k.calls.find(x=>x.url.includes('order-credit')).options.body);assert.deepEqual([cover.CRDT_TYPE,cover.LOAN_DT,cover.EXCG_ID_DVSN_CD],['26','20261007','KRX']);assert.equal(k.calls.find(x=>x.url.includes('order-credit')).options.headers.tr_id,'TTTC0052U');
 });
-test('still not executable: no request leaves the app for a short or a cover',async()=>{
+const closed=async fn=>{const real=CP.pathStatus;CP.pathStatus=(kind,o)=>['short','cover'].includes(kind)?{executable:false,automatic:false,reason:'closed in this test'}:real(kind,o);try{return await fn();}finally{CP.pathStatus=real;}};
+test('a closed path: no request leaves the app for a short or a cover',()=>closed(async()=>{
   for(const kind of ['short','cover']){const {c,calls}=client(()=>({rt_cd:'0'}));await assert.rejects(c.placeCreditOrder({symbol:'990010',side:kind==='short'?'Sell':'Buy',quantity:1,limitPrice:1001,credit:{kind,type:kind==='short'?'22':'26',loanDate:'2026-10-07',market:'KOSPI'}}),/CREDIT_PATH_UNVERIFIED/);assert.equal(calls.length,0,kind);}
+}));
+// Shorts on: the loan date. KIS's refusal codes for a wrong loan date are not known, so any first refusal sends the plan's
+// alternate once; never a third request.
+test('the loan date: the plan first; on a refusal the alternate once; accepted: which form, and the first refusal; refused twice: both, rejected',async()=>{
+  const LD=require('../electron/short-loan-date.cjs');const sent=calls=>calls.filter(x=>x.url.includes('order-credit')).map(x=>JSON.parse(x.options.body).LOAN_DT);
+  const plan={first:{form:'trade-day',date:'2026-10-09'},alternate:{form:'settlement',date:'2026-10-13'}};
+  {let n=0;const {c,calls}=client(()=>++n===1?{rt_cd:'1',msg_cd:'APBK9999',msg1:'made-up refusal'}:{rt_cd:'0',output:{ODNO:'0000200',KRX_FWDG_ORD_ORGNO:'00950'}});
+    const r=await c.placeCreditOrder({symbol:'990010',side:'Sell',quantity:2,limitPrice:1001,credit:{kind:'short',type:'22',market:'KOSPI',send:plan}});
+    assert.deepEqual(sent(calls),['20261009','20261013']);assert.equal(r.brokerOrderId,'0000200');
+    assert.deepEqual(r.loanDateSent,{date:'2026-10-13',form:'settlement',alternate:true,firstRefusal:{date:'2026-10-09',form:'trade-day',brokerCode:'APBK9999',brokerMessage:'made-up refusal'}});}
+  {const {c,calls}=client(()=>({rt_cd:'1',msg_cd:'APBK9998',msg1:'made-up'}));
+    const e=await c.placeCreditOrder({symbol:'990010',side:'Buy',quantity:2,limitPrice:1100,credit:{kind:'cover',type:'26',loanDate:'2026-10-13',send:{first:{form:'balance',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}}}}).then(()=>null,x=>x);
+    assert.equal(e.message,'BROKER_REJECTED');assert.deepEqual(sent(calls),['20261013','20261009'],'two requests, never a third');assert.deepEqual(e.loanDateTried.map(x=>x.form),['balance','trade-day']);}
+  {const {c,calls}=client(()=>({rt_cd:'0',output:{ODNO:'0000201'}}));const r=await c.placeCreditOrder({symbol:'990010',side:'Buy',quantity:2,limitPrice:1100,credit:{kind:'cover',type:'26',loanDate:'2026-10-13'}});
+    assert.deepEqual(sent(calls),['20261013'],'no plan given: the balance date first');assert.deepEqual(r.loanDateSent,{date:'2026-10-13',form:'balance',alternate:false});}
+  // An unclear first reply is the order's outcome: no alternate (it may be at KIS).
+  {let n=0;const {c,calls}=client(()=>++n===1?{rt_cd:'0',output:{}}:{rt_cd:'0',output:{ODNO:'1'}});await assert.rejects(c.placeCreditOrder({symbol:'990010',side:'Sell',quantity:2,limitPrice:1001,credit:{kind:'short',type:'22',market:'KOSPI',send:plan}}),/ORDER_UNCERTAIN/);assert.equal(sent(calls).length,1);}
+  // A margin repayment has no alternate (its path stays closed; opened here only to show the request).
+  {const P=CP.PATHS['margin-sell'];P.executable=true;try{const {c,calls}=client(()=>({rt_cd:'1',msg_cd:'X'}));await assert.rejects(c.placeCreditOrder({symbol:'990010',side:'Sell',quantity:1,limitPrice:1001,credit:{kind:'margin-sell',type:'27',loanDate:'2026-10-01'}}),/BROKER_REJECTED/);assert.deepEqual(sent(calls),['20261001']);}finally{P.executable=false;}}
+  // A plan that is not one (same form twice, a bad date): refused before any request.
+  {const {c,calls}=client(()=>({rt_cd:'0',output:{ODNO:'1'}}));await assert.rejects(c.placeCreditOrder({symbol:'990010',side:'Sell',quantity:2,limitPrice:1001,credit:{kind:'short',type:'22',market:'KOSPI',send:{first:{form:'trade-day',date:'2026-10-09'},alternate:{form:'trade-day',date:'2026-10-13'}}}}),/INVALID_ORDER/);assert.equal(sent(calls).length,0);}
+  assert.equal(LD.validPlan('cover',{first:{form:'balance',date:'2026-10-13'},alternate:null}).alternate,null);
+});
+test('the loan-date plan: the remembered form first, the other as the alternate; a cover\'s trade-day form is two business days before its lot',()=>{
+  const LD=require('../electron/short-loan-date.cjs');
+  assert.deepEqual(LD.candidates('short',{today:'2026-10-09'}),{first:{form:'trade-day',date:'2026-10-09'},alternate:{form:'settlement',date:'2026-10-13'}});
+  assert.deepEqual(LD.candidates('short',{today:'2026-10-09',forms:{short:'settlement',cover:'balance'}}),{first:{form:'settlement',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}});
+  assert.deepEqual(LD.candidates('cover',{today:'2026-10-20',loanDate:'2026-10-13'}),{first:{form:'balance',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}},'Tuesday: Monday and Friday back');
+  assert.equal(LD.candidates('cover',{loanDate:'2026-10-13',isOpen:d=>d==='2026-10-12'?false:null}).alternate.date,'2026-10-08','a closed Monday is skipped');
+  assert.throws(()=>LD.candidates('cover',{loanDate:null}),/INVALID_DATE/);assert.equal(LD.candidates('margin-sell',{loanDate:'2026-10-01'}),null);
+  assert.equal(LD.candidates('cover',{loanDate:'2026-10-13',alternate:false}).alternate,null,'the calendar unreadable: no alternate');
+  // Stage 1b: the plan as the worker gets it is checked and copied: real dates only, extra keys dropped.
+  assert.equal(LD.validPlan('cover',{first:{form:'balance',date:'2026-02-30'}}),null,'an impossible date');
+  const extra=LD.validPlan('cover',{first:{form:'balance',date:'2026-10-13',x:1},alternate:{form:'trade-day',date:'2026-10-09'},y:2});assert.deepEqual(extra,{first:{form:'balance',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}});
+});
+test('stage 1b: the forms in use are learned with care: the default back at once; the other form only on its second alternate; one accident kept nowhere',()=>{
+  const LD=require('../electron/short-loan-date.cjs');const db=new DatabaseSync(':memory:');const f=new LD.LoanDateForms(db,()=>1000);assert.deepEqual(f.get(),{short:'trade-day',cover:'balance'});
+  // One transient refusal of the default, the other form taken on the alternate: counted once, not used.
+  assert.deepEqual(f.accepted('short','settlement',{alternate:true}),{changed:false,form:'trade-day',count:1});assert.equal(f.get().short,'trade-day');
+  // The default accepted first next: the count is cleared; one accident is kept nowhere.
+  assert.deepEqual(f.accepted('short','trade-day',{alternate:false}),{changed:false,form:'trade-day',count:0});assert.deepEqual(f.read(),{});
+  // KIS takes the other form on the alternate twice in a row of such results: now used first, across restarts.
+  f.accepted('short','settlement',{alternate:true});assert.deepEqual(f.accepted('short','settlement',{alternate:true}),{changed:true,form:'settlement',count:2});assert.equal(new LD.LoanDateForms(db).get().short,'settlement');
+  // The learned form refused and the default taken on the alternate: dropped at once.
+  assert.deepEqual(f.accepted('short','trade-day',{alternate:true}),{changed:true,form:'trade-day',count:0});assert.equal(f.get().short,'trade-day');
+  assert.deepEqual(f.accepted('cover','x',{alternate:true}).changed,false,'an unknown form');assert.equal(f.get().cover,'balance');
+});
+test('stage 1b: a refusal the app can name as not about the date sends no alternate; an unnamed one does',async()=>{
+  const LD=require('../electron/short-loan-date.cjs');
+  for(const body of [{},{rt_cd:''},{rt_cd:'1',msg_cd:'EGW00201',msg1:'x'},{rt_cd:'1',msg_cd:'APBK1617',msg1:'x'},{rt_cd:'1',msg_cd:'APBK0001',msg1:'장운영시간이 아닙니다'},{rt_cd:'1',msg_cd:'APBK0002',msg1:'주문가능수량을 초과하였습니다'},{rt_cd:'1',msg_cd:'APBK0003',msg1:'대주가능수량이 부족합니다'}])assert.ok(LD.notAboutDate(body),JSON.stringify(body));
+  for(const body of [{rt_cd:'1',msg_cd:'APBK9999',msg1:'made-up refusal'},{rt_cd:'1',msg_cd:'APBK0004',msg1:'대출일자 오류'},{rt_cd:'1',msg_cd:'APBK0005',msg1:'수량 또는 대출일 확인'}])assert.equal(LD.notAboutDate(body),null,JSON.stringify(body));
+  const sent=calls=>calls.filter(x=>x.url.includes('order-credit')).map(x=>JSON.parse(x.options.body).LOAN_DT);const plan={first:{form:'trade-day',date:'2026-10-09'},alternate:{form:'settlement',date:'2026-10-13'}};
+  for(const refusal of [{rt_cd:'1',msg_cd:'APBK0001',msg1:'장운영시간이 아닙니다'},{msg1:'no result code'}]){const {c,calls}=client(()=>refusal);await assert.rejects(c.placeCreditOrder({symbol:'990010',side:'Sell',quantity:2,limitPrice:1001,credit:{kind:'short',type:'22',market:'KOSPI',send:plan}}),/BROKER_REJECTED/);assert.deepEqual(sent(calls),['20261009'],'one request: '+JSON.stringify(refusal));}
+});
+test('stage 1b: a cover\'s alternate is dropped at the preparation when it names another short lot of the stock; the placed ticket carries that plan',async()=>{
+  const LD=require('../electron/short-loan-date.cjs');const plan={first:{form:'balance',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}};
+  const lots=more=>({shorts:[{symbol:'990010',loanDate:'2026-10-13'},...more]});
+  assert.deepEqual(LD.dropAlternate(plan,{symbol:'990010',loanDate:'2026-10-13',balance:lots([{symbol:'990010',loanDate:'2026-10-09'}])}),{plan:{...plan,alternate:null},dropped:'2026-10-09 is another short lot of 990010'});
+  assert.deepEqual(LD.dropAlternate(plan,{symbol:'990010',loanDate:'2026-10-13',balance:lots([{symbol:'990020',loanDate:'2026-10-09'}])}),{plan,dropped:null},'another stock\'s lot: kept');
+  assert.equal(LD.dropAlternate(plan,{symbol:'990010',loanDate:'2026-10-13',balance:{}}).plan.alternate,null,'short rows unreadable: dropped');
+  const src=fs.readFileSync(path.join(__dirname,'..','electron','kis-client.cjs'),'utf8');assert.match(src,/const d=LD\.guardPlan\(plan,\{symbol:command\.symbol,loanDate,balance\}\);sendPlan=d\.plan;/);
+  const w=fs.readFileSync(path.join(__dirname,'..','electron','kis-worker.cjs'),'utf8');assert.match(w,/prepared\.set\(ticket,\{command:check\.sendPlan&&data\.command\?\.credit\?\{\.\.\.data\.command,credit:\{\.\.\.data\.command\.credit,send:check\.sendPlan\}\}:data\.command,/);
+  // Through the client's preparation: the dropped plan comes back as sendPlan.
+  const {c}=client(url=>url.includes('inquire-price')?{rt_cd:'0',output:{stck_prpr:'1100',aspr_unit:'1',temp_stop_yn:'N'}}:url.includes('inquire-balance')?{rt_cd:'0',output1:[],output2:[{}]}:url.includes('inquire-daily-ccld')?{rt_cd:'0',output1:[],output2:{}}:{rt_cd:'0',output:{}});
+  c.checkSession=async()=>null;c.getBalance=async()=>({holdings:[],shorts:[{symbol:'990010',loanDate:'2026-10-13',quantity:2,availableQuantity:2},{symbol:'990010',loanDate:'2026-10-09',quantity:1,availableQuantity:1}]});c.getActivity=async()=>({orders:[]});
+  const live=new KisReadOnlyClient({...credentials,environment:'live'},async(url,options)=>{if(url.endsWith('/oauth2/tokenP'))return reply({access_token:'t',expires_in:3600});return reply({rt_cd:'0',output:{stck_prpr:'1100',aspr_unit:'1',temp_stop_yn:'N'}});},async()=>{});
+  live.checkSession=c.checkSession;live.getBalance=c.getBalance;live.getActivity=c.getActivity;
+  const r=await live.prepareOrder({symbol:'990010',side:'Buy',quantity:1,limitPrice:1100,credit:{kind:'cover',type:'26',loanDate:'2026-10-13',send:plan}});
+  assert.deepEqual(r.sendPlan,{...plan,alternate:null});assert.match(r.alternateDropped,/another short lot/);
+});
+test('stage 1b: an unclear reply to the alternate keeps the first refusal and the date that may be at KIS; a not-sent alternate says so',async()=>{
+  const plan={first:{form:'balance',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}};const cover={symbol:'990010',side:'Buy',quantity:1,limitPrice:1100,credit:{kind:'cover',type:'26',loanDate:'2026-10-13',send:plan}};
+  {let n=0;const {c}=client(()=>++n===1?{rt_cd:'1',msg_cd:'APBK9999',msg1:'made-up'}:{rt_cd:'0',output:{}});const e=await c.placeCreditOrder(cover).then(()=>null,x=>x);
+    assert.equal(e.message,'ORDER_UNCERTAIN');assert.deepEqual(e.loanDateTried,[{date:'2026-10-13',form:'balance',brokerCode:'APBK9999',brokerMessage:'made-up'},{date:'2026-10-09',form:'trade-day',unclear:true}]);}
+});
+test('stage 1b: both attempts cross the worker and the service, and the engine keeps them with the first refusal shown first',async()=>{
+  const LD=require('../electron/short-loan-date.cjs');const t=[{date:'2026-10-13',form:'balance',brokerCode:'APBK9999',brokerMessage:'first'},{date:'2026-10-09',form:'trade-day',brokerCode:'APBK9998',brokerMessage:'second'}];
+  assert.deepEqual(LD.tried(t),t);assert.equal(LD.tried([...t,t[0]]),null,'never three');assert.equal(LD.tried([{date:'x'}]),null);assert.deepEqual(LD.tried([{...t[0],extra:'<b>'}]),[t[0]],'extra keys dropped');
+  const w=fs.readFileSync(path.join(__dirname,'..','electron','kis-worker.cjs'),'utf8');assert.match(w,/postMessage\(require\('\.\/worker-codes\.cjs'\)\.errorReply\(id,operation,error\)\)/);
+  // The service puts the worker's fields back (worker-codes kisErrorFields); end to end in shorts-on-1b.
+  const handler=fs.readFileSync(path.join(__dirname,'..','electron','kis-service.cjs'),'utf8');assert.match(handler,/require\('\.\/worker-codes\.cjs'\)\.kisErrorFields\(error,message\)/);
+  // The engine: a Rejected order keeps both, with the first refusal's code and words on the order.
+  const le=fs.readFileSync(path.join(__dirname,'..','electron','live-engine.cjs'),'utf8');assert.match(le,/\(tried&&!tried\[0\]\.unclear\?tried\[0\]:error\)/);assert.match(le,/const tried=require\('\.\/short-loan-date\.cjs'\)\.tried\(error\.loanDateTried\);/);
 });
 test('the loan date of a new short: the trade day (the rule now) or T+2 Korean business days; B4 picks one',()=>{
   assert.equal(R.SHORT_LOAN_DATE_RULE,'trade-day');assert.equal(R.shortLoanDate('2026-10-09'),'2026-10-09');
@@ -85,11 +169,11 @@ test('review 2: an unreadable calendar is no session for a short, and the tracke
   const {Automation}=require('../electron/automation.cjs');const ctx={closedDays:new Set(),officialClosedDays:()=>{throw new Error('calendar');}};
   assert.equal(Automation.prototype.krShortSession.call(ctx,Date.parse('2026-10-08T10:00:00+09:00')),'other');
 });
-test('the preparation refuses a credit path that is not confirmed before any request',async()=>{
+test('the preparation refuses a credit path that is not confirmed before any request',()=>closed(async()=>{
   const TYPE={short:'22',cover:'26','margin-buy':'23','margin-sell':'27'};
   for(const kind of Object.keys(TYPE)){const calls=[];const c=new KisReadOnlyClient({...credentials,environment:'live'},async(url,options)=>{calls.push(url);return reply({rt_cd:'0'});},async()=>{});
     await assert.rejects(c.prepareOrder({symbol:'990010',side:['short','margin-sell'].includes(kind)?'Sell':'Buy',quantity:1,limitPrice:1001,credit:{kind,type:TYPE[kind],loanDate:'2026-10-07',market:'KOSPI'}}),/CREDIT_PATH_UNVERIFIED/);assert.equal(calls.length,0,kind);}
-});
+}));
 test('reconcile: KIS\'s own names and loan date for the app\'s short or cover; a mismatch in words',()=>{
   assert.equal(R.creditRowCheck({credit:{kind:'short'}},[{creditName:'유대신규',loanDate:'2026-10-09'}]),null);
   assert.equal(R.creditRowCheck({credit:{kind:'short'}},[{creditName:'유대매도거부'}]),null,'a refusal is still a short-sale row');
@@ -97,7 +181,11 @@ test('reconcile: KIS\'s own names and loan date for the app\'s short or cover; a
   assert.equal(R.creditRowCheck({credit:{kind:'short'}},[{creditName:'<script>x'}]),'KIS recorded it as an unknown kind, not a new short sale.','only known names are printed');
   assert.equal(R.creditRowCheck({credit:{kind:'cover',loanDate:'2026-10-07'}},[{creditName:'유대상환',loanDate:'2026-10-09'}]),'its loan date at KIS is 2026-10-09, the app sent 2026-10-07.');
   assert.equal(R.creditRowCheck({credit:{kind:'cover',loanDate:'2026-10-07'}},[{creditName:'유대상환',loanDate:'2026-10-07'}]),null);assert.equal(R.creditRowCheck({credit:{kind:'margin-sell'}},[{creditName:'x'}]),null);
-  assert.match(require('fs').readFileSync(require('path').join(__dirname,'..','electron','live-engine.cjs'),'utf8'),/const creditCheck=order\.credit\?require\('\.\/short-rules\.cjs'\)\.creditRowCheck\(order,res\.chain\):null;/);
+  // Stage 1b: a cover accepted on its alternate date matches it; a KIS date that is another short lot is said so.
+  assert.equal(R.creditRowCheck({credit:{kind:'cover',loanDate:'2026-10-13'},loanDateSent:{date:'2026-10-09'}},[{creditName:'유대상환',loanDate:'2026-10-09'}]),null);
+  assert.equal(R.creditRowCheck({credit:{kind:'cover',loanDate:'2026-10-13'}},[{creditName:'유대상환',loanDate:'2026-10-08'}],['2026-10-08']),"its loan date at KIS is 2026-10-08, the app sent 2026-10-13 for its lot of 2026-10-13; 2026-10-08 is another short lot of this stock, so KIS may have bought that one back: check both lots in KIS's app.");
+  const le=require('fs').readFileSync(require('path').join(__dirname,'..','electron','live-engine.cjs'),'utf8');assert.match(le,/const creditCheck=order\.credit\?require\('\.\/short-rules\.cjs'\)\.creditRowCheck\(order,res\.chain,otherLots\):null;/);assert.match(le,/if\(creditCheck&&!order\.creditCheck\)\{try\{this\.onCreditCheck\?\.\(next\);\}catch\{\}\}/,'stage 1c: written once');
+  assert.match(require('fs').readFileSync(require('path').join(__dirname,'..','electron','main.cjs'),'utf8'),/'Short order at KIS'/);
 });
 test('the tracker: an open short sale is revised only at or above the uptick floor; not when the floor rose but its price meets it; not on a stale trade or outside the regular session',async()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
@@ -116,4 +204,19 @@ test('the Korean session for a short: the auction before the open, the regular s
   assert.equal(s(at('2026-10-08','08:29')),'other');assert.equal(s(at('2026-10-08','08:30')),'auction');assert.equal(s(at('2026-10-08','09:00')),'regular');assert.equal(s(at('2026-10-08','15:19')),'regular');assert.equal(s(at('2026-10-08','15:20')),'other','the closing auction');
   assert.equal(s(at('2026-11-19','09:30')),'auction','a shifted day');
   assert.equal(s(at('2026-10-11','10:00')),'other','a Sunday');assert.equal(s(at('2026-10-10','10:00')),'other','a Saturday');assert.equal(s(at('2026-10-09','10:00')),'other','a closed day by the KIS calendar');assert.equal(s(at('2026-11-19','10:00')),'regular');
+});
+test('the engine: a short or cover carries its plan (remembered forms, the app calendar); KIS taking the alternate is remembered once, with one Activity line',()=>{
+  const {LiveEngine}=require('../electron/live-engine.cjs');const LD=require('../electron/short-loan-date.cjs');const e=Object.create(LiveEngine.prototype);
+  const db=new DatabaseSync(':memory:');e.loanForms=new LD.LoanDateForms(db);e.closedKrDays=()=>[];
+  const plan=e.loanDatePlan({credit:{kind:'cover',loanDate:'2026-10-13'}});assert.deepEqual(plan,{first:{form:'balance',date:'2026-10-13'},alternate:{form:'trade-day',date:'2026-10-09'}});
+  e.closedKrDays=()=>['2026-10-12'];assert.equal(e.loanDatePlan({credit:{kind:'cover',loanDate:'2026-10-13'}}).alternate.date,'2026-10-08','a closed day from the app calendar is skipped');
+  assert.equal(e.loanDatePlan({credit:{kind:'cover',loanDate:null}}),null,'no lot date: no plan (the worker refuses it)');
+  const lines=[];e.onLoanDateLearned=(o,{changed,count})=>lines.push([o.id,changed,count]);
+  e.noteLoanDate({id:'A',credit:{kind:'short'},loanDateSent:{date:'2026-10-13',form:'trade-day',alternate:false}});assert.equal(lines.length,0,'the first form taken: no line');
+  const alt={date:'2026-10-13',form:'settlement',alternate:true,firstRefusal:{date:'2026-10-09',form:'trade-day'}};
+  e.noteLoanDate({id:'B',credit:{kind:'short'},loanDateSent:alt});assert.deepEqual(lines,[['B',false,1]],'once only');assert.equal(e.loanDatePlan({credit:{kind:'short'}}).first.form,'trade-day');
+  e.noteLoanDate({id:'C',credit:{kind:'short'},loanDateSent:alt});assert.deepEqual(lines.at(-1),['C',true,2]);assert.equal(e.loanDatePlan({credit:{kind:'short'}}).first.form,'settlement','used first from then on');
+  e.closedKrDays=()=>{throw new Error('calendar');};assert.equal(e.loanDatePlan({credit:{kind:'cover',loanDate:'2026-10-13'}}).alternate,null,'the calendar unreadable: no alternate that day');
+  const src=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(src,/live\.loanForms=new LD\.LoanDateForms\(store\.db\)/);assert.match(src,/'Short loan date'/);
+  const le=fs.readFileSync(path.join(__dirname,'..','electron','live-engine.cjs'),'utf8');assert.match(le,/if\(\['short','cover'\]\.includes\(order\.credit\?\.kind\)\)\{const plan=this\.loanDatePlan\(order\);/);assert.match(le,/status:'Accepted'\}\);this\.noteLoanDate\(order\);/);
 });

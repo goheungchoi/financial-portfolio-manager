@@ -180,6 +180,8 @@ tests/conditional-permit.test.cjs
 tests/watch-while-stopped.test.cjs
 tests/short-rules.test.cjs
 tests/short-orders.test.cjs
+tests/shorts-on-1b.test.cjs
+tests/shorts-on-1c.test.cjs
 tests/short-propose.test.cjs
 tests/short-stops.test.cjs
 tests/short-loan.test.cjs
