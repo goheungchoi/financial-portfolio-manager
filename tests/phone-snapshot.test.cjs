@@ -4,9 +4,11 @@ const portfolio={totals:{KRW:10500000,USD:null,equityKRW:null},cash:{KRW:2100000
 const daily=[{day:'2026-10-15',value:10000000},{day:'2026-10-16',value:10200000}];
 const intraday=[{at:Date.parse('2026-10-12T00:05:00Z'),equity:10200000},{at:Date.parse('2026-10-12T01:00:00Z'),equity:10500000}];
 test('intraday samples are throttled to one per two minutes and kept for three days',()=>{
-  const store=new P.IntradayValues(new DatabaseSync(':memory:'));const t=Date.now();
+  // The samples are taken at noon of one Korean day, named once (run in the last two minutes before 24:00 KST, a sample at
+  // Date.now() + 130 s fell on the next Korean day, which the app rightly keeps out of today).
+  const store=new P.IntradayValues(new DatabaseSync(':memory:'));const D=new Date(Date.now()+9*3600000).toISOString().slice(0,10);const t=Date.parse(D+'T12:00:00+09:00');
   assert.equal(store.record('acct',100,t),true);assert.equal(store.record('acct',101,t+60000),false);assert.equal(store.record('acct',102,t+130000),true);assert.equal(store.record('acct',NaN,t+400000),false);
-  assert.deepEqual(store.day('acct').map(r=>r.equity),[100,102]);
+  assert.deepEqual(store.day('acct',D).map(r=>r.equity),[100,102]);
 });
 test('figures show amounts or only percentages, with today against the previous day',()=>{
   const prev={'005930':68000,'105560':85000};const shown=P.portfolioFigures({portfolio,daily,intraday,previousClose:s=>prev[s],amounts:true,today:'2026-10-12'});
