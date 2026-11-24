@@ -6,7 +6,7 @@ const US_KNOWN={TQQQ:3,SQQQ:-3,QLD:2,QID:-2,PSQ:-1,UPRO:3,SPXU:-3,SPXL:3,SPXS:-3
 // Short: stock loan source (자기대주 / 유통대주); feePct is the annual borrowing fee used for estimates.
 // leveragedEtps.brokerEligible: whether the user confirmed that KIS lets this account buy leveraged and inverse products
 // (true, false, or null = not confirmed). The app cannot read it from KIS (fact check X2, 2026-11-11).
-const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10,brokerEligible:null,singleStock:false},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5,trailingStop:false}};
+const DEFAULT_POLICY={leveragedEtps:{enabled:false,auto:false,maxPctOfEquity:20,maxHoldingDays:10,brokerEligible:null,singleStock:false},margin:{enabled:false,auto:false,maxLoanPctOfEquity:30,minCollateralPct:140,source:'self',interestPct:9},short:{enabled:false,auto:false,maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,source:'distribution',feePct:5,trailingStop:false,coverBeforeDays:5}};
 const CREDIT_TYPES={'margin-buy':{self:'21',distribution:'23'},'margin-sell':{self:'25',distribution:'27'},short:{self:'24',distribution:'22'},cover:{self:'28',distribution:'26'}};
 // Whether the AI may consider leveraged and inverse products for this account, with the reason when not: the switch
 // is on and the user confirmed the broker allows the account to buy them.
@@ -74,6 +74,7 @@ class Exposure {
     const next=this.policy(account);
     for(const [section,fields] of Object.entries(value)){if(!fields||typeof fields!=='object')throw new Error('INVALID_SETTINGS');for(const [key,v] of Object.entries(fields)){
       if(!Object.hasOwn(DEFAULT_POLICY[section],key))throw new Error('INVALID_SETTINGS');
+      if(key==='coverBeforeDays'&&!Number.isInteger(v))throw new Error('INVALID_SETTINGS');
       if(key==='brokerEligible'?![true,false,null].includes(v):key==='source'?!['self','distribution'].includes(v):['enabled','auto','singleStock','trailingStop'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
       next[section][key]=v;}}
     for(const section of Object.keys(next))if(!next[section].enabled)next[section].auto=false;

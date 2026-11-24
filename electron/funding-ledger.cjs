@@ -49,7 +49,8 @@ class FundingLedger {
   // no shares filled (KIS refused it at submission, the listing marks it rejected, or it was stopped before sending);
   // everything else committed stays committed.
   static commitment(o,prev=null,{pretracking=false}={}){
-    if(o.side!=='Buy'||o.credit?.kind==='margin-buy')return null;
+    // Short selling B3d-3: a cover is paid from the short's collateral (its proceeds), so it reserves no cash.
+    if(o.side!=='Buy'||o.credit?.kind==='margin-buy'||o.credit?.kind==='cover')return null;
     // A Ready order commits nothing, unless the ledger reserved it for a submission under way.
     if(o.status==='Ready'&&prev?.state!=='reserved')return prev??null;
     const filled=Math.max(0,o.filled??0),quantity=Math.max(o.quantity??0,filled),per=FundingLedger.perShare(o);

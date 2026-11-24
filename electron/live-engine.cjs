@@ -179,7 +179,7 @@ class LiveEngine {
       // F3: from the check to the placement the order holds the KIS queue. F6: how long each step took, and what the
       // order waited behind, go on the order record (the "Order submission" event).
       const timings={},since=t=>Date.now()-t;let other;
-      if(this.funding?.otherReading&&order.side==='Buy'&&order.credit?.kind!=='margin-buy'){const t=Date.now();other=await this.funding.otherReading(this.market,{account:order.accountKey,environment});timings.otherMarketMs=since(t);}
+      if(this.funding?.otherReading&&order.side==='Buy'&&!['margin-buy','cover'].includes(order.credit?.kind)){const t=Date.now();other=await this.funding.otherReading(this.market,{account:order.accountKey,environment});timings.otherMarketMs=since(t);}
       timings.aheadOfCheck=this.broker.ahead?.()??null;
       const held=fn=>typeof this.broker.hold==='function'?this.broker.hold(fn,{label:`${order.side} ${order.quantity} ${order.symbol}`}):fn({waitedMs:0,released:()=>false});
       return await held(async hold=>{timings.holdWaitMs=hold.waitedMs;const stamp=o=>({...o,timings:{...timings,...(hold.released()?{holdReleasedByLimit:true}:{})}});
@@ -231,13 +231,14 @@ class LiveEngine {
       // A margin buy is funded by the loan; the broker's credit capacity was checked when preparing the order.
       // U.S. buys may draw on KRW through integrated margin, capped at real cash (buying-power.cjs).
       const available=this.market==='US'&&this.buyingPower?this.buyingPower(prepared.balance).usd:Math.min(prepared.balance.cash,Number.isFinite(prepared.balance.settledCash)?prepared.balance.settledCash:prepared.balance.cash);
-      if(order.side==='Buy'&&order.credit?.kind!=='margin-buy'&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
+      // A cover is paid from the short's collateral (short selling B3d-3), as a margin buy from its loan: no cash check here.
+      if(order.side==='Buy'&&!['margin-buy','cover'].includes(order.credit?.kind)&&order.costEstimate&&-order.costEstimate.netCash>available)throw new Error('INSUFFICIENT_CAPACITY');
       // Both markets' buys share one funding ledger: checked under its lock against fresh balances, and reserved
       // durably before anything is sent. Sales are never held back here.
       // Your own open buys at KIS in this market must fit beside it (at this order's fee factor); the app's are in the ledger.
       const yoursCost=pending.filter(o=>o.yours&&o.side==='Buy').reduce((n,o)=>n+o.notional,0)*FundingLedger.feeFactor(order);
       timings.checksMs=since(t);t=Date.now();
-      if(this.funding&&order.side==='Buy'&&order.credit?.kind!=='margin-buy'){await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,...(yoursCost>0?{alsoOpen:yoursCost}:{}),...(other!==undefined?{other}:{})});timings.fundingMs=since(t);t=Date.now();}
+      if(this.funding&&order.side==='Buy'&&!['margin-buy','cover'].includes(order.credit?.kind)){await this.funding.admit({order,market:this.market,cost:FundingLedger.perShare(order)*order.quantity,balance:prepared.balance,environment,...(yoursCost>0?{alsoOpen:yoursCost}:{}),...(other!==undefined?{other}:{})});timings.fundingMs=since(t);t=Date.now();}
       // Rechecked immediately before sending, with no wait until the order is marked Submitting: trading may have been
       // stopped, the account changed or the order expired while funds were checked (stage 1 review, P1). Nothing has
       // been sent, so the reservation is released.

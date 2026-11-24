@@ -36,7 +36,8 @@ function unprotectedShorts({shorts=[],rows=[],lapsed=()=>false}){const out=[];
 //   approval (held: named until approved; armed again once it expires).
 const OPEN_AT_KIS=new Set(['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain']);
 // brokerExpired: whether the order's proposal is past its time (an expired proposal can no longer be approved).
-function lotDecision(rows,{brokerStatus=()=>null,brokerFilled=()=>0,brokerExpired=()=>false}={}){const stops=(Array.isArray(rows)?rows:[]).filter(isCoverStop);
+// purpose: stop_loss (the cover stop) or exit (the loan-end cover, B3d-3); the same answers for both.
+function lotDecision(rows,{brokerStatus=()=>null,brokerFilled=()=>0,brokerExpired=()=>false,purpose='stop_loss'}={}){const stops=(Array.isArray(rows)?rows:[]).filter(o=>isCover(o)&&o.purpose===purpose);
   if(stops.some(o=>LIVE.has(o.status)))return {covered:'armed'};const last=stops[0];if(!last)return {arm:'first'};
   const s=brokerStatus(last);
   if(last.status==='expired')return {arm:'expired'};
@@ -44,11 +45,19 @@ function lotDecision(rows,{brokerStatus=()=>null,brokerFilled=()=>0,brokerExpire
   if(last.status==='proposed')return s==='Ready'&&!brokerExpired(last)?{list:{cause:'approval',held:true,words:'its stop was hit and waits for your approval'}}:{arm:'its proposal ended unapproved'};
   if(last.status==='submitted'){if(OPEN_AT_KIS.has(s))return {covered:'its cover is at KIS'};if(Number(brokerFilled(last))>0)return {arm:'its cover filled with shares left'};
     return {list:{cause:'lapsed',words:'its cover order ended at KIS with nothing filled'}};}
-  if(last.status==='rejected')return {list:{cause:'rejected',words:last.outcome?String(last.outcome).slice(0,200):'its cover stop was refused'}};
-  if(last.status==='cancelled'){if(last.closedBy==='app')return {arm:'the lot is back'};return {list:{cause:'cancelled',words:last.closedBy==='user'?'you cancelled its cover stop':'its cover stop was cancelled'}};}
-  return {list:{cause:'other',words:`its last cover stop is ${String(last.status)}`}};}
+  const name=purpose==='exit'?'its loan-end cover':'its cover stop';
+  if(last.status==='rejected')return {list:{cause:'rejected',words:last.outcome?String(last.outcome).slice(0,200):`${name} was refused`}};
+  if(last.status==='cancelled'){if(last.closedBy==='app')return {arm:'the lot is back'};return {list:{cause:'cancelled',words:last.closedBy==='user'?`you cancelled ${name}`:`${name} was cancelled`}};}
+  return {list:{cause:'other',words:`${name.replace('its ','its last ')} is ${String(last.status)}`}};}
 // The short's trail (B3d-2 trail step; short.trailingStop, off by default): the lowest fresh price since the fill, and the
 // cover stop's level at that low plus the short's own stop distance; the level only moves down. null: no move.
 function trailStep({low,price,level,pct}){const p=Number(price),l=Number.isFinite(Number(low))&&Number(low)>0?Math.min(Number(low),p):p;if(!(p>0))return null;
   const next=coverStopLevel(l,pct);if(next==null)return null;return {low:l,level:Number.isFinite(level)&&next>=level?level:next,moved:Number.isFinite(level)&&next<level};}
-module.exports={trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};
+// B3d-3: the loan's end. The end is the loan date plus maxDays calendar days. Until KIS's own figure is seen (B4), the
+// last day a cover can be made is taken as the last business day strictly before the end. isOpen(day): the app's calendar
+// (false closed, null unknown: weekdays).
+function loanEnd(loanDate,maxDays,isOpen=()=>null){const BD=require('./business-days.cjs');const end=new Date(Date.parse(loanDate+'T00:00:00Z')+maxDays*86400000).toISOString().slice(0,10);
+  let d=end;do{d=new Date(Date.parse(d+'T00:00:00Z')-86400000).toISOString().slice(0,10);}while(!BD.isBusinessDay('KR',d,{krOpen:isOpen}));return {end,lastDay:d};}
+// Business days from today to lastDay (0 on it; negative once past it).
+function businessDaysTo(today,lastDay,isOpen=()=>null){const BD=require('./business-days.cjs');return today<=lastDay?BD.businessDaysBetween('KR',today,lastDay,{krOpen:isOpen}):-BD.businessDaysBetween('KR',lastDay,today,{krOpen:isOpen});}
+module.exports={loanEnd,businessDaysTo,trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};

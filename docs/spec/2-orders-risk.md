@@ -771,6 +771,23 @@ determined here.
     a short open (above KIS's figure INSUFFICIENT_CAPACITY, unreadable INVALID_RESPONSE), and its record carries the
     fact for its screen ("a short is open; KIS's orderable cash is N").
   - Each refusal has words in Activity (`activity-today.cjs`).
+- **A cover's cash and the loan's end** (B3d-3): a cover is paid from the short's collateral (its proceeds), so like a
+  margin buy it reserves no cash in the funding ledger and has no cash check at the send. A short is lent for
+  `short.maxDays` (90) calendar days from its loan date, with no extension; until B4 shows KIS's own figure, the last
+  day a cover can be made is taken as the last business day strictly before the end (`loanEnd`, the app's calendar), and
+  the countdown is in business days to that day. For the app's own lots: from `short.coverBeforeDays` + 5 days before it
+  the app writes one "Short loan ends soon" line a day (the day kept on the lot's record, `short_loan_warnings`, so a
+  restart does not repeat it); from `coverBeforeDays` (5) before it, or once past it, a cover of what is left (the lot
+  less unshown fills) is armed to go at once (purpose exit, the cover-stop pricing, automatic, not held by the daily
+  cap), decided from the lot's own exit-cover record as a stop is (`lotDecision`, purpose exit): live, at KIS or
+  awaiting approval adds nothing (awaiting approval is named on Home); filled with shares left or expired arms again;
+  a lasting rejection or your cancel is not re-armed and Home says "The short of <stock> ends its loan on <day> and is
+  not being covered (<cause>)." The cover's own words name it "its loan-end cover". When the cover is armed but orders
+  are not watched (stopped without the setting, Stop everything, or KIS not connected), the line says it "is armed and
+  is sent once orders are watched", and Home says "<stock> short ends its loan on <day>: its cover is armed but not
+  watched until auto trading is started." `coverBeforeDays` is a whole number. The warnings table is made only once
+  there are shorts, and a lot's row is removed when the lot is gone. A short you opened gets no automatic cover. A short sale left unfilled at the close lapses at KIS; the app records it ended (Canceled, "expired unfilled")
+  from the order history, never tracks a day order of another day, and its cap no longer counts it.
 - **The cover stop and unprotected shorts** (B3d-2, `short-stops.cjs`, `Automation.syncShortStops`): each desk step,
   when the app's short has filled and its lot (KIS's loan date) shows in the balance, a cover stop is armed for the lot:
   an armed conditional Buy of kind cover, purpose stop_loss, for the lot's quantity, fired by a rise to the entry x (1 +
