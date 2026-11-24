@@ -607,10 +607,11 @@ class Automation {
     const live=orders.filter(o=>!notStarted[mk(o.symbol)]),ready=live.filter(o=>!held[mk(o.symbol)]);
     const waitBuys=live.filter(o=>o.side==='Buy'&&!o.credit&&lossMarkets.includes(mk(o.symbol)));
     const out={...base,matches,watching,everythingStopped:Boolean(v.everythingStopped),recorded:Boolean(v.record),
-      orders:orders.length,buys:live.filter(o=>o.side==='Buy').length,sentByThemselves:ready.filter(o=>auto[mk(o.symbol)]).length,proposedOnly:ready.filter(o=>!auto[mk(o.symbol)]).length,
+      // B3f-1: a cover (a Buy that repays a short) is named apart from the buys in every count.
+      orders:orders.length,buys:live.filter(o=>o.side==='Buy'&&o.credit?.kind!=='cover').length,covers:live.filter(o=>o.side==='Buy'&&o.credit?.kind==='cover').length,sentByThemselves:ready.filter(o=>auto[mk(o.symbol)]).length,proposedOnly:ready.filter(o=>!auto[mk(o.symbol)]).length,
       waiting:['KR','US'].filter(m=>held[m]).map(m=>({why:held[m],orders:live.filter(o=>mk(o.symbol)===m).length})).filter(x=>x.orders>0),
       notStarted:[...new Set(orders.filter(o=>notStarted[mk(o.symbol)]).map(o=>o.symbol))],
-      lossLimit:!running&&lossMarkets.length&&watching?{closing:live.filter(o=>!waitBuys.includes(o)).length,buysWait:waitBuys.length}:null,
+      lossLimit:!running&&lossMarkets.length&&watching?{closing:live.filter(o=>!waitBuys.includes(o)).length,covers:live.filter(o=>!waitBuys.includes(o)&&o.side==='Buy'&&o.credit?.kind==='cover').length,buysWait:waitBuys.length}:null,
       // "Submit them automatically" on now but off in the record: it takes effect at the next Start.
       takesEffectAtStart:Boolean(!running&&this.config.conditionalAutoSubmit&&(!v.record||v.record.conditionalAutoSubmit!==true))};return {...out,said:require('./auto-launch.cjs').watchedWords(out)};}
   // Armed stocks outside the app's own price lists, per market: the reader keeps about 10 current (B-1, capacity).

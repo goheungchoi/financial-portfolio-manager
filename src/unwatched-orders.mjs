@@ -26,7 +26,7 @@ export function whileStoppedLines(state){const w=state?.desk?.whileStopped,confi
   if(!w.connected)return {block:(w.orders??armed)?'Orders not watched: KIS is not connected.':null,info:null};
   if(!w.watching||w.running)return {block:null,info:null};
   const later=w.takesEffectAtStart?' "Submit them automatically" takes effect at the next Start.':'';
-  if(w.lossLimit)return {block:`Daily loss limit reached: auto trading stopped. ${w.lossLimit.closing} closing ${w.lossLimit.closing===1?'order is':'orders are'} still watched; ${w.lossLimit.buysWait} ${w.lossLimit.buysWait===1?'buy waits':'buys wait'}.`,info:null};
+  if(w.lossLimit)return {block:`Daily loss limit reached: auto trading stopped. ${w.lossLimit.closing} closing ${w.lossLimit.closing===1?'order is':'orders are'} still watched${w.lossLimit.covers?` (${w.lossLimit.covers} ${w.lossLimit.covers===1?'cover':'covers'})`:''}; ${w.lossLimit.buysWait} ${w.lossLimit.buysWait===1?'buy waits':'buys wait'}.`,info:null};
   if(!w.orders)return {block:null,info:'Auto trading is stopped. Armed orders will be watched while it is stopped.'};
   return {block:null,info:`Auto trading is stopped. ${w.said??''}${later}`.trim()};}
 // B-1's capacity, carried: more armed stocks outside the app's own price lists than about 10 per market.

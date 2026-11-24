@@ -66,7 +66,8 @@ function stop(a){a.launchGeneration=(a.launchGeneration??0)+1;try{a.refreshWatch
 function watchedWords(w){const held=(w.waiting??[]).reduce((s,x)=>s+x.orders,0);const n=(w.sentByThemselves??0)+(w.proposedOnly??0),one=n===1;
   const wait=[...(w.waiting??[]).map(x=>`${x.orders} ${x.orders===1?'waits':'wait'}: ${x.why}.`),w.notStarted?.length?`Not watched until you start auto trading on this account: ${w.notStarted.slice(0,4).join(', ')}.`:''].filter(Boolean).join(' ');
   if(!n)return held?`Your ${held} armed ${held===1?'order is':'orders are'} still watched. ${wait}`:wait;
-  const b=w.buys?` (${w.buys} ${w.buys===1?'buy':'buys'})`:'';const head=`Your ${n} armed ${one?'order is':'orders are'} still watched${b}`;
+  // B3f-1: covers named apart: "(2 buys, 1 cover)".
+  const parts=[w.buys?`${w.buys} ${w.buys===1?'buy':'buys'}`:'',w.covers?`${w.covers} ${w.covers===1?'cover':'covers'}`:''].filter(Boolean),b=parts.length?` (${parts.join(', ')})`:'';const head=`Your ${n} armed ${one?'order is':'orders are'} still watched${b}`;
   const how=w.proposedOnly===0?(one?' and is sent by itself if its conditions are met.':' and are sent by themselves if their conditions are met.'):w.sentByThemselves===0?(one?': if its conditions are met it is only proposed for your approval.':': if their conditions are met they are only proposed for your approval.'):`: ${w.sentByThemselves} sent by themselves, ${w.proposedOnly} only proposed for your approval.`;
   return head+how+(wait?' '+wait:'');}
 const EVERYTHING_STOPPED='Everything stopped. No order will be sent by the app; orders already at KIS stay.';

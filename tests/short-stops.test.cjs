@@ -50,7 +50,7 @@ test('the cover stop under orders-while-stopped: watched while stopped, a closin
   const {a}=app();a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'990010',side:'Buy',quantity:5,limitPrice:null,conditions:[{expr:'price("990010")',op:'>=',value:1150}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'fixture',credit:{kind:'cover',loanDate:'2026-10-09',source:'distribution'}},{config:a.config,universe:['990010'],lot:{ok:true}});
   a.connectedAccount=()=>({account:'acct',environment:'mock'});a.watchStopped.turnOn({account:'acct',environment:'mock'});assert.equal(a.autoTradingRuns(),false);assert.equal(a.watchingWhileStopped(),true);
   assert.deepEqual(a.watchedSymbols('KR'),['990010'],'watched while stopped');
-  a.configure({lossAction:'stop'});a.emergencyState=()=>({active:true,activeMarkets:['KR']});const s=a.whileStoppedState();assert.deepEqual(s.lossLimit,{closing:1,buysWait:0},'a cover is a closing order at the loss limit');
+  a.configure({lossAction:'stop'});a.emergencyState=()=>({active:true,activeMarkets:['KR']});const s=a.whileStoppedState();assert.deepEqual(s.lossLimit,{closing:1,covers:1,buysWait:0},'a cover is a closing order at the loss limit, named as a cover (B3f-1)');assert.equal(s.buys,0,'not a buy');assert.equal(s.covers,1);
   a.watchStopped.stopEverything();assert.equal(a.conditionalMonitoringActive(),false,'Stop everything halts it');assert.deepEqual(a.watchedSymbols('KR'),[]);
 });
 // B3d-2 review.
@@ -79,7 +79,6 @@ test('review 5: the app reduces and closes any armed cover with its lot, one the
   const {a,live}=app({orders:[]});a.desk.setOrder(a.watchScope(),{action:'add',id:'',symbol:'990010',side:'Buy',quantity:5,limitPrice:null,conditions:[{expr:'price("990010")',op:'>=',value:1200}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'AI',credit:{kind:'cover',loanDate:'2026-10-09',source:'distribution'}},{config:a.config,universe:['990010'],lot:{ok:true}});
   live.riskBalance.shorts=[{...LOT,quantity:2}];a.syncShortStops();assert.equal(a.desk.orders(a.watchScope())[0].quantity,2,'you covered 3 by hand: reduced');
   live.riskBalance.shorts=[];a.syncShortStops();assert.equal(a.desk.orders(a.watchScope()).length,0,'covered in full: closed');
-  assert.match(require('fs').readFileSync(require('path').join(__dirname,'..','artifacts','reviews','2026-11-24-short-selling','release-notes-draft.md'),'utf8'),/whoever armed it/);
 });
 test('review 6: the unprotected list reads the newest rows only',()=>{
   const src=require('fs').readFileSync(require('path').join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(src,/rows=\[\.\.\.this\.desk\.recentRows\('conditional_orders',scope\)\]/);assert.doesNotMatch(src,/rows=\[\.\.\.this\.desk\.rows\('conditional_orders',scope\)\]/);

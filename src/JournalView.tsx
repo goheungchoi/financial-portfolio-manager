@@ -3,6 +3,7 @@ import {Scoreboard} from './Scoreboard';
 import {TradeOutcomes} from './TradeOutcomes';
 import type {RuntimeState} from './RuntimeSettings';
 import {useState} from 'react';
+import {outcomeWords} from './outcome-words.mjs';
 import {setDraft,useDraftState} from './useDraftState';
 import {AccountScope,accountName,type HistoryScope} from './AccountScope';
 import {AgentDesk} from './AgentDesk';
@@ -39,7 +40,7 @@ function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state
     <div className="decision-facts" aria-label="Decision facts">{facts.map(f=><div key={f.label} className="decision-fact"><small>{f.label}</small><span>{f.value}</span></div>)}</div>
     <details className="inline-help decision-more" aria-label="More about this decision" open={more} onToggle={e=>setMore((e.currentTarget as HTMLDetailsElement).open)}><summary>More</summary>
     {review.executionNote&&<div className="meta-line"><b>Execution</b><span>{review.executionNote}</span></div>}
-    {outcomes.length>0&&<div className="detail-block"><div className="thread-label">Outcome</div>{outcomes.map(o=><div key={o.id} className="meta-line"><b>{o.side} {o.quantity}/{o.requested}</b><span>{o.side==='Sell'?`${money(o.gainAfterFees,o.currency)} after fees`:`Bought at ${money(o.averagePrice,o.currency).replace('+','')}`}{o.assessment?` · ${o.assessment.category}`:''}</span><time>{day(o.timestamp)}</time></div>)}</div>}
+    {outcomes.length>0&&<div className="detail-block"><div className="thread-label">Outcome</div>{outcomes.map(o=><div key={o.id} className="meta-line"><b>{o.side} {o.quantity}/{o.requested}</b><span>{outcomeWords(o,money)??`Bought at ${money(o.averagePrice,o.currency).replace('+','')}`}{o.assessment?` · ${o.assessment.category}`:''}</span><time>{day(o.timestamp)}</time></div>)}</div>}
     {lessons.length>0&&<div className="detail-block"><div className="thread-label">Lessons</div>{lessons.map(l=><div key={l.id} className="meta-line"><b>{l.lifecycle?.status??(l.approved?'approved':'pending')}</b><span>{l.text}</span></div>)}<button className="link-button" onClick={onLessons}>Review lessons →</button></div>}
     <DecisionScripts review={review}/>
     <div className="detail-actions">{onNavigate&&<button onClick={()=>{setDraft('console:focus',review.id);onNavigate('AI console');}}>Open conversation</button>}<small className="muted">Review {review.id.slice(0,8)}{review.proposalId?` · proposal ${review.proposalId.slice(0,8)}`:''}{review.orderId?` · order ${review.orderId.slice(0,8)}`:''}</small></div>

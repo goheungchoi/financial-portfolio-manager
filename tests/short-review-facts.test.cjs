@@ -119,12 +119,12 @@ test('coverStop: armed with its level, unprotected with the cause, null when non
 // A covered short's row reaches a review (lessons, position memory) only while shorts are enabled.
 const DAY=86400000,T=Date.parse('2026-11-20T01:00:00Z');
 const fill=(id,side,effect,at,extra={})=>({id:'broker:'+id,orderId:id,reviewId:'R-'+id,source:'broker',accountKey:'acct',environment:'live',market:'KR',currency:'KRW',symbol:'990010',side,effect,status:'Filled',quantity:10,requested:10,averagePrice:1000,timestamp:at,decision:{action:side,explanation:id},...extra});
-const shortSale=fill('S1','Sell','OPEN_SHORT',T-5*DAY,{credit:{kind:'short'}}),cover=fill('C1','Buy','CLOSE_SHORT',T,{credit:{kind:'cover',loanDate:'2026-11-17'},gainAfterFees:-2300,shortProceeds:10000,shortCosts:{saleCharges:30,coverCharges:20,interest:7,beforeCharges:-2000}});
+const shortSale=fill('S1','Sell','OPEN_SHORT',T-5*DAY,{credit:{kind:'short'}}),cover=fill('C1','Buy','CLOSE_SHORT',T,{credit:{kind:'cover',loanDate:'2026-11-17'},gainAfterFees:-2300,shortProceeds:10000,shortCosts:{saleCharges:30,coverCharges:20,interest:{amount:7,basis:'estimate',pct:5,days:3},beforeCharges:-2000}});
 function lessons(){const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE lessons(id TEXT PRIMARY KEY,text TEXT,approved INTEGER);CREATE TABLE trade_outcomes(id TEXT PRIMARY KEY,payload TEXT);CREATE TABLE reviews(id TEXT PRIMARY KEY,payload TEXT)');
   for(const o of [shortSale,cover])db.prepare('INSERT INTO trade_outcomes VALUES(?,?)').run(o.id,JSON.stringify(o));return {db,memory:new (require('../electron/learning-memory.cjs').LearningMemory)(db)};}
 test('with shorts off a cover makes no lesson and no memory row; with shorts on both reach the review, worded as a cover',()=>{
   const {db,memory}=lessons();memory.sync();assert.equal(db.prepare("SELECT count(*) AS n FROM lessons WHERE id LIKE 'outcome:%'").get().n,0,'off: no cover lesson');
-  memory.sync({covers:true});const id='outcome:'+cover.id;const row=db.prepare('SELECT text FROM lessons WHERE id=?').get(id);assert.match(row.text,/10 shares bought back to cover a short; after-fee result -2300 KRW against the short sale's proceeds of 10000, borrow interest 7 included\./);
+  memory.sync({covers:true});const id='outcome:'+cover.id;const row=db.prepare('SELECT text FROM lessons WHERE id=?').get(id);assert.match(row.text,/10 shares bought back to cover a short; after-fee result -2300 KRW against the short sale's proceeds of 10000, borrow interest 7 \(estimated\) included\./);assert.doesNotMatch(row.text,/object Object/,'the interest is a figure, not its record');
   const e=memory.describe(id);assert.equal(e.effect,'CLOSE_SHORT');assert.deepEqual(e.episode.entries.map(x=>x.decisionId),['R-S1'],'its short sale');
   // A cover's assessment is not eligible (outcome-evaluation, B3d-3): its lesson cannot be approved, so it reaches no review
   // by approval today. The gate is shown with the lesson marked approved directly.

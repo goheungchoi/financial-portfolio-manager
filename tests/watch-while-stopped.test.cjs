@@ -306,7 +306,7 @@ test('B-4 review 2-5: another account shows the 1.5.73 line; the loss line count
   const {unwatchedLine}=await lines();const w=world();w.on();w.start();w.arm('Sell');AL.stop(w.a);w.setSnapshot({accountKey:'other'});
   w.a.desk.orders=()=>[{symbol:SYM,side:'Sell',purpose:'stop_loss'}];assert.equal(unwatchedLine({config:w.a.config,desk:{...w.a.deskState(),monitoringActive:false}}),'1 stop is not watched until auto trading is started.','before the next sync voids the row');
   const l=world({config:{lossAction:'stop'}});l.on();l.start();AL.stop(l.a);l.a.emergencyState=()=>({active:true,activeMarkets:['KR']});
-  l.a.desk.orders=()=>[{symbol:SYM,side:'Sell'},{symbol:SYM,side:'Buy',credit:{kind:'cover'}},{symbol:SYM,side:'Buy'}];assert.deepEqual(l.a.whileStoppedState().lossLimit,{closing:2,buysWait:1},'a cover is a closing order');
+  l.a.desk.orders=()=>[{symbol:SYM,side:'Sell'},{symbol:SYM,side:'Buy',credit:{kind:'cover'}},{symbol:SYM,side:'Buy'}];assert.deepEqual(l.a.whileStoppedState().lossLimit,{closing:2,covers:1,buysWait:1},'a cover is a closing order, named apart (B3f-1)');
   const p=world({config:{scope:'paper'}});assert.throws(()=>p.on(),/PAPER_SCOPE/);
   const src=require('fs').readFileSync(require('path').join(__dirname,'..','src','KeepWorking.tsx'),'utf8');
   assert.match(src,/Stop everything halts all of them, and so does closing the app\. After the app restarts, they are watched again as soon as KIS connects, without pressing Start\./);
