@@ -86,4 +86,9 @@ function costDetails(model,usage){
 }
 function usageEstimate(model,usage){return costDetails(model,usage)?.micro??null;}
 function budgetExceeded(config,usage,reserve,reflection=false){const calls=reflection?'reflectionCallsPerDay':'maxCallsPerDay',usd=reflection?'reflectionUSDPerDay':'maxUSDPerDay',prefix=reflection?'reflectionUnlimited':'unlimited';return (!config[prefix+'Calls']&&usage.calls>=config[calls])||(!config[prefix+'Budget']&&usage.reservedMicro+reserve>config[usd]*1e6);}
-module.exports={contextKeep,CLAUDE_CONTEXT_KEEP,orderCeiling,WORST_ANSWER,FURTHER_ORDER_TOKENS,ANSWER_RESERVE,CLAUDE_TRADING_MODEL,ratesFor,reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};
+// Provider naming P2 (artifacts/reviews/2026-11-24-provider-naming): the settings keep provider "openai" for "an AI model
+// decides" and openaiModel for the trading model of either company, as stored (renaming them would move the start token).
+// The code reads the decision maker through decisionMaker: 'ai', 'rules' or 'external'.
+// Exactly the stored value the old comparisons accepted: 'openai' is the AI; any other value is not (as before).
+const decisionMaker=config=>{const p=config?.provider;return p==='openai'?'ai':p==='local'?'rules':p==='external'?'external':null;};
+module.exports={decisionMaker,contextKeep,CLAUDE_CONTEXT_KEEP,orderCeiling,WORST_ANSWER,FURTHER_ORDER_TOKENS,ANSWER_RESERVE,CLAUDE_TRADING_MODEL,ratesFor,reviewByteLimit,MODELS,vendorOf,assertTradingModel,CLAUDE_TRADING_ENABLED,claudeTradingEnabled,setClaudeTradingForTests,settings,reservation,reservationAt,CLAUDE_OUTPUT,outputCap,usageEstimate,normalizeUsage,costDetails,budgetExceeded};

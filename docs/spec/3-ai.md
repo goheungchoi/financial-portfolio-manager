@@ -42,7 +42,7 @@ Part 2).
 Three words the UI uses:
 
 - **Decision maker** (`provider`): `local` (rule-based, paper practice only), `openai` (an AI model — the value is
-  `openai` for Claude models too; the model id selects the vendor, `ai-router.cjs:1-3`), or `external` (an outside agent
+  `openai` for Claude models too, as stored: renaming it would move the start token; the code reads it through `ai-models.decisionMaker` (`ai` for the stored `openai` only, `rules`, `external`; any other value is not the AI, as before), provider-naming P2; the model id selects the vendor, `ai-router.cjs:1-3`), or `external` (an outside agent
   sends decisions through the bridge; refused for KIS accounts, `EXTERNAL_KIS_DISABLED`, `automation.cjs:565`).
 - **Scope** (`scope`): `paper`, `kis` (Korea), `us`, `both`.
 - **Watch scope**: scope plus the hashed account identity (`watchScope()`, `automation.cjs:156`). Every per-account

@@ -1,3 +1,4 @@
+import {isClaudeModel} from './model-company.mjs';
 // Trading on Claude Opus 5.5, step D-3 (artifacts/reviews/2026-11-15-claude-trading: d0/note.md section 8, review.md B and
 // the shared-wait ruling): the confirmation's lines, from the user's own dry run and settings. Plain JavaScript so the
 // tests can import it (as src/agentDraft.mjs). Facts only; no advice on whether or how to trade.
@@ -17,6 +18,6 @@ export function claudeConfirmLines(config,state){
     cost,limits,
     ...(moving.length?[`${moving.join(', ')} move${moving.length===1?'s':''} to Claude too. ${moving.length===1?'It has':'They have'} not yet run on Claude with real requests.`]:[]),
     // Haiku compacting H-1: compacting on Claude is named too.
-    routine.startsWith('claude-')?`Context compacting uses ${MODEL_NAMES[routine]??routine}.`:`Context compacting still uses OpenAI (${MODEL_NAMES[routine]??routine}).`,
+    isClaudeModel(routine)?`Context compacting uses ${MODEL_NAMES[routine]??routine}.`:`Context compacting still uses OpenAI (${MODEL_NAMES[routine]??routine}).`,
     'The first review waits for you: run it from Home. Automatic reviews start after it completes.'];
 }

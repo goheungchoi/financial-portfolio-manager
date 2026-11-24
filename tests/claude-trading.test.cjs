@@ -139,6 +139,7 @@ test('D-3: the switch to Claude makes the first review wait for your press; emer
 });
 
 test('D-3: the confirmation says what goes to Anthropic, no fallback, the shared wait, the measured cost, the limits and the helpers',async()=>{
+  (await import('../src/model-company.mjs')).setModelCompanies(Object.fromEntries(Object.entries(require('../electron/ai-models.cjs').MODELS).map(([m,r])=>[m,r.vendor])));// the table the main process sends (provider-naming P2)
   const {claudeConfirmLines}=await import('../src/claudeConfirmLines.mjs');
   const cfg={intervalMinutes:30,scope:'both',anthropicUnlimitedBudget:true,anthropicUnlimitedCalls:true,scoutModel:'same',narrativeModel:'same',reflectionModel:'same',routineModel:'gpt-6-luna'};
   const lines=claudeConfirmLines(cfg,{claudeDryRun:{costUSD:0.416837,calls:3}});
@@ -211,6 +212,7 @@ test('H-1: a failed condensing request is said once per model and code; the revi
 });
 
 test('H-1: the confirmation names compacting on Claude Haiku 5.5; the decision maker reads "AI model"',async()=>{
+  (await import('../src/model-company.mjs')).setModelCompanies(Object.fromEntries(Object.entries(require('../electron/ai-models.cjs').MODELS).map(([m,r])=>[m,r.vendor])));// the table the main process sends (provider-naming P2)
   const {claudeConfirmLines}=await import('../src/claudeConfirmLines.mjs');const lines=claudeConfirmLines({intervalMinutes:30,scope:'both',anthropicUnlimitedBudget:true,anthropicUnlimitedCalls:true,routineModel:'claude-haiku-5-5'},{});
   assert.ok(lines.includes('Context compacting uses Claude Haiku 5.5.'));assert.ok(!lines.some(l=>/still uses OpenAI/.test(l)));
   const es=require('fs').readFileSync(require('path').join(__dirname,'../src/EngineSettings.tsx'),'utf8');assert.ok(es.includes('<option value="openai">AI model</option>'));assert.ok(!es.includes('<option value="openai">OpenAI</option>'));

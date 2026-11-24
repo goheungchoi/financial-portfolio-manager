@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import {Note} from './Note';
 import {MoneyField} from './MoneyField';
+import {isClaudeModel} from './model-company.mjs';
 // Replay saved reviews with a change, next to an unchanged baseline, and compare both with what prices did afterwards.
 // C1 (artifacts/reviews/2026-11-13-c1-replay/review.md): the change may be Claude Opus 5.5. A Claude replay is confirmed
 // first with its estimate and a spending cap; a row whose answer is not accepted or refused shows why, and the summary
@@ -30,7 +31,7 @@ export function ReplayPanel(){
   useEffect(()=>{void window.portfolio?.listReplays().then(r=>{setRuns(r.runs as Run[]);setBusy(r.busy);}).catch(()=>{});},[]);
   if(!window.portfolio)return null;
   const options=()=>{const [openaiModel,reasoningEffort]=form.model.split('/');return {...form,model:form.model?{openaiModel,reasoningEffort}:undefined};};
-  const claude=form.model.startsWith('claude-');
+  const claude=isClaudeModel(String(form.model??'').split('/')[0]);// the select carries model/effort
   const run=async()=>{setBusy(true);setNote('');setConfirm(null);try{const r=await window.portfolio!.runReplay({...options(),...(claude?{capUSD:cap}:{})});if(r.ok)setRuns(v=>[r.run as Run,...v]);else setNote(ERRORS[r.error??'']??'The replay did not finish. See Console.');}catch{setNote('Could not reach the engine.');}finally{setBusy(false);}};
   // A Claude replay is confirmed first: the estimate, the cap, what is sent and that nothing trades.
   const ask=async()=>{setNote('');setConfirm(null);if(!claude)return void run();try{const r=await window.portfolio!.estimateReplay?.({...options(),capUSD:cap});if(!r?.ok||!r.estimate){setNote(ERRORS[r?.error??'']??'Could not prepare the replay.');return;}setConfirm(r.estimate);}catch{setNote('Could not reach the engine.');}};

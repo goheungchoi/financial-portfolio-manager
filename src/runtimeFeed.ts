@@ -1,4 +1,5 @@
 import type {RuntimeState} from './RuntimeSettings';
+import {setModelCompanies} from './model-company.mjs';
 // One shared 2-second runtime poller (lag fix L2, artifacts/reviews/2026-11-10-lag): the status header, Home, the
 // dashboard and the shell used to poll getRuntime each on its own timer, so the main process built the state several
 // times every two seconds. Subscribers now share one request per tick; the first subscriber starts the timer and the
@@ -7,7 +8,7 @@ type Listener=(state:RuntimeState|null,failed:boolean)=>void;
 const listeners=new Set<Listener>();let timer:number|null=null;let pending=false;let last:RuntimeState|null=null;
 async function tick(){
   if(pending)return;pending=true;
-  try{const state=await window.portfolio?.getRuntime();if(state){last=state;for(const listen of [...listeners])listen(state,false);}}
+  try{const state=await window.portfolio?.getRuntime();if(state){last=state;setModelCompanies((state as {modelCompanies?:Record<string,string>}).modelCompanies);for(const listen of [...listeners])listen(state,false);}}
   catch{for(const listen of [...listeners])listen(last,true);}
   finally{pending=false;}
 }

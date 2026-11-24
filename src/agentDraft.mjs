@@ -1,3 +1,4 @@
+import {isClaudeModel} from './model-company.mjs';
 // Agent model and effort in the Engine settings draft (step A3, review F1). The engine (electron/agent-models.cjs)
 // refuses a save when any agent's resolved model and effort do not go together; the only such pair among the models
 // that can be chosen is GPT-6 Astra with effort None. Changing the trading model or effort can create that pair for an
@@ -9,7 +10,7 @@ export const AGENT_KEYS={scout:['scoutModel','scoutEffort'],narrative:['narrativ
 const RAISED=new Set(['scout','narrative']);
 const follows=v=>v==null||v==='same';
 // Models with no effort None: GPT-6 Astra, and every Claude model (B3: Claude takes Low, Medium or High).
-const noNoneModel=m=>m==='gpt-6-astra'||String(m??'').startsWith('claude-');
+const noNoneModel=m=>m==='gpt-6-astra'||isClaudeModel(m);
 
 /** @type {Record<string,string>} */
 const AGENT_TITLES={scout:'Scout',narrative:'Market narrative',compacting:'Context compacting',reflection:'Reflection'};

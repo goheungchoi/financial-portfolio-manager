@@ -152,6 +152,7 @@ test('reflection on Claude: its own counter and the Anthropic row in one transac
 });
 
 test('the provider cards say what each provider is used for now, and the Anthropic note matches B3 (gate 1.5.54 review)',async()=>{
+  (await import('../src/model-company.mjs')).setModelCompanies(Object.fromEntries(Object.entries(require('../electron/ai-models.cjs').MODELS).map(([m,r])=>[m,r.vendor])));// the table the main process sends (provider-naming P2)
   const {providerUses,ANTHROPIC_NOTE}=await import('../src/providerText.mjs');
   const sol={openaiModel:'gpt-6-sol'},claude={openaiModel:'claude-opus-5-5'};
   const none={trading:sol,scout:sol,narrative:sol,compacting:{openaiModel:'gpt-6-luna'},reflection:sol};

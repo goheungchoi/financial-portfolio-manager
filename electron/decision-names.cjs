@@ -13,4 +13,7 @@ const isAi=provider=>AI.has(provider);
 function vendorOfModel(model){if(typeof model!=='string'||!model)return null;try{return require('./ai-models.cjs').vendorOf(model);}catch{return null;}}
 function vendorOfRecord(r){if(['openai','anthropic'].includes(r?.vendor))return r.vendor;return isAi(r?.provider)?vendorOfModel(r?.model):null;}
 function readRecord(r){if(!r||typeof r!=='object'||!isAi(r.provider))return r;const vendor=vendorOfRecord(r);const {vendor:_,...rest}=r;return {...rest,provider:'ai',...(vendor?{vendor}:{})};}
-module.exports={decisionMakerOf,isAi,vendorOfModel,vendorOfRecord,readRecord};
+// A check that gates on Claude (replay's onClaude): the table, and an id it does not know that starts with "claude-" as
+// Claude, as before (the safer side).
+const isClaudeId=model=>vendorOfModel(model)==='anthropic'||String(model??'').startsWith('claude-');
+module.exports={decisionMakerOf,isAi,vendorOfModel,vendorOfRecord,readRecord,isClaudeId};

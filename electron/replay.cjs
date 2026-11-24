@@ -80,7 +80,7 @@ function claudeSummary(rows,{estimate=null,stopped=null,capMicro=null,claudeSide
   const accepted=sides.filter(s=>s.decision&&!s.failure).length,notAccepted=failure('not-accepted'),received=accepted+notAccepted.length;
   const byRule={};for(const s of notAccepted){const k=s.failure.rule??s.failure.code;byRule[k]=(byRule[k]??0)+1;}
   const sum=(list,f)=>list.reduce((n,x)=>n+(Number.isFinite(f(x))?f(x):0),0);
-  const all=rows.flatMap(r=>[r.baseline,r.variant]),onClaude=s=>String(s?.usage?.model??'').startsWith('claude-');
+  const all=rows.flatMap(r=>[r.baseline,r.variant]),onClaude=s=>require('./decision-names.cjs').isClaudeId(s?.usage?.model);
   const claudeMicro=sum(all.filter(onClaude),s=>s.usage?.costMicro),openaiMicro=sum(all.filter(s=>!onClaude(s)),s=>s.usage?.costMicro);
   const ms=sides.map(s=>s.usage?.ms).filter(Number.isFinite);
   // The enforced decision form (E1, E3): how many answers came in it, how many fell back to text, and dropped text parts.

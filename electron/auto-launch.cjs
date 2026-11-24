@@ -12,11 +12,11 @@ async function start(a,token){
   if(token!==launchState(a).token)throw new Error('Settings or account changed. Check the updated account label and try again.');
   if(a.config.lossAction==='stop'&&a.emergencyState().active)throw new Error('The daily loss limit is reached and the guardrail keeps auto trading stopped today. Change Loss-limit response in Engine settings to restart.');
   if(a.config.provider==='external')throw new Error('Choose an AI model in Engine settings to start automatic reviews.');
-  if(a.config.provider==='openai'){const missing=a.missingKey?a.missingKey(a.config.openaiModel):(a.providerStatus.aiConnected?null:'OpenAI');if(missing)throw new Error(`Import your ${missing} key in Connections first.`);}
-  if(a.config.scope!=='paper'&&a.config.provider!=='openai')throw new Error('Select an AI model for broker auto trading. Local rules are for paper practice.');
+  if(require('./ai-models.cjs').decisionMaker(a.config)==='ai'){const missing=a.missingKey?a.missingKey(a.config.openaiModel):(a.providerStatus.aiConnected?null:'OpenAI');if(missing)throw new Error(`Import your ${missing} key in Connections first.`);}
+  if(a.config.scope!=='paper'&&require('./ai-models.cjs').decisionMaker(a.config)!=='ai')throw new Error('Select an AI model for broker auto trading. Local rules are for paper practice.');
   // B1: the consent and the daily limits of the trading model's provider.
   if(a.config.scope!=='paper'&&!(a.consentFor?a.consentFor(a.config.openaiModel):a.config.shareKisWithOpenAI))throw new Error(a.consentMessage?a.consentMessage(a.config.openaiModel):'Allow sharing KIS data with OpenAI in Connections.');
-  if(a.config.provider==='openai'&&(a.budgetBlocked?a.budgetBlocked(a.config.openaiModel,require('./ai-models.cjs').reservation(a.config)):require('./ai-models.cjs').budgetExceeded(a.config,a.getState().usage,require('./ai-models.cjs').reservation(a.config))))throw new Error('Daily API budget reached. Update your budget or wait for the next day.');
+  if(require('./ai-models.cjs').decisionMaker(a.config)==='ai'&&(a.budgetBlocked?a.budgetBlocked(a.config.openaiModel,require('./ai-models.cjs').reservation(a.config)):require('./ai-models.cjs').budgetExceeded(a.config,a.getState().usage,require('./ai-models.cjs').reservation(a.config))))throw new Error('Daily API budget reached. Update your budget or wait for the next day.');
   a.launching=true;const generation=a.launchGeneration??0;const selected=engines(a);const prior=selected.map(e=>({e,enabled:e.enabled,autoEnabled:e.autoEnabled}));
   try{
     if(['us','both'].includes(a.config.scope))await a.refreshUS();

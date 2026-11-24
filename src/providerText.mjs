@@ -1,3 +1,4 @@
+import {isClaudeModel} from './model-company.mjs';
 // The AI provider cards' texts (release B, gate 1.5.54 review): what each provider is used for now, from the agents'
 // resolved models, and the Anthropic card's note. Pure, so the unit tests pin them.
 
@@ -17,6 +18,6 @@ export const ANTHROPIC_NOTE='Claude needs this key, this sharing switch and room
 export function providerUses(vendor,agentModels){
   const claude=vendor==='anthropic';
   if(!agentModels)return claude?'Dry run':'AI reviews';
-  const list=Object.entries(agentModels).filter(([,m])=>String(m?.openaiModel??'').startsWith('claude-')===claude).map(([a])=>AGENT_NAMES[a]??a);
+  const list=Object.entries(agentModels).filter(([,m])=>isClaudeModel(m?.openaiModel)===claude).map(([a])=>AGENT_NAMES[a]??a);
   return list.length?list.join(', ').replace(/^./,c=>c.toUpperCase()):claude?'Dry run':'Nothing now';
 }

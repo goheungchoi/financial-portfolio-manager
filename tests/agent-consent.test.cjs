@@ -39,7 +39,7 @@ test('the trading review and its replay: the trading model\'s vendor; a replay\'
   assert.throws(()=>world({openai:true,anthropic:false}).a.replayPlan({model:{openaiModel:OPUS,reasoningEffort:'medium'}}),/DATA_SHARING_NOT_ENABLED/,'a Claude variant');
   assert.throws(()=>world({openai:true,anthropic:true,openaiKey:false}).a.replayPlan({model:{openaiModel:LUNA,reasoningEffort:'none'}}),/AI_NOT_CONNECTED/,'an OpenAI variant without an OpenAI key (before: not checked)');
   const src=require('node:fs').readFileSync(require.resolve('../electron/automation.cjs'),'utf8');
-  assert.ok(src.includes("if(this.config.provider==='openai'&&!this.consentFor(this.agentModel('trading').openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');"),'the review itself');});
+  assert.ok(src.includes("if(require('./ai-models.cjs').decisionMaker(this.config)==='ai'&&!this.consentFor(this.agentModel('trading').openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');"),'the review itself');});
 
 test('the market narrative sends no KIS data: the key of its own vendor only, no sharing switch',()=>{
   assert.equal(world({openai:false,anthropic:false}).a.narrativeAvailable(),null,'both switches off: still allowed');

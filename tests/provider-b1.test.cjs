@@ -40,9 +40,9 @@ test('dry runs: paper still gives DRY_RUN_NEEDS_KIS; a KIS dry run on the tradin
 
 test('each consent check asks the provider of the model it is about to use',()=>{
   const s=src('electron/automation.cjs');
-  for(const line of ["if(this.config.scope!=='paper'&&this.config.provider==='openai'&&!this.consentFor(this.config.openaiModel))return {label:'Data sharing required',detail:this.consentMessage(this.config.openaiModel)};",
+  for(const line of ["if(this.config.scope!=='paper'&&require('./ai-models.cjs').decisionMaker(this.config)==='ai'&&!this.consentFor(this.config.openaiModel))return {label:'Data sharing required',detail:this.consentMessage(this.config.openaiModel)};",
     "if(mode==='review'&&!this.consentFor((override??this.agentModel('trading')).openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');",
-    "if(this.config.provider==='openai'&&!this.consentFor(this.agentModel('trading').openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');",
+    "if(require('./ai-models.cjs').decisionMaker(this.config)==='ai'&&!this.consentFor(this.agentModel('trading').openaiModel))throw new Error('DATA_SHARING_NOT_ENABLED');",
     "if(!this.consentFor(this.agentModel('scout').openaiModel))return",
     "shareKisAllowed:this.consentFor(this.agentModel('reflection').openaiModel)"])assert.ok(s.includes(line),line);
   assert.ok(src('electron/reflection.cjs').includes('config.shareKisAllowed===true'));assert.ok(src('electron/auto-launch.cjs').includes('a.consentFor(a.config.openaiModel)'));
