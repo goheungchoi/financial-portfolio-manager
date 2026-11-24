@@ -31,6 +31,8 @@ test('a refusal of order 2 (every code of the ORDER class): that order only; ord
     // for an order whose state at KIS is unknown; never the raw code.
     const T=require('../electron/activity-today.cjs');const [title,note]=code==='BROKER_REJECTED'?['Order rejected by KIS','Rejected by KIS: Buy 1 035720.']:['ORDER_UNCERTAIN','BROKER_ORDER_MISMATCH'].includes(code)?['Order not confirmed',`Not confirmed: Buy 1 035720: ${T.reasonText(code)}.`]:['Order not sent',`Not sent: Buy 1 035720: ${T.reasonText(code)}.`];
     assert.ok(T.NOT_SENT[code],code+' has words');
+    // TOKEN_EXPIRED at the preparation (the token fix): recorded not sent like a refusal at the order request, with its own words.
+    if(code==='TOKEN_EXPIRED'){assert.ok(h.logs.some(x=>x[2]==='Order not sent · sign-in renewed'&&/KIS had ended the app's sign-in when the app went to send Buy 1 035720 \(the sign-in is renewed\), so nothing reached KIS\./.test(x[3])),code);continue;}
     if(!['PRODUCT_APPROVAL_REQUIRED','EXTENDED_APPROVAL_REQUIRED'].includes(code))assert.ok(h.logs.some(x=>x[2]===title&&x[3]===note),code+': '+JSON.stringify(h.logs.filter(x=>/^Order (not|rejected)/.test(x[2])).map(x=>x.slice(2))));}
 });
 test('a STOP outcome on order 2 (every code of the class): order 1 stands, order 3 is not sent; the review is not failed; one follow-up review',async()=>{

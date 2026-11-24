@@ -4,7 +4,7 @@ class KisService {
   constructor(workerScript='kis-worker.cjs') {this.workerScript=workerScript;this.pending=new Map();this.counter=0;this.queue=Promise.resolve();this.generation=0;this.line=[];this.holding=null;this.als=new (require('node:async_hooks').AsyncLocalStorage)();}
   ensureWorker() {
     if(this.worker)return;
-    const worker=utilityProcess.fork(path.join(__dirname,this.workerScript),[],{stdio:'pipe',serviceName:({'kis-worker.cjs':'KIS broker','calendar-worker.cjs':'KIS market calendar'})[this.workerScript]??'Private provider broker'});
+    const worker=utilityProcess.fork(path.join(__dirname,this.workerScript),[],{stdio:'pipe',env:{...process.env,KIS_TOKEN_CLOCK:path.join(require('electron').app.getPath('userData'),'kis-token-clock.json')},serviceName:({'kis-worker.cjs':'KIS broker','calendar-worker.cjs':'KIS market calendar'})[this.workerScript]??'Private provider broker'});
     this.worker=worker;
     // Discard worker stdout/stderr; raw broker data/errors never enter console logs.
     worker.stdout?.resume();worker.stderr?.resume();
@@ -12,6 +12,7 @@ class KisService {
       if(this.worker!==worker)return;
       if(message.type==='quote'){this.onQuote?.(message.quote);return;}
       if(message.type==='stream'){this.onStatus?.(message.state);return;}
+      if(message.type==='signin'){this.onSignInWait?.(message.waitMs);return;}
       const pending=this.pending.get(message.id);if(!pending)return;
       clearTimeout(pending.timer);this.pending.delete(message.id);
       if(message.ok)pending.resolve(message.snapshot);else {const error=new Error(message.code);if(this.workerScript==='provider-worker.cjs'){error.usage=message.usage??null;error.model=message.model??null;if(Number.isInteger(message.responseChars))error.responseChars=message.responseChars;if(message.detail)error.detail=message.detail;

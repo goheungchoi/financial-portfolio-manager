@@ -12,7 +12,7 @@ process.parentPort.on('message',async({data})=>{
     if(operation==='import'){
       const handle=await fs.open(data.path,'r');let text;
       try{const stat=await handle.stat();if(!stat.isFile()||stat.size>65536)throw new Error();text=await handle.readFile('utf8');}finally{await handle.close();}
-      const next=new KisReadOnlyClient(parseCredentials(text));text=null;
+      const next=new KisReadOnlyClient(parseCredentials(text));text=null;next.onSignInWait=waitMs=>process.parentPort.postMessage({type:'signin',waitMs});
       if(next.overseasIdentity().environment!=='live')throw Object.assign(new Error(),{code:'CALENDAR_NEEDS_LIVE_KEY'});
       client=next;result={environment:'live'};
     }else if(operation==='kr-calendar'){

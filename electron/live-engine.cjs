@@ -6,7 +6,8 @@ const {validateLoss,lossStatus}=require('./loss-policy.cjs');const {FundingLedge
 const WON_RULE='The app checks every U.S. buy, automatic or yours, twice before it is sent: it must fit buyingPower.usd (KIS\'s figure, capped at real cash), and it must fit Korean won cash at the exchange rate plus 2%, together with open Korean buys and unsettled U.S. buys (the shared cash rule; U.S. dollar cash adds no room under it). A U.S. buy larger than the smaller of buyingPower.usd and buyingPower.wonRule.roomUSD, fees included, is not sent.';
 // The editable limits of a policy; everything else on it (the day's baseline and its identity) is the loss basis.
 // An order request refused before it left the app by the KIS request limit (M-1a, M-1.5a).
-const notSentError=e=>e?.message==='ORDER_NOT_SENT'||e?.message==='RATE_LIMITED'&&e?.notSent===true;
+// TOKEN_EXPIRED (the token fix): KIS's gateway refused an expired sign-in, so the order, revision or cancellation is not at KIS.
+const notSentError=e=>e?.message==='ORDER_NOT_SENT'||e?.message==='TOKEN_EXPIRED'||e?.message==='RATE_LIMITED'&&e?.notSent===true;
 const LIMIT_FIELDS=new Set(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','maxDailyLossKRW','lossLimit','anyStock']);
 // One open order of yours in KIS as a pending row (M-1.4 F2: at its full ordered quantity, at its listed price). Its kind
 // (B3e): a Sell KIS names 유대신규 is a short sale and counts toward the short cap; a row whose kind cannot be read is not
@@ -82,7 +83,10 @@ class LiveEngine {
   permitHolds(){const p=this.conditionalPermit;if(!p)return false;let key=null;try{key=this.identity();}catch{}return key===p.account;}
   admits(order){return this.enabled||(order?.madeBy==='conditional'&&this.permitHolds());}
   enableAuto(confirmation){const environment=this.getConnection().snapshot?.environment;if(!this.enabled||confirmation!==(environment==='live'?'ENABLE AUTO LIVE':'ENABLE AUTO MOCK'))throw new Error('ACTIVATION_REQUIRED');this.autoEnabled=true;return this.getState();}
-  getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;return {...(this.conditionalPermit&&this.permitHolds()?{watchPermit:{auto:this.conditionalPermit.auto}}:{}),httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null,...(()=>{if(!this.settlingFills)return {};try{const n=this.settlingFills();return Number.isInteger(n)?{settlingFills:n}:{};}catch{return {};}})()};}
+  getState(){let policy=null;try{policy=this.policy();}catch{}const connection=this.getConnection().snapshot;const snapshot=this.riskBalance?.accountKey===connection?.accountKey?this.riskBalance:connection;// Seventh review: what will be true after "KIS never took it" for one of this market's Uncertain orders (decided by
+    // automation from the permit rule, not from the present permit, which the unclear reply revoked).
+    let notTakenOutlook=null;if(this.notTakenOutlook&&this.orders().some(o=>o.status==='Uncertain')){try{notTakenOutlook=this.notTakenOutlook();}catch{notTakenOutlook='unknown';}}
+    return {...(this.conditionalPermit&&this.permitHolds()?{watchPermit:{auto:this.conditionalPermit.auto}}:{}),...(notTakenOutlook?{notTakenOutlook}:{}),httpStatus:this.httpStatus??null,brokerCode:this.brokerCode??null,refreshError:this.refreshError??null,warnings:this.refreshWarnings??[],market:this.market,currency:this.market==='US'?'USD':'KRW',portfolio:this.market==='US'?connection:null,enabled:this.enabled,autoEnabled:this.autoEnabled,busy:this.busy,environment:connection?.environment??null,policy,loss:policy&&snapshot&&policy.day===this.day()?this.lossOf(policy,snapshot):null,orders:this.orders().map(({accountKey,...order})=>order),reconcileHealth:this.reconcileHealth??null,...(()=>{if(!this.settlingFills)return {};try{const n=this.settlingFills();return Number.isInteger(n)?{settlingFills:n}:{};}catch{return {};}})()};}
   // A new day takes its basis from the valuation, or is pending when it cannot be read (1.5.48 review, R1). A pending day
   // takes a late basis at the first reading that succeeds; a known day's peak moves only on readings of its own version.
   // D4: a Korean reading in the overnight settlement state (settlement-check.cjs) sets nothing: no baseline, no day's peak,
@@ -191,8 +195,17 @@ class LiveEngine {
       const held=fn=>typeof this.broker.hold==='function'?this.broker.hold(fn,{label:`${order.side} ${order.quantity} ${order.symbol}`}):fn({waitedMs:0,released:()=>false});
       return await held(async hold=>{timings.holdWaitMs=hold.waitedMs;const stamp=o=>({...o,timings:{...timings,...(hold.released()?{holdReleasedByLimit:true}:{})}});
       let t=Date.now();
-      const prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{}),...(order.madeBy==='ticket'?{yours:true}:{})},...(this.severalOpen?{severalOpen:true}:{})}).then(p=>{this.noteLend(order,p,null);return p;},error=>{this.noteLend(order,null,error);throw error;});
+      // The token fix, fourth review: a preparation refused for an ended sign-in (TOKEN_EXPIRED, before anything was sent)
+      // is the same passing refusal as one at the order request: recorded not sent, so a stop stays armed and a review's
+      // order takes its not-sent path. Nothing reached KIS, so no resend check is kept for it.
+      let prepared;try{prepared=await this.broker.request('prepare-order',{...(this.sessionOptions?{sessions:this.sessionOptions()}:{}),command:{symbol:order.symbol,side:order.side,quantity:order.quantity,limitPrice:order.limitPrice,...(order.credit?{credit:order.credit}:{}),...(order.madeBy==='ticket'?{yours:true}:{})},...(this.severalOpen?{severalOpen:true}:{})}).then(p=>{this.noteLend(order,p,null);return p;},error=>{this.noteLend(order,null,error);throw error;});}
+      catch(error){if(error?.message!=='TOKEN_EXPIRED')throw error;timings.checkMs=since(t);order=stamp({...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:'token-expired',notSentAt:Date.now()});this.save(order);return order;}
       timings.checkMs=since(t);t=Date.now();
+      // The token fix, third review: an order the gateway refused for an ended sign-in may still have reached KIS. Before
+      // another order of that stock and side is sent, KIS's orders of today are read (the preparation did); one the app
+      // does not know, placed since that attempt (a minute's margin) or with no time, whatever its status, refuses the send
+      // and the refused order becomes Uncertain for you to link. With none, the attempt is cleared and never checked again.
+      this.tokenResendCheck(order,prepared);
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
       // Short selling B3d-1: your own buy while a short is open carries the fact on its record (checked as before).
@@ -272,7 +285,7 @@ class LiveEngine {
       // M-1c: so is a prepared ticket the worker refused as missing or expired (15 s) before sending (TICKET_EXPIRED);
       // notSentCause says which.
       catch(error){timings.placeMs=since(t);if(Number.isFinite(error.ticketAgeMs))timings.ticketAgeMs=error.ticketAgeMs;order=stamp(order);
-        if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
+        if(error.message==='ORDER_NOT_SENT'||error.message==='TICKET_EXPIRED'||error.message==='TOKEN_EXPIRED'||error.message==='RATE_LIMITED'&&error.notSent===true){order={...order,status:'Rejected',reason:'ORDER_NOT_SENT',...(error.message==='TOKEN_EXPIRED'?{tokenAttemptAt:Date.now()}:{}),notSentCause:error.message==='TICKET_EXPIRED'?'ticket-expired':error.message==='TOKEN_EXPIRED'?'token-expired':'rate-limit',...(Number.isFinite(error.retryAt)?{retryAt:error.retryAt}:{})};this.save(order);return order;}
         if(['SESSION_CLOSED','CREDIT_PATH_UNVERIFIED'].includes(error.message)){order={...order,status:'Rejected',reason:error.message};this.save(order);return order;}order={...order,status:error.message==='BROKER_REJECTED'?'Rejected':'Uncertain',reason:error.message==='BROKER_REJECTED'?'BROKER_REJECTED':'ORDER_UNCERTAIN',...(error.message==='BROKER_REJECTED'&&/^[A-Z0-9_-]{1,24}$/.test(error.brokerCode??'')?{brokerCode:error.brokerCode}:{}),...(error.message==='BROKER_REJECTED'&&typeof error.brokerMessage==='string'&&error.brokerMessage?{brokerMessage:error.brokerMessage.slice(0,120)}:{})};
         // Rule U (M-1.2): with several orders open allowed, an unclear order blocks only its own stock (openBlock) and is
         // counted in full in every sum; the market's trading stays on. Off: the market stops, as before.
@@ -477,6 +490,15 @@ class LiveEngine {
   // The last lending-list answer of a short's preparation, per stock: borrowable (tradable now covered the order or not).
   noteLend(order,prepared,error){if(order?.credit?.kind!=='short')return;const code=error?.message;if(error&&!['SHORT_NOT_LENDABLE','SHORT_BORROW_SHORT'].includes(code))return;
     (this.lendReads??=new Map()).set(order.symbol,{borrowable:!error,at:Date.now()});}
+  tokenResendCheck(order,prepared,now=Date.now()){const {sameStock}=require('./broker-open-orders.cjs');
+    const tries=this.orders().filter(o=>o.id!==order.id&&o.status==='Rejected'&&o.notSentCause==='token-expired'&&Number.isFinite(o.tokenAttemptAt)&&!o.tokenChecked&&now-o.tokenAttemptAt<86400000&&o.side===order.side&&sameStock(o.symbol,order.symbol));
+    if(!tries.length||!Array.isArray(prepared?.todayOrders))return;
+    const key=n=>String(n).replace(/^0+(?=\d)/,'');const known=new Set();for(const o of this.orders())for(const n of [o.brokerOrderId,o.currentBrokerOrderId,...(o.brokerOrderIds??[])])if(n!=null)known.add(key(n));
+    const since=Math.min(...tries.map(o=>o.tokenAttemptAt))-60000;
+    const stray=prepared.todayOrders.filter(r=>r.side===order.side&&sameStock(r.symbol,order.symbol)&&!known.has(key(r.orderId))&&(!Number.isFinite(r.timestamp)||r.timestamp>=since));
+    if(!stray.length){for(const o of tries)this.save({...o,tokenChecked:now});return;}
+    for(const o of tries)this.save({...o,status:'Uncertain',reason:'ORDER_UNCERTAIN',uncertainCause:'token-expired',kisCandidates:stray.slice(0,5).map(r=>({orderId:r.orderId,symbol:r.symbol,side:r.side,quantity:r.quantity??null,status:r.status??null,timestamp:r.timestamp??null}))});// fifth review: the rows themselves, shown when you decide
+    throw Object.assign(new Error('RECONCILIATION_REQUIRED'),{detail:`KIS lists ${stray.length===1?'an order':'orders'} for ${order.symbol} the app did not send knowingly, placed after an order refused for an ended sign-in: that order is marked uncertain for you to link`});}
   openShortOrders(){const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'];return this.orders().filter(o=>o.side==='Sell'&&o.credit?.kind==='short'&&OPEN.includes(o.status)&&!(o.status==='Ready'&&o.expiresAt<Date.now())).map(o=>({id:o.id,credit:'short',notional:Math.max(0,(o.quantity??0)-(o.filled??0))*(Number(o.currentPrice??o.limitPrice)||0)}));}
   exposureBase(balance,{buy=false}={}){if(!this.netEquityOf)return balance.reportedTotal;let v=null;try{v=this.netEquityOf(balance)??null;}catch{}
     if(Number.isFinite(v?.low))return Math.min(balance.reportedTotal,v.low);if(buy)throw new Error('RISK_DATA_UNAVAILABLE');return balance.reportedTotal;}
@@ -693,6 +715,17 @@ class LiveEngine {
     // buy is checked as a manual one is: KIS's buying power capped at real cash (R17) and the shared ledger under the
     // unknown regime, which counts it against won cash at the rate plus 2% with Korean buys (R3). U6–U9 stay off.
     if(order?.requiresApproval)return {...order,reason:'APPROVAL_REQUIRED'};try{return await this.send(id,this.getConnection().snapshot.environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER',{automatic:true});}catch(error){if(error.message==='EXTENDED_APPROVAL_REQUIRED')return {...order,reason:'APPROVAL_REQUIRED'};if(error.message==='PRODUCT_APPROVAL_REQUIRED')return this.orders().find(row=>row.id===id)??{...order,requiresApproval:true,reason:'APPROVAL_REQUIRED'};throw error;}}
+  // The token fix, fourth review: what an Uncertain order holds, for Home's Needs-you item: with several orders open only
+  // its stock's orders (openBlock), otherwise the market's (stocks null). Null when none is Uncertain.
+  uncertainHold(){const u=this.orders().filter(o=>o.status==='Uncertain');if(!u.length)return null;
+    return {orders:u.slice(0,3),stocks:this.severalOpen?[...new Set(u.map(o=>o.symbol))].slice(0,3):null};}
+  // The token fix, fourth review: an Uncertain order you know KIS never took (you checked in KIS) is marked not sent: its
+  // funds are released and the market's orders are no longer held by it. The app may then send that order again.
+  // Fifth review: only an Uncertain order (a Submitting one may still be on its way), never while a send, revision or
+  // cancellation is in flight (busy). A conditional order that sent it is armed again by automation.markNotTaken.
+  markNotTaken(id,confirmation){if(confirmation!=='KIS NEVER TOOK IT')throw new Error('APPROVAL_REQUIRED');
+    if(this.busy)throw new Error('KIS_ORDER_BUSY');const order=this.orders().find(row=>row.id===id);if(!order||order.status!=='Uncertain')throw new Error('UNKNOWN_ORDER');
+    this.save({...order,status:'Rejected',reason:'ORDER_NOT_SENT',notSentCause:'user-confirmed-not-taken',notTakenAt:Date.now()});return this.getState?.()??null;}
   async linkUncertain(id,brokerOrderId,confirmation) {
     if(confirmation!=='LINK BROKER ORDER')throw new Error('APPROVAL_REQUIRED');const order=this.orders().find(row=>row.id===id);if(!order||!['Uncertain','Submitting'].includes(order.status))throw new Error('UNKNOWN_ORDER');
     const report=await this.broker.request('orders',{startDate:order.day,endDate:order.day});const match=report.orders.find(row=>row.orderId===brokerOrderId);

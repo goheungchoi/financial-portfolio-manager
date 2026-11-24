@@ -46,4 +46,11 @@ export function shortfallLine(state){const f=state?.desk?.shortfall;if(!f?.open)
   if(!f.known)return {block:`Buys wait: a short is open and what buying it back costs beyond its proceeds could not be read (${f.missing.join(', ')}).`,info:null};
   if(!(f.amount>0))return {block:null,info:null};const names=f.rows.map(r=>r.symbol);
   return {block:null,info:`₩${f.amount.toLocaleString('en-US')} of your cash is held back from the app's buys: your ${names.length===1?'short of '+names[0]+' costs':'shorts of '+names.join(', ')+' cost'} more to buy back than ${names.length===1?'its sale':'their sales'} brought in.`};}
+// The token fix: KIS has not answered for more than 3 minutes while orders are armed or auto trading runs: nothing is
+// watched or sent. The reason in plain words: an ended sign-in (EGW00123 / EGW00121) or a connection error.
+// The U.S. feed counts the same (state.kisFeed.us); the earlier of the two failures is named.
+export function kisDownLine(state,now=Date.now()){const feeds=[state?.kisFeed,state?.kisFeed?.us].filter(x=>x?.status==='error'&&Number.isFinite(x.since)&&now-x.since>180000).sort((a,b)=>a.since-b.since);const f=feeds[0];if(!f)return null;
+  const armed=(state?.desk?.orders??[]).length>0,running=Boolean(state?.config?.enabled&&state?.config?.autoSubmit);if(!armed&&!running)return null;
+  const at=new Date(f.since).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit'});const why=['EGW00123','EGW00121'].includes(f.brokerCode)?'its sign-in expired':'a connection error';
+  return `KIS is not answering since ${at} (${why}): armed orders and stops are not watched until it answers.`;}
 export function shortLoanLine(state){const a=state?.desk?.shortLoanAlarms??[];if(!a.length)return null;return a.map(x=>x.cause==='approval'?`The short of ${x.symbol} ends its loan on ${x.end}: its cover waits for your approval.`:x.cause==='unwatched'?`${x.symbol} short ends its loan on ${x.end}: its cover is armed but not watched until auto trading is started.`:`The short of ${x.symbol} ends its loan on ${x.end} and is not being covered (${x.words}).`).join(' ');}

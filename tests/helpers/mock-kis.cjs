@@ -74,7 +74,7 @@ class MockKis {
       if(availableQuantity==null||command.quantity>availableQuantity)throw err('INSUFFICIENT_CAPACITY');}
     const open=openGuard(this.historyRows(market),command,{severalOpen,fail:()=>err('OPEN_BROKER_ORDERS')});
     const ticket=randomUUID();this.tickets.set(ticket,{command,...(market==='US'?{market:'US'}:{}),session:null,expiresAt:this.clock()+15000});
-    return {balance,price,...(market==='KR'?{unit:1,availableQuantity}:{}),checkedAt:this.clock(),...open,capacityRaw:{...capacity,at:this.clock()},ticket,session:null};}
+    return {balance,price,...(market==='KR'?{unit:1,availableQuantity}:{}),checkedAt:this.clock(),...open,todayOrders:this.historyRows(market).filter(o=>!o.originalOrderId&&(o.kind??'order')==='order').map(o=>({orderId:String(o.orderId),symbol:o.symbol,side:o.side,quantity:Number.isFinite(o.quantity)?o.quantity:null,timestamp:Number.isFinite(o.timestamp)?o.timestamp:null,status:o.status})),capacityRaw:{...capacity,at:this.clock()},ticket,session:null};}
   newRow(market,{symbol,side,quantity,orderPrice,originalOrderId=null,kind='order',by='app',name}){const n=++this.seq[market];
     const row={market,orderId:String(n),originalOrderId,kind,symbol,name:name??symbol,side,quantity,filled:0,remaining:kind==='cancel'?0:quantity,orderPrice,amount:0,rejected:0,by,at:this.clock(),day:market==='US'?nyDay(this.clock()):seoulDay(this.clock())};
     this.book[market].push(row);return row;}

@@ -364,7 +364,7 @@ In order:
 23. **Placement** (`place-order` with the ticket) (`:222`). Outcomes:
     - order number → `Accepted`;
     - `ORDER_NOT_SENT`, `TICKET_EXPIRED`, or a local `RATE_LIMITED` → `Rejected`, reason `ORDER_NOT_SENT`,
-      `notSentCause` `'ticket-expired'` or `'rate-limit'`; trading stays on (`:232`);
+      `notSentCause` `'ticket-expired'`, `'token-expired'` (KIS had ended the sign-in: the token fix) or `'rate-limit'`; trading stays on (`:232`);
     - `SESSION_CLOSED`, `CREDIT_PATH_UNVERIFIED` → `Rejected` with that reason (`:233`);
     - `BROKER_REJECTED` → `Rejected`, with KIS's code (`brokerCode`);
     - anything else → `Uncertain`, reason `ORDER_UNCERTAIN`. With several open orders off this also turns the
@@ -1408,3 +1408,74 @@ worker's tickets; the service's queue, cooldown and last-200 failures list; the 
     read by me.
 12. Whether the unit of `maxOrderKRW` / `maxDailyTurnoverKRW` for the U.S. engine is shown to the user as dollars
     (the engine compares them with a dollar notional).
+
+## The KIS sign-in ended early (the token fix, 2026-11-24)
+
+Found in live use: every KIS request failed with EGW00123 for over an hour, until the app's own clock renewed the token.
+
+- On a reply with `msg_cd` EGW00123 (expired) or EGW00121 (invalid), on any path but the token request, the client
+  (`kis-client.cjs` `request`, `renewToken`; the code with HTTP 200 too) expires the token and signs in again through
+  `authenticate`, which is single-flight for every sign-in (the first, the natural 24-hour expiry and a renewal) and keeps
+  one token request a minute, counted from when a token request leaves (a failed one too); it requests one new token, never within a minute of the
+  last token request (it waits out the minute once); requests that meet the dead token together share that renewal.
+  The old one-retry with the same token is skipped for these codes.
+- A GET is retried once with the new token. An order, revision or cancellation, in Korea and the U.S., is thrown at once (the renewal runs on) `TOKEN_EXPIRED` (not sent: the
+  gateway refused it) and never repeated by the client.
+- `TOKEN_EXPIRED` is a passing refusal: an order is recorded not sent (`notSentCause` `token-expired`) and a review is
+  asked to decide again; a revision or cancellation changes nothing at KIS; a conditional order (a stop included) stays
+  armed and is checked again in a minute, never counted towards the three-attempts close (one Activity line per
+  episode). It is in the ORDER class: the rest of a batch goes on.
+- Before such an order is sent again, its send reads KIS's open orders, as every send does; an open order for the stock
+  that the app does not know stops it (`openGuard`: Korea in `kis-client` preparation, the U.S. in `kis-overseas` `prepare`).
+- No send waits for a sign-in: an order, revision or cancellation, and its preparation's reads, run as a send (`SEND`);
+  a sign-in that would have to wait (one running, or the minute not over) or a token KIS has just ended refuses it at once
+  as `TOKEN_EXPIRED`, and the sign-in runs on. The minute is per app key: across every client in a process (Reconnect
+  and an account switch build new ones) and, through `kis-token-clock.json` in the app's data folder, across the KIS
+  broker and market-calendar workers. The file holds only a keyed hash of the key (HMAC-SHA-256, cut to 16 hex), keyed
+  by a random value made once per install and kept beside it (`kis-token-clock.json.secret`). The value is read from
+  that file at every use; a new one is written to a temp file and linked into place only where no file is (an invalid
+  file is replaced), then the file is read again, so every worker ends on the file's value. Only when the file cannot
+  be read is a random value for the process used. A waiting connect says "KIS allows one sign-in a minute; connecting
+  in N s". The provider worker holds no KIS client.
+- A stored time in the future (the file a day ahead, or the PC's clock set back) counts as now: a sign-in never waits
+  more than a minute. The same holds for the request spacing (at most its own length) and a request-limit pause (at
+  most its five minutes).
+- A preparation refused `TOKEN_EXPIRED` (before anything was sent) is recorded like a refusal at the order request: not
+  sent (`notSentCause` `token-expired`), so a stop stays armed and is checked again in a minute however often it is
+  refused; it keeps no resend check (nothing reached KIS).
+- After an order refused this way, before another order of that stock and side is sent, the preparation's read of
+  today's KIS orders is checked (`tokenResendCheck`): an order the app does not know, placed since the attempt (a
+  minute's margin) or with no time, whatever its status (open, filled, cancelled), refuses the send
+  (`RECONCILIATION_REQUIRED`) and the refused order becomes Uncertain for you to link. With none, the attempt is cleared.
+- The way out of an Uncertain order is always the user's: "It is this KIS order" (the existing link) or "KIS never took
+  it" (`automation.markNotTaken` → the engine's `markNotTaken`, `live:not-taken` / `us:not-taken`, phrase `KIS NEVER
+  TOOK IT`, only for an Uncertain order, refused `KIS_ORDER_BUSY` while a send, revision or cancellation is in flight),
+  which records it not sent (`notSentCause` `user-confirmed-not-taken`): its funds are released, the orders it held are
+  free and the app may send it again. The screen asks first, with what KIS listed when the order became Uncertain (the
+  engine keeps the rows as `kisCandidates`: side, quantity, stock, status, time; up to three shown, "KIS shows: Buy 1
+  990010, filled, 14:02", a row showing only the fields it has; "KIS showed no order like it." for an empty list after
+  a real read; "The app has not checked KIS for this order. Look in KIS before you confirm." when there is no list, as
+  for an order made Uncertain by an unclear reply, or a record of ids only), then "Only if you checked in KIS that it has no such
+  order. The app then counts it as not sent and may send it again." While any is Uncertain, Home's Needs you says
+  "Korean (U.S.) orders are held: an order's state at KIS is unknown", or "… orders of 990010 are held …" with several
+  orders open (only that stock's orders wait), with Open to its tab (`uncertainHold`).
+- A conditional order (a stop, a cover stop, any armed order) that sent the order marked not taken is armed again, as
+  after a not-sent refusal: its tries not counted, one Activity line ("Conditional order · armed again"); one past its
+  expiry is closed as expired. When the unclear reply had stopped the market's trading (one open order at a time:
+  `enabled` off, the permit to send while stopped revoked) and no permit holds after it, the order waits armed and
+  nothing is sent until you press Start; the app never restarts trading. The confirmation's message, the order's
+  waiting words and Home's Needs you ("Stop for 990010 armed again: nothing is sent until you press Start") say so
+  (`notTakenHeld`). With orders watched while stopped, the permit is granted again once nothing is unclear: the order
+  is armed and still watched and may be sent before Start, as that setting says; the words then say so ("watched while
+  auto trading is stopped") and never "nothing is sent". The line shown before the confirmation says what will hold
+  after it, decided in the main process by that same rule, not from the present permit (which the unclear reply
+  revoked): `automation.notTakenOutlook(market)`, in the engine's state as `notTakenOutlook` while an order is
+  Uncertain — `running` (no line), `watched` (the setting on for this account, in scope, no other unclear order:
+  "Korean (U.S.) auto trading is stopped, but orders are watched while stopped: a stop armed again may be sent right
+  away."), `halted` ("… a stop armed again sends nothing until you press Start."); when it cannot be decided, the "may
+  be sent right away" line. Armed again, an order keeps everything it had: a cover stop
+  its credit and trail (the lot's decision sees it armed, so no second cover stop is armed), a trailing stop its level.
+- Home says when KIS has not answered for more than 3 minutes while orders are armed or auto trading runs (1-ui).
+- Known limits (accepted): with the PC's clock set forward, two sign-in requests can leave inside a real minute (KIS
+  refuses the second; the app tries again after the minute). When the app's data folder cannot be written, the
+  minute is not shared between the KIS broker and market-calendar workers (each keeps its own).

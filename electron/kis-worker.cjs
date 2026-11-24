@@ -21,6 +21,8 @@ process.parentPort.on('message',async ({data})=>{
       const {parseCredentials}=require('./kis-client.cjs');
       stream?.stop();
       client=new KisReadOnlyClient(parseCredentials(text));text=null;
+      // The token fix: when a sign-in has to wait for KIS's one-a-minute rule, the screen says so.
+      client.onSignInWait=waitMs=>process.parentPort.postMessage({type:'signin',waitMs});
       stream=new KisQuoteStream(client,quote=>process.parentPort.postMessage({type:'quote',quote}),state=>process.parentPort.postMessage({type:'stream',state}));
     } else if(!client) throw new Error('KIS_NOT_CONNECTED');
     if(operation==='chart-bars'){const snapshot=await require('./kis-evidence.cjs').fetchBars(client,data.request);process.parentPort.postMessage({id,ok:true,snapshot});return;}

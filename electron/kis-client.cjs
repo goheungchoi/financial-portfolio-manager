@@ -1,5 +1,34 @@
 const ORIGINS = { live:'https://openapi.koreainvestment.com:9443', mock:'https://openapivts.koreainvestment.com:29443' };
 class KisError extends Error { constructor(code) { super(code); this.code=code; } }
+// The token fix, review 2: an order, revision or cancellation, and its preparation's reads, never wait for a sign-in. They
+// run inside SEND; with no valid token in hand, or one KIS has just ended, they are refused at once as not sent
+// (TOKEN_EXPIRED) while the sign-in runs on outside SEND.
+const {AsyncLocalStorage}=require('node:async_hooks');const SEND=new AsyncLocalStorage();
+// The token fix, review 2: KIS allows one token request a minute per app key, so the minute is kept per key, across every
+// client in this process (Reconnect and an account switch build a new one) and, through a small file the main process
+// names (KIS_TOKEN_CLOCK), across the KIS broker and market-calendar workers. The key is kept only as a short hash.
+// Kept per KIS endpoint (the transport: the app uses one fetch for all its clients) and per key.
+const TOKEN_CLOCK=new WeakMap();const clockOf=transport=>{if(!TOKEN_CLOCK.has(transport))TOKEN_CLOCK.set(transport,new Map());return TOKEN_CLOCK.get(transport);};
+// Fourth review: a keyed hash (HMAC) with a random value made once per install and kept beside the file, so the file says
+// nothing about the key outside this machine; without the file, a random value for this process.
+// Fifth review: the file is read at every use (only at a sign-in), so a process never keeps a value that is not the
+// file's while the file is readable. A new value is written to a temp file and linked into place only where no file is
+// (a link never overwrites, so two workers racing end on the one that landed; an unreadable, invalid file is replaced);
+// then the file is read again and its value used. Only when it cannot be read is a value for this process used.
+let PROCESS_SECRET=null;const processSecret=()=>PROCESS_SECRET??=require('node:crypto').randomBytes(32).toString('hex');
+function secret(){const f=process.env.KIS_TOKEN_CLOCK;if(!f)return processSecret();const fs=require('node:fs'),p=f+'.secret';
+  const valid=()=>{try{const v=fs.readFileSync(p,'utf8').trim();return /^[0-9a-f]{64}$/.test(v)?v:null;}catch{return null;}};
+  const v=valid();if(v)return v;
+  const tmp=`${p}.${process.pid}.${Date.now()}.tmp`;try{fs.writeFileSync(tmp,require('node:crypto').randomBytes(32).toString('hex'));
+    try{fs.linkSync(tmp,p);}catch(error){if(error?.code==='EEXIST'){if(!valid())fs.renameSync(tmp,p);}else if(!fs.existsSync(p))fs.renameSync(tmp,p);}}catch{}finally{try{fs.unlinkSync(tmp);}catch{}}
+  return valid()??processSecret();}
+const keyHash=appKey=>require('node:crypto').createHmac('sha256',secret()).update(String(appKey)).digest('hex').slice(0,16);
+function clockFile(){const f=process.env.KIS_TOKEN_CLOCK;if(!f)return {};try{const v=JSON.parse(require('node:fs').readFileSync(f,'utf8'));return v&&typeof v==='object'?v:{};}catch{return {};}}
+// A stored time in the future (the file a day ahead, or the PC's clock set back) counts as now: never more than a minute's wait.
+function lastTokenAt(transport,appKey){const k=keyHash(appKey);return Math.min(Date.now(),Math.max(clockOf(transport).get(k)??-Infinity,Number(clockFile()[k])||-Infinity));}
+function noteTokenAt(transport,appKey,at){const k=keyHash(appKey);clockOf(transport).set(k,at);const f=process.env.KIS_TOKEN_CLOCK;if(!f)return;
+  try{const fsx=require('node:fs');const v=clockFile();v[k]=at;for(const [x,t] of Object.entries(v))if(!(Number(t)>at-3600000))delete v[x];const tmp=f+'.'+process.pid+'.tmp';fsx.writeFileSync(tmp,JSON.stringify(v));try{fsx.renameSync(tmp,f);}catch{try{fsx.unlinkSync(tmp);}catch{}}}catch{}}// sixth review: a temp file whose rename failed (another worker's) is removed
+const tokenExpired=brokerCode=>Object.assign(new KisError('TOKEN_EXPIRED'),{notSent:true,...(brokerCode?{brokerCode}:{})});
 // What a failed order request means (M-1a): KIS refused it, it never left the app (refused by the request-limit window
 // before it was sent: ORDER_NOT_SENT, with when to try again), or anything else, which may have reached KIS.
 // A rate limit KIS returns for the request itself stays uncertain: the request was sent.
@@ -10,6 +39,9 @@ function brokerText(body){const t=typeof body?.msg1==='string'?body.msg1:'';cons
 function brokerFields(body){return {...(/^[A-Z0-9_-]{1,24}$/.test(String(body?.msg_cd??''))?{brokerCode:body.msg_cd}:{}),...(brokerText(body)?{brokerMessage:brokerText(body)}:{})};}
 function rejected(body){return Object.assign(new KisError('BROKER_REJECTED'),brokerFields(body));}
 function orderError(error){if(error?.code==='BROKER_REJECTED')return Object.assign(new KisError('BROKER_REJECTED'),error.brokerCode?{brokerCode:error.brokerCode}:{},error.brokerMessage?{brokerMessage:error.brokerMessage}:{});
+  // The token fix (artifacts/reviews/2026-11-24-kis-token): KIS's gateway refused the order's expired sign-in, so it is not
+  // at KIS; it keeps its own code so a stop stays armed and is tried again with the renewed sign-in.
+  if(error?.code==='TOKEN_EXPIRED')return Object.assign(new KisError('TOKEN_EXPIRED'),{notSent:true});
   if(error?.notSent===true){const e=new KisError('ORDER_NOT_SENT');if(Number.isFinite(error.retryAt))e.retryAt=error.retryAt;return e;}
   return new KisError('ORDER_UNCERTAIN');}
 function parseCredentials(text) {
@@ -69,14 +101,33 @@ class KisReadOnlyClient {
   constructor(credentials,transport=fetch,wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))) {
     this.#credentials=parseCredentials(JSON.stringify(credentials)); this.transport=transport; this.wait=wait;
   }
+  // KIS ended the sign-in before its own expiry (EGW00123 expired, EGW00121 invalid; seen live 2026-11-24). The token is
+  // renewed through authenticate, which is single-flight and keeps KIS's one-token-a-minute rule for every sign-in (the
+  // first, the natural expiry and a renewal); a failed token request makes the next try wait a minute. A GET is retried
+  // once with the new token; an order, revision or cancellation is thrown not sent (TOKEN_EXPIRED) at once while the
+  // renewal runs on. A failed renewal throws the GET's original error, as before.
+  static tokenGone(error){return ['EGW00123','EGW00121'].includes(error?.brokerCode);}
+  // used: the Authorization header the refused request carried. A token renewed since by another request is kept.
+  renewToken(used){if(this.#token&&used&&used!=='Bearer '+this.#token&&Date.now()<this.#expires)return Promise.resolve();this.#expires=0;return this.authenticate();}
   async request(path,options) {
+    const first=this.queued(path,options);if(path==='/oauth2/tokenP'||options?.renewed)return first;
+    return first.catch(async error=>{if(!KisReadOnlyClient.tokenGone(error))throw error;const used=options?.headers?.authorization;
+      const get=String(options?.method??'GET').toUpperCase()==='GET';
+      if(!get||SEND.getStore()){SEND.exit(()=>this.renewToken(used)).catch(()=>{});throw tokenExpired(error.brokerCode);}
+      try{await this.renewToken(used);}catch{throw error;}
+      return this.queued(path,{...options,renewed:true,headers:{...options.headers,...(used?{authorization:'Bearer '+this.#token}:{})}});});
+  }
+  queued(path,options) {
     const task=(this.httpQueue??Promise.resolve()).then(async()=>{
       for(let attempt=0;attempt<2;attempt++){
-        const spacing=(this.#credentials.environment==='mock'?1500:650)-(Date.now()-(this.lastHttpAt??0));if(spacing>0)await this.wait(spacing);
+        // Fourth review: a time from before the PC's clock was set back never stretches a wait (the spacing at most its own
+        // length; a request-limit pause at most its five minutes).
+        const gap=this.#credentials.environment==='mock'?1500:650;const spacing=Math.min(gap,gap-(Date.now()-(this.lastHttpAt??0)));if(spacing>0)await this.wait(spacing);
+        if((this.rateLimitedUntil??0)>Date.now()+300000)this.rateLimitedUntil=Date.now()+300000;
         // notSent: refused here, before the request left the app (M-1a); an order request refused so is not at KIS.
         if(Date.now()<(this.rateLimitedUntil??0)){const error=new KisError('RATE_LIMITED');error.retryAt=this.rateLimitedUntil;error.notSent=true;throw error;}
-        this.lastHttpAt=Date.now();
-        try{return await this.performRequest(path,options);}catch(error){if(error.code==='RATE_LIMITED'){this.throttleCount=(Date.now()-(this.lastThrottleAt??0)>600000?0:this.throttleCount??0)+1;this.lastThrottleAt=Date.now();this.rateLimitedUntil=Date.now()+Math.min(300000,60000*2**(this.throttleCount-1));error.retryAt=this.rateLimitedUntil;}if(options.method!=='GET'||attempt===1||!['NETWORK_UNAVAILABLE','REQUEST_TIMEOUT','SERVER_ERROR'].includes(error.code))throw error;await this.wait(1200);}
+        this.lastHttpAt=Date.now();if(path==='/oauth2/tokenP')noteTokenAt(this.transport,this.#credentials.appKey,this.lastHttpAt);// the minute counts from when a token request leaves, per app key
+        try{return await this.performRequest(path,options);}catch(error){if(error.code==='RATE_LIMITED'){this.throttleCount=(Date.now()-(this.lastThrottleAt??0)>600000?0:this.throttleCount??0)+1;this.lastThrottleAt=Date.now();this.rateLimitedUntil=Date.now()+Math.min(300000,60000*2**(this.throttleCount-1));error.retryAt=this.rateLimitedUntil;}if(options.method!=='GET'||attempt===1||KisReadOnlyClient.tokenGone(error)||!['NETWORK_UNAVAILABLE','REQUEST_TIMEOUT','SERVER_ERROR'].includes(error.code))throw error;await this.wait(1200);}
       }
     });this.httpQueue=task.catch(()=>{});return task;
   }
@@ -86,11 +137,22 @@ class KisReadOnlyClient {
       const text=await response.text();
       if(text.length>2000000) throw new KisError('INVALID_RESPONSE');
       let body;try{body=JSON.parse(text);}catch{if(response.ok)throw new KisError('INVALID_RESPONSE');}
-      if(!response.ok||body?.msg_cd==='EGW00201'){const info=require('./broker-errors.cjs').responseError(response.status,body);const error=new KisError(info.reason);error.brokerCode=info.brokerCode;error.httpStatus=info.httpStatus;throw error;}
+      if(!response.ok||body?.msg_cd==='EGW00201'||['EGW00123','EGW00121'].includes(body?.msg_cd)){const info=require('./broker-errors.cjs').responseError(response.status,body);const error=new KisError(info.reason);error.brokerCode=info.brokerCode;error.httpStatus=info.httpStatus;throw error;}
       if(!body||typeof body!=='object')throw new KisError('INVALID_RESPONSE');return {body,continuation:response.headers.get('tr_cont')};
     } catch(error) { if(error instanceof KisError)throw error;throw new KisError(['TimeoutError','AbortError'].includes(error.name)?'REQUEST_TIMEOUT':'NETWORK_UNAVAILABLE'); }
   }
-  async authenticate() {
+  // Single-flight: every caller that needs a token while one is being requested waits for that one. At most one token
+  // request a minute (tokenAt: the last request, failed or not).
+  lastTokenRequest(){return lastTokenAt(this.transport,this.#credentials.appKey);}
+  authenticate() {
+    if(this.#token && Date.now()<this.#expires) return Promise.resolve();
+    // In a send: a sign-in that would have to wait (one already running, or the minute not over) is not waited for.
+    if(SEND.getStore()&&(this.authing||Date.now()-(this.lastTokenRequest()??-Infinity)<60000)){SEND.exit(()=>this.authenticate()).catch(()=>{});return Promise.reject(tokenExpired());}
+    if(!this.authing)this.authing=this.signIn().finally(()=>{this.authing=null;});
+    return this.authing;
+  }
+  async signIn() {
+    const wait=60000-(Date.now()-this.lastTokenRequest());if(wait>0){try{this.onSignInWait?.(wait);}catch{}await this.wait(wait);}
     if(this.#token && Date.now()<this.#expires) return;
     const {body}=await this.request('/oauth2/tokenP',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({grant_type:'client_credentials',appkey:this.#credentials.appKey,appsecret:this.#credentials.appSecret})});
     if(typeof body.access_token!=='string' || !/^[A-Za-z0-9._\-+/=]+$/.test(body.access_token) || !Number.isFinite(Number(body.expires_in)) || Number(body.expires_in)<60) throw new KisError('AUTH_FAILED');
@@ -266,7 +328,10 @@ class KisReadOnlyClient {
     }
     return {open:true,basis:'KRX holiday calendar and trading hours'};
   }
-  async prepareOrder(command,session=null,{severalOpen=false}={}) {
+  // Runs fn as a send (no waiting for a sign-in): the overseas client's prepare, place and revise use it too.
+  sending(fn){return SEND.run(true,fn);}
+  prepareOrder(...args){return SEND.run(true,()=>this.prepareOrderNow(...args));}
+  async prepareOrderNow(command,session=null,{severalOpen=false}={}) {
     if(session&&!session.regular&&command?.credit!=null)throw new KisError('FEATURE_UNAVAILABLE');
     if(!command||!/^\d{6}$/.test(command.symbol)||!['Buy','Sell'].includes(command.side)||!Number.isSafeInteger(command.quantity)||command.quantity<1||command.quantity>10000||!Number.isSafeInteger(command.limitPrice)||command.limitPrice<=0)throw new KisError('INVALID_ORDER');
     if(command.credit!=null){
@@ -309,7 +374,9 @@ class KisReadOnlyClient {
     } else {{const held=balance.holdings.find(row=>row.symbol===command.symbol);capacity={tr:'balance',fields:{ord_psbl_qty:held?.availableQuantity,hldg_qty:held?.quantity}};}availableQuantity=balance.holdings.find(row=>row.symbol===command.symbol)?.availableQuantity;if(availableQuantity==null || command.quantity>availableQuantity)throw new KisError('INSUFFICIENT_CAPACITY');}
     const {orders}=await this.getActivity('orders',today,today);
     const open=require('./broker-open-orders.cjs').openGuard(orders,command,{severalOpen,fail:()=>new KisError('OPEN_BROKER_ORDERS')});
-    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{}),...(shortCash?{shortCash}:{})};
+    // The token fix, third review: today's orders at KIS (orders, not revisions), whatever their status, for the resend check.
+    const todayOrders=(orders??[]).filter(o=>!o.originalOrderId).map(o=>({orderId:String(o.orderId),symbol:o.symbol,side:o.side,quantity:Number.isFinite(o.quantity)?o.quantity:null,timestamp:Number.isFinite(o.timestamp)?o.timestamp:null,status:o.status}));
+    return {balance,price,unit,availableQuantity,checkedAt:Date.now(),...open,todayOrders,...(capacity?{capacityRaw:{...capacity,at:Date.now()}}:{}),...(shortCash?{shortCash}:{})};
   }
   // B3c: KIS's lending list for one stock (CTSC2702R, lendable-by-company), read just before a short: the row for this
   // stock as short-rules reads it, or one that is not open when the stock is not listed (not lendable now).
@@ -333,7 +400,8 @@ class KisReadOnlyClient {
     }catch(error){throw orderError(error);}
   }
   // session.route picks the exchange (KRX or NXT) and order type (00 limit).
-  async placeOrder(command,session=null) {
+  placeOrder(...args){return SEND.run(true,()=>this.placeOrderNow(...args));}
+  async placeOrderNow(command,session=null) {
     if(command.credit)return this.placeCreditOrder(command);
     await this.authenticate();await this.wait(550);
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,PDNO:command.symbol,ORD_DVSN:['00','07'].includes(session?.route?.ordDvsn)?session.route.ordDvsn:'00',ORD_QTY:String(command.quantity),ORD_UNPR:String(command.limitPrice),EXCG_ID_DVSN_CD:['KRX','NXT'].includes(session?.route?.exchange)?session.route.exchange:'KRX',SLL_TYPE:command.side==='Sell'?'01':'',CNDT_PRIC:''};
@@ -346,7 +414,8 @@ class KisReadOnlyClient {
   }
   // Revises the price of an open order, or cancels it, for all its unfilled shares (order-rvsecncl). originalOrderId
   // and organization are the order's current number and KRX forwarding organization; a revision gets a new number.
-  async reviseOrder({originalOrderId,organization,price,cancel=false,exchange='KRX'}) {
+  reviseOrder(...args){return SEND.run(true,()=>this.reviseOrderNow(...args));}
+  async reviseOrderNow({originalOrderId,organization,price,cancel=false,exchange='KRX'}) {
     if(!/^\d{1,20}$/.test(String(originalOrderId??''))||!/^\d{0,10}$/.test(String(organization??''))||!cancel&&!(Number.isSafeInteger(price)&&price>0)||!['KRX','NXT'].includes(exchange))throw new KisError('INVALID_REQUEST');
     await this.authenticate();await this.wait(550);
     const params={CANO:this.#credentials.accountNumber,ACNT_PRDT_CD:this.#credentials.accountProductCode,KRX_FWDG_ORD_ORGNO:String(organization??''),ORGN_ODNO:String(originalOrderId),ORD_DVSN:'00',RVSE_CNCL_DVSN_CD:cancel?'02':'01',ORD_QTY:'0',ORD_UNPR:cancel?'0':String(price),QTY_ALL_ORD_YN:'Y',EXCG_ID_DVSN_CD:exchange};
