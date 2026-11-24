@@ -346,7 +346,7 @@ reached a decision; the payload is JSON. Written twice by `review()`: at step 11
 | `id`, `timestamp` | review id (also the `runId` of its Console lines); time recorded |
 | `scope`, `account` | `paper`/`kis`/`us`/`both`; `{key,label}` of the account (`accountTag`, `:126`) |
 | `trigger` | the trigger string of 1.4 |
-| `provider`, `vendor`, `model` | `openai`/`local`/`external`; `openai`/`anthropic`; the model id the provider reported |
+| `provider`, `vendor`, `model` | who decided: `ai` (an AI model of either company; records before provider-naming P1 say `openai` for this and are read as `ai`, `decision-names.cjs readRecord`), `local` or `external`; the company, `openai` or `anthropic`, always written for an AI decision (an old record without it takes the company of its model; with no recognisable model, none, and a screen says "AI"); the model id the provider reported. Stored rows are never rewritten; the review history, the runtime brief and the export read them through `readRecord`. A dry run row's `review` carries `vendor` too |
 | `instructions` | which instruction set was used (`ai-client.cjs` `instructions(context)`; section 3.1) |
 | `reviewScope` | `broad` or `routine` when focused reviews are on |
 | `alerts` | which price-alert rules were in force (`alertTag`, `:1367`) |

@@ -67,7 +67,7 @@ test('every schema after translation has no unsupported keyword, no union type, 
 });
 test('a Hold after a thinking block is decided, with Anthropic usage, vendor and size',async()=>{
   const t=transport(claudeReply());const r=await client(t).decide(CTX,OPTS);
-  assert.equal(r.decision.action,'Hold');assert.equal(r.provider,'openai','design T2: safety code branches on provider');assert.equal(r.vendor,'anthropic');assert.equal(r.model,'claude-opus-5-5');
+  assert.equal(r.decision.action,'Hold');assert.equal(r.provider,'ai','provider-naming P1 (was openai, design T2): the safety code branches on an AI decision, whichever company');assert.equal(r.vendor,'anthropic');assert.equal(r.model,'claude-opus-5-5');
   assert.deepEqual(r.usage,{inputTokens:13200,outputTokens:400,cachedTokens:9000,cacheWriteTokens:3000,reasoningTokens:null,serviceTier:'standard'});
   assert.ok(r.responseChars>100);assert.equal(r.droppedThinking,0);assert.ok(!('toolCalls' in r));
   // Text split across blocks is joined; Korean text and ₩ pass through.

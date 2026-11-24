@@ -45,7 +45,7 @@ const brief=d=>d?{action:d.action,symbol:d.symbol||null,quantity:d.quantity||0,.
 const replayOrders=context=>Number.isInteger(context?.ordersPerReview)&&context.ordersPerReview>1?context.ordersPerReview:1;
 // Picks recent reviews with a saved context; logged contexts from before saving began are used when they parse, marked approximate.
 function candidates({reviews,store,events,from,to,limit}){
-  const out=[];for(const r of reviews){const day=new Date(r.timestamp+9*3600000).toISOString().slice(0,10);if(from&&day<from||to&&day>to)continue;if(r.provider!=='openai')continue;
+  const out=[];for(const r of reviews){const day=new Date(r.timestamp+9*3600000).toISOString().slice(0,10);if(from&&day<from||to&&day>to)continue;if(!require('./decision-names.cjs').isAi(r.provider))continue;
     let context=store.context(r.id),approximate=false;if(!context){const logged=events.find(e=>e.runId===r.id&&e.title==='Supplied context');try{context=logged?JSON.parse(logged.body):null;approximate=Boolean(context);}catch{context=null;}}
     if(context&&Array.isArray(context.universe))out.push({review:r,day,context,approximate});if(out.length>=limit)break;}
   return out;

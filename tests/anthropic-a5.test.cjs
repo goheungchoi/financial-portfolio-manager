@@ -71,11 +71,11 @@ test('A5: Claude calls get their own timeout, and the worker cap leaves room for
   const svc=fs.readFileSync(path.join(__dirname,'../electron/kis-service.cjs'),'utf8');assert.ok(svc.includes("this.workerScript==='provider-worker.cjs'?require('./ai-router.cjs').workerCapMs(operation,payload):90000"),'only the provider worker gets the AI cap');
 });
 test('A5: saved reviews carry their vendor; a Claude trading model is refused with words the user can act on',async()=>{
-  const {a,db}=harness(BOTH);await a.review('User request');const row=JSON.parse(db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);assert.equal(row.vendor,'openai');assert.equal(row.provider,'openai');
+  const {a,db}=harness(BOTH);await a.review('User request');const row=JSON.parse(db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);assert.equal(row.vendor,'openai');assert.equal(row.provider,'ai','provider-naming P1: an AI decision is ai; the company is vendor');
   // A Claude decision (as the stage D go-live will route it) is recorded as anthropic.
   // Claude trading D-1 added a review-time check (dry run, key, consent); it is tested in claude-trading.test.cjs. Here the
   // record's vendor is the subject, so the check is passed.
-  const h=harness(BOTH);h.a.config.openaiModel='claude-opus-5-5';h.a.config.reasoningEffort='medium';h.a.claudeTradingRefusal=()=>null;await h.a.review('User request');const row2=JSON.parse(h.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);assert.equal(row2.vendor,'anthropic');
+  const h=harness(BOTH);h.a.config.openaiModel='claude-opus-5-5';h.a.config.reasoningEffort='medium';h.a.claudeTradingRefusal=()=>null;await h.a.review('User request');const row2=JSON.parse(h.db.prepare('SELECT payload FROM reviews ORDER BY rowid DESC LIMIT 1').get().payload);assert.equal(row2.vendor,'anthropic');assert.equal(row2.provider,'ai','a Claude decision is an AI decision, not openai (provider-naming P1)');
   // Claude trading D-3 opened the gate: without a qualifying dry run the save is refused by the D-1 condition, in words.
   assert.throws(()=>harness(BOTH).a.configure({openaiModel:'claude-opus-5-5',reasoningEffort:'medium'}),/CLAUDE_TRADING_DRY_RUN/);
   // Claude trading D-1 added the save-condition codes (CLAUDE_TRADING_*) to what reaches the settings page.

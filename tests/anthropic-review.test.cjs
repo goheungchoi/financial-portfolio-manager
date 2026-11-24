@@ -92,10 +92,10 @@ test('A4: settle stores vendor, responseChars and the real Opus cost for a compl
   assert.equal(settle(db,'ai_usage','d','gpt',{usage:{inputTokens:1,outputTokens:1,cachedTokens:0,cacheWriteTokens:0}},'completed').vendor,'openai');
   const total=db.prepare('SELECT reservedMicro FROM ai_usage WHERE day=?').get('d').reservedMicro;assert.ok(total<1000000,'reservations replaced by real costs');
 });
-test('A4: position-memory enforcement runs on a Claude decision (provider stays "openai", design T2)',async()=>{
+test('A4: position-memory enforcement runs on a Claude decision (an AI decision, provider "ai" since provider-naming P1)',async()=>{
   const pm=require('../electron/position-memory.cjs');const original=pm.enforce;const seen=[];pm.enforce=(decision,...rest)=>{seen.push(decision.action);return original(decision,...rest);};
   try{const t=transport(reply());const {a,ops}=automation(t);const r=await a.review('User request').catch(e=>{throw new Error(a.lastError+' '+a.lastErrorDetail);});
-    assert.ok(ops.includes('decision'));assert.ok(t.sent.length>=1,'the Claude transport was used');assert.deepEqual(seen,['Hold'],'enforce saw the Claude decision');assert.equal(r.provider,'openai');}
+    assert.ok(ops.includes('decision'));assert.ok(t.sent.length>=1,'the Claude transport was used');assert.deepEqual(seen,['Hold'],'enforce saw the Claude decision');assert.equal(r.provider,'ai');}
   finally{pm.enforce=original;}
 });
 test('A4: a Claude format failure counts toward the review backoff; a completed review clears it',async()=>{

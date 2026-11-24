@@ -277,7 +277,7 @@ class AnthropicClient {
       if(call.responseChars>C.RESPONSE_CHAR_LIMIT)throw fail(`a response of ${C.kb(call.responseChars)}, above the ${C.kb(C.RESPONSE_CHAR_LIMIT)} limit`);
       reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;if(typeof reply.stop_reason==='string')call.stopReason=reply.stop_reason.replace(/[^a-z_]/g,'').slice(0,30);
       const blocks=Array.isArray(reply.content)?reply.content:[];
-      const base={usage:reportedUsage,provider:'openai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking:(reply.input_transformations??[]).filter(t=>t?.type==='thinking_dropped').length,stopReason:typeof reply.stop_reason==='string'?reply.stop_reason.slice(0,30):null,requestSizes:call.sizes};
+      const base={usage:reportedUsage,provider:'ai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking:(reply.input_transformations??[]).filter(t=>t?.type==='thinking_dropped').length,stopReason:typeof reply.stop_reason==='string'?reply.stop_reason.slice(0,30):null,requestSizes:call.sizes};
       if(reply.stop_reason==='refusal'){const category=String(reply.stop_details?.category??'').replace(/[^a-z_]/g,'').slice(0,30);throw Object.assign(new Error('AI_REFUSED'),{stopReason:'refusal',detail:{rule:`a refusal${category?` (${category})`:''}`}});}
       if(reply.stop_reason==='max_tokens')throw Object.assign(new Error('AI_OUTPUT_LIMIT'),{stopReason:'max_tokens'});
       const calls=blocks.filter(b=>b?.type==='tool_use');
@@ -374,7 +374,7 @@ class AnthropicClient {
       const blocks=Array.isArray(reply.content)?reply.content:[];
       const droppedThinking=(reply.input_transformations??[]).filter(t=>t?.type==='thinking_dropped').length;
       // B2: the stop reason and the measured request sizes go with each reply, for the dry run's measurement.
-      const base={usage:reportedUsage,provider:'openai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking,stopReason:typeof reply.stop_reason==='string'?reply.stop_reason.slice(0,30):null,requestSizes:call.sizes};
+      const base={usage:reportedUsage,provider:'ai',vendor:'anthropic',model:returnedModel,responseChars:call.responseChars,droppedThinking,stopReason:typeof reply.stop_reason==='string'?reply.stop_reason.slice(0,30):null,requestSizes:call.sizes};
       if(reply.stop_reason==='refusal'){const category=String(reply.stop_details?.category??'').replace(/[^a-z_]/g,'').slice(0,30);throw Object.assign(new Error('AI_REFUSED'),{stopReason:'refusal',requestSizes:call.sizes,detail:{rule:`a refusal${category?` (${category})`:''}`}});}
       if(reply.stop_reason==='max_tokens')throw Object.assign(new Error('AI_OUTPUT_LIMIT'),{stopReason:'max_tokens',requestSizes:call.sizes,usage:reportedUsage});
       const calls=blocks.filter(b=>b?.type==='tool_use');

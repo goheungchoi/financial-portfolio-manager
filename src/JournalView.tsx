@@ -12,7 +12,10 @@ import {ScreenList,type ScreenRecord} from './ScoutScreens';
 import type {DeskState} from './RuntimeSettings';
 import {JOURNAL_TABS,journalTab,journalBadges,firstSentences,decisionFacts,orderPill,ordersOf,batchCounts,batchAction,matchesAction} from './journalTabs';
 type Review=RuntimeState['reviews'][number];
-const PROVIDER:Record<string,string>={local:'Local rules',openai:'OpenAI',external:'External agent'};
+// Who decided (provider-naming P1): an AI decision names its company from vendor (the main process fills it from the
+// model for old records); with neither known it says AI, never a company. 'openai' is the old word for any AI decision.
+const PROVIDER:Record<string,string>={local:'Local rules',ai:'AI',openai:'AI',external:'External agent'};
+const VENDOR:Record<string,string>={anthropic:'Claude',openai:'OpenAI'};
 const day=(t:number)=>new Date(t).toLocaleDateString('en-CA');
 const clock=(t:number)=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 const withheldOf=(r:Review)=>(r.decision as {withheld?:{symbol:string}}).withheld;
@@ -35,7 +38,7 @@ function DecisionDetail({review,state,onNavigate,onLessons}:{review:Review;state
   const facts=decisionFacts(review as never,usage);
   return <article className="journal-entry thread" aria-label="Decision detail" data-id={review.id}>
     <div className="thread-head"><div><h3>{!all&&<><span className={'decision-tag '+review.decision.action.toLowerCase()}>{review.decision.action}</span> </>}{title(review)}</h3><small>{day(review.timestamp)} {clock(review.timestamp)} · {review.emergency?'Emergency review':review.trigger}</small></div><span className={`outcome-pill tone-${review.decision.action.toLowerCase()}`}>{result}</span></div>
-    <div className="bubble from-ai"><div className="bubble-head"><span className="who">{(review as {vendor?:string}).vendor==='anthropic'?'Claude':PROVIDER[review.provider]??review.provider}</span></div><p aria-label="Explanation">{whole||!text.more?review.decision.explanation:text.short}{text.more&&<> <button className="link-button" aria-expanded={whole} aria-label={whole?'Show less of the explanation':'Show the whole explanation'} onClick={()=>setWhole(v=>!v)}>{whole?'Less':'More'}</button></>}</p></div>
+    <div className="bubble from-ai"><div className="bubble-head"><span className="who">{VENDOR[(review as {vendor?:string}).vendor??'']??PROVIDER[review.provider]??review.provider}</span></div><p aria-label="Explanation">{whole||!text.more?review.decision.explanation:text.short}{text.more&&<> <button className="link-button" aria-expanded={whole} aria-label={whole?'Show less of the explanation':'Show the whole explanation'} onClick={()=>setWhole(v=>!v)}>{whole?'Less':'More'}</button></>}</p></div>
     {all&&<div className="detail-block" aria-label="Orders of this review"><div className="thread-label">Orders</div>{all.map(o=><div key={o.item} className="meta-line"><b>{o.action} {o.symbol} ×{o.quantity}</b><span className="outcome-pill">{orderPill(o)}</span>{o.executionNote&&<small>{o.executionNote}</small>}</div>)}</div>}
     <div className="decision-facts" aria-label="Decision facts">{facts.map(f=><div key={f.label} className="decision-fact"><small>{f.label}</small><span>{f.value}</span></div>)}</div>
     <details className="inline-help decision-more" aria-label="More about this decision" open={more} onToggle={e=>setMore((e.currentTarget as HTMLDetailsElement).open)}><summary>More</summary>

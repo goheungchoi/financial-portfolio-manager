@@ -251,7 +251,7 @@ class AiClient {
       const text=await response.text();if(text.length>RESPONSE_CHAR_LIMIT)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
       if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
       const output=(body.output??[]).filter(i=>i.type==='message').flatMap(i=>i.content??[]).filter(i=>i.type==='output_text').map(i=>i.text).join('');
-      return {...JSON.parse(output),usage:reportedUsage,provider:'openai',model:returnedModel};
+      return {...JSON.parse(output),usage:reportedUsage,provider:'ai',model:returnedModel};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;throw safe;}
   }
   async narrative(context,options={}) {
@@ -264,7 +264,7 @@ class AiClient {
       if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
       if((body.output??[]).some(i=>(i.content??[]).some(c=>c.type==='refusal')))throw new Error('AI_REFUSED');
       const output=(body.output??[]).filter(i=>i.type==='message').flatMap(i=>i.content??[]).filter(i=>i.type==='output_text').map(i=>i.text).join('');
-      return {narrative:JSON.parse(output),usage:reportedUsage,provider:'openai',model:returnedModel};
+      return {narrative:JSON.parse(output),usage:reportedUsage,provider:'ai',model:returnedModel};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;throw safe;}
   }
   // Scout research run: discovery and company-research tools, answered with a portfolio plan. The size limit applies to
@@ -288,11 +288,11 @@ class AiClient {
         // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never treated as a failed run.
         if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||call.name!=='run_screen'&&(typeof call.arguments!=='string'||call.arguments.length>2000)))throw invalid('a tool request was malformed');
         let toolCalls;try{toolCalls=calls.map(call=>({name:names.includes(call.name)?call.name:'unknown:'+String(call.name).slice(0,40),callId:call.call_id,args:call.name==='run_screen'?require('./scout.cjs').screenArgs(call.arguments):JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments were not valid JSON');}
-        return {toolCalls,continuation:[...input,...body.output],usage:reportedUsage,provider:'openai',model:returnedModel,...(options.final?{finalToolUse:true}:{})};
+        return {toolCalls,continuation:[...input,...body.output],usage:reportedUsage,provider:'ai',model:returnedModel,...(options.final?{finalToolUse:true}:{})};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       let parsed;try{parsed=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:output.trim()?'the plan was not valid JSON':'the model returned no plan and no tool request'});}
-      try{const skippedTargets=[];const plan=scout.validatePlan(parsed,skippedTargets);return {plan,answer:parsed,skippedTargets,usage:reportedUsage,provider:'openai',model:returnedModel};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}
+      try{const skippedTargets=[];const plan=scout.validatePlan(parsed,skippedTargets);return {plan,answer:parsed,skippedTargets,usage:reportedUsage,provider:'ai',model:returnedModel};}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:'the plan did not match the required format'});}
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;if(error.detail)safe.detail=error.detail;throw safe;}
   }
   // Sends a request and keeps the size of its parts (input, instructions, tool definitions) for size reports.
@@ -328,7 +328,7 @@ class AiClient {
         // A run_screen request of any size or shape is answered by the tool (scout.screenArgs), never a failed review.
         if(calls.some(call=>typeof call.call_id!=='string'||call.call_id.length>200||call.name!=='run_screen'&&(typeof call.arguments!=='string'||call.arguments.length>(call.name==='save_assessment'?6000:2000))))throw invalid('a malformed or oversized tool request');
         let toolCalls;try{toolCalls=calls.map(call=>({name:call.name,callId:call.call_id,args:call.name==='run_screen'?require('./scout.cjs').screenArgs(call.arguments):JSON.parse(call.arguments)}));}catch{throw invalid('tool arguments that are not valid JSON');}
-        return {...(options.final?{finalToolUse:true}:{}),toolCalls,continuation:[...input,...body.output],stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars};
+        return {...(options.final?{finalToolUse:true}:{}),toolCalls,continuation:[...input,...body.output],stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'ai',model:body.model??selected.model,responseChars};
       }
       const output=(body.output??[]).filter(item=>item.type==='message').flatMap(item=>item.content??[]).filter(item=>item.type==='output_text').map(item=>item.text).join('');
       if(output.length>DECISION_OUTPUT_CHAR_LIMIT)throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:`a decision of ${kb(output.length)}, above the ${kb(DECISION_OUTPUT_CHAR_LIMIT)} limit`,status:body.status}});
@@ -338,7 +338,7 @@ class AiClient {
       let raw;try{raw=JSON.parse(output);}catch{throw Object.assign(new Error('INVALID_AI_RESPONSE'),{detail:{rule:output.trim()?'a decision that is not valid JSON':'no decision and no tool request',status:body.status}});}
       const memory=validationMemory(context,options);const decision=validateDecision(raw,context.universe.map(row=>row.symbol),{requirePlan:true,memory,quotes:options.validation?.quotes??context.quotes??[],context,more:furtherOrders(options)});
       // A Buy held back for an incomplete plan keeps its conversation, so the review can ask once for the missing field.
-      return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'openai',model:body.model??selected.model,responseChars,...(correctable(decision)?{continuation:[...input,...body.output]}:{})};
+      return {decision,stopReason:typeof body.status==='string'?body.status.slice(0,30):null,requestSizes:this.lastRequestSizes??null,usage:require('./ai-models.cjs').normalizeUsage(body),provider:'ai',model:body.model??selected.model,responseChars,...(correctable(decision)?{continuation:[...input,...body.output]}:{})};
     }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;safe.responseChars=responseChars;if(error.detail)safe.detail=error.detail;throw safe;}
   }
 }

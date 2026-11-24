@@ -48,7 +48,7 @@ class Scoreboard {
         return {days,status:benchmark==null?'no-benchmark':'scored',endDay:target.day,stockReturn:stock,benchmarkReturn:benchmark,signedReturn:sign*stock,excess:benchmark==null?null:sign*(stock-benchmark)};
       });
       const ids=Array.isArray(review.contextEvidence?.lessonIds)?review.contextEvidence.lessonIds:null;
-      return {id:review.id,timestamp:review.timestamp,day,symbol,action,confidence:review.decision.plan?.confidence??null,quantity:review.decision.quantity??0,provider:review.provider,model:review.model??null,executed:Boolean(review.orderId),benchmark:benchmarkOf(symbol),decisionPrice:Number.isFinite(quote)?quote:null,baseClose:base?.close??null,baseDay:base?.day??null,horizons,lessonIds:ids,lessonTexts:review.contextEvidence?.reviewedLessons??[]};
+      return {id:review.id,timestamp:review.timestamp,day,symbol,action,confidence:review.decision.plan?.confidence??null,quantity:review.decision.quantity??0,provider:require('./decision-names.cjs').decisionMakerOf(review.provider),model:review.model??null,executed:Boolean(review.orderId),benchmark:benchmarkOf(symbol),decisionPrice:Number.isFinite(quote)?quote:null,baseClose:base?.close??null,baseDay:base?.day??null,horizons,lessonIds:ids,lessonTexts:review.contextEvidence?.reviewedLessons??[]};
     });
   }
   summary(decisions,filter=()=>true){return Object.fromEntries(HORIZONS.map(days=>[days,stats(decisions.filter(filter).map(d=>d.horizons.find(h=>h.days===days)).filter(h=>h?.status==='scored').map(h=>h.excess))]));}
