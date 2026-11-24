@@ -42,6 +42,32 @@ function startNotice({previousStop,stops,wasRunning,trailing=0,watched=false,now
   return {title,message,how,armedStops:hasStops(stops)?stops.count:0,...(trailing>0?{trailingStops:trailing}:{}),wasRunning:Boolean(wasRunning),stopKind:previousStop.kind};
 }
 
+/**
+ * The notice as it stands now (found in live use on 1.5.74: the setting turned on after a stopped start left "not
+ * watched" on Home beside "still watched"): the launch facts (base: previousStop, wasRunning) with the present stops and
+ * watch state, so it always agrees with what the app does. Null without a launch notice, or when nothing is left to say.
+ */
+function currentNotice(base,{stops,trailing=0,watched=false,now=Date.now()}){if(!base?.previousStop)return null;return startNotice({previousStop:base.previousStop,wasRunning:Boolean(base.wasRunning),stops,trailing:watched?0:trailing,watched,now});}
+/**
+ * Once KIS is connected, with the setting on (review of the start-notice fix): what a hit stop does in each market, from
+ * the engine's permit as it holds now. markets: [{market:'KR'|'US', stops:n, state:'sent'|'proposed'|'not'}] for the
+ * markets with armed stops. 'sent': the permit holds with auto (sent by itself); 'proposed': it holds without (only
+ * proposed for your approval until the next Start); 'not': no permit (another account, an unclear order, Stop everything,
+ * or a market its record does not allow). All 'not': the not-watched notice. Null without a launch notice.
+ */
+// An engine's permit as it holds now: 'not' (none, or for another account), 'sent' (auto), 'proposed' (without auto).
+function permitState(e){let holds=false;try{holds=Boolean(e?.permitHolds?.());}catch{holds=false;}return !holds?'not':e.conditionalPermit?.auto===true?'sent':'proposed';}
+const where=m=>m==='US'?'the U.S.':'Korea',tab=m=>m==='US'?'the U.S. tab':'the Korea tab';
+const orders=n=>`${n} stop order${n===1?'':'s'}`,isAre=n=>n===1?'is':'are';
+function connectedNotice(base,{markets,now=Date.now()}){if(!base?.previousStop)return null;const ms=(markets??[]).filter(m=>m.stops>0);
+  if(!ms.length||ms.every(m=>m.state==='not'))return currentNotice(base,{stops:{count:ms.reduce((s,m)=>s+m.stops,0),any:ms.length>0},watched:false,now});
+  const how=stopSentence(base.previousStop,now);const total=ms.reduce((s,m)=>s+m.stops,0),states=new Set(ms.map(m=>m.state));const one=ms.length===1;
+  const line=m=>m.state==='sent'?`${orders(m.stops)}${one?'':` in ${where(m.market)}`} ${isAre(m.stops)} watched and sent by ${m.stops===1?'itself':'themselves'} if hit.`
+    :m.state==='proposed'?`${orders(m.stops)}${one?'':` in ${where(m.market)}`} ${isAre(m.stops)} watched, but a hit stop is only proposed: it sells nothing until you approve it on ${tab(m.market)}. "Submit them automatically" takes effect at the next Start.`
+    :`${orders(m.stops)}${one?'':` in ${where(m.market)}`} ${isAre(m.stops)} not being watched now.`;
+  const title=states.size===1?(states.has('sent')?`Paused: ${orders(total)} watched`:`Paused: ${orders(total)} watched, proposed only`):'Paused: stop orders partly watched';
+  const message=[how,'The app started and auto trading is paused.',...ms.map(line),'Press Start auto trading to resume reviews.'].filter(Boolean).join(' ');
+  return {title,message,how,armedStops:total,wasRunning:Boolean(base.wasRunning),stopKind:base.previousStop.kind,markets:ms.map(m=>({market:m.market,stops:m.stops,state:m.state}))};}
 /** The phone message when Windows ends the session, or null when there is nothing to warn about. */
 function sessionEndMessage({stops,running}){
   const armed=hasStops(stops);if(!armed&&!running)return null;
@@ -62,6 +88,9 @@ function armedStops(db,{scope=null,now=Date.now()}={}){
     if(known){const count=live.filter(r=>r.scope===scope).length;return {count,any:count>0};}
     return {count:null,any:live.some(r=>r.scope!=='paper'&&!r.scope.startsWith('paper:'))};}catch{return {count:null,any:false};}
 }
+// The watched account's armed, unexpired stop-loss orders per market ({KR, US}); zeros when the account is not known.
+function armedStopsByMarket(db,{scope=null,now=Date.now()}={}){const out={KR:0,US:0};try{if(typeof scope!=='string'||!scope.includes(':')||scope.endsWith(':disconnected'))return out;
+  for(const r of db.prepare("SELECT payload FROM conditional_orders WHERE status='armed' AND scope=?").all(scope)){let o=null;try{o=JSON.parse(r.payload);}catch{}if(o?.purpose==='stop_loss'&&Number(o.expiresAt)>now)out[String(o.symbol).includes(':')?'US':'KR']++;}}catch{}return out;}
 // Armed, unexpired trailing stops (stop_loss or take_profit with a trail) of the watched account; 0 when it is not known.
 function armedTrailing(db,{scope=null,now=Date.now()}={}){try{if(typeof scope!=='string'||!scope.includes(':'))return 0;return db.prepare("SELECT payload FROM conditional_orders WHERE status='armed' AND scope=?").all(scope).map(r=>{try{return JSON.parse(r.payload);}catch{return null;}}).filter(o=>o?.trail&&Number(o.expiresAt)>now).length;}catch{return 0;}}
-module.exports={stopSentence,startNotice,sessionEndMessage,armedStops,armedTrailing};
+module.exports={stopSentence,startNotice,currentNotice,connectedNotice,permitState,sessionEndMessage,armedStops,armedStopsByMarket,armedTrailing};

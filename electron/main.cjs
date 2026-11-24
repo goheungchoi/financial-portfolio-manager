@@ -4,7 +4,10 @@ let mainWindow=null;const chartWindows=new Map();
 // How the app last stopped (restart part 1, step 1): this run's exit record and the previous run's stop.
 let exitRecord=null,previousStop=null;
 // The start notice (step 2): shown on Home until auto trading is started or it is dismissed.
-let restartNotice=null,restartNoticeDismissed=false;
+// restartNotice: the notice made at launch (its phone message); restartBase: the launch facts the Home item is recomputed
+// from at every read (start-notice currentNotice); restartNoticeDismissed: the title the user dismissed, so a changed
+// statement shows again.
+let restartNotice=null,restartBase=null,restartNoticeDismissed=null;
 app.on('second-instance',()=>{const window=mainWindow&&!mainWindow.isDestroyed()?mainWindow:BrowserWindow.getAllWindows()[0];if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
 const { PortfolioStore } = require('./storage.cjs');
 const { KisService } = require('./kis-service.cjs');
@@ -354,7 +357,7 @@ app.whenReady().then(async () => {
   try{const N=require('./start-notice.cjs');restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),trailing:automation.config.trailingStops===true&&automation.config.conditionalOrders?N.armedTrailing(store.db,{scope:previousStop?.scope??null}):0,wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit)});
   // Orders while stopped, B-4: with the setting on, the armed orders are watched once KIS connects (no Start needed; trailing stops catch up with the watch).
   try{const N=require('./start-notice.cjs'),v=automation.watchStopped.get();if(restartNotice&&v&&!v.everythingStopped&&automation.config.conditionalOrders&&automation.config.scope!=='paper')restartNotice=N.startNotice({previousStop,stops:N.armedStops(store.db,{scope:previousStop?.scope??null}),wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit),watched:true});}catch{}
-    if(restartNotice){const id='restart-notice:'+(exitRecord?.current?.startedAt??Date.now());setTimeout(()=>{try{notifier.notify(id,restartNotice.message);}catch{}},3000);}}catch{}
+    if(restartNotice){restartBase={previousStop,wasRunning:Boolean(automation.config.enabled&&automation.config.autoSubmit)};const id='restart-notice:'+(exitRecord?.current?.startedAt??Date.now());setTimeout(()=>{try{notifier.notify(id,restartNotice.message);}catch{}},3000);}}catch{}
   agentBridge=require('./agent-bridge.cjs').startBridge(app.getPath('userData'),paper,decision=>automation.review('External agent',decision));
   automation.evidence=new (require('./market-evidence.cjs').MarketEvidence)(async(args,context)=>{
     if(context.environment==='local-paper'){
@@ -772,16 +775,23 @@ app.whenReady().then(async () => {
     try{for(const f of automation.desk.planStopFailures(automation.watchScope()))items.push({id:'plan-stop-'+f.id,tone:'warning',title:`No stop order for the purchase of ${f.symbol}`,detail:`${f.quantity} ${f.symbol}: ${f.reason}`,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
     // A plan stop armed fixed although its plan gave a trail (found in live use): until the trail is added at the fill.
     try{for(const o of automation.desk.plannedTrailsMissing(automation.watchScope()))items.push({id:'plan-trail-'+o.id,tone:'warning',title:`Stop for ${o.symbol} has no trailing`,detail:`A fixed stop at ${(v=>/:/.test(o.symbol)?Number(v).toFixed(2):Math.round(v).toLocaleString('en-US'))(o.conditions?.[0]?.value)} protects ${o.quantity} ${o.symbol}; its plan gave a trail. ${o.trailWanted&&o.linkedBuy?'The trail is added when the purchase fills. ':''}Why: ${o.trailNotUsed}`,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
-    try{if(restartNotice&&!restartNoticeDismissed&&!require('./auto-launch.cjs').launchState(automation).running)items.push({id:'restart-notice',tone:'warning',title:restartNotice.title,detail:restartNotice.message,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers',dismissible:true});}catch{}
+    try{const rn=currentRestartNotice();if(rn&&restartNoticeDismissed!==rn.title&&!require('./auto-launch.cjs').launchState(automation).running)items.push({id:'restart-notice',tone:'warning',title:rn.title,detail:rn.message,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers',dismissible:true});}catch{}
     if(updates.view().status==='downloaded')items.push({id:'update',tone:'info',title:`Version ${updates.view().available?.version} is ready to install`,detail:'Install from Connections when no trading is active.',tab:'Connections',action:'Install'});
     return {items,counts};
   };
+  // The start notice as it stands now: watched while the setting is on and Stop everything has not run (as at launch, once
+  // KIS connects), not watched otherwise; the watched account's present stops.
+  function currentRestartNotice(){if(!restartBase)return null;const N=require('./start-notice.cjs');const scope=restartBase.previousStop?.scope??null;let watched=false;try{const v=automation.watchStopped.get();watched=Boolean(v&&!v.everythingStopped&&automation.config.conditionalOrders&&automation.config.scope!=='paper');}catch{}
+    // Connected with the setting on: each market's permit as it holds now (sent by itself, only proposed, or not watched).
+    if(watched&&automation.connectedAccount?.()){const by=N.armedStopsByMarket(store.db,{scope});const state=m=>N.permitState(m==='US'?usLive:live);
+      return N.connectedNotice(restartBase,{markets:['KR','US'].map(m=>({market:m,stops:by[m],state:state(m)}))});}
+    return N.currentNotice(restartBase,{stops:N.armedStops(store.db,{scope}),trailing:automation.config.trailingStops===true&&automation.config.conditionalOrders?N.armedTrailing(store.db,{scope}):0,watched});}
   ipcMain.handle('workspace:attention',event=>{authorize(event);return attentionState();});
   // Start with Windows (restart part 1, step 3): read from Windows each time; set only by the installed app; a fake in test runs.
   const loginItem=require('./login-item.cjs').createLoginItem({app,packaged:app.isPackaged,fake:process.env.PORTFOLIO_SMOKE_DATA?{on:false}:null});
   ipcMain.handle('system:login-item',event=>{authorize(event);return loginItem.get();});
   ipcMain.handle('system:set-login-item',(event,on)=>{authorize(event);try{return loginItem.set(on);}catch{return {...loginItem.get(),error:'Invalid request.'};}});
-  ipcMain.handle('workspace:dismiss',(event,id)=>{authorize(event);if(id==='restart-notice')restartNoticeDismissed=true;
+  ipcMain.handle('workspace:dismiss',(event,id)=>{authorize(event);if(id==='restart-notice'){let t=null;try{t=currentRestartNotice()?.title??null;}catch{}restartNoticeDismissed=t;}
     else if(typeof id==='string'&&/^flow-ask-[\w-]{1,80}$/.test(id)){const a=kisState.snapshot?.accountKey;if(a)flowDetector.dismissAsk(a,id.slice('flow-ask-'.length));}
     else if(typeof id==='string'&&/^stop-notice-[\w-]{1,80}$/.test(id))automation.acknowledgeStopNotice(id.slice('stop-notice-'.length));
     return attentionState();});

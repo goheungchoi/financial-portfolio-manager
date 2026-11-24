@@ -396,3 +396,17 @@ test('B-4 review 4: a price hovering at the stop level is one held episode: one 
   assert.equal(w.events.filter(e=>e.title==='Conditional order · waiting').length,1,'one Activity line');assert.equal(stamps.size,1,'one episode stamp');
   assert.deepEqual(lines2,Array.from({length:12},(_,i)=>i%2===0),'Home follows the live state');assert.equal(row().status,'armed');assert.equal(w.placed.length,0);
 });
+test('the start notice\'s permit state (review of the start-notice fix): proposed without a record, sent after Start, not after an unclear order or with another account',()=>{
+  const N=require('../electron/start-notice.cjs');const w=world();w.policy();w.on();w.a.syncConditionalPermits();
+  assert.equal(N.permitState(w.live),'proposed','no switches record yet: only proposed');
+  w.start();AL.stop(w.a);w.a.syncConditionalPermits();assert.equal(N.permitState(w.live),'sent','after Start with Submit automatically on');
+  w.live.save({id:'U1',accountKey:'acct',source:'kis',environment:'mock',market:'KR',currency:'KRW',symbol:SYM,side:'Sell',quantity:1,limitPrice:1000,status:'Uncertain',reason:'ORDER_UNCERTAIN',day:'2026-11-25',createdAt:Date.now()});
+  w.a.syncConditionalPermits();assert.equal(N.permitState(w.live),'not','an unclear order revokes it');
+  const x=world();x.policy();x.on();x.a.syncConditionalPermits();x.setSnapshot({accountKey:'other'});x.a.syncConditionalPermits();assert.equal(N.permitState(x.live),'not','another account');
+  const base={previousStop:{kind:'clean',at:Date.now()-3600000},wasRunning:false};
+  assert.equal(N.connectedNotice(base,{markets:[{market:'KR',stops:2,state:'proposed'}]}).title,'Paused: 2 stop orders watched, proposed only');
+  assert.match(N.connectedNotice(base,{markets:[{market:'KR',stops:2,state:'proposed'}]}).message,/sells nothing until you approve it on the Korea tab/);
+  assert.equal(N.connectedNotice(base,{markets:[{market:'KR',stops:2,state:'sent'}]}).title,'Paused: 2 stop orders watched');
+  assert.equal(N.connectedNotice(base,{markets:[{market:'KR',stops:2,state:'not'}]}).title,'Paused: 2 stop orders not watched');
+  assert.equal(N.connectedNotice(base,{markets:[{market:'KR',stops:2,state:'proposed'},{market:'US',stops:1,state:'not'}]}).title,'Paused: stop orders partly watched');
+});

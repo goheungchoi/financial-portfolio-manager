@@ -77,8 +77,22 @@ test('main.cjs wiring: the notice once per start for the last run\'s account; th
   assert.match(src,/restartNotice=N\.startNotice\(\{previousStop,stops:N\.armedStops\(store\.db,\{scope:previousStop\?\.scope\?\?null\}\),trailing:automation\.config\.trailingStops===true&&automation\.config\.conditionalOrders\?N\.armedTrailing\(store\.db,\{scope:previousStop\?\.scope\?\?null\}\):0,wasRunning:Boolean\(automation\.config\.enabled&&automation\.config\.autoSubmit\)\}\)/);
   assert.match(src,/exitRecord\.heartbeat\(scope\);\},60000\)\.unref\(\)/);
   assert.match(src,/const id='restart-notice:'\+\(exitRecord\?\.current\?\.startedAt\?\?Date\.now\(\)\);setTimeout\(\(\)=>\{try\{notifier\.notify\(id,restartNotice\.message\);\}catch\{\}\},3000\);/);
-  assert.match(src,/if\(restartNotice&&!restartNoticeDismissed&&!require\('\.\/auto-launch\.cjs'\)\.launchState\(automation\)\.running\)items\.push\(\{id:'restart-notice'/);
+  // Found in live use on 1.5.74: the Home item is recomputed from the present watch state at every read; a dismissal holds
+  // for the statement dismissed.
+  assert.match(src,/const rn=currentRestartNotice\(\);if\(rn&&restartNoticeDismissed!==rn\.title&&!require\('\.\/auto-launch\.cjs'\)\.launchState\(automation\)\.running\)items\.push\(\{id:'restart-notice',tone:'warning',title:rn\.title,detail:rn\.message,/);
+  assert.match(src,/if\(restartNotice\)\{restartBase=\{previousStop,wasRunning:Boolean\(automation\.config\.enabled&&automation\.config\.autoSubmit\)\};/);
+  assert.match(src,/watched=Boolean\(v&&!v\.everythingStopped&&automation\.config\.conditionalOrders&&automation\.config\.scope!=='paper'\);/);
+  assert.match(src,/if\(id==='restart-notice'\)\{let t=null;try\{t=currentRestartNotice\(\)\?\.title\?\?null;\}catch\{\}restartNoticeDismissed=t;\}/);
   const i=src.indexOf("win.on('session-end'"),j=src.indexOf("exitRecord?.stop('windows-shutdown',event?.reasons);",i),k=src.indexOf("providerService.request('push'",i);
   assert.ok(i>0&&j>i&&k>j,'the row is written before the phone send');assert.match(src.slice(i,k+200),/N\.armedStops\(store\.db,\{scope\}\)/,'the watched account at that moment');
   assert.match(src.slice(i,k+200),/void Promise\.resolve\(providerService\.request\('push',\{message\}\)\)/,'not awaited');
+});
+test('found in live use on 1.5.74: the notice as it stands now follows the watch state and the present stops; nothing without a launch notice',()=>{
+  const {currentNotice}=require('../electron/start-notice.cjs');const base={previousStop:{kind:'clean',at:AT},wasRunning:false};
+  const off=currentNotice(base,{stops:S(2),now:NOW});assert.equal(off.title,'Paused: 2 stop orders not watched');assert.match(off.message,/2 stop orders are not being watched\./);
+  const on=currentNotice(base,{stops:S(2),watched:true,now:NOW});assert.equal(on.title,'Paused: 2 stop orders watched');assert.match(on.message,/2 stop orders are watched once KIS connects/);assert.doesNotMatch(on.message,/not being watched/);
+  assert.equal(currentNotice(base,{stops:S(1),watched:true,now:NOW}).title,'Paused: 1 stop order watched','the present count');
+  assert.equal(currentNotice(base,{stops:S(0),now:NOW}),null,'no stop left and not running: nothing to say');
+  assert.equal(currentNotice(null,{stops:S(2)}),null,'no launch notice: none later');
+  assert.equal(currentNotice({...base,wasRunning:true},{stops:S(0),now:NOW}).title,'Auto trading paused after a restart');
 });

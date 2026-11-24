@@ -4,6 +4,10 @@
 //              everything button and its reply, then "Everything stopped"; Engine settings' row
 //   watch-off  the setting off: Home's 1.5.73 line, no Stop everything; turning the setting on through its confirmation,
 //              then Home's watched line and Stop's reply
+//   notice     found in live use on 1.5.74: a start after a closed run with the setting off, then the setting turned on.
+//              Home's start notice follows the watch state: not watched, then watched, Dismiss, then not watched again
+//              when the setting goes off (a changed statement shows again), the dismissed watched one stays hidden, and
+//              Stop everything says not watched
 // KIS is a stand-in (KisService.prototype.request, as s5-desktop.cjs); nothing reaches a real service.
 const {app,dialog}=require('electron');const fs=require('node:fs');const path=require('node:path');const assert=require('node:assert/strict');
 if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('Isolated UI data directory required');
@@ -20,6 +24,8 @@ const seoulDay=t=>new Date(t+9*3600000).toISOString().slice(0,10);
     assert.ok(['armed','saved'].includes(r.status),'seeded stop: '+JSON.stringify(r));}
   const {LiveEngine}=require('../electron/live-engine.cjs');const e=new LiveEngine(db,{request:async()=>({})},()=>({status:'disconnected',snapshot:null}));
   e.writePolicy(ACCOUNT,{symbols:[],anyStock:true,day:seoulDay(Date.now()),lossLimit:{mode:'off',value:0},maxOrderKRW:null,maxDailyTurnoverKRW:null,maxCompanyPct:null});
+  // A previous run of this app that the user closed an hour ago, watching this account (the start notice's launch facts).
+  if(mode==='notice'){const t=Date.now();db.exec('CREATE TABLE IF NOT EXISTS app_exit(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)');db.prepare('INSERT INTO app_exit VALUES(1,?)').run(JSON.stringify({startedAt:t-3*3600000,heartbeatAt:t-3600000,stop:{kind:'clean',at:t-3600000},scope:'kis:'+ACCOUNT}));}
   if(mode==='watch-on'){const W=require('../electron/watch-while-stopped.cjs');new W.WatchWhileStopped(db).turnOn({account:ACCOUNT,environment:'mock',record:{autoSubmit:true,conditionalAutoSubmit:true,scope:'kis',markets:{KR:true,US:false},at:Date.now()-3600000}});}
   db.close();}
 
@@ -65,6 +71,21 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
     await navigate('Home');await until(has('Auto trading is stopped. Your 2 armed orders are still watched: if their conditions are met they are only proposed for your approval.'),'Home\'s watched line, proposed only (no record)');
     await until(`Boolean(${button('Stop everything')})`,'the Stop everything button');await capture('home-on');}
 
+  if(mode==='notice'){const NOT='Paused: 2 stop orders not watched',WATCHED='Paused: 2 stop orders watched, proposed only';const item=t=>`Array.from(document.querySelectorAll('.attention-list li')).some(li=>li.innerText.includes(${JSON.stringify(t)}))`;
+    const gone=t=>`!${item(t)}`;
+    await navigate('Home');await until(item(NOT),'the start notice, not watched (setting off)');assert.equal(await run(item(WATCHED)),false);await capture('notice-not-watched');
+    // On, through its confirmation: the item says watched, without a restart or a Dismiss.
+    await navigate('Engine settings');await until(`Boolean(document.querySelector('[aria-label="Keep conditional orders working while auto trading is stopped"]'))`,'the setting\'s row');
+    await run(`document.querySelector('[aria-label="Keep conditional orders working while auto trading is stopped"]').click()`);await until(`Boolean(document.querySelector('[role="dialog"][aria-label="Keep conditional orders working while auto trading is stopped"]'))`,'the confirmation');
+    await run(`${button('Turn on')}.click()`);await until(has('On for the mock account.'),'the row on');
+    await navigate('Home');await until(item(WATCHED),'the start notice, watched');await until(gone(NOT),'no not-watched item');
+    assert.ok(await run(has('Your 2 armed orders are still watched')),'agrees with AI activity');await capture('notice-watched');
+    // Dismiss it; off: the statement changed, so it shows again; on: the dismissed statement stays hidden.
+    await run(`document.querySelector('[aria-label="Dismiss: ${WATCHED}"]').click()`);await until(gone(WATCHED),'dismissed');
+    await run('window.portfolio.setWatchWhileStopped(false)');await until(item(NOT),'not watched again after the setting goes off');
+    await run("window.portfolio.setWatchWhileStopped(true,'WATCH WHILE STOPPED MOCK')");await until(gone(NOT),'the not-watched item gone');await new Promise(r=>setTimeout(r,3000));assert.equal(await run(item(WATCHED)),false,'the dismissed statement stays hidden');
+    // Stop everything: not watched.
+    await run('window.portfolio.stopEverything()');await until(item(NOT),'not watched after Stop everything');await capture('notice-stop-everything');}
   console.log(`B-4 desktop (${mode}): passed`);clearTimeout(timer);app.exit(0);
 }catch(error){console.error(`B-4 desktop (${mode}):`,error);try{fs.writeFileSync(path.join(output,`b4-${mode}-failure.txt`),String(error?.stack??error));}catch{}clearTimeout(timer);app.exit(1);}});});
 require('../electron/main.cjs');
