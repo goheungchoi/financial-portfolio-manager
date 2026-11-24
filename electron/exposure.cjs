@@ -68,13 +68,16 @@ class Exposure {
   setSingleStock(symbol,value){if(typeof symbol!=='string'||!/^\d{6}$/.test(symbol)||![true,false,null].includes(value))throw new Error('INVALID_REQUEST');
     if(value==null){this.db.prepare('DELETE FROM product_kinds WHERE symbol=?').run(symbol);return;}this.db.prepare('INSERT INTO product_kinds VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET single_stock=excluded.single_stock').run(symbol,value?1:0);}
   kindOverrides(){try{return this.db.prepare('SELECT symbol,single_stock FROM product_kinds ORDER BY symbol').all().map(r=>({symbol:r.symbol,singleStock:r.single_stock===1}));}catch{return [];}}
-  policy(account){const row=this.db.prepare('SELECT payload FROM exposure_policy WHERE account=?').get(account);const saved=row?JSON.parse(row.payload):{};return Object.fromEntries(Object.entries(DEFAULT_POLICY).map(([k,v])=>[k,{...v,...(saved[k]??{})}]));}
+  // B3f-3: a stored short.coverBeforeDays outside 1–20 (allowed before) is read as the nearest bound, so it can never stop
+  // the Korean card from saving; a value typed outside the range is still refused by savePolicy.
+  policy(account){const row=this.db.prepare('SELECT payload FROM exposure_policy WHERE account=?').get(account);const saved=row?JSON.parse(row.payload):{};const out=Object.fromEntries(Object.entries(DEFAULT_POLICY).map(([k,v])=>[k,{...v,...(saved[k]??{})}]));
+    const c=out.short.coverBeforeDays;if(!(Number.isInteger(c)&&c>=1&&c<=20))out.short.coverBeforeDays=Number.isFinite(c)?Math.min(20,Math.max(1,Math.round(c))):DEFAULT_POLICY.short.coverBeforeDays;return out;}
   savePolicy(account,value){
     if(typeof account!=='string'||!account||!value||typeof value!=='object'||Object.keys(value).some(k=>!DEFAULT_POLICY[k]))throw new Error('INVALID_SETTINGS');
     const next=this.policy(account);
     for(const [section,fields] of Object.entries(value)){if(!fields||typeof fields!=='object')throw new Error('INVALID_SETTINGS');for(const [key,v] of Object.entries(fields)){
       if(!Object.hasOwn(DEFAULT_POLICY[section],key))throw new Error('INVALID_SETTINGS');
-      if(key==='coverBeforeDays'&&!Number.isInteger(v))throw new Error('INVALID_SETTINGS');
+      if(key==='coverBeforeDays'&&!(Number.isInteger(v)&&v>=1&&v<=20))throw new Error('INVALID_SETTINGS');
       if(key==='brokerEligible'?![true,false,null].includes(v):key==='source'?!['self','distribution'].includes(v):['enabled','auto','singleStock','trailingStop'].includes(key)?typeof v!=='boolean':!(Number.isFinite(v)&&v>0&&v<=(key==='minCollateralPct'?1000:key.endsWith('Days')?365:100)))throw new Error('INVALID_SETTINGS');
       next[section][key]=v;}}
     for(const section of Object.keys(next))if(!next[section].enabled)next[section].auto=false;

@@ -17,6 +17,7 @@ export function KeepWorking({state,busy,onState}:{state:RuntimeState;busy:boolea
     {asking&&<div className="notice" role="dialog" aria-label="Keep conditional orders working while auto trading is stopped">
       <p><b>Keep conditional orders working on the {env} account?</b></p>
       <p>While auto trading is stopped, your armed conditional orders keep working: stops and take-profits may sell your shares, and conditional buys may buy, within your limits. Stop everything halts all of them, and so does closing the app. After the app restarts, they are watched again as soon as KIS connects, without pressing Start.</p>
+      {(state as {shortsCanOpen?:boolean}).shortsCanOpen&&<p>A short's cover stop is watched the same way; with Stop everything or the app closed it has none, and only KIS's own forced buy-back protects it.</p>}
       {!w.sendsNow&&<p>An order hit while auto trading is stopped will only be proposed and wait for your approval, until you next start auto trading with "Submit them automatically" on.</p>}
       <div className="actions"><button className="primary" disabled={working} onClick={()=>void set(true)}>Turn on</button><button disabled={working} onClick={()=>setAsking(false)}>Cancel</button></div>
     </div>}

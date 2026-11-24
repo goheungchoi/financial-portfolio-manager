@@ -71,4 +71,8 @@ function watchedWords(w){const held=(w.waiting??[]).reduce((s,x)=>s+x.orders,0);
   const how=w.proposedOnly===0?(one?' and is sent by itself if its conditions are met.':' and are sent by themselves if their conditions are met.'):w.sentByThemselves===0?(one?': if its conditions are met it is only proposed for your approval.':': if their conditions are met they are only proposed for your approval.'):`: ${w.sentByThemselves} sent by themselves, ${w.proposedOnly} only proposed for your approval.`;
   return head+how+(wait?' '+wait:'');}
 const EVERYTHING_STOPPED='Everything stopped. No order will be sent by the app; orders already at KIS stay.';
-module.exports={launchState,start,stop,watchedWords,EVERYTHING_STOPPED};
+// B3f-3: Stop everything's reply names open shorts, which then have no stop.
+// lots: [{symbol, name}] (a bare code is taken too); each is named "<name> (<code>)", as the other lines name a stock.
+function stopShortWords(lots){const s=[...new Map((lots??[]).map(l=>typeof l==='string'?{symbol:l}:l).filter(l=>l?.symbol).map(l=>[l.symbol,l.name?`${l.name} (${l.symbol})`:l.symbol])).values()];if(!s.length)return '';
+  return s.length===1?` Your short of ${s[0]} has no stop now: only KIS's own forced buy-back protects it.`:` Your shorts of ${s.slice(0,4).join(', ')}${s.length>4?' and more':''} have no stop now: only KIS's own forced buy-back protects them.`;}
+module.exports={launchState,start,stop,watchedWords,EVERYTHING_STOPPED,stopShortWords};
