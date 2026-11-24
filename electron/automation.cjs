@@ -647,6 +647,20 @@ class Automation {
       ...(h.blocking?{waitsFor:h.blocking}:{}),fact:`The ${SS.isCover(o)?'cover stop for the short of':'stop loss for'} ${o.symbol} was hit and is still armed; it is not sent while ${h.why}${h.blocking&&h.why!=='its purchase is still open'?` (order ${h.blocking.id}, ${h.blocking.side} ${h.blocking.symbol}, ${h.blocking.status})`:''}.`}));}
   // Whether short selling is enabled for the connected Korean account (Short & leverage).
   shortsEnabled(){try{return this.live?.exposure?.policy?.(this.live.identity())?.short?.enabled===true;}catch{return false;}}
+  // The short's trail (short.trailingStop, off by default): each armed stop-loss cover of the Korean account follows the
+  // lowest fresh price (the watch's view, at most 60 s old, the regular session) since its fill, from its entry; its level
+  // is that low plus the short's stop distance (stopLossPct), and only moves down, each move one Activity line.
+  trackShortTrails(scope=this.watchScope(),now=Date.now()){let policy=null;try{policy=this.live?.exposure?.policy?.(this.live.identity())?.short;}catch{policy=null;}if(policy?.trailingStop!==true)return;
+    if(this.krShortSession(now)!=='regular')return;const SS=require('./short-stops.cjs'),AQ=require('./armed-quotes.cjs');const pct=Number(policy.stopLossPct)>0?Number(policy.stopLossPct):15;let view=[];try{view=this.watchQuotes(now);}catch{view=[];}
+    // Only the stops the app armed for its own lots; the low moves only on two consecutive distinct fresh quotes, to the
+    // higher of the two (one bad print moves nothing); at most one Activity line per stop per 10 minutes.
+    this.shortTrailSeen??=new Map();
+    for(const o of this.desk.orders(scope).filter(o=>SS.isCoverStop(o)&&o.status==='armed'&&o.armedBy==='app')){const q=view.find(x=>x?.symbol===o.symbol);if(!q||!AQ.freshEnough(q,now))continue;
+      const stamp=require('./trailing-stops.cjs').stamp(q),prev=this.shortTrailSeen.get(o.id);if(prev?.stamp===stamp)continue;this.shortTrailSeen.set(o.id,{stamp,price:q.price});if(!prev||!(now-prev.stamp<=120000))continue;const confirmed=Math.max(prev.price,q.price);
+      const c0=o.conditions?.[0];if(!c0||c0.op!=='>='||!/^price\("[^"]+"\)$/.test(String(c0.expr)))continue;const low=o.shortTrail?.low??(Number(c0.value)/(1+pct/100));
+      const step=SS.trailStep({low,price:confirmed,level:Number(c0.value),pct});if(!step||!step.moved)continue;
+      const say=!(now-(o.shortTrail?.lineAt??0)<600000);this.desk.update(o,{shortTrail:{low:step.low,at:now,lineAt:say?now:o.shortTrail?.lineAt??null},conditions:[{...c0,value:step.level},...(o.conditions.slice(1))]});
+      if(say)this.log(o.id,'System','Cover stop trailed',`Buy ${o.quantity} ${o.symbol} (cover): ${c0.value} → ${step.level}, ${pct}% above the low of ${step.low}.`);}}
   // Short selling B3d-2: the Korean balance's short lots, and whether they are known (a balance read with its shorts list).
   shortBalanceRaw(){const e=this.live;try{return e?.riskBalance??e?.getConnection?.()?.snapshot??null;}catch{return null;}}
   shortBalance(){const e=this.live;let bal=null;try{bal=e?.riskBalance??e?.getConnection?.()?.snapshot??null;}catch{bal=null;}return {shorts:Array.isArray(bal?.shorts)?bal.shorts:[],known:Array.isArray(bal?.shorts)};}
@@ -660,11 +674,15 @@ class Automation {
     const toArm=shorts.filter(l=>Number(l.quantity)>0&&mine.has(`${l.symbol}|${l.loanDate}`)&&this.shortLotDecision(scope,l).arm);
     for(const lot0 of toArm){let left=lot0.quantity;try{const bal=this.shortBalanceRaw();left=Math.max(0,lot0.quantity-require('./credit-paths.cjs').remaining(bal,{symbol:lot0.symbol,side:'Buy',credit:{kind:'cover',loanDate:lot0.loanDate}},this.live.orders()).reserved);}catch{left=0;}
       // Covers filled or open that the balance has not shown yet take their shares: arm only for what is left, none at 0.
-      if(left<1)continue;const lot={...lot0,quantity:left};const entry=lot.entryPrice??appShorts.find(o=>o.symbol===lot.symbol&&o.lotLoanDate===lot.loanDate)?.fillPrice;const level=SS.coverStopLevel(entry,pct);
+      if(left<1)continue;const lot={...lot0,quantity:left};const entry=lot.entryPrice??appShorts.find(o=>o.symbol===lot.symbol&&o.lotLoanDate===lot.loanDate)?.fillPrice;let level=SS.coverStopLevel(entry,pct);
+      // A stop re-armed for the same lot keeps the trail its last app stop had reached (its low and level).
+      // Only from the lot's newest stop, when it was the app's, trailed, and its cover filled with shares of the lot still open
+      // (a lot that went to zero in between, then a new short on that loan date, starts fresh, above its own entry).
+      let carried=null;try{const prev=this.desk.lotStops(scope,lot.symbol,lot.loanDate)[0];const v=Number(prev?.conditions?.[0]?.value);if(prev?.armedBy==='app'&&prev.shortTrail&&prev.status==='submitted'&&Number.isFinite(v)&&(level==null||v<level)){level=v;carried=prev.shortTrail;}}catch{}
       const said=k=>`Cover stop for the short of ${lot.quantity} ${lot.symbol} (loan ${lot.loanDate})${k}`;
       if(level==null){if(this.shortStopNoted?.[lot.symbol+lot.loanDate]!=='entry'){(this.shortStopNoted??={})[lot.symbol+lot.loanDate]='entry';this.log(randomUUID(),'System','Cover stop not armed',said(': its entry price could not be read.'));}continue;}
       const r=this.desk.setOrder(scope,{action:'add',id:'',symbol:lot.symbol,side:'Buy',quantity:lot.quantity,limitPrice:null,conditions:[{expr:`price("${lot.symbol}")`,op:'>=',value:level}],combine:'all',purpose:'stop_loss',expiresInHours:this.config.conditionalMaxHours,reason:`Cover stop at ${pct}% above the short's entry.`,credit:{kind:'cover',loanDate:lot.loanDate,source:lot.source??'distribution'}},{config:this.config,universe:[lot.symbol],lot:{ok:true,account:(()=>{try{return this.live.identity();}catch{return null;}})()}});
-      if(r?.status==='armed'||r?.status==='saved')this.log(r.id??randomUUID(),'System','Cover stop armed',said(` at ${level}.`));
+      if(r?.status==='armed'||r?.status==='saved'){try{const made=this.desk.orders(scope).find(o=>o.id===r.id);if(made)this.desk.update(made,{armedBy:'app',...(carried?{shortTrail:carried}:{})});}catch{}this.log(r.id??randomUUID(),'System','Cover stop armed',said(` at ${level}${carried?' (its trail kept)':''}.`));}
       else if(this.shortStopNoted?.[lot.symbol+lot.loanDate]!=='refused'){(this.shortStopNoted??={})[lot.symbol+lot.loanDate]='refused';this.log(randomUUID(),'System','Cover stop not armed',said(`: ${r?.reason??r?.error??'refused'}`));}}
     const {reduce,close,raise}=SS.lotChanges({shorts,deskOrders,balanceKnown:known});
     for(const {order,quantity} of raise){this.desk.update(order,{quantity});this.log(order.id,'System','Cover stop raised',`Buy ${order.symbol} (cover): ${order.quantity} → ${quantity}, the shares its short lot now holds; its level stays at ${order.conditions?.[0]?.value}.`);}
@@ -2418,6 +2436,8 @@ class Automation {
       const scope=this.watchScope();const data=this.watchData();const formula=require('./formula.cjs');
       // Trailing stops move their level first (T1), so the check below reads the level as of this quote.
       if(this.config.trailingStops===true)this.trackTrailing(scope);
+      // Short selling, the short's trail: only with short.trailingStop on (off by default).
+      try{this.trackShortTrails(scope);}catch{}
       for(const order of this.desk.orders(scope)){if(order.nextCheckAt>Date.now())continue;const check=formula.checkConditions(order.conditions,order.combine,data);if(check.met){this.firing=true;void this.fireConditional(order).catch(()=>{}).finally(()=>{this.firing=false;});break;}}
     }
     // Open app orders follow the best bid or ask every 3 seconds while the app runs, auto trading on or not.

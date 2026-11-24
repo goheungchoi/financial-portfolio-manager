@@ -47,4 +47,8 @@ function lotDecision(rows,{brokerStatus=()=>null,brokerFilled=()=>0,brokerExpire
   if(last.status==='rejected')return {list:{cause:'rejected',words:last.outcome?String(last.outcome).slice(0,200):'its cover stop was refused'}};
   if(last.status==='cancelled'){if(last.closedBy==='app')return {arm:'the lot is back'};return {list:{cause:'cancelled',words:last.closedBy==='user'?'you cancelled its cover stop':'its cover stop was cancelled'}};}
   return {list:{cause:'other',words:`its last cover stop is ${String(last.status)}`}};}
-module.exports={coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};
+// The short's trail (B3d-2 trail step; short.trailingStop, off by default): the lowest fresh price since the fill, and the
+// cover stop's level at that low plus the short's own stop distance; the level only moves down. null: no move.
+function trailStep({low,price,level,pct}){const p=Number(price),l=Number.isFinite(Number(low))&&Number(low)>0?Math.min(Number(low),p):p;if(!(p>0))return null;
+  const next=coverStopLevel(l,pct);if(next==null)return null;return {low:l,level:Number.isFinite(level)&&next>=level?level:next,moved:Number.isFinite(level)&&next<level};}
+module.exports={trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};

@@ -792,8 +792,15 @@ determined here.
   and episode rules; the Agent Desk's entry for a short makes no claim about a review. The list reads only the newest
   rows (`recentRows`). Under orders
   while stopped a cover stop is watched as any armed order, counted as a closing order at the loss limit, halted by
-  Stop everything, and held behind its own short sale while that is open. The short's trailing stop (a switch, off by
-  default) is its own step.
+  Stop everything, and held behind its own short sale while that is open. The short's trail (`short.trailingStop`,
+  off by default; `trackShortTrails`): each stop-loss cover the app armed for its own lot (`armedBy` app; not one the
+  AI armed on a short you opened) follows the low of fresh prices (the watch's view, at most 60 s old, the regular
+  session) from its entry; the low moves only on two consecutive distinct fresh quotes (distinct by the quote's time stamp,
+  exactly as the holdings' trail: trailing-stops `stamp`), to the higher of the two, so
+  one bad print moves nothing; its level is that low plus the short's own stop distance (`stopLossPct`) and only moves
+  down; at most one "Cover stop trailed" line per stop per 10 minutes; a stop re-armed for the same lot keeps the low
+  and level only when the lot's newest stop was the app's, trailed, and its cover filled with shares still open (a lot
+  gone and back starts fresh from its own entry); a stale price or another session moves nothing (no catch-up of a gap).
 
 ### 5.3 The daily loss limit and its responses
 

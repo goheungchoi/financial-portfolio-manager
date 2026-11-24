@@ -108,4 +108,4 @@ function catchUp(order,bars,{now,from,price=null,blocked=null}){const t=order.tr
   if(high!==t.high||active!==t.active){const fires=price>0&&price<=next.level;
     events.push({title:`Trailing stop caught up · ${order.symbol}`,body:`Daily high ${fmt(high,market)} on ${top.date.slice(5)} while the app was not tracking${Number.isFinite(from)?` (${span(from,now,market)})`:''}; stop now ${fmt(next.level,market)}${fires?`, at or above the price ${fmt(price,market)}, so it fires at this check`:''}.`});}
   return patch(next);}
-module.exports={catchUpStart,create,step,usable,rawLevel,roundDown,tickOf,dayOf,nextDay,marketOf,firedText,distanceText,armedText,catchUp,startFromFill,span,WATCHED_EVERY_MS,MAX_AGE_MS,RETRY_MS,GAP_MS};
+module.exports={stamp,catchUpStart,create,step,usable,rawLevel,roundDown,tickOf,dayOf,nextDay,marketOf,firedText,distanceText,armedText,catchUp,startFromFill,span,WATCHED_EVERY_MS,MAX_AGE_MS,RETRY_MS,GAP_MS};

@@ -131,3 +131,50 @@ test('review 3-2: during the balance lag after a cover filled the whole lot, no 
   const w=app({orders:[SHORT_ORDER,filled]});w.live.riskBalance.timestamp=new Date().toISOString();w.a.syncShortStops();assert.equal(w.a.desk.orders(w.a.watchScope()).length,0,'all 5 taken by the unshown fill: none armed');
   const p=app({orders:[SHORT_ORDER,{...filled,filled:3,quantity:3}]});p.live.riskBalance.timestamp=new Date().toISOString();p.a.syncShortStops();assert.deepEqual(p.a.desk.orders(p.a.watchScope()).map(o=>o.quantity),[2],'5 less the 3 not shown yet');
 });
+// The short's trail (short.trailingStop, off by default).
+test('the trail rule: the low and the level, which only moves down',()=>{
+  assert.deepEqual(SS.trailStep({low:1000,price:900,level:1150,pct:15}),{low:900,level:1035,moved:true});
+  assert.deepEqual(SS.trailStep({low:900,price:950,level:1035,pct:15}),{low:900,level:1035,moved:false},'the price rose: the level stays');
+  assert.deepEqual(SS.trailStep({low:900,price:900,level:1035,pct:15}),{low:900,level:1035,moved:false});assert.equal(SS.trailStep({low:900,price:0,level:1035,pct:15}),null);
+});
+test('the short\'s trail: off by default; on, the app\'s stop follows two confirming fresh quotes, only down; one bad print moves nothing; at most a line per 10 minutes; the AI\'s cover on a hand short is not trailed',()=>{
+  const trailWorld=(on,orders=[SHORT_ORDER])=>{const w=app({orders,extra:{exposure:{policy:()=>({short:{enabled:true,stopLossPct:15,trailingStop:on}})}}});w.a.syncShortStops();w.a.krShortSession=()=>'regular';return w;};
+  let t=Date.now()-15000;const quote=(w,p,{age=0}={})=>{t+=500;const at=Date.now()-age;w.a.watchQuotes=()=>[{symbol:'990010',price:p,timestamp:Math.min(t,at)}];w.a.trackShortTrails();return w.a.desk.orders(w.a.watchScope())[0].conditions[0].value;};
+  assert.equal(new (require('../electron/exposure.cjs').Exposure)(new DatabaseSync(':memory:')).policy('x').short.trailingStop,false,'off by default');
+  const off=trailWorld(false);quote(off,900);assert.equal(quote(off,900),1150,'off: unchanged');
+  const on=trailWorld(true);assert.equal(on.a.desk.orders(on.a.watchScope())[0].armedBy,'app');
+  // One bad print: 700 once between 1000s moves nothing.
+  quote(on,1000);quote(on,700);assert.equal(quote(on,1000),1150,'one print at 700: the higher of each pair is 1000');
+  // Two confirming lower quotes: the low is the higher of the two.
+  quote(on,900);assert.equal(quote(on,905),1041,'905 and 900: low 905, level 1041');assert.equal(quote(on,950),1041,'a rise: unchanged');
+  quote(on,800);assert.equal(quote(on,800),920,'a new low of 800: 920');
+  assert.equal(on.events.filter(e=>e.title==='Cover stop trailed').length,1,'two moves within 10 minutes: one line');
+  assert.equal(quote(on,600,{age:61000}),920,'a stale quote: no move');assert.equal(quote(on,600,{age:61000}),920);on.a.krShortSession=()=>'other';quote(on,600);assert.equal(quote(on,600),920,'outside the regular session: no move');
+  // The AI's cover stop on a short you opened: not trailed.
+  const hand=trailWorld(true,[]);hand.a.desk.setOrder(hand.a.watchScope(),{action:'add',id:'',symbol:'990010',side:'Buy',quantity:5,limitPrice:null,conditions:[{expr:'price("990010")',op:'>=',value:1150}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'AI',credit:{kind:'cover',loanDate:'2026-10-09',source:'distribution'}},{config:hand.a.config,universe:['990010'],lot:{ok:true}});
+  quote(hand,800);assert.equal(quote(hand,800),1150,'not the app\'s stop: not trailed');
+});
+test('the short\'s trail: a stop re-armed for the same lot after a partial fill keeps the trail it had reached',()=>{
+  const w=app({orders:[SHORT_ORDER,{id:'P1',status:'Filled',filled:3}],extra:{exposure:{policy:()=>({short:{enabled:true,stopLossPct:15,trailingStop:true}})}}});w.a.syncShortStops();w.a.krShortSession=()=>'regular';
+  let t=Date.now()-15000;const q=p=>{t+=500;w.a.watchQuotes=()=>[{symbol:'990010',price:p,timestamp:t}];w.a.trackShortTrails();};q(800);q(800);
+  const [stop]=w.a.desk.orders(w.a.watchScope());assert.equal(stop.conditions[0].value,920);w.a.desk.update(stop,{status:'submitted',proposalId:'P1',closedAt:Date.now()});
+  w.live.riskBalance.shorts=[{...LOT,quantity:2}];w.a.syncShortStops();const [again]=w.a.desk.orders(w.a.watchScope());assert.deepEqual([again.quantity,again.conditions[0].value,again.shortTrail?.low,again.armedBy],[2,920,800,'app'],'armed for 2 at the trailed level');
+  assert.ok(w.events.some(e=>e.title==='Cover stop armed'&&/at 920 \(its trail kept\)\./.test(e.body)));
+});
+test('the trail is carried only from the lot\'s own partly filled stop; a new short on the same loan date starts fresh; a freshly armed stop is never at or below the entry',()=>{
+  const w=app({orders:[SHORT_ORDER,{id:'P1',status:'Filled',filled:5}],extra:{exposure:{policy:()=>({short:{enabled:true,stopLossPct:15,trailingStop:true}})}}});w.a.syncShortStops();w.a.krShortSession=()=>'regular';
+  let t=Date.now()-15000;const q=p=>{t+=500;w.a.watchQuotes=()=>[{symbol:'990010',price:p,timestamp:t}];w.a.trackShortTrails();};q(700);q(700);
+  const [stop]=w.a.desk.orders(w.a.watchScope());assert.equal(stop.conditions[0].value,805);
+  // The whole lot covered by the stop: the lot goes to zero (the sync closes nothing armed), then a new short on that loan date at 900.
+  w.a.desk.update(stop,{status:'submitted',proposalId:'P1',closedAt:Date.now()});w.live.riskBalance.shorts=[];w.a.syncShortStops();
+  w.a.desk.write('conditional_orders',{id:'Z',scope:w.a.watchScope(),status:'cancelled',closedBy:'app',symbol:'990010',side:'Buy',quantity:5,purpose:'stop_loss',credit:{kind:'cover',loanDate:'2026-10-09'}});
+  w.live.riskBalance.shorts=[{...LOT,quantity:4,entryPrice:900}];w.a.syncShortStops();const [fresh]=w.a.desk.orders(w.a.watchScope());assert.equal(fresh.conditions[0].value,1035,'fresh from its own entry 900, not 805');assert.equal(fresh.shortTrail,undefined);
+  // Property: a stop armed fresh (the lot's newest stop closed by the app, the lot gone and back) is above its own entry.
+  for(const [entry,carried] of [[900,805],[900,900],[900,1000],[1000,1100],[20000,19000]]){const x=app({orders:[{...SHORT_ORDER},{id:'P1',status:'Filled',filled:1}],extra:{exposure:{policy:()=>({short:{enabled:true,stopLossPct:15,trailingStop:true}})}}});
+    x.a.desk.write('conditional_orders',{id:'OLD',scope:x.a.watchScope(),status:'cancelled',closedBy:'app',armedBy:'app',shortTrail:{low:carried/1.15},proposalId:'P1',symbol:'990010',side:'Buy',quantity:5,purpose:'stop_loss',credit:{kind:'cover',loanDate:'2026-10-09'},conditions:[{expr:'price("990010")',op:'>=',value:carried}]});
+    x.live.riskBalance.shorts=[{...LOT,quantity:4,entryPrice:entry}];x.a.syncShortStops();const [s]=x.a.desk.orders(x.a.watchScope());assert.ok(s.conditions[0].value>entry,`entry ${entry}, carried ${carried}: ${s.conditions[0].value}`);}
+});
+test('distinct quotes are judged exactly as the long trail does: by the quote\'s own time stamp (timestamp, else retrievedAt)',()=>{
+  const src=require('fs').readFileSync(require('path').join(__dirname,'..','electron','automation.cjs'),'utf8');assert.match(src,/const stamp=require\('\.\/trailing-stops\.cjs'\)\.stamp\(q\),prev=this\.shortTrailSeen\.get\(o\.id\);/);
+  const T=require('../electron/trailing-stops.cjs');assert.equal(T.stamp({timestamp:5,retrievedAt:9}),5);assert.equal(T.stamp({retrievedAt:9}),9);
+});
