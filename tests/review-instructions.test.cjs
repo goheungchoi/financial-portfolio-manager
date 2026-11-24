@@ -11,17 +11,24 @@ test('step 1: today\'s texts, whatever parts apply',()=>{
   // Step 2: the 1.5.57 text (31,533 characters, b0afae298315cefb) without its complexity sentence (530 characters).
   // A ('review 2026-11-21'): the leveraged sentence changed; with the earlier text put back, the core is the step-2 text.
   // S4 ('review 2026-11-24'): the compute sentence became the run_screen sentences; put back first, the same check holds.
-  {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');const S4=require('./fixtures/s4-text.cjs');assert.ok(S4.coreHasNewSentence());let core=RI.REVIEW_CORE.replace(S4.NEW_SENTENCE,S4.OLD_SENTENCE);for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
+  // Risk-off text ('review 2026-11-25' / 'scout 2026-11-25b', the user's "Yes, both with dry run"): the risk_off preference
+  // sentences removed; with them put back, each core is its earlier text exactly (31,563 fe872efd61e04606; 9,754 edef24348a4575f5).
+  const RISK_REVIEW=['marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends.','marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends; in risk_off prefer smaller positions and require stronger evidence for new buys.'];
+  const RISK_SCOUT=['for its own sake. Write retrospective','for its own sake. Keep more cash in risk_off. Write retrospective'];
+  assert.equal(RI.REVIEW_CORE.split(RISK_REVIEW[0]).length,2);const reviewBefore=RI.REVIEW_CORE.replace(RISK_REVIEW[0],RISK_REVIEW[1]);assert.equal(reviewBefore.length,31563);assert.equal(sha(reviewBefore),'fe872efd61e04606');
+  assert.equal(RI.SCOUT_CORE.split(RISK_SCOUT[0]).length,2);const scoutBefore=RI.SCOUT_CORE.replace(RISK_SCOUT[0],RISK_SCOUT[1]);assert.equal(scoutBefore.length,9754);assert.equal(sha(scoutBefore),'edef24348a4575f5');
+  assert.doesNotMatch(RI.REVIEW_CORE,/risk_off|smaller positions and require stronger evidence/);assert.doesNotMatch(RI.SCOUT_CORE,/risk_off|more cash/);
+  {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');const S4=require('./fixtures/s4-text.cjs');assert.ok(S4.coreHasNewSentence());let core=reviewBefore.replace(S4.NEW_SENTENCE,S4.OLD_SENTENCE);for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
     assert.equal(core.length,31003);assert.equal(sha(core),'137131132eea8ab3');}
-  assert.equal(RI.REVIEW_CORE.length,31563);assert.equal(sha(RI.REVIEW_CORE),'fe872efd61e04606');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
+  assert.equal(RI.REVIEW_CORE.length,31482);assert.equal(sha(RI.REVIEW_CORE),'6411a5c8791b0cd4');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
   // A: the scout core's leveraged sentence (a defined view held up to maxHoldingDays, or a hedge) and the single-stock
   // clause; with both put back, the earlier core is ed636750c54c3942.
   // Carried scout targets ('scout 2026-11-25'): the carried-targets sentences; with the earlier sentence put back, the
   // core is the earlier 9,499 characters, 7d1654b0af466ec4, so nothing else in it changed.
   let beforeCarried;{const NEW=' the app carries forward the targets of the previous plan for those markets, dated and with their facts (priceWhenSet, priceNow, movePct, sessionsSince), until a run that focuses on them. A carried target can be restated in this plan when its facts show the condition it rests on has passed; it then replaces that target only. No new target can be added for those markets.';
-    assert.equal(RI.SCOUT_CORE.split(NEW).length,2);const back=RI.SCOUT_CORE.replace(NEW,' the app carries forward the targets of the previous plan for those markets, dated, until a run that focuses on them.');
+    assert.equal(scoutBefore.split(NEW).length,2);const back=scoutBefore.replace(NEW,' the app carries forward the targets of the previous plan for those markets, dated, until a run that focuses on them.');
     assert.equal(back.length,9499);assert.equal(sha(back),'7d1654b0af466ec4');beforeCarried=back;}
-  assert.equal(RI.SCOUT_CORE.length,9754);assert.equal(sha(RI.SCOUT_CORE),'edef24348a4575f5');
+  assert.equal(RI.SCOUT_CORE.length,9726);assert.equal(sha(RI.SCOUT_CORE),'033461c41d96ab11');
   {const {SCOUT_PIECE:[before,after]}=require('./fixtures/leveraged-text-a.cjs');assert.equal(RI.SCOUT_CORE.split(after).length,2);
     assert.equal(sha(beforeCarried.replace(' Single-stock ones only when products.leveragedOrInverseEtps.singleStockAllowed is true.','').replace(after,before)),'ed636750c54c3942');}
   for(const s of subsets(ids))assert.equal(RI.reviewText(s),RI.REVIEW_CORE);

@@ -42,9 +42,9 @@ test('without research the context is the plain string it was (no second call ca
 test('OpenAI: the review request body is unchanged (pinned)',async()=>{
   const bodies=[];const openai=new AiClient('fixture_key_123',async(url,init)=>{bodies.push(init.body);return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(hold)}]}],usage:{input_tokens:1,output_tokens:1}})};});
   await openai.decide(CTX,{openaiModel:'gpt-6-sol',reasoningEffort:'low',research:true});
-  // Leveraged products held up to maxHoldingDays (A) and S4's run_screen pieces: the earlier text put back, every other
+  // The risk-off text (review 2026-11-25), leveraged products held up to maxHoldingDays (A) and S4's run_screen pieces: the earlier text put back, every other
   // byte compared.
-  const sha=crypto.createHash('sha256').update(require('./fixtures/leveraged-text-a.cjs').earlierLeveragedText(require('./fixtures/s4-text.cjs').beforeS4(bodies[0]))).digest('hex').slice(0,16);assert.equal(sha,OPENAI_PIN,'the OpenAI request body, byte for byte');
+  const sha=crypto.createHash('sha256').update(require('./fixtures/leveraged-text-a.cjs').earlierLeveragedText(require('./fixtures/s4-text.cjs').beforeS4(require('./fixtures/risk-off-text.cjs').beforeRiskOff(bodies[0])))).digest('hex').slice(0,16);assert.equal(sha,OPENAI_PIN,'the OpenAI request body, byte for byte');
 });
 const OPENAI_PIN='d8b41c7f7d274c88';// computed with electron/ai-client.cjs as at b0f86b6 (unchanged by this step)
 test('the expected cost on Claude Opus 5.5 (the measured shape: prefix 20,946, context 26,200, tool round 2,800 tokens)',()=>{

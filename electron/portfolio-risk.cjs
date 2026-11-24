@@ -45,6 +45,6 @@ function regime({vix,vix5dChangePct,hySpread,hySpreadChange,advanceRatioPct,kosp
   add('Semiconductor index 20-day %',sox20dPct,sox20dPct<=-10?-1:sox20dPct>=10?1:0,sox20dPct<=-10?'chips falling':sox20dPct>=10?'chips rising':'flat');
   add('Oil two-week change %',oil20dPct,oil20dPct>=12?-1:0,oil20dPct>=12?'oil spike':'no spike');
   if(parts.length<3)return null;const score=parts.reduce((s,p)=>s+p.score,0);
-  return {regime:score<=-2?'risk_off':score>=2?'risk_on':'neutral',score,components:parts,note:'Rule-based from stress readings, separate from the AI-written narrative. Risk-off asks for smaller positions and stronger evidence for new buys.'};
+  return {regime:score<=-2?'risk_off':score>=2?'risk_on':'neutral',score,components:parts,note:'Rule-based from stress readings, separate from the AI-written narrative.'};
 }
 module.exports={exposure,sizing,regime,corr,returns};

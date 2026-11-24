@@ -513,7 +513,7 @@ any run may restate a carried target from what it already has. A returned target
 in the previous plan replaces that target only (a new target: the run's time and price, no `carriedFrom`), as a
 reassessed one does; a deferred-market symbol not in the previous plan is handled as before (the run covers that
 market). The tools are unchanged, no role was added: there is none that means "no longer a target" (`exit` means selling the
-holding), so a restated target takes an existing role with a new thesis. The scout's text says so in two sentences ('scout 2026-11-25'); nothing gates on the scout's version.
+holding), so a restated target takes an existing role with a new thesis. The scout's text says so in two sentences ('scout 2026-11-25'); 'scout 2026-11-25b' then removed "Keep more cash in risk_off." (the user's "Yes, both with dry run"); nothing gates on the scout's version.
 A later review's `passed` verdict flags a carried target whatever its role (before, hold, add and candidate only); the
 opposite-trade and price-move rules are unchanged.
 
@@ -722,7 +722,7 @@ built-in defaults only fill gaps where the guidelines are silent (`REVIEW_CORE`,
 
 | Set | Version | Used by | Shape |
 |---|---|---|---|
-| `current` | `'review 2026-11-24'` (`INSTRUCTIONS_VERSION`; S4: run_screen in place of compute, and "If a script you relied on did not return the numbers you asked for, do not state or estimate them: say in your explanation which were not available, and do not take an action that depended on them."; a Claude dry run under 'review 2026-11-21' no longer counts, so Start on Claude asks for a new one); several-orders `'review 2026-11-24 orders'`; scout `'scout 2026-11-21'` | every live request, dry run and replay baseline | **One core of about 31,000 characters** (`REVIEW_CORE`, `:8`); the ten parts exist as ids and conditions but their text is empty (`REVIEW_PARTS`, `:33-43`). Only the more-orders part has text. |
+| `current` | `'review 2026-11-25'` (`INSTRUCTIONS_VERSION`; the risk-off text, the user's "Yes, both with dry run": "in risk_off prefer smaller positions and require stronger evidence for new buys" removed, marketRegime described as a gauge only; fingerprints `2e155a5b9452c226` single, `36913349434ce621` several orders, `03d337dbcb5e4765` / `0997fb689307bf23` with the short part; a dry run under 'review 2026-11-24' (`bdfca4388d263737` / `ecd1189f47a389f2`) no longer counts, so the switch to Claude and Start on it ask for a new dry run once. 'review 2026-11-24', S4: run_screen in place of compute, and "If a script you relied on did not return the numbers you asked for, do not state or estimate them: say in your explanation which were not available, and do not take an action that depended on them."; a Claude dry run under 'review 2026-11-21' no longer counts, so Start on Claude asks for a new one); several-orders `'review 2026-11-25 orders'`; scout `'scout 2026-11-25b'` | every live request, dry run and replay baseline | **One core of about 31,000 characters** (`REVIEW_CORE`, `:8`); the ten parts exist as ids and conditions but their text is empty (`REVIEW_PARTS`, `:33-43`). Only the more-orders part has text. |
 | `proposed` | `'proposed 2026-11-21'`; `'proposed 2026-11-21 orders'` | **only** the replay option "Built-in text: proposed" (`:66-69`) | A structured core with headed sections, and real text in each part |
 
 The parts, their conditions (`factsOf`, `:14-25`) and what the *proposed* text of each tells the model:
@@ -838,7 +838,7 @@ named.
 | `scoutBrief` | whether a scout run may be requested, remaining runs, scheduled runs, open briefs | `scoutBriefState` `:1809` | scout usable and in use | B |
 | `agentDesk` | notes, triggers, conditional orders (allowed, limits, armed, recent, `monitoring`) | `desk.context` `:589` | KIS | P |
 | `marketNarrative`, `similarEpisodes` | confirmed drivers; similar past episodes | `storyContext` `:1763` | KIS, narrative ≤72 h old | B |
-| `portfolioExposure`, `positionSizing`, `marketRegime` | sector weights, concentration, beta; per symbol the stop distance and largest position within `sizingRiskPct` (1 %) at `sizingAtrMultiple` (2) × ATR; a rule-based stress gauge | `riskContext` `:1641-1653` | KIS, when data exists | B |
+| `portfolioExposure`, `positionSizing`, `marketRegime` | sector weights, concentration, beta; per symbol the stop distance and largest position within `sizingRiskPct` (1 %) at `sizingAtrMultiple` (2) × ATR; a rule-based stress gauge; its note says only "Rule-based from stress readings, separate from the AI-written narrative." (the risk-off preference it carried was removed, 'review 2026-11-25') | `riskContext` `:1641-1653` | KIS, when data exists | B |
 | `eventCalendar` | up to 15 known events in the next 14 days | `calendarState` `:589` | KIS | B |
 | `discovery` | `enabled`, the watchlist with reasons, `starterCandidates` when a market has nothing to review | `:589` | KIS with discovery | B |
 | `news`, `topStories` | relevant headlines with symbols and importance; widely covered stories | `newsContext` `:316`, `storiesContext` `:315` | always / KIS | B |

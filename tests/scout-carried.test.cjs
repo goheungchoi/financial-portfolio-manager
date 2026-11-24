@@ -74,8 +74,8 @@ test('staleCarried: a passed verdict flags a carried target whatever its role; t
   assert.equal(S.staleCarried([c('990010','trim',{priceWhenSet:100})],{price:()=>106}).length,1,'a 6% move');assert.equal(S.staleCarried([c('990010','trim',{priceWhenSet:100})],{price:()=>105}).length,0);
   assert.equal(S.staleCarried([c('990010','trim')],{reviews:[{...passed('990010'),timestamp:Date.parse(setAt)-1}]}).length,0,'a verdict before the target counts for nothing');
 });
-test('the review\'s instructions and fingerprints are unchanged; the scout\'s text says what a run can do with carried targets, its version moves',()=>{
-  assert.equal(RI.fingerprint(),'bdfca4388d263737');assert.equal(RI.fingerprint(undefined,{orders:true}),'ecd1189f47a389f2');
+test('carried targets add nothing to the review\'s text (its fingerprints are the risk-off step\'s, review 2026-11-25); the scout\'s text says what a run can do with carried targets',()=>{
+  assert.equal(RI.fingerprint(),'2e155a5b9452c226');assert.equal(RI.fingerprint(undefined,{orders:true}),'36913349434ce621');
   for(const core of [RI.SCOUT_CORE,RI.PROPOSED_SCOUT_CORE])assert.match(core,/A carried target can be restated in this plan when its facts show the condition it rests on has passed; it then replaces that target only\. No new target can be added for those markets\./);
-  assert.equal(RI.SCOUT_INSTRUCTIONS_VERSION,'scout 2026-11-25');
+  assert.equal(RI.SCOUT_INSTRUCTIONS_VERSION,'scout 2026-11-25b');
 });

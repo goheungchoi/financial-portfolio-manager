@@ -20,9 +20,12 @@ function onClaude(){const a=harness();a.completedClaudeDryRun=()=>record(RI.fing
 
 test('fix 2: the several-orders fingerprint counts as well as the single-order one; an older one does not',()=>{
   const a=harness();const use=r=>{a.completedClaudeDryRun=()=>r;return a.claudeTradingDryRun();};
-  assert.equal(RI.fingerprint(undefined,{orders:true}),'ecd1189f47a389f2');assert.equal(RI.fingerprint(),'bdfca4388d263737');
-  assert.ok(use(record('ecd1189f47a389f2')),'a several-orders dry run under today\'s text');
-  assert.ok(use(record('bdfca4388d263737')),'a single-order dry run');
+  assert.equal(RI.fingerprint(undefined,{orders:true}),'36913349434ce621');assert.equal(RI.fingerprint(),'2e155a5b9452c226');
+  assert.ok(use(record('36913349434ce621')),'a several-orders dry run under today\'s text');
+  assert.ok(use(record('2e155a5b9452c226')),'a single-order dry run');
+  // Risk-off text ('review 2026-11-25', the user's "Yes, both with dry run"): a dry run under 'review 2026-11-24' no longer
+  // counts, so Start on Claude asks for a new one once after the update.
+  assert.equal(use(record('bdfca4388d263737')),null,'a 2026-11-24 single-order dry run');assert.equal(use(record('ecd1189f47a389f2')),null,'a 2026-11-24 several-orders dry run');
   // S4 ('review 2026-11-24'): reviews are offered run_screen in place of compute, so a dry run under 'review 2026-11-21'
   // (its single and several-orders fingerprints) no longer counts: Start on Claude asks for a new one.
   assert.equal(use(record('56da3eb8fe72bacc')),null,'a 2026-11-21 single-order dry run');assert.equal(use(record('a5bc46e95c6a5a98')),null,'a 2026-11-21 several-orders dry run');
@@ -31,7 +34,12 @@ test('fix 2: the several-orders fingerprint counts as well as the single-order o
   assert.equal(use(null),null);});
 
 test('fix 2: the switch to Claude saves with a several-orders dry run on record; the advice uses the same check',()=>{
-  M.setClaudeTradingForTests(true);try{const a=harness();a.completedClaudeDryRun=()=>record('ecd1189f47a389f2');
+  // With a dry run stored under the 2026-11-24 text, the switch to Claude and Start on it are refused (a new dry run is
+  // asked once after the update); one under today's text lets both through (below).
+  M.setClaudeTradingForTests(true);try{const old=harness();old.completedClaudeDryRun=()=>record('ecd1189f47a389f2');
+    assert.throws(()=>old.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true}),/CLAUDE_TRADING_DRY_RUN/);assert.notEqual(old.config.openaiModel,'claude-opus-5-5');
+    assert.throws(()=>old.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true,enabled:true,autoSubmit:true}),/CLAUDE_TRADING_DRY_RUN/);assert.notEqual(old.config.enabled,true);}finally{M.setClaudeTradingForTests(false);}
+  M.setClaudeTradingForTests(true);try{const a=harness();a.completedClaudeDryRun=()=>record('36913349434ce621');
     a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});assert.equal(a.config.openaiModel,'claude-opus-5-5');
     a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'Start\'s save goes through');}finally{M.setClaudeTradingForTests(false);}
   // automation.cjs: the Review F1 advice is shown when claudeTradingDryRun() is null, so it follows fix 2.

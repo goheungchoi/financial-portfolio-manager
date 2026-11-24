@@ -14,6 +14,9 @@ test('pin: the OpenAI decide request body is byte-identical to 1.5.49',async()=>
     try{await c.decide(CTX,opts);}catch{}
     // S4 ('review 2026-11-24'): run_screen in place of compute, the trigger's neutral text and the core's run_screen
     // sentences; those pieces are put back first (each present in a body with tools), every other byte still compared.
+    // Risk-off text ('review 2026-11-25', the user's "Yes, both with dry run"): the risk_off preference is put back first.
+    {const now='marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends. ',then='marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends; in risk_off prefer smaller positions and require stronger evidence for new buys. ';
+      assert.equal(body.split(now).length,2,name+': the gauge sentence, once, without the preference');body=body.replace(now,then);}
     {const S4=require('./fixtures/s4-text.cjs');if(name!=='plain')assert.ok(body.includes('"name":"run_screen"')&&!body.includes('"name":"compute"'),name+': run_screen is offered, compute is not');body=S4.beforeS4(body);}
     // Agent tools T1 (instructions 'review 2026-11-04') added cci, stochrsi and ultimate to the formula help in the
     // compute tool's description; with exactly those entries taken out, the body must still be 1.5.49's byte for byte.
