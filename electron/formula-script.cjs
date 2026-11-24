@@ -195,7 +195,10 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
   const isFallback=s=>{try{return typeof ctx.isFallback==='function'&&ctx.isFallback(s)===true;}catch{return false;}};
   const ownDay=s=>{try{const d=typeof ctx.asOfFor==='function'?ctx.asOfFor(s):null;return typeof d==='string'?d:null;}catch{return null;}};
   // A stale stock's value is labelled with the day its history really ends (ctx.asOfFor), never the market's day.
-  const fallbackDays=new Set(),staleDays=new Set();const readFrom=sym=>{const d=ownDay(sym);if(isFallback(sym)&&d&&!(staleOf(sym)===true))fallbackDays.add(d);else if(staleOf(sym)===true&&d){if(isFallback(sym))fallbackDays.add(d);else staleDays.add(d);}else closeMarkets.add(marketOf(sym));};
+  // ctx.isProvisional(s) (the store): the stock's last close is the store's provisional newest Korean row, not yet re-read
+  // in the morning. Said once per script, as one closing line outside the output bound (store step 1, second review).
+  const isProvisional=s=>{try{return typeof ctx.isProvisional==='function'&&ctx.isProvisional(s)===true;}catch{return false;}};const provisionalUsed=new Set();
+  const fallbackDays=new Set(),staleDays=new Set();const readFrom=sym=>{const d=ownDay(sym);if(isFallback(sym)&&d&&!(staleOf(sym)===true))fallbackDays.add(d);else if(staleOf(sym)===true&&d){if(isFallback(sym))fallbackDays.add(d);else staleDays.add(d);}else{closeMarkets.add(marketOf(sym));if(marketOf(sym)==='KR'&&isProvisional(sym))provisionalUsed.add(marketOf(sym));}};
   // A formula function: its arguments evaluated here, then a formula.cjs tree with numbers and symbols, evaluated there.
   const formula=(n,line,sc)=>{if(n.fn==='price')throw new ScriptError('PRICE_AMBIGUOUS','use live(S) for the live price or close(S,0) for the last completed close',line);
     const [kinds,required]=F.FUNCS[n.fn];const variadic=kinds.endsWith('*');let unknownArg=false;
@@ -334,6 +337,8 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
     const days=[...closeMarkets].map(m=>[m,asOf[m]]).filter(([,d])=>d);if(days.length)mark+=days.length===1?` (as of close ${days[0][1]})`:` (as of close ${days.map(([m,d])=>`${m} ${d}`).join(', ')})`;
     return mark;};
   const SUFFIX=200;// bytes kept for the marks and notes of a line
+  // The closing line when a value used a provisional Korean close: once, after every printed line, not counted in the bound.
+  const closing=out=>provisionalUsed.size&&asOf.KR?[...out,`Korean closes of ${asOf.KR} are provisional: they may include after-hours trades until KIS settles them.`]:out;
   try{const lines=splitScript(text);
     for(let i=0;i<lines.length;i++){current=i+1;checkLine(lines[i],current);const st=parseLine(lines[i],current);if(!st)continue;marks.clear();notes.clear();closeMarkets.clear();liveTimes.length=0;fallbackDays.clear();staleDays.clear();
       if(st.assign){const v=value(st.expr,current,TOP);vars.set(st.assign,v);varMarks.set(st.assign,new Set(marks));varNotes.set(st.assign,new Set(notes));varLive.set(st.assign,{markets:new Set(closeMarkets),times:[...liveTimes],fallback:[...fallbackDays],stale:[...staleDays]});continue;}
@@ -342,8 +347,8 @@ function execute(text,ctx){const out=[],coverage=[],vars=new Map(),varMarks=new 
       if(marks.size){const stale=[...marks];line+=` (stale data: ${stale.slice(0,3).join(', ')}${stale.length>3?` and ${stale.length-3} more`:''})`;}
       const said=[...notes];if(said.length)line+=said.slice(0,3).map(s=>` (${clean(s,60)})`).join('')+(said.length>3?` (and ${said.length-3} more notes)`:'');
       addOutput(bytes(line)+1,current);out.push(line);}
-    return {lines:out,coverage};}
-  catch(error){return {lines:out,coverage,stopped:stopFor(error,current)};}}
+    return {lines:closing(out),coverage};}
+  catch(error){return {lines:closing(out),coverage,stopped:stopFor(error,current)};}}
 const WORDS=Object.freeze(Object.assign(Object.create(null),{EMPTY_SCRIPT:'the script is empty',SCRIPT_TOO_LONG:'the script is too long',TOO_MANY_LINES:'too many lines',LINE_TOO_LONG:'the line is too long',
   SYNTAX_ERROR:'this line cannot be read',NOT_A_STATEMENT:'not a statement',RESERVED_NAME:'that name is a function, S or a reserved word',UNKNOWN_NAME:'no value has that name yet',
   UNKNOWN_FUNCTION:'no such function',NOT_HERE:'print and log are lines of their own',WRONG_ARGUMENTS:'wrong arguments',NO_STOCK:'S is used outside rank, top, bottom, filter or count',

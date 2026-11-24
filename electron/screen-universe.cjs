@@ -47,7 +47,10 @@ function screenContext(deps){const now=deps.clock();const closed=deps.closedDays
   const data={price:s=>rows(s).at(-1)?.close??null,closes:s=>{const r=rows(s);return r.length?r:null;},previousClose:s=>rows(s).at(-2)?.close??null};
   const isStale=s=>{const r=rows(s);return Boolean(r.length&&r.at(-1).date<asOf[marketOf(s)]);};
   // asOfFor(s): the day a stock's history really ends (a stale one is labelled with it, not the market's day).
-  const reviewHooks={asOfFor:s=>rows(s).at(-1)?.date??null,...(deps.allowed?{allowSymbol:s=>deps.allowed.has(s),isFallback:s=>{rows(s);return fallbackSet.has(s);}}:{})};
+  // isProvisional(s): the stock's last stored close is the store's provisional newest row (not a review's own history),
+  // until the morning re-read was tried for that day.
+  const isProvisional=s=>{const r=rows(s);if(!r.length||fallbackSet.has(s))return false;const progressOf=x=>{try{return deps.store.progress?.(x)??null;}catch{return null;}};const pr=progressOf(s),p=pr?.provisional??null;return Boolean(p&&r.at(-1).date===p&&pr?.settleTried!==p);};
+  const reviewHooks={isProvisional,asOfFor:s=>rows(s).at(-1)?.date??null,...(deps.allowed?{allowSymbol:s=>deps.allowed.has(s),isFallback:s=>{rows(s);return fallbackSet.has(s);}}:{})};
   const names=s=>{try{return deps.db.prepare('SELECT name FROM securities WHERE symbol=?').get(s)?.name??null;}catch{return null;}};
   const universe=spec=>universeFor(deps,spec,now);
   // Only codes the security master lists are asked for, so an unknown code never reaches the nightly reads.

@@ -7,6 +7,15 @@
 //   on the overlap by more than 0.5% (a split or a correction) or a page with no overlap discards the stored rows, so
 //   the stock is short of history (counted as no history for longer windows) until it deepens again; no seam is kept.
 // - A row dated after its market's readable day (the last day whose session and closing print are over) is refused.
+// - The provisional newest row (found in live use; the user's answer: always the latest price): KIS's Korean daily row for
+//   the day just closed carries the latest price until KIS settles it later (after-hours trades fold in until the evening).
+//   The newest stored day's row is never compared for the overlap, whenever it was read, in both markets: every later
+//   page overwrites it, and a split or a correction shows in the older rows (which still reset beyond 0.5%).
+//   A newest Korean row read before 06:00 KST the next day is also provisional (screen_progress.provisional = its day):
+//   it is read once more from 06:00 the next day, before the session (kind 'settle'), and stays provisional until a
+//   read changes its close or a newer day's page supersedes it. Scripts say so in one closing line until the morning
+//   read was tried. U.S. rows are not provisional (no mark, label or morning read). What stays unprotected: a day's row
+//   that KIS changes by more than 0.5% after it is no longer the newest stored row.
 // - The start of a listing is an older page with no rows, never a short page (a Korean halt shortens a page).
 // - Each stock is tried at most once a night for its newest page and once for deeper pages after a failure.
 // - The refresher reads one page at a time, only inside the window (no regular session of either market, no extended
@@ -55,8 +64,17 @@ class HistoryStore{
       +'CREATE TABLE IF NOT EXISTS screen_requests(symbol TEXT PRIMARY KEY,at INTEGER NOT NULL);');
     // Columns added after the first staging: a database that ran an earlier build gets them here.
     const have=new Set(db.prepare('PRAGMA table_info(screen_progress)').all().map(c=>c.name));
-    for(const [name,type] of [['triedNewest','TEXT'],['triedDeeper','TEXT'],['resets','INTEGER NOT NULL DEFAULT 0'],['resetDay','TEXT'],['resetNights','INTEGER NOT NULL DEFAULT 0'],['stopped','TEXT']])
-      if(!have.has(name))db.exec(`ALTER TABLE screen_progress ADD COLUMN ${name} ${type}`);}
+    for(const [name,type] of [['triedNewest','TEXT'],['triedDeeper','TEXT'],['resets','INTEGER NOT NULL DEFAULT 0'],['resetDay','TEXT'],['resetNights','INTEGER NOT NULL DEFAULT 0'],['stopped','TEXT'],['provisional','TEXT'],['settleTried','TEXT']])
+      if(!have.has(name))db.exec(`ALTER TABLE screen_progress ADD COLUMN ${name} ${type}`);
+    // Once, when this build first opens the store: Korean stocks stopped or reset by a moving evening row (before rows
+    // were provisional) are repaired. A stop for "the closes keep changing" is lifted, and a stock reset in the last 30
+    // days deepens again from the next window. Its discarded rows are read again by deepening.
+    if(!have.has('provisional'))this.repairEveningResets();}
+  // Also once: every Korean stock's newest row, stored by the earlier build without the mark, is provisional, so the first
+  // night after the update cannot reset it either (it costs one morning read).
+  repairEveningResets(now=Date.now()){const since=new Date(now-30*86400000).toISOString().slice(0,10);
+    this.db.prepare("UPDATE screen_progress SET provisional=newest WHERE symbol NOT LIKE '%:%' AND newest IS NOT NULL").run();
+    return this.db.prepare("UPDATE screen_progress SET stopped=CASE WHEN stopped='the closes KIS gives keep changing between reads' THEN NULL ELSE stopped END,resetNights=0,triedDeeper=NULL,complete=CASE WHEN depth>=? THEN complete ELSE 0 END WHERE symbol NOT LIKE '%:%' AND (stopped='the closes KIS gives keep changing between reads' OR (resets>0 AND resetDay>=?))").run(KEEP,since).changes;}
   progress(symbol){return this.db.prepare('SELECT * FROM screen_progress WHERE symbol=?').get(symbol)??null;}
   // A stock that stopped deepening tries again 30 days after its last reset.
   retryStopped(now=Date.now()){const day=new Date(now-30*86400000).toISOString().slice(0,10);return this.db.prepare('UPDATE screen_progress SET stopped=NULL,resetNights=0 WHERE stopped IS NOT NULL AND (resetDay IS NULL OR resetDay<?)').run(day).changes;}
@@ -72,15 +90,25 @@ class HistoryStore{
   // - a close differing on the overlap by more than 0.5%, or a newest page with no overlap, resets the stock: its rows are
   //   discarded, the newest page is kept (read again after a deeper reset), and it is not deepened again that night.
   //   After resets on 3 nights within 4 days of each other it stops deepening, with a reason the Scout panel shows.
-  put(symbol,rows,{kind='newest',day=null,now=Date.now()}={}){
+  // A settle read passes the provisional day as day (no row after it) and the night's readable day as readable: a reset
+  // there records the readable day, and triedNewest is left as it was.
+  put(symbol,rows,{kind='newest',day=null,readable=null,now=Date.now()}={}){const settle=kind==='settle';if(settle)kind='newest';const night=settle?(readable??day):day;
     const clean=[];const seen=new Set();for(const r of Array.isArray(rows)?rows:[]){const close=finite(r?.close);if(!DAY.test(r?.date??'')||!(close>0)||seen.has(r.date)||(day&&r.date>day))continue;seen.add(r.date);
       clean.push({date:r.date,close,high:finite(r.high),low:finite(r.low),volume:finite(r.volume),value:finite(r.value)});}
     clean.sort((a,b)=>a.date.localeCompare(b.date));const before=this.progress(symbol);
     const stored=before?.newest&&clean.length?new Map(this.db.prepare('SELECT date,close FROM screen_closes WHERE symbol=? AND date>=? AND date<=?').all(symbol,clean[0].date,clean.at(-1).date).map(r=>[r.date,r.close])):new Map();
-    const overlap=clean.filter(r=>stored.has(r.date));const differs=overlap.some(r=>Math.abs(r.close-stored.get(r.date))>TOLERANCE*stored.get(r.date));
+    // The newest stored day's row is never compared, whenever it was read, in both markets (store step 1, second review):
+    // KIS may still change it, and every later page overwrites it; a split or a correction shows in the older rows.
+    const prov=marketOf(symbol)==='KR'?before?.provisional??null:null,newestStored=before?.newest??null;
+    const overlap=clean.filter(r=>stored.has(r.date));const differs=overlap.some(r=>r.date!==newestStored&&Math.abs(r.close-stored.get(r.date))>TOLERANCE*stored.get(r.date));
     const older=kind==='deeper'&&before?.oldest?clean.filter(r=>r.date<before.oldest).length:0;
     if(kind==='deeper'&&!overlap.length)return {reset:false,older,failed:'NO_OVERLAP'};
-    const reset=Boolean(before?.newest&&clean.length&&(differs||(kind==='newest'&&!overlap.length)));
+    // Store step 1, third review: a newest page whose only overlap is the stored newest row (not compared), while the store
+    // holds rows older than the page's first, counts as no overlap (the app was away about a page's length: a split then
+    // would leave the older rows on the old basis for good). With no older row stored, it stays no reset. A settle page
+    // (one day's re-read, possibly one row) is not judged by this.
+    const onlyNewest=kind==='newest'&&!settle&&overlap.length>0&&overlap.every(r=>r.date===newestStored)&&Boolean(before?.oldest&&before.oldest<clean[0]?.date);
+    const reset=Boolean(before?.newest&&clean.length&&(differs||(kind==='newest'&&(!overlap.length||onlyNewest))));
     this.db.exec('BEGIN IMMEDIATE');
     try{if(reset)this.db.prepare('DELETE FROM screen_closes WHERE symbol=?').run(symbol);
       if(!(kind==='deeper'&&reset)){const put=this.db.prepare('INSERT INTO screen_closes VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol,date) DO UPDATE SET close=excluded.close,high=excluded.high,low=excluded.low,volume=excluded.volume,value=excluded.value');
@@ -88,17 +116,24 @@ class HistoryStore{
       const count=this.db.prepare('SELECT COUNT(*) AS n FROM screen_closes WHERE symbol=?').get(symbol).n;
       if(count>KEEP)this.db.prepare('DELETE FROM screen_closes WHERE symbol=? AND date<(SELECT date FROM screen_closes WHERE symbol=? ORDER BY date DESC LIMIT 1 OFFSET ?)').run(symbol,symbol,KEEP-1);
       const span=this.db.prepare('SELECT MIN(date) AS oldest,MAX(date) AS newest,COUNT(*) AS n FROM screen_closes WHERE symbol=?').get(symbol);
-      const nights=reset?(before?.resetDay&&day&&(Date.parse(day)-Date.parse(before.resetDay))/86400000<=4&&before.resetDay!==day?(before.resetNights??0)+1:before?.resetDay===day?(before.resetNights??1):1):(before?.resetNights??0);
-      const p={newest:span.newest,oldest:span.oldest,depth:span.n,complete:span.n>=KEEP||(kind==='deeper'&&!reset&&older===0)?1:reset?0:(before?.complete??0),readAt:now,
-        triedNewest:kind==='deeper'&&reset?null:kind==='newest'?day:(before?.triedNewest??null),triedDeeper:reset?day:(before?.triedDeeper??null),resets:(before?.resets??0)+(reset?1:0),
-        resetDay:reset?day:(before?.resetDay??null),resetNights:nights,stopped:reset&&nights>=3?'the closes KIS gives keep changing between reads':(before?.stopped??null)};
-      this.db.prepare('INSERT INTO screen_progress(symbol,newest,oldest,depth,complete,readAt,failures,failedAt,triedNewest,triedDeeper,resets,resetDay,resetNights,stopped) VALUES(?,?,?,?,?,?,0,NULL,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET newest=excluded.newest,oldest=excluded.oldest,depth=excluded.depth,complete=excluded.complete,readAt=excluded.readAt,failures=0,failedAt=NULL,triedNewest=excluded.triedNewest,triedDeeper=excluded.triedDeeper,resets=excluded.resets,resetDay=excluded.resetDay,resetNights=excluded.resetNights,stopped=excluded.stopped')
-        .run(symbol,p.newest,p.oldest,p.depth,p.complete,p.readAt,p.triedNewest,p.triedDeeper,p.resets,p.resetDay,p.resetNights,p.stopped);
+      const nights=reset?(before?.resetDay&&night&&(Date.parse(night)-Date.parse(before.resetDay))/86400000<=4&&before.resetDay!==night?(before.resetNights??0)+1:before?.resetDay===night?(before.resetNights??1):1):(before?.resetNights??0);
+      // The provisional day after this page: a newer Korean newest row read before 06:00 KST the next day; the same day
+      // read again stays provisional unless its close changed (KIS settled it); a deeper page keeps it.
+      let provisional=prov;if(marketOf(symbol)==='KR'&&kind==='newest'&&clean.length){const top=clean.at(-1);
+        if(top.date===span.newest&&(!prov||top.date>prov))provisional=now<zoned(addDays(top.date,1),'06:00','Asia/Seoul')?top.date:null;
+        else if(prov&&top.date===prov&&stored.has(prov)&&top.close!==stored.get(prov))provisional=null;
+        else if(prov&&span.newest>prov)provisional=null;}
+      if(reset&&provisional&&provisional!==span.newest)provisional=null;
+      const p={provisional,settleTried:settle?prov:(before?.settleTried??null),newest:span.newest,oldest:span.oldest,depth:span.n,complete:span.n>=KEEP||(kind==='deeper'&&!reset&&older===0)?1:reset?0:(before?.complete??0),readAt:now,
+        triedNewest:kind==='deeper'&&reset?null:settle?(before?.triedNewest??null):kind==='newest'?day:(before?.triedNewest??null),triedDeeper:reset?night:(before?.triedDeeper??null),resets:(before?.resets??0)+(reset?1:0),
+        resetDay:reset?night:(before?.resetDay??null),resetNights:nights,stopped:reset&&nights>=3?'the closes KIS gives keep changing between reads':(before?.stopped??null)};
+      this.db.prepare('INSERT INTO screen_progress(symbol,newest,oldest,depth,complete,readAt,failures,failedAt,triedNewest,triedDeeper,resets,resetDay,resetNights,stopped,provisional,settleTried) VALUES(?,?,?,?,?,?,0,NULL,?,?,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET provisional=excluded.provisional,settleTried=excluded.settleTried,newest=excluded.newest,oldest=excluded.oldest,depth=excluded.depth,complete=excluded.complete,readAt=excluded.readAt,failures=0,failedAt=NULL,triedNewest=excluded.triedNewest,triedDeeper=excluded.triedDeeper,resets=excluded.resets,resetDay=excluded.resetDay,resetNights=excluded.resetNights,stopped=excluded.stopped')
+        .run(symbol,p.newest,p.oldest,p.depth,p.complete,p.readAt,p.triedNewest,p.triedDeeper,p.resets,p.resetDay,p.resetNights,p.stopped,p.provisional,p.settleTried);
       this.db.exec('COMMIT');}
     catch(error){try{this.db.exec('ROLLBACK');}catch{}throw error;}
     return {reset,older,progress:this.progress(symbol)};}
   // A failed read counts against the stock and marks the page kind as tried for that readable day.
-  fail(symbol,{kind='newest',day=null,now=Date.now()}={}){const col=kind==='deeper'?'triedDeeper':'triedNewest';
+  fail(symbol,{kind='newest',day=null,now=Date.now()}={}){if(kind==='settle'){this.db.prepare('UPDATE screen_progress SET failures=failures+1,failedAt=?,settleTried=provisional WHERE symbol=?').run(now,symbol);return;}const col=kind==='deeper'?'triedDeeper':'triedNewest';
     this.db.prepare(`INSERT INTO screen_progress(symbol,failures,failedAt,${col}) VALUES(?,1,?,?) ON CONFLICT(symbol) DO UPDATE SET failures=failures+1,failedAt=excluded.failedAt,${col}=excluded.${col}`).run(symbol,now,day);}
   // Symbols a script named outside the nightly set: at most 100, kept 7 days, read with the next night's set.
   request(symbols,now=Date.now()){const put=this.db.prepare('INSERT INTO screen_requests VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET at=excluded.at');
@@ -120,10 +155,12 @@ class HistoryRefresher{
   clock(){return (this.deps.clock??Date.now)();}
   // The work list: each stock's newest page when it lacks the readable day and was not tried for it, then deeper pages.
   buildPlan(now){const {store,set}=this.deps;try{store.retryStopped?.(now);}catch{}const closed=this.deps.closedDays?.()??new Set();const want={KR:readableDay('KR',now,closed),US:readableDay('US',now,closed)};const all=store.progressAll();
-    const newest=[],deeper=[];for(const s of set()){const p=all.get(s);if(p&&p.failures>=STOCK_TRIES&&p.failedAt>now-12*3600000)continue;const day=want[marketOf(s)];if(!day)continue;
+    const settle=[],newest=[],deeper=[];for(const s of set()){const p=all.get(s);if(p&&p.failures>=STOCK_TRIES&&p.failedAt>now-12*3600000)continue;const day=want[marketOf(s)];if(!day)continue;
       if((!p?.newest||p.newest<day)&&p?.triedNewest!==day)newest.push({symbol:s,kind:'newest',end:day,day});
+      // The provisional row read once more from 06:00 KST the next day (before the next session), once per day.
+      else if(marketOf(s)==='KR'&&p?.provisional&&p.provisional===p.newest&&p.settleTried!==p.provisional&&now>=zoned(addDays(p.provisional,1),'06:00','Asia/Seoul'))settle.push({symbol:s,kind:'settle',end:p.provisional,day:p.provisional,readable:day});
       else if(p?.newest&&!p.complete&&!p.stopped&&p.depth<KEEP&&p.triedDeeper!==day)deeper.push({symbol:s,kind:'deeper',day});}
-    return [...newest,...deeper];}
+    return [...settle,...newest,...deeper];}
   tick(now=this.clock()){
     if(this.reading)return;
     if(now<this.pauseUntil){this.status.state='paused';return;}
@@ -144,7 +181,7 @@ class HistoryRefresher{
     this.lastStart=now;this.status.state='reading';this.status.why=null;
     let sent;try{sent=Promise.resolve(this.deps.request(task.symbol,task.end));}catch(error){sent=Promise.reject(error);}
     this.reading=sent.then(rows=>{const t=this.clock();
-        let r;try{r=this.deps.store.put(task.symbol,rows,{kind:task.kind,day:task.day,now:t});}
+        let r;try{r=this.deps.store.put(task.symbol,rows,{kind:task.kind,day:task.day,readable:task.readable??null,now:t});}
         catch{this.inRow=0;this.pauseUntil=t+30*60000;this.plan=null;this.status.failed++;this.status.why='the store could not be written';return;}
         // A deeper page with no stored row in it (empty, or the overlap missing) is that stock's failure.
         if(r.failed){try{this.deps.store.fail(task.symbol,{kind:task.kind,day:task.day,now:t});}catch{}this.status.failed++;if(++this.inRow>=3){this.inRow=0;this.pauseUntil=t+30*60000;this.plan=null;}return;}
