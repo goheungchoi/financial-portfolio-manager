@@ -20,15 +20,15 @@ test('allowed while the short and cover paths cannot be sent (today, until B4) i
   assert.equal(await sent(ALLOWED_PATH_OFF),await sent(offAllowedFalse));assert.doesNotMatch(await sent(ALLOWED_PATH_OFF),/SHORT SELLING/);assert.match(await sent(ON),/SHORT SELLING/);
   // The dry-run gate and the facts in automation: off while the paths are closed, whatever the switch says.
   const {Automation}=require('../electron/automation.cjs');const a=Object.create(Automation.prototype);a.config={scope:'kis'};a.shortsEnabled=()=>true;a.live={creditApproved:()=>true};assert.equal(a.shortFactsInForce(),false);
-  a.completedClaudeDryRun=()=>({instructions:{fingerprint:'2e155a5b9452c226'}});assert.ok(a.claudeTradingDryRun(),'today\'s dry run keeps counting');
+  a.completedClaudeDryRun=()=>({instructions:{fingerprint:'cb76073c9969edd4'}});assert.ok(a.claudeTradingDryRun(),'today\'s dry run keeps counting');
   withPathsOpen(()=>{assert.equal(a.shortFactsInForce(),true);assert.equal(a.claudeTradingDryRun(),null,'with the paths open: a new dry run');});
 });
 test('the off pin: both fingerprints, versions and the text exactly as before; on: the short part after CREDIT, its own versions and fingerprints',()=>{
-  assert.equal(RI.fingerprint(),'2e155a5b9452c226');assert.equal(RI.fingerprint(undefined,{orders:true}),'36913349434ce621');
-  assert.equal(RI.fingerprint(undefined,{short:true}),'03d337dbcb5e4765');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'0997fb689307bf23');
-  assert.deepEqual(RI.record(OFF),{version:'review 2026-11-25',fingerprint:'2e155a5b9452c226',parts:['extended','credit']});
-  assert.deepEqual(RI.record(ON),{version:'review 2026-11-25 short',fingerprint:'03d337dbcb5e4765',parts:['extended','credit','short']});
-  assert.deepEqual(RI.record({...ON,ordersPerReview:3}),{version:'review 2026-11-25 orders short',fingerprint:'0997fb689307bf23',parts:['extended','credit','short','more-orders']});
+  assert.equal(RI.fingerprint(),'cb76073c9969edd4');assert.equal(RI.fingerprint(undefined,{orders:true}),'136bb024468c1184');
+  assert.equal(RI.fingerprint(undefined,{short:true}),'bda0a00141be7eb9');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'a42c4a83ae4bd05b');
+  assert.deepEqual(RI.record(OFF),{version:'review 2026-11-25.2',fingerprint:'cb76073c9969edd4',parts:['extended','credit']});
+  assert.deepEqual(RI.record(ON),{version:'review 2026-11-25.2 short',fingerprint:'bda0a00141be7eb9',parts:['extended','credit','short']});
+  assert.deepEqual(RI.record({...ON,ordersPerReview:3}),{version:'review 2026-11-25.2 orders short',fingerprint:'a42c4a83ae4bd05b',parts:['extended','credit','short','more-orders']});
   assert.equal(RI.record(ON,'proposed').version,'proposed 2026-11-24 short');assert.equal(RI.record({...ON,ordersPerReview:2},'proposed').version,'proposed 2026-11-24 orders short');
   // No credit at all, or a U.S. context: no short part.
   assert.deepEqual(RI.partsFor({environment:'kis-us',universe:[],positions:{}}),['extended']);
@@ -59,11 +59,11 @@ function harness(){require('./fixtures/order-book.cjs');const {Automation}=requi
 test('a Claude dry run counts only for the instructions in force: switching shorts on asks a new one, and Start is refused until then',()=>{
   const M=require('../electron/ai-models.cjs');M.setClaudeTradingForTests(true);try{const a=harness();let shorts=false;a.shortFactsInForce=()=>shorts;
     const use=fp=>{a.completedClaudeDryRun=()=>record(fp);return a.claudeTradingDryRun();};
-    assert.ok(use('2e155a5b9452c226'));assert.ok(use('36913349434ce621'));assert.equal(use('03d337dbcb5e4765'),null,'off: a short dry run does not count');
-    shorts=true;assert.equal(use('2e155a5b9452c226'),null,'shorts on: the off dry run no longer counts');assert.equal(use('36913349434ce621'),null);
-    assert.ok(use('03d337dbcb5e4765'));assert.ok(use('0997fb689307bf23'));
-    a.completedClaudeDryRun=()=>record('36913349434ce621');assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true,enabled:true}),/CLAUDE_TRADING_DRY_RUN/,'Start is refused');
-    a.completedClaudeDryRun=()=>record('0997fb689307bf23');a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'with a dry run under the short text: Start goes through');
+    assert.ok(use('cb76073c9969edd4'));assert.ok(use('136bb024468c1184'));assert.equal(use('bda0a00141be7eb9'),null,'off: a short dry run does not count');
+    shorts=true;assert.equal(use('cb76073c9969edd4'),null,'shorts on: the off dry run no longer counts');assert.equal(use('136bb024468c1184'),null);
+    assert.ok(use('bda0a00141be7eb9'));assert.ok(use('a42c4a83ae4bd05b'));
+    a.completedClaudeDryRun=()=>record('136bb024468c1184');assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true,enabled:true}),/CLAUDE_TRADING_DRY_RUN/,'Start is refused');
+    a.completedClaudeDryRun=()=>record('a42c4a83ae4bd05b');a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'with a dry run under the short text: Start goes through');
   }finally{M.setClaudeTradingForTests(false);}
 });
 // The context fields, from readings already held (no KIS read for the context).
@@ -146,10 +146,10 @@ test('the dry-run gate follows the instructions the scope\'s context gets: Korea
     const contexts={kis:open=>({environment:'kis',universe:[],positions:{},productRisk:kr(open)}),both:open=>({environment:'kis-combined',universe:[],positions:{},markets:[{market:'KR',productRisk:kr(open)},{market:'US'}]}),
       us:()=>({environment:'kis',market:'US',universe:[],positions:{}}),paper:()=>({environment:'local-paper',universe:[],positions:{}})};
     for(const scope of ['kis','both','us','paper'])for(const inForce of [false,true]){const a=harness();a.configure({scope});a.shortFactsInForce=()=>inForce;
-      const want=RI.record(contexts[scope](inForce)).fingerprint,other=want==='2e155a5b9452c226'?'03d337dbcb5e4765':'2e155a5b9452c226';
+      const want=RI.record(contexts[scope](inForce)).fingerprint,other=want==='cb76073c9969edd4'?'bda0a00141be7eb9':'cb76073c9969edd4';
       a.completedClaudeDryRun=()=>record(want);assert.ok(a.claudeTradingDryRun(),`${scope}, in force ${inForce}: the dry run under the context's own text counts`);
       a.completedClaudeDryRun=()=>record(other);assert.equal(a.claudeTradingDryRun(),null,`${scope}, in force ${inForce}: another text does not`);
-      assert.equal(want,inForce&&['kis','both'].includes(scope)?'03d337dbcb5e4765':'2e155a5b9452c226',`${scope} ${inForce}`);}
+      assert.equal(want,inForce&&['kis','both'].includes(scope)?'bda0a00141be7eb9':'cb76073c9969edd4',`${scope} ${inForce}`);}
   }finally{M.setClaudeTradingForTests(false);}
 });
 test('the review step itself: a Korean review\'s context carries each short\'s coverStop while the facts are in force, and none otherwise',async()=>{

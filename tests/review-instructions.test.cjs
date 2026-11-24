@@ -15,12 +15,16 @@ test('step 1: today\'s texts, whatever parts apply',()=>{
   // sentences removed; with them put back, each core is its earlier text exactly (31,563 fe872efd61e04606; 9,754 edef24348a4575f5).
   const RISK_REVIEW=['marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends.','marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends; in risk_off prefer smaller positions and require stronger evidence for new buys.'];
   const RISK_SCOUT=['for its own sake. Write retrospective','for its own sake. Keep more cash in risk_off. Write retrospective'];
-  assert.equal(RI.REVIEW_CORE.split(RISK_REVIEW[0]).length,2);const reviewBefore=RI.REVIEW_CORE.replace(RISK_REVIEW[0],RISK_REVIEW[1]);assert.equal(reviewBefore.length,31563);assert.equal(sha(reviewBefore),'fe872efd61e04606');
+  // 'review 2026-11-25.2' (the user's "Remove all four"): the four other preference sentences; put back (fixtures/risk-off-text.cjs), the
+  // core is the 2026-11-25 text exactly, 31,482 characters, 6411a5c8791b0cd4.
+  const core2025=require('./fixtures/risk-off-text.cjs').beforeFour(RI.REVIEW_CORE);assert.equal(core2025.length,31482);assert.equal(sha(core2025),'6411a5c8791b0cd4');
+  assert.equal(core2025.split(RISK_REVIEW[0]).length,2);const reviewBefore=core2025.replace(RISK_REVIEW[0],RISK_REVIEW[1]);assert.equal(reviewBefore.length,31563);assert.equal(sha(reviewBefore),'fe872efd61e04606');
   assert.equal(RI.SCOUT_CORE.split(RISK_SCOUT[0]).length,2);const scoutBefore=RI.SCOUT_CORE.replace(RISK_SCOUT[0],RISK_SCOUT[1]);assert.equal(scoutBefore.length,9754);assert.equal(sha(scoutBefore),'edef24348a4575f5');
   assert.doesNotMatch(RI.REVIEW_CORE,/risk_off|smaller positions and require stronger evidence/);assert.doesNotMatch(RI.SCOUT_CORE,/risk_off|more cash/);
   {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');const S4=require('./fixtures/s4-text.cjs');assert.ok(S4.coreHasNewSentence());let core=reviewBefore.replace(S4.NEW_SENTENCE,S4.OLD_SENTENCE);for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
     assert.equal(core.length,31003);assert.equal(sha(core),'137131132eea8ab3');}
-  assert.equal(RI.REVIEW_CORE.length,31482);assert.equal(sha(RI.REVIEW_CORE),'6411a5c8791b0cd4');assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
+  assert.equal(RI.REVIEW_CORE.length,31057);assert.equal(sha(RI.REVIEW_CORE),'60cebc4a8956dc41');
+  assert.doesNotMatch(RI.REVIEW_CORE,/Prioritize justified loss-reduction|lack of candidates is not a reason|Keeping cash idle|Prefer Hold when expected edge/);assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
   // A: the scout core's leveraged sentence (a defined view held up to maxHoldingDays, or a hedge) and the single-stock
   // clause; with both put back, the earlier core is ed636750c54c3942.
   // Carried scout targets ('scout 2026-11-25'): the carried-targets sentences; with the earlier sentence put back, the

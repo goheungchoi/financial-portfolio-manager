@@ -28,12 +28,12 @@ test('every one of the 1,024 part sets assembles: the core, then exactly those p
 test('versions: the current pin is unchanged; the proposed set has its own version and fingerprint',()=>{
   // trailing stops T2: the current set moved from 'review 2026-11-13' (d50342a570a47586) to 'review 2026-11-15' (36fe9b8abbd1bbea) with the
   // trail variants of the decision schema and set_conditional_order; its text is unchanged.
-  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25');assert.equal(RI.fingerprint(),'2e155a5b9452c226');assert.equal(RI.fingerprint('current'),'2e155a5b9452c226');
+  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.2');assert.equal(RI.fingerprint(),'cb76073c9969edd4');assert.equal(RI.fingerprint('current'),'cb76073c9969edd4');
   // trailing stops T2: 'proposed 2026-11-14' (83ab4d1b1e9de0ec) became 'proposed 2026-11-15' (db193ed8d9cc5268) with the trail variants.
   // Leveraged products held up to maxHoldingDays (A): both sets moved again, to 'review 2026-11-21' and 'proposed 2026-11-21'.
   assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-24');assert.equal(RI.fingerprint('proposed'),'07d9d66f7954bf84');
-  assert.deepEqual(C.instructions(),{version:'review 2026-11-25',fingerprint:'2e155a5b9452c226'});
-  assert.deepEqual(C.instructions({environment:'kis-combined',extendedSessions:[],agentDesk:{}}),{version:'review 2026-11-25',fingerprint:'2e155a5b9452c226',parts:['two-markets','desk']},'the review record keeps the parts');
+  assert.deepEqual(C.instructions(),{version:'review 2026-11-25.2',fingerprint:'cb76073c9969edd4'});
+  assert.deepEqual(C.instructions({environment:'kis-combined',extendedSessions:[],agentDesk:{}}),{version:'review 2026-11-25.2',fingerprint:'cb76073c9969edd4',parts:['two-markets','desk']},'the review record keeps the parts');
   assert.deepEqual(RI.scoutRecord({products:{leveragedOrInverseEtps:{allowed:true}}}),{version:'scout 2026-11-25b',parts:['leveraged']});
   assert.match(src('automation.cjs'),/scoutStore\.save\(scope,plan,\{runId:id,trigger,focus:focus\.markets,instructions:require\('\.\/review-instructions\.cjs'\)\.scoutRecord\(context\)/,'each plan record keeps the scout version');
 });
@@ -147,12 +147,12 @@ test('the replay runs the proposed text on the change side only, fills a missing
   assert.deepEqual(base.context.extendedSessions,['Nextrade pre- and after-market']);assert.deepEqual(variant.context.extendedSessions,base.context.extendedSessions,'filled from the current settings on both sides');
   assert.deepEqual(variant.context.userGuidelines,'Grow.','the text is the only change');
   const row=run.rows[0];assert.deepEqual(row.filled,['extendedSessions']);
-  assert.equal(row.instructions.baseline.version,'review 2026-11-25');assert.equal(row.instructions.variant.version,'proposed 2026-11-24');assert.ok(row.instructions.variant.parts.includes('extended'));
+  assert.equal(row.instructions.baseline.version,'review 2026-11-25.2');assert.equal(row.instructions.variant.version,'proposed 2026-11-24');assert.ok(row.instructions.variant.parts.includes('extended'));
   assert.equal(run.variant.proposedText,true);
   // Without the option nothing is filled and both sides keep the current text.
   before=calls.length;run=await a.replay({instructions:'Be brief.',limit:3});const [b2,v2]=calls.slice(before);
   assert.equal(b2.options.instructionSet,undefined);assert.equal(v2.options.instructionSet,undefined);assert.equal(b2.context.extendedSessions,undefined);assert.equal(run.rows[0].filled,undefined);
-  assert.equal(run.rows[0].instructions.variant.version,'review 2026-11-25');
+  assert.equal(run.rows[0].instructions.variant.version,'review 2026-11-25.2');
   // The live review record keeps its parts.
   const rec=JSON.parse(db.prepare('SELECT payload FROM reviews').get().payload);assert.deepEqual(rec.instructions.parts,RI.partsFor(calls[0].context));
 });
