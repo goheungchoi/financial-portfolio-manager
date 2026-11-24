@@ -44,14 +44,14 @@ test('a dry run records its model\'s company; the dry-run gate still reads the m
   const s=require('node:fs').readFileSync(path.join(ROOT,'electron','automation.cjs'),'utf8');
   assert.match(s,/review=\{model:model\.openaiModel,vendor:require\('\.\/decision-names\.cjs'\)\.vendorOfModel\(model\.openaiModel\),effort:/);
   assert.equal(N.vendorOfModel('claude-opus-5-5'),'anthropic');assert.equal(N.vendorOfModel('gpt-6-sol'),'openai');assert.equal(N.vendorOfModel('nope'),null);
-  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'e36e408915854800');assert.equal(RI.fingerprint(undefined,{orders:true}),'270c1047cfa0a70e');
+  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
 });
 test('pins: the start token of a fixed configuration and each client\'s request body are as before P1 (computed on 3f1a720b..f7698d1f)',async()=>{
   assert.deepEqual(PINS.startToken(ROOT),{token:'0bb210a088bf48a862bea2630c5e658c7eaae3607d8cfcac2a2d54a156cc2487',config:'4eb88e1b40c61b4f'});
-  // The risk-off text ('review 2026-11-25.4') changed the instructions both bodies carry: the pins taken before it were
+  // The risk-off text ('review 2026-11-25.5') changed the instructions both bodies carry: the pins taken before it were
   // openai dfc4223814d360cb, claude 6c2985ba7acc7046; ai-models-vendor and claude-context-cache put the sentence back and
   // still compare every other byte.
-  assert.deepEqual(await PINS.requestBodies(ROOT),{openai:'6407cebba47f82f7',claude:'133b748182fa30eb'});// '.4': 1f80fff93c755c6a / c5984315b1712590 before; '.3': 5edbc9cef56a995e / 6e179352ff3af321 before; '.2': eecdf1e0b7ea608a / 8f6cd7b5692119ff before
+  assert.deepEqual(await PINS.requestBodies(ROOT),{openai:'6d2c5bb8afd04b56',claude:'f8e789d30495ba9d'});// '.5': 6407cebba47f82f7 / 133b748182fa30eb before; '.4': 1f80fff93c755c6a / c5984315b1712590 before; '.3': 5edbc9cef56a995e / 6e179352ff3af321 before; '.2': eecdf1e0b7ea608a / 8f6cd7b5692119ff before
 });
 // ---- P2: the settings read through true-named accessors; one source for "which company" on every screen.
 test('P2: decisionMaker reads the stored setting exactly as the old comparisons did; nothing compares the setting with "openai" any more',()=>{
@@ -72,7 +72,7 @@ test('P2: the start token is unchanged after a load and a save that changes noth
   a.live={getState:()=>({environment:'live',policy:{symbols:[],maxOrderKRW:1000000,maxDailyTurnoverKRW:5000000,maxCompanyPct:20,lossLimit:{mode:'off'}}}),identity:()=>'acct',enabled:false,autoEnabled:false};
   const L=require('../electron/auto-launch.cjs');const before=L.launchState(a).token;a.configure({});assert.equal(L.launchState(a).token,before,'a save that changes nothing');assert.equal(a.config.provider,'openai','the stored value is not rewritten');
   assert.match(require('node:fs').readFileSync(path.join(ROOT,'electron','automation.cjs'),'utf8'),/startsWith\('claude-'\)/,"the gate's own model check (completedClaudeDryRun) is left as it is");
-  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'e36e408915854800');assert.equal(RI.fingerprint(undefined,{orders:true}),'270c1047cfa0a70e');
+  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
 });
 test('P2: the scoreboard and the replay selection on a mixed history of old "openai" rows and new "ai" rows',()=>{
   const {Scoreboard}=require('../electron/scoreboard.cjs');const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL)');

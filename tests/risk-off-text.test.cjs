@@ -18,21 +18,21 @@ test('the gauge itself is unchanged: regime, score and components for the same r
   assert.match(src,/return \{regime:score<=-2\?'risk_off':score>=2\?'risk_on':'neutral',score,components:parts,note:'Rule-based from stress readings, separate from the AI-written narrative\.'\};/);
 });
 test('versions and fingerprints moved: the review asks for a new Claude dry run once',()=>{
-  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.4');assert.equal(RI.ORDERS_VERSION,'review 2026-11-25.4 orders');assert.equal(RI.SCOUT_INSTRUCTIONS_VERSION,'scout 2026-11-25b');
-  assert.equal(RI.fingerprint(),'e36e408915854800');assert.equal(RI.fingerprint(undefined,{orders:true}),'270c1047cfa0a70e');
-  assert.equal(RI.fingerprint(undefined,{short:true}),'67577dc81443657e');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'236a6e7d3e6aff2e');
+  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.5');assert.equal(RI.ORDERS_VERSION,'review 2026-11-25.5 orders');assert.equal(RI.SCOUT_INSTRUCTIONS_VERSION,'scout 2026-11-25b');
+  assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
+  assert.equal(RI.fingerprint(undefined,{short:true}),'748298e5b27c1087');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'cc58f9a9d4c59f9e');
 });
 test('the four other preference sentences are gone (the user\'s "Remove all four"); what stays reads cleanly; the proposed set had none of the four (its fingerprints are those of the .3 step, which changed its unknown-tax line)',()=>{
   const F=require('./fixtures/risk-off-text.cjs');
   assert.doesNotMatch(RI.REVIEW_CORE,/Prioritize justified loss-reduction rebalancing or cash preservation|a lack of candidates is not a reason to Hold|Keeping cash idle is a valid decision|\(for example risk-off or mixed signals\)|Prefer Hold when expected edge does not cover costs/);
   assert.match(RI.REVIEW_CORE,/liquidity and transaction costs\. Hold is allowed when a trade is not justified\./,'.3: "Never chase recovery…" removed too');
   assert.match(RI.REVIEW_CORE,/ screen_market, search_securities and update_watchlist can build a shortlist, and discovery\.starterCandidates are evaluated like any other universe symbol, with evidence gathered before any Buy\. /);
-  assert.match(RI.REVIEW_CORE,/specific reasons are fine, but the same general reason repeated for every target is not\./);assert.match(RI.REVIEW_CORE,/A tax estimate is not withheld cash\. Precedence:/);
+  assert.match(RI.REVIEW_CORE,/A tax estimate is not withheld cash\. Precedence:/);// .5 removed the plan-gap sentence that held "specific reasons are fine…"
   assert.equal(F.beforeFour(RI.REVIEW_CORE).length,31482,'put back, the 2026-11-25 core');
-  assert.equal(RI.fingerprint('proposed'),'756c0cd4aa6601c4');assert.equal(RI.fingerprint('proposed',{orders:true}),'a1418621c76413d5');
+  assert.equal(RI.fingerprint('proposed'),'4125be8df9bf2e10');assert.equal(RI.fingerprint('proposed',{orders:true}),'baefcb594987fc45');
   // One dry run in all: 'review 2026-11-25' was never released (the installed build is at 'review 2026-11-24'); the gate counts
   // only the fingerprints in force, so a dry run on this version is the one the update asks for.
-  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.4');
+  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.5');
 });
 test('three more of the same kind are gone (the user\'s "Remove the sentences which are the same kind as the ones I found"); the facts and the app\'s cap stay; the precedence sentence stays',()=>{
   const F=require('./fixtures/risk-off-text.cjs');
@@ -43,14 +43,23 @@ test('three more of the same kind are gone (the user\'s "Remove the sentences wh
   assert.match(RI.REVIEW_CORE,/The defaults in these instructions fill gaps where userGuidelines are silent\./,'precedence kept');
   assert.equal(F.beforeThree(RI.REVIEW_CORE).length,31057,'put back, the .2 core');
   // Still one dry run in all: '.2' and '.3' are unreleased; the installed build carries 'review 2026-11-24'.
-  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.4');assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-25.2');
+  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.5');assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-25.3');
 });
 test('the first two of the last pass are gone (the user\'s "Remove the first two"): the news Hold preference and the plan-gap sentence, in both sets; the other three stay',()=>{
   const F=require('./fixtures/risk-off-text.cjs');const proposed=[RI.PROPOSED_REVIEW_CORE,...RI.PROPOSED_REVIEW_PARTS.map(p=>p.text)].join('\n');
   for(const t of [RI.REVIEW_CORE,proposed])assert.doesNotMatch(t,/prefer Hold when the effect is unclear|Closing the gap is never a goal in itself|is worse than holding/);
   assert.match(RI.REVIEW_CORE,/assess whether those disclosures or headlines change the thesis, risk or valuation of the affected holdings or watchlist symbols\. reviewedLessons/);
-  assert.match(RI.REVIEW_CORE,/the same general reason repeated for every target is not\. When you disagree with the plan/);
+  assert.match(RI.REVIEW_CORE,/must say what would make the review reconsider\. When you disagree with the plan/,'.5: the far-from-the-plan sentence is gone too');
   assert.match(RI.REVIEW_CORE,/Prefer liquid, orderable stocks/);assert.match(RI.REVIEW_CORE,/a weak or small sample calls for more caution, not reversal/);assert.match(RI.REVIEW_CORE,/take a smaller position/);
   assert.equal(F.beforeTwo(RI.REVIEW_CORE).length,30788,'put back, the .3 core');
-  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.4');assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-25.2');
+  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.5');assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-25.3');
+});
+test('"Being far from the plan … needs a specific reason" is gone (the user\'s "Yes, remove it"), in both sets; the Hold sentence before it and the disagreement sentence after it stay; planGap stays facts and planVerdicts stay',()=>{
+  const F=require('./fixtures/risk-off-text.cjs');const proposed=[RI.PROPOSED_REVIEW_CORE,...RI.PROPOSED_REVIEW_PARTS.map(p=>p.text)].join('\n');
+  for(const t of [RI.REVIEW_CORE,proposed])assert.doesNotMatch(t,/Being far from the plan|is a deviation that needs a specific reason|needs a specific reason/);
+  assert.match(RI.REVIEW_CORE,/For a Hold, plan\.invalidation must say what would make the review reconsider\. When you disagree with the plan, say so in the feedback so the scout can revise it\./);
+  assert.match(RI.REVIEW_CORE,/planGap shows, as facts, the cash and invested share of each market next to the plan/);assert.match(RI.REVIEW_CORE,/give each scoutPlan target a verdict in planVerdicts/);
+  assert.match(proposed,/the planned weight of each target next to the weight held now\.\n\nplanVerdicts: one verdict for each scoutPlan target/);
+  assert.equal(F.beforeOne(RI.REVIEW_CORE).length,30586,'put back, the .4 core');
+  assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.5');assert.equal(RI.PROPOSED_VERSION,'proposed 2026-11-25.3');
 });

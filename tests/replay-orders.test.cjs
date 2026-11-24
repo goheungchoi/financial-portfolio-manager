@@ -9,8 +9,8 @@ test('replay asks what the saved review asked: its ordersPerReview, never more; 
   assert.equal(R.replayOrders({ordersPerReview:3}),3);assert.equal(R.replayOrders({}),1);assert.equal(R.replayOrders({ordersPerReview:1}),1);assert.equal(R.replayOrders(null),1);
 });
 test('replay\'s version is the context\'s: a several-order context reports the orders version',()=>{
-  const t=R.textOf({context:{universe:[],ordersPerReview:3}},{instructions:'x'});assert.equal(t.instructions.baseline.version,'review 2026-11-25.4 orders');assert.ok(t.instructions.baseline.parts.includes('more-orders'));
-  assert.equal(R.textOf({context:{universe:[]}},{instructions:'x'}).instructions.baseline.version,'review 2026-11-25.4');
+  const t=R.textOf({context:{universe:[],ordersPerReview:3}},{instructions:'x'});assert.equal(t.instructions.baseline.version,'review 2026-11-25.5 orders');assert.ok(t.instructions.baseline.parts.includes('more-orders'));
+  assert.equal(R.textOf({context:{universe:[]}},{instructions:'x'}).instructions.baseline.version,'review 2026-11-25.5');
 });
 test('scoring order by order: each order with its own stock; the sum; a stock not ordered counts 0; waiting if any order waits',()=>{
   const d=days(12,'2026-10-01');const up=d.map((date,i)=>({date,close:100+i})),flat=d.map(date=>({date,close:100})),bench=d.map(date=>({date,close:1000}));

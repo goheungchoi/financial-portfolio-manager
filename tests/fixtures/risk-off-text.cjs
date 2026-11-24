@@ -7,8 +7,12 @@
 //   recovery, the extended-session advice, unknown tax as a reason to Hold.
 // - 'review 2026-11-25.4' (the user's "Remove the first two"): prefer Hold when a news item's effect is unclear, and the
 //   plan-gap sentence (buying only to close the gap is worse than holding).
+// - 'review 2026-11-25.5' (the user's "Yes, remove it"): "Being far from the plan … needs a specific reason".
 // beforeRiskOff(text) puts every one back, in order, in a request body or a core, so a pin taken before still compares
 // every other byte. Each piece must be present exactly once.
+const ONE=[
+  ['must say what would make the review reconsider. When you disagree with the plan','must say what would make the review reconsider. Being far from the plan, such as all cash against a mostly invested plan or well above a target weight, is a deviation that needs a specific reason; specific reasons are fine, but the same general reason repeated for every target is not. When you disagree with the plan'],
+];
 const TWO=[
   ['affected holdings or watchlist symbols. reviewedLessons','affected holdings or watchlist symbols, and prefer Hold when the effect is unclear. reviewedLessons'],
   ['repeated for every target is not. When you disagree','repeated for every target is not. Closing the gap is never a goal in itself: buying only to reduce the gap, without fresh supporting evidence and a complete trade plan, is worse than holding. When you disagree'],
@@ -27,12 +31,14 @@ const FOUR=[
 const NOW='marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends. ';
 const THEN='marketRegime is a rule-based gauge from VIX, credit spreads, breadth and trends; in risk_off prefer smaller positions and require stronger evidence for new buys. ';
 const once=(text,now,then)=>{if(text.split(now).length!==2)throw new Error('not in the text once: '+now.slice(0,50));return text.replace(now,then);};
-// The two only (the text as 'review 2026-11-25.3' had it).
-function beforeTwo(text){let t=text;for(const [now,then] of TWO)t=once(t,now,then);return t;}
+// The one only (the text as 'review 2026-11-25.4' had it).
+function beforeOne(text){let t=text;for(const [now,then] of ONE)t=once(t,now,then);return t;}
+// The one and the two (the text as 'review 2026-11-25.3' had it).
+function beforeTwo(text){let t=beforeOne(text);for(const [now,then] of TWO)t=once(t,now,then);return t;}
 // The two and the three (the text as 'review 2026-11-25.2' had it).
 function beforeThree(text){let t=beforeTwo(text);for(const [now,then] of THREE)t=once(t,now,then);return t;}
 // The three and the four (the text as 'review 2026-11-25' had it).
 function beforeFour(text){let t=beforeThree(text);for(const [now,then] of FOUR)t=once(t,now,then);return t;}
 // Every removal put back (the text as 'review 2026-11-24' had it).
 function beforeRiskOff(text){return once(beforeFour(text),NOW,THEN);}
-module.exports={NOW,THEN,TWO,THREE,FOUR,beforeTwo,beforeThree,beforeFour,beforeRiskOff};
+module.exports={NOW,THEN,ONE,TWO,THREE,FOUR,beforeOne,beforeTwo,beforeThree,beforeFour,beforeRiskOff};

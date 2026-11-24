@@ -21,6 +21,9 @@ test('step 1: today\'s texts, whatever parts apply',()=>{
   // back, the core is the '.2' text exactly, 31,057 characters, 60cebc4a8956dc41.
   // 'review 2026-11-25.4' (the user's "Remove the first two"): two more; put back, the core is the '.3' text exactly, 30,788
   // characters, 1ab7ffb56122145b.
+  // 'review 2026-11-25.5' (the user's "Yes, remove it"): the far-from-the-plan sentence; put back, the core is the '.4' text
+  // exactly, 30,586 characters, 39b2838b4d39b6ac.
+  {const core254=require('./fixtures/risk-off-text.cjs').beforeOne(RI.REVIEW_CORE);assert.equal(core254.length,30586);assert.equal(sha(core254),'39b2838b4d39b6ac');}
   {const core253=require('./fixtures/risk-off-text.cjs').beforeTwo(RI.REVIEW_CORE);assert.equal(core253.length,30788);assert.equal(sha(core253),'1ab7ffb56122145b');}
   {const core252=require('./fixtures/risk-off-text.cjs').beforeThree(RI.REVIEW_CORE);assert.equal(core252.length,31057);assert.equal(sha(core252),'60cebc4a8956dc41');}
   const core2025=require('./fixtures/risk-off-text.cjs').beforeFour(RI.REVIEW_CORE);assert.equal(core2025.length,31482);assert.equal(sha(core2025),'6411a5c8791b0cd4');
@@ -29,8 +32,8 @@ test('step 1: today\'s texts, whatever parts apply',()=>{
   assert.doesNotMatch(RI.REVIEW_CORE,/risk_off|smaller positions and require stronger evidence/);assert.doesNotMatch(RI.SCOUT_CORE,/risk_off|more cash/);
   {const {PIECES}=require('./fixtures/leveraged-text-a.cjs');const S4=require('./fixtures/s4-text.cjs');assert.ok(S4.coreHasNewSentence());let core=reviewBefore.replace(S4.NEW_SENTENCE,S4.OLD_SENTENCE);for(const [before,after] of PIECES){assert.equal(core.split(after).length,2);core=core.split(after).join(before);}
     assert.equal(core.length,31003);assert.equal(sha(core),'137131132eea8ab3');}
-  assert.equal(RI.REVIEW_CORE.length,30586);assert.equal(sha(RI.REVIEW_CORE),'39b2838b4d39b6ac');
-  assert.doesNotMatch(RI.REVIEW_CORE,/Prioritize justified loss-reduction|lack of candidates is not a reason|Keeping cash idle|Prefer Hold when expected edge|Never chase recovery|keep the order small|prefer protecting or trimming|not a reason to Hold|prefer Hold when the effect is unclear|Closing the gap is never a goal/);assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
+  assert.equal(RI.REVIEW_CORE.length,30348);assert.equal(sha(RI.REVIEW_CORE),'0dde85b9cc3e110d');
+  assert.doesNotMatch(RI.REVIEW_CORE,/Prioritize justified loss-reduction|lack of candidates is not a reason|Keeping cash idle|Prefer Hold when expected edge|Never chase recovery|keep the order small|prefer protecting or trimming|not a reason to Hold|prefer Hold when the effect is unclear|Closing the gap is never a goal|Being far from the plan/);assert.doesNotMatch(RI.REVIEW_CORE,/complexity/);
   // A: the scout core's leveraged sentence (a defined view held up to maxHoldingDays, or a hedge) and the single-stock
   // clause; with both put back, the earlier core is ed636750c54c3942.
   // Carried scout targets ('scout 2026-11-25'): the carried-targets sentences; with the earlier sentence put back, the

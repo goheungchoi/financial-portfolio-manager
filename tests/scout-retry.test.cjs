@@ -51,4 +51,4 @@ test('the tick runs a due retry first; a scheduled run\'s failure is noted for a
   assert.ok(src.includes('{const retried=this.scoutRetryTick(now);if(retried)return retried;}'));
   assert.ok(src.includes(".catch(error=>this.noteScoutRetry(slot,error));return {slot,ran:true};"));
   assert.ok(src.includes("const SCOUT_RETRY_CODES=['BROKER_REJECTED','RATE_LIMITED','REQUEST_TIMEOUT','NETWORK_UNAVAILABLE'],SCOUT_RETRY_MS=120000;"));
-  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'e36e408915854800');assert.equal(RI.fingerprint(undefined,{orders:true}),'270c1047cfa0a70e');});
+  const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');});

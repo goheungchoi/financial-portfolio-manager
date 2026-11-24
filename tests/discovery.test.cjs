@@ -79,7 +79,7 @@ test('AI request includes discovery tools only when discovery is enabled',async(
   const client=new AiClient('fixture-private-key',async(_url,options)=>{body=JSON.parse(options.body);return {ok:true,text:async()=>JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({action:'Hold',symbol:'',quantity:0,explanation:'Fixture.'})}]}]})};});
   await client.decide({universe:[]},{research:true});assert.ok(!body.tools.some(tool=>tool.name==='screen_market'));
   await client.decide({universe:[],discovery:{enabled:true,watchlist:[]}},{research:true});assert.deepEqual(body.tools.filter(tool=>['screen_market','search_securities','update_watchlist'].includes(tool.name)).length,3);
-  // 'review 2026-11-25.4' (the user's "Remove all four"): the tools as one plain sentence, no preference about idle cash.
+  // 'review 2026-11-25.5' (the user's "Remove all four"): the tools as one plain sentence, no preference about idle cash.
   assert.match(body.instructions,/screen_market, search_securities and update_watchlist can build a shortlist/);assert.doesNotMatch(body.instructions,/lack of candidates is not a reason to Hold/);assert.match(body.instructions,/discovery\.starterCandidates/);
 });
 
