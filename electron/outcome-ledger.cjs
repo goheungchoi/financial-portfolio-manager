@@ -44,13 +44,22 @@ class OutcomeLedger {
       const fees=executions.reduce((n,f)=>n+f.fee,0);
       records.push({id:'paper:'+order.id,orderId:order.id,proposalId:order.proposalId,source:'paper',environment:'simulation',market:'KR',currency:'KRW',symbol:order.symbol,side:order.side,status:order.status,quantity,requested:order.quantity,averagePrice:gross/quantity,gross,fees,netCash:order.side==='Sell'?gross-fees:-gross-fees,gainAfterFees:order.side==='Sell'?executions.reduce((n,f)=>n+f.realized,0):null,gainAfterEstimatedTax:null,costBasis:'simulated',taxStatus:'Not modeled',timestamp:Math.max(...executions.map(f=>f.timestamp)),evidence:{fillIds:executions.map(f=>f.id)}});
     }
-    for(const order of this.rows('live_intents')) {
+    const intents=this.rows('live_intents');
+    for(const order of intents) {
       if(!(order.filled>0))continue;
       const costs=order.resultCosts;
       // The credit identity and position effect travel with the outcome (audit 2026-11-04, Stage 3): a short sale opens a
       // position and a cover closes it; a repayment whose lot is not recorded has an unknown identity, never a guessed one.
       const credit=order.credit?{kind:order.credit.kind,type:order.credit.type??null,loanDate:order.credit.loanDate??null}:null;const effect=require('./outcome-evaluation.cjs').effectOf({side:order.side,credit});
       records.push({id:'broker:'+order.id,orderId:order.id,proposalId:order.id,accountKey:order.accountKey,source:'broker',environment:order.environment,market:order.market??'KR',currency:order.currency??'KRW',symbol:order.symbol,side:order.side,credit,effect,status:order.status,quantity:order.filled,requested:order.quantity,averagePrice:order.fillPrice??null,gross:costs?.gross??null,fees:costs?costs.commission+costs.transactionTax:null,netCash:costs?.netCash??null,gainAfterFees:costs?.gainAfterFees??null,gainAfterEstimatedTax:costs?.gainAfterEstimatedTax??null,costBasis:costs?(costs.basis==='broker'?'broker':'estimated'):'unknown',taxStatus:order.market==='US'?(costs?.capitalGainsTaxKRW==null?'Unknown':'Estimated; annual tax'):'Estimated transaction tax',timestamp:order.reconciledAt??order.createdAt,evidence:{brokerOrderId:order.brokerOrderId,acquisitionCostPerShare:order.costPerShare??null,costSettings:order.costSettings??null,resultCosts:costs??null,observationTimeKnown:Boolean(order.reconciledAt)}});
+      // A short sale realizes nothing (its result comes at the cover); a cover realizes against its own lot (B3d-3 part 2,
+      // short-result.cjs), with its costs kept apart. Only short and cover records change.
+      const rec=records.at(-1);
+      if(effect==='OPEN_SHORT'){rec.gainAfterFees=null;rec.gainAfterEstimatedTax=null;}
+      if(effect==='CLOSE_SHORT'){const r=require('./short-result.cjs').shortResult(order,intents);rec.gainAfterFees=r?.realized??null;rec.shortGaps=r?.gaps??[];
+        if(r?.shortProceeds!=null){const exempt=intents.filter(o=>r.shortOrderIds?.includes(o.id)).every(o=>o.resultCosts?.capitalGainsTaxKRW===0);
+          Object.assign(rec,{shortProceeds:r.shortProceeds,shortEntryPrice:r.entryPrice,shortCosts:{saleCharges:r.saleCharges,coverCharges:r.coverCharges,interest:r.interest,beforeCharges:r.beforeCharges},gainAfterEstimatedTax:r.realized!=null&&exempt?r.realized:null,costBasis:r.realized==null?rec.costBasis:r.costBasis});}
+        else rec.gainAfterEstimatedTax=null;}
     }
     const previous=new Map(this.rows('trade_outcomes').map(row=>[row.id,row]));
     for(const old of previous.values())if(!records.some(row=>row.id===old.id))records.push({...old,status:'Retracted',quantity:0,gross:null,fees:null,netCash:null,gainAfterFees:null,gainAfterEstimatedTax:null});
@@ -69,7 +78,7 @@ class OutcomeLedger {
         // of the review that armed it, kept apart from decision (nothing decided this order at the time it was made).
         // Added only on a match, so an outcome with none is unchanged (same signature, no new version).
         if(!review){const t=triggerOf(conditionals,record,reviews);if(t){record.trigger=t.trigger;if(t.armingDecision)record.armingDecision=t.armingDecision;}}
-        record.evaluation=record.side==='Buy'?'Entry recorded; exit outcome pending':record.gainAfterFees==null?'Insufficient cost evidence':record.gainAfterFees<0?'Loss observed; cause unassessed':record.gainAfterFees>0?'Gain observed; cause unassessed':'Break-even after recorded costs';
+        record.evaluation=record.effect==='OPEN_SHORT'||record.side==='Buy'&&record.effect!=='CLOSE_SHORT'?'Entry recorded; exit outcome pending':record.gainAfterFees==null?'Insufficient cost evidence':record.gainAfterFees<0?'Loss observed; cause unassessed':record.gainAfterFees>0?'Gain observed; cause unassessed':'Break-even after recorded costs';
         record.assessment=evaluate(record);
         const economic={...record};for(const key of ['timestamp','version','signature','firstObservedAt','updatedAt'])delete economic[key];
         const signature=createHash('sha256').update(JSON.stringify(economic)).digest('hex');const old=previous.get(record.id);

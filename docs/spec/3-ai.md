@@ -573,9 +573,21 @@ rule (`docs/LEARNING-PIPELINE.md`, "Lesson lifecycle").
 - **Outcome ledger** (`outcome-ledger.cjs`; tables `trade_outcomes`, `outcome_versions`): one outcome per app order,
   replaced by cumulative broker reports, versioned when the economics change; each carries the review that decided it
   (for a further order, that order's own decision), or the conditional order that made it and the review that armed
-  it (`:50-70`). Local only.
+  it (`:50-70`). Local only. A short sale realizes nothing (its gain fields are empty). A cover realizes against its
+  own lot (`short-result.cjs`, B3d-3 part 2): it is matched to the app's short sales of the lot (account, stock, KIS's
+  loan date), and realized = proceeds − buy-back − the short sale's fees and tax − the cover's fees − borrow interest.
+  The proceeds and the sale's charges are the lot's, pro rata to the shares covered, after its earlier covers, cut by
+  cumulative rounding so a lot's covers sum to the whole (the last takes the remainder). A cover dated before its
+  short sale, a negative or unreadable KIS interest figure, or a rate outside the setting's 0.1–30 % gives a gap. The
+  interest is KIS's figure once the cover carries it (`borrowInterest`, nothing writes it before B4); until then it
+  is estimated at the fee rate kept on the short sale when it was made (`borrowFeePct`), proceeds × rate × calendar
+  days from the short's trade day to the cover's (at least 1) / 365. The record keeps `shortProceeds` and
+  `shortCosts` (sale charges, cover charges, interest with its basis, the result before charges). A lot the app did
+  not wholly sell short, or missing charges or rate, gives a named gap and no result. A short sale has no acquisition
+  cost, so a long holding of the stock never gives it a gain.
 - **Evaluation** (`outcome-evaluation.cjs`; `docs/LEARNING-PIPELINE.md` "Evaluations"): entry / pending / retracted /
-  gain / loss / cost drag; it "does not claim a loss proves a thesis mistake".
+  gain / loss / cost drag; it "does not claim a loss proves a thesis mistake". A cover with its result is judged
+  against the short's proceeds, the estimated interest named as a gap; not eligible for learning until B3e.
 - **Learning memory** (`learning-memory.cjs`; tables `lesson_evidence`, `lesson_lifecycle`, `lesson_history`, plus
   `lessons` in `automation.cjs:110`): lessons come from exits only. Evidence (version 2) carries the position episode:
   the filled entries since the position was last flat, each with its review's rationale, thesis, invalidation, stop

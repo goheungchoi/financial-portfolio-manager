@@ -8,7 +8,15 @@ function evaluate(outcome){
   const effect=outcome.effect??effectOf(outcome);
   // An exit realizes a result: a long sold (cash or a margin repayment) or a short covered. Opening a short is a sale
   // that realizes nothing; a cover realizes against its own short lot, which the record must carry (shortProceeds).
-  if(effect==='unknown'||effect==='OPEN_SHORT'||effect==='CLOSE_SHORT'){const gaps=effect==='unknown'?['Credit lot identity unknown']:effect==='CLOSE_SHORT'&&!finite(outcome.shortProceeds)?['Short-sale proceeds of the covered lot unavailable']:[];
+  // A cover with its realized result (B3d-3 part 2, short-result.cjs): judged like a sale against the short's proceeds;
+  // not eligible for learning until the review is told about shorts (B3e).
+  if(effect==='CLOSE_SHORT'&&finite(outcome.shortProceeds)&&outcome.shortProceeds>0&&finite(outcome.gainAfterFees)){
+    const complete=terminal.has(outcome.status)&&outcome.quantity>0,before=outcome.shortCosts?.beforeCharges;const gaps=[...(outcome.shortGaps??[])];if(!complete)gaps.push('Execution not final');
+    if(outcome.shortCosts?.interest?.basis==='estimate')gaps.push('Borrow interest estimated');
+    const category=outcome.status==='Retracted'?'retracted':!complete?'pending':finite(before)&&before>0&&outcome.gainAfterFees<=0?'cost-drag':outcome.gainAfterFees<0?'loss':outcome.gainAfterFees>0?'gain':'break-even';
+    const words={retracted:'The source no longer reports this fill. Previous lessons must not be used.',pending:'Wait for the remaining execution or cancellation to reconcile.','cost-drag':'The fall was eaten by fees, tax and borrow interest: compare the expected move with these costs before a similar short.',loss:'The price rose against the short: revisit the thesis and the cover stop; an adverse outcome alone does not establish a mistake.',gain:'Check whether the thesis was supported before treating this outcome as repeatable.','break-even':'Check whether the short was worth its costs and risk.'};
+    return {version:2,effect,category,complete,eligible:false,exit:true,currency:outcome.currency,basis:outcome.shortProceeds,basisMethod:'The short sale\'s proceeds for these shares',beforeExitCharges:finite(before)?before:null,netReturnPct:outcome.gainAfterFees/outcome.shortProceeds*100,gaps,recommendation:words[category]};}
+  if(effect==='unknown'||effect==='OPEN_SHORT'||effect==='CLOSE_SHORT'){const gaps=effect==='unknown'?['Credit lot identity unknown']:effect==='CLOSE_SHORT'?(outcome.shortGaps?.length?[...outcome.shortGaps]:!finite(outcome.shortProceeds)?['Short-sale proceeds of the covered lot unavailable']:[]):[];
     const category=outcome.status==='Retracted'?'retracted':effect==='OPEN_SHORT'?'entry':'data-gap';
     return {version:2,effect,category,complete:terminal.has(outcome.status)&&outcome.quantity>0,eligible:false,exit:effect==='CLOSE_SHORT',currency:outcome.currency,basis:null,gaps,
       recommendation:category==='entry'?'A short sale opens a position: wait for its cover before evaluating a result.':category==='retracted'?'The source no longer reports this fill. Previous lessons must not be used.':'Resolve the credit lot and its proceeds before drawing a conclusion.'};}
