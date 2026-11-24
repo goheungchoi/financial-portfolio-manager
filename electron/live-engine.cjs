@@ -196,7 +196,8 @@ class LiveEngine {
       // Its lot rechecked on the balance just read, with every other closing order waiting on it reserved.
       require('./credit-paths.cjs').check(prepared.balance,order,this.orders().filter(row=>row.id!==order.id));
       // Short selling B3d-1: your own buy while a short is open carries the fact on its record (checked as before).
-      if(prepared.shortCash)order={...order,shortCashFact:Number.isFinite(prepared.shortCash.orderableCash)?`a short is open; KIS's orderable cash is ${prepared.shortCash.orderableCash.toLocaleString('en-US')}`:'a short is open; KIS\'s orderable cash could not be read'};
+      // B3f-4: the figure too (null: not read), so your ticket's order shows it.
+      if(prepared.shortCash)order={...order,shortOrderableCash:Number.isFinite(prepared.shortCash.orderableCash)?prepared.shortCash.orderableCash:null,shortCashFact:Number.isFinite(prepared.shortCash.orderableCash)?`a short is open; KIS's orderable cash is ${prepared.shortCash.orderableCash.toLocaleString('en-US')}`:'a short is open; KIS\'s orderable cash could not be read'};
       // B3c: the lot as read now, so a fill is released only once a later balance shows it (short-rules balanceShows).
       if(order.credit?.kind==='cover'){const l=prepared.balance.shorts?.find(s=>s.symbol===order.symbol&&s.loanDate===order.credit.loanDate);order={...order,lotAtSend:Number.isFinite(l?.quantity)?l.quantity:null,lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};}
       else if(order.credit?.kind==='short')order={...order,lotAtSend:require('./short-rules.cjs').shortQuantity(prepared.balance,order.symbol),lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};

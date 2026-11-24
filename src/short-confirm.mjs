@@ -3,6 +3,9 @@
 // cover paths cannot be sent (before B4) one line says so; after, the confirmation says whether a short the AI decides is
 // sent by itself or proposed, from the value in force. Facts only.
 // short: the draft's short section; pathsOpen: both paths executable; automatic: the short path's own automatic.
+// B3f-4: your own buy while a short is open shows KIS's orderable cash from its preparation (KIS may hold cash against
+// the short); null: KIS did not give it.
+export function orderableCashText(v){return typeof v==='number'&&Number.isFinite(v)?`A short is open: KIS's orderable cash ${new Intl.NumberFormat('en-US',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(v)}`:'A short is open: KIS\'s orderable cash could not be read';}
 export function shortConfirmLines(short,{pathsOpen=false,automatic=false}={}){
   const n=Number(short?.maxGrossPctOfEquity),m=Number(short?.stopLossPct),days=Number(short?.maxDays)>0?Number(short.maxDays):90;
   const main=['Turn on short selling? The app may then sell borrowed shares and buy them back later. A short loses when the price rises, and its loss has no limit.',

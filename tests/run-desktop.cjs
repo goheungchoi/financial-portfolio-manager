@@ -17,6 +17,7 @@ const cases=[
   ['Home Holdings card: every holding, 15 rows scroll inside the card','home-holdings-desktop.cjs',['--count','15'],data('home-holdings-15')],
   ['Short positions: the section below the holdings on Home and the Holdings tab, an app short and one opened in the KIS app, both themes','short-positions-desktop.cjs',[],data('short-positions')],
   ['Short & leverage: the controls of the short section, and the confirmation when short selling is turned on (Cancel saves nothing), both themes','short-settings-desktop.cjs',[],data('short-settings')],
+  ['The Korea tab Orders card: your buy prepared while a short was open shows KIS orderable cash, a cover its buy-back cost, both themes','short-ticket-desktop.cjs',[],data('short-ticket')],
   ['Claude trading with several orders: Start, Stop with a dry run that no longer counts, and the refusal sentence','claude-start-stop-desktop.cjs',[],data('claude-start-stop')],
   ['Activity: opens with rows, totals with a corrected order, Today and not-sent, From, a failed refresh keeps rows, both themes','activity-desktop.cjs',[],data('activity')],
   ["Scripts: the Scout panel's Screens section with a partly read history and a failed run's scripts",'s5-desktop.cjs',['--mode=screens'],data('s5-screens')],
