@@ -17,6 +17,9 @@ function planGap(context){
 }
 // The smallest feasible position for each target: one share, as a share of total equity, and whether cash, the sizing
 // rules and the caps allow it. Facts for the review's comparison with staying in cash; one share can be a large weight.
+// Only for targets the plan may buy (BUY_ROLES: add and candidate; plan-verdicts check, 2026-11-25): for a hold, trim or exit
+// target one share or cash is not the plan's question, so it has no minimumPosition and raises no issue (verdictIssues).
+const BUY_ROLES=new Set(['add','candidate']);
 function addMinimumPositions(context){
   const gap=context?.planGap;if(!gap?.targets?.length)return context;const C=require('./complexity.cjs');
   const equity=C.equityKRW(context),fx=C.usdKrw(context);const markets=C.marketsOf(context);
@@ -32,7 +35,7 @@ function addMinimumPositions(context){
   // automatic send checks it. A market this context does not cover is closed to it; no session reported is unknown.
   const sessionOf=m=>Array.isArray(context.markets)&&context.markets.length?context.markets.find(x=>x.market===m)?.marketSession:(context.market??'KR')===m?context.marketSession:{open:false};
   const marketOpen=m=>{const s=sessionOf(m);return s&&typeof s.open==='boolean'?s.open:null;};
-  for(const t of gap.targets){const m=marketOf(t.symbol);const p=price(t.symbol);const value=p>0?(m==='US'?(fx?p*fx:null):p):null;
+  for(const t of gap.targets){if(!BUY_ROLES.has(t.role))continue;const m=marketOf(t.symbol);const p=price(t.symbol);const value=p>0?(m==='US'?(fx?p*fx:null):p):null;
     if(value==null||!(equity>0)){t.minimumPosition={shares:1,unavailable:'price or equity unknown'};continue;}
     const cash=cashKRW(m);const row=sizing.get(t.symbol);const policy=policyOf(m);
     // As the order checks apply them: the order limit to one share in the market's currency, and concentration to the
@@ -54,7 +57,7 @@ function verdictIssues(context,decision,{earlier=[]}={}){
   for(const v of decision?.planVerdicts??[]){const c=v.condition;
     if(v.verdict==='waiting'){if(!c||!c.unresolved||!c.evidence||!c.recheck||c.kind==='none')issues.push(`${v.symbol}: waiting without a specific condition, resolving evidence and recheck`);else if(vague.test(c.evidence.trim()))issues.push(`${v.symbol}: the resolving evidence is vague`);
       if(c?.kind==='data'&&!v.dataGap)issues.push(`${v.symbol}: missing data without a data-gap assessment`);}
-    if(['waiting','passed'].includes(v.verdict)&&targets.get(v.symbol)?.minimumPosition?.feasible&&!v.minimumPosition&&!comparedToday(v,earlier))issues.push(`${v.symbol}: no comparison of buying one share with staying in cash (market open, none given today)`);}
+    if(['waiting','passed'].includes(v.verdict)&&BUY_ROLES.has(targets.get(v.symbol)?.role)&&targets.get(v.symbol)?.minimumPosition?.feasible&&!v.minimumPosition&&!comparedToday(v,earlier))issues.push(`${v.symbol}: no comparison of buying one share with staying in cash (market open, none given today)`);}
   if(decision?.action==='Hold'&&!String(decision.plan?.invalidation??'').trim())issues.push('Hold without a reconsideration condition (plan.invalidation)');
   // A gap at its retry limit should not produce the same data wait again.
   // A wait on the same gap (the same identity) is another exhausted wait; a wait on different evidence starts afresh,
@@ -75,4 +78,4 @@ function impactCheck(context,decision){
   const before=pct(held*unit),after=pct((held+(decision.quantity||0))*unit);const stated=decision.plan.portfolioImpact;
   return {appWeightBeforePct:before,appWeightAfterPct:after,statedWeightAfterPct:stated.weightAfterPct,differencePts:Math.round(Math.abs(after-stated.weightAfterPct)*10)/10,equityReliable:context.equityReliability?.reliable??null};
 }
-module.exports={planGap,missingVerdicts,marketOf,addMinimumPositions,verdictIssues,impactCheck};
+module.exports={BUY_ROLES,planGap,missingVerdicts,marketOf,addMinimumPositions,verdictIssues,impactCheck};
