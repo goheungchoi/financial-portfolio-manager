@@ -6,8 +6,8 @@
 // Claude Haiku 5.5 (Haiku compacting H-1; platform.claude.com pricing and the Haiku 5.5 model page, read 2026-11-15): the
 // first Claude row priced by prompt length. A request whose prompt is over 100,000 tokens, counting cache reads and
 // writes, pays the long rates on every category, output included. Only context compacting may use it.
-const MODELS={'gpt-6-luna':{vendor:'openai',input:0.1,output:0.5},'gpt-6-sol':{vendor:'openai',input:2,output:10},'gpt-6-astra':{vendor:'openai',input:10,output:50},'claude-opus-5-5':{vendor:'anthropic',input:4,output:20,cached:0.2,write:5},
-  'claude-haiku-5-5':{vendor:'anthropic',input:0.1,output:0.5,cached:0.01,write:0.125,longAbove:100000,long:{input:0.5,output:2.5,cached:0.05,write:0.625}}};
+const MODELS={'gpt-6-luna':{vendor:'openai',input:0.1,output:0.5},'gpt-6-sol':{vendor:'openai',input:2,output:10},'gpt-6-astra':{vendor:'openai',input:10,output:50},'claude-opus-5-5':{vendor:'anthropic',input:4,output:20,cached:0.2,write:5,write1h:8},
+  'claude-haiku-5-5':{vendor:'anthropic',input:0.1,output:0.5,cached:0.01,write:0.125,write1h:0.2,longAbove:100000,long:{input:0.5,output:2.5,cached:0.05,write:0.625,write1h:1}}};
 // The one Claude model a trading review may use (Haiku compacting H-1, review C): with the gate open any other Claude id
 // is refused for trading before the D-1 save conditions.
 const CLAUDE_TRADING_MODEL='claude-opus-5-5';
@@ -63,7 +63,10 @@ function reservationAt(config,bytes,kind){const selected=settings(config);const 
 function normalizeUsage(body,vendor='openai'){
  const u=body?.usage;const count=n=>Number.isSafeInteger(n)&&n>=0?n:null;
  if(vendor==='anthropic'){if(!u)return null;const base=count(u.input_tokens),read=u.cache_read_input_tokens==null?0:count(u.cache_read_input_tokens),write=u.cache_creation_input_tokens==null?0:count(u.cache_creation_input_tokens);
-  return {inputTokens:base!=null&&read!=null&&write!=null?base+read+write:null,outputTokens:count(u.output_tokens),cachedTokens:read,cacheWriteTokens:write,reasoningTokens:null,serviceTier:typeof u.service_tier==='string'?u.service_tier.slice(0,20):'standard'};}
+  // Hourly cache, stage B: the one-hour part of the writes (usage.cache_creation.ephemeral_1h_input_tokens; the 5-minute part
+  // is the rest), priced at the one-hour rate. Absent: none. A broken count makes the total cost unknown (costDetails).
+  const h=u.cache_creation?.ephemeral_1h_input_tokens,write1h=h==null||h===0?undefined:count(h);
+  return {inputTokens:base!=null&&read!=null&&write!=null?base+read+write:null,outputTokens:count(u.output_tokens),cachedTokens:read,cacheWriteTokens:write,...(write1h!==undefined?{cacheWrite1hTokens:write1h}:{}),reasoningTokens:null,serviceTier:typeof u.service_tier==='string'?u.service_tier.slice(0,20):'standard'};}
  if(vendor!=='openai')throw new Error('INVALID_MODEL_SETTINGS');if(!u)return null;
  return {inputTokens:count(u.input_tokens),outputTokens:count(u.output_tokens),cachedTokens:count(u.input_tokens_details?.cached_tokens),cacheWriteTokens:count(u.input_tokens_details?.cache_write_tokens),reasoningTokens:count(u.output_tokens_details?.reasoning_tokens),serviceTier:body.service_tier??'default'};
 }
@@ -78,8 +81,9 @@ function costDetails(model,usage){
  // Haiku compacting H-1 (review A): usage.inputTokens is already all input (uncached + cache reads + cache writes,
  // normalizeUsage), the prompt length the long-context rule counts.
  if(rate.vendor==='anthropic'){if(!['standard','default'].includes(tier))return null;rate=ratesFor(rate,usage.inputTokens);
-  const components={ordinaryInputMicro:(usage.inputTokens-cached-written)*rate.input,cachedInputMicro:cached*rate.cached,cacheWriteMicro:written*rate.write,outputMicro:usage.outputTokens*rate.output};
-  return {micro:Math.round(Object.values(components).reduce((a,b)=>a+b,0)*1000)/1000,...components,rates:{input:rate.input,cached:rate.cached,write:rate.write,output:rate.output},pricingDate:key==='claude-haiku-5-5'?'2026-11-15':'2026-11-10',...(rate.longAbove?{longContext:usage.inputTokens>rate.longAbove}:{}),tier,cacheDetailsKnown:usage.cachedTokens!=null&&usage.cacheWriteTokens!=null,basis:'Reported token usage × published USD rates; not an invoice'};}const multiplier={default:1,standard:1,flex:.5,priority:2,fast:2}[tier];if(!multiplier)return null;
+  const hour=usage.cacheWrite1hTokens??0;if(!Number.isSafeInteger(hour)||hour<0||hour>written)return null;
+  const components={ordinaryInputMicro:(usage.inputTokens-cached-written)*rate.input,cachedInputMicro:cached*rate.cached,cacheWriteMicro:(written-hour)*rate.write+hour*rate.write1h,outputMicro:usage.outputTokens*rate.output};
+  return {micro:Math.round(Object.values(components).reduce((a,b)=>a+b,0)*1000)/1000,...components,...(hour?{cacheWrite1hTokens:hour}:{}),rates:{input:rate.input,cached:rate.cached,write:rate.write,...(hour?{write1h:rate.write1h}:{}),output:rate.output},pricingDate:key==='claude-haiku-5-5'?'2026-11-15':'2026-11-10',...(rate.longAbove?{longContext:usage.inputTokens>rate.longAbove}:{}),tier,cacheDetailsKnown:usage.cachedTokens!=null&&usage.cacheWriteTokens!=null,basis:'Reported token usage × published USD rates; not an invoice'};}const multiplier={default:1,standard:1,flex:.5,priority:2,fast:2}[tier];if(!multiplier)return null;
  const long=usage.inputTokens>272000, input=rate.input*(long?2:1)*multiplier,output=rate.output*(long?1.5:1)*multiplier;
  const components={ordinaryInputMicro:(usage.inputTokens-cached-written)*input,cachedInputMicro:cached*input*.1,cacheWriteMicro:written*input*1.25,outputMicro:usage.outputTokens*output};
  return {micro:Math.round(Object.values(components).reduce((a,b)=>a+b,0)*1000)/1000,...components,rates:{input,cached:input*.1,write:input*1.25,output},pricingDate:'2026-10-16',tier,cacheDetailsKnown:usage.cachedTokens!=null&&usage.cacheWriteTokens!=null,basis:'Reported token usage × published USD rates; not an invoice'};

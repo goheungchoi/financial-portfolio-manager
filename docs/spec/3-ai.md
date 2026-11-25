@@ -399,13 +399,13 @@ running session only; saved settings are unchanged and it ends at restart. Tradi
 - The setting names say "openai" for historical reasons: `openaiModel` holds any model id.
 - **Model table** (`ai-models.cjs:9-10`, `MODELS`; USD per million tokens):
 
-| Model id | Vendor | Input | Output | Cache read | Cache write | Notes |
+| Model id | Vendor | Input | Output | Cache read | Cache write (5 min / 1 h) | Notes |
 |---|---|---|---|---|---|---|
 | `gpt-6-luna` | OpenAI | 0.1 | 0.5 | input × 0.1 | input × 1.25 | default; a dated snapshot id (`gpt-6-luna-20…`) is priced as this row (`rowKey`, `:19`) |
 | `gpt-6-sol` | OpenAI | 2 | 10 | same rule | same rule | |
 | `gpt-6-astra` | OpenAI | 10 | 50 | same rule | same rule | effort `none` not allowed (`settings`, `:30`) |
-| `claude-opus-5-5` | Anthropic | 4 | 20 | 0.2 | 5 | the only Claude model that may trade (`CLAUDE_TRADING_MODEL`, `:13`) |
-| `claude-haiku-5-5` | Anthropic | 0.1 | 0.5 | 0.01 | 0.125 | compacting only (`agent-models.cjs:40`); above 100,000 prompt tokens every category is priced at the long rates (0.5 / 2.5 / 0.05 / 0.625) |
+| `claude-opus-5-5` | Anthropic | 4 | 20 | 0.2 | 5 / 8 | the only Claude model that may trade (`CLAUDE_TRADING_MODEL`, `:13`) |
+| `claude-haiku-5-5` | Anthropic | 0.1 | 0.5 | 0.01 | 0.125 / 0.2 | compacting only (`agent-models.cjs:40`); above 100,000 prompt tokens every category is priced at the long rates (0.5 / 2.5 / 0.05 / 0.625 / 1) |
 
   OpenAI rows pay a surcharge above 272,000 input tokens (input ×2, output ×1.5) and a multiplier by service tier
   (`costDetails`, `:82-84`). The rates carry a "checked on" date in the cost record (`pricingDate`); they are local
@@ -964,6 +964,13 @@ The size retry (`size-retry.cjs`) is about re-running a failed review, not about
   condensing is dropped instead of failing the request (`:361-362`).
 - **Caching** (`:332-349`): one breakpoint on the system blocks caches tools, instructions and the form; in research
   reviews the context is one marked block so later rounds read it from the cache (review-cost item 12, step 2).
+  Since 1.5.76 (hourly cache, stage B) the system blocks' marks are `{type:'ephemeral', ttl:'1h'}` when the engine
+  expects the next scheduled review within the hour in an open session (`automation.cjs` `cacheHourFor`, decided once
+  per review: a Claude trading model, auto trading on and started, no loss-limit response, a scheduled interval of an
+  hour or less after `slowFactor`, and a market in scope with a session the app trades open at start + interval); the
+  dry run always sends that form on Claude. The context block and the top-level mark stay five minutes, after them
+  (Anthropic: a longer lifetime before a shorter one; at most 4 marks). The one-hour write is priced at its own rate
+  from `usage.cache_creation.ephemeral_1h_input_tokens` (`normalizeUsage` `cacheWrite1hTokens`, `costDetails`).
 - **Refused requests** (`:75-123`; `ai-accounting.cjs:8-15`): HTTP status and error type map to the app's fixed
   codes; a 4xx with a body and no usage was refused before the model ran, so it is settled at **zero cost** (status
   `refused`) but still counts as one call. The provider's message (key-redacted, ≤300 characters) is kept only

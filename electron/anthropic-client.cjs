@@ -350,8 +350,12 @@ class AnthropicClient {
       // is the two blocks it was. options.instructionSet is 'proposed' only in the replay.
       const textBlocks=RI.reviewBlocks(RI.partsFor(context),options.instructionSet);
       const brief=Boolean(context.scoutBrief),targets=Boolean(context.scoutPlan?.targets?.length);const trail=C.trailOn(context);const enforced=form!=='text';const more=C.furtherOrders(options);const flatSchema=enforced?flatDecisionSchema(brief,targets,trail,more):null;
+      // Hourly cache, stage B: the system blocks' marks live one hour when the engine expects the next scheduled review
+      // within the hour in an open session (options.cacheHour, set once per review); the context block and the top-level
+      // continuation mark stay five minutes, after them, as Anthropic requires (a longer lifetime before a shorter one).
+      const systemMark=options.cacheHour===true?{type:'ephemeral',ttl:'1h'}:{type:'ephemeral'};
       const body={model:selected.model,max_tokens:MAX_TOKENS,service_tier:'standard_only',betas:[BETA],
-        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:{type:'ephemeral'}}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?formatText(more):shapeText(decisionShape(C.decisionSchema(brief,targets,trail,more))),cache_control:{type:'ephemeral'}}],
+        system:[{type:'text',text:textBlocks.core,...(textBlocks.parts?{cache_control:systemMark}:{})},...(textBlocks.parts?[{type:'text',text:textBlocks.parts}]:[]),{type:'text',text:enforced?formatText(more):shapeText(decisionShape(C.decisionSchema(brief,targets,trail,more))),cache_control:systemMark}],
         // Tools: in research rounds, and also in any request whose conversation already holds tool calls (the plan
         // correction is sent with research off): Claude refuses tool_use or tool_result blocks without tool definitions,
         // and the same tools keep the prefix the thinking blocks are bound to. Only research rounds before the last may

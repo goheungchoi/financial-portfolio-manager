@@ -285,3 +285,4 @@ tests/lesson-support.test.cjs
 tests/no-personal-data.test.cjs
 tests/scout-stops-plan-verdicts.test.cjs
 tests/review-from-start.test.cjs
+tests/hourly-cache-b.test.cjs

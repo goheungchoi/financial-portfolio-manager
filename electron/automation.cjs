@@ -288,6 +288,13 @@ class Automation {
       return this.preOpenRan(hours)?Math.max(hours.next.at,this.scheduleBase()+interval,this.lastRun+60000):hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS;}
     const due=Math.max(Date.now(),this.scheduleBase()+interval,this.lastRun+60000);
     const defer=this.emergencyState().active?null:this.deferForPendingOrder();return defer?Math.max(due,defer.until):due;}
+  // Hourly cache, stage B: whether a review starting at `startedAt` writes its instructions with the one-hour lifetime: on a
+  // Claude trading model, with auto trading on and started, no loss-limit response running, a scheduled interval of an hour
+  // or less (the agent's, doubled near the budget), and a market in scope with a session the app trades open when the next
+  // scheduled review starts (start + interval). Otherwise the five-minute lifetime, as before.
+  cacheHourFor(startedAt,model=this.config.openaiModel){try{if(this.vendorOf(model)!=='anthropic'||!this.config.enabled||!this.sessionArmed||this.config.scope==='paper')return false;
+    if(this.emergencyState().active)return false;const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*this.slowFactor();if(!(interval>0&&interval<=3600000))return false;
+    const at=startedAt+interval;return this.scoutMarkets().some(m=>this.sessionOpen(m,at));}catch{return false;}}
   preOpenRan(hours=this.marketHours()){return Boolean(hours.next)&&this.preOpenKey===`${hours.next.market}:${hours.next.at}`;}
   // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping (tick and nextReviewAt).
   // The 80% slowdown follows the trading model's provider: its limits and its usage today (B1).
@@ -436,7 +443,8 @@ class Automation {
         // uses the review's own quotes and reads nothing from KIS.
         const desk=providerContext.agentDesk?(()=>{const real=this.deskActions(watchScope,providerContext,id,()=>{},null,{dryRun:true});return Object.fromEntries(Object.keys(real).map(k=>[k,k==='compute'||k==='run_screen'?real[k]:noop(k)]));})():null;
         const model=override??this.agentModel('trading');const models=require('./ai-models.cjs');let calls=0;const callIds=[];
-        const request=async options=>{options={...options,...model,validation:dryValidation,...(dryOrders>1?{moreOrders:dryOrders-1}:{})};
+        // Hourly cache, stage B: the dry run sends the one-hour form on Claude, so it proves what reviews will send.
+        const request=async options=>{options={...options,...model,validation:dryValidation,...(dryOrders>1?{moreOrders:dryOrders-1}:{})};if(this.vendorOf(model.openaiModel)==='anthropic')options={...options,cacheHour:true};
           requests.push({call:requests.length+1,followUp:Boolean(options.continuation),bytes:Buffer.byteLength(JSON.stringify(options.continuation??[{role:'user',content:JSON.stringify(providerContext)}])),limitBytes:models.reviewByteLimit(options,model)});
           const reserve=models.reservation(model,providerContext,{...options,maxBytes:models.reviewByteLimit(options,model)});
           const day=seoulDate();
@@ -1186,7 +1194,7 @@ class Automation {
         this.replays.saveContext(id,providerContext);firstRequest=providerContext;
         const research=()=>require('./research-review.cjs').researchReview({context,detail,watched:watchedIn(this.discovery,context),evidence:this.evidence,discovery:context.discovery?.enabled?{...(this.discovery.research?{get_company_research:this.researchFor({watchScope,trigger,emergency:emergency.active,gate,gateMode,id})}:{}),...(this.discovery.marketOverview?{get_market_overview:()=>this.discovery.marketOverview()}:{}),screen_market:args=>this.discovery.screen_market(args),search_securities:args=>this.discovery.search_securities(args),update_watchlist:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.discovery.update_watchlist(args);}}:null,setInterval:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return this.reviewInterval.set(watchScope,args,this.config,{heldMoves:this.heldMoves(context)});},setWatch:args=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');return require('./not-held.cjs').withWatchNote(this.watches.set(watchScope,args,context),this.config.notHeldPriceReviews,args,this.heldNow());},actions:context.agentDesk?this.deskActions(watchScope,context,id,()=>{if(this.disposed||revision!==this.revision||watchScope!==this.watchScope())throw new Error('STALE_DECISION');},formulaUse):null,log:(kind,title,body)=>this.log(id,kind,title,body),compact:context.environment==='local-paper'||require('./ai-models.cjs').decisionMaker(this.config)!=='ai'?null:payload=>this.compactResearch(id,payload),request:async options=>{
           {const changed=this.staleReason(watchScope,revision,costRevision);if(changed)throw Object.assign(new Error('STALE_DECISION'),{detail:{changed}});}
-          const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};const n=reviewOrders;options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};
+          const modelConfig={openaiModel:selected.openaiModel,reasoningEffort:selected.reasoningEffort};const n=reviewOrders;if(this.cacheHourReview?.id!==id)this.cacheHourReview={id,value:this.cacheHourFor(startedAt,modelConfig.openaiModel)};options={...options,...modelConfig,validation,...(n>1?{moreOrders:n-1}:{})};if(this.cacheHourReview.value)options={...options,cacheHour:true};
           const reserve=require('./ai-models.cjs').reservation(modelConfig,providerContext,{...options,maxBytes:require('./ai-models.cjs').reviewByteLimit(options,modelConfig)});
           const day=seoulDate();
           const callId=randomUUID(),record={reviewId:id,model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:Date.now()};
