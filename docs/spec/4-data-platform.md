@@ -292,6 +292,9 @@ here; parts 2 and 3 describe them.
 | `security_master_meta` | security-master.cjs:46 | market PK, count, updatedAt | when a market's list was loaded | SecurityMaster | one row per market |
 | `instrument_metadata` | portfolio-view.cjs:22 | symbol PK, payload JSON | the user's own labels for a holding | PortfolioView (`portfolio:metadata`) | kept |
 | `sector_assignments` | sectors.cjs `SectorStore` | symbol PK, payload JSON `{sector, detail, model, at, …}` | the app's own sector assignments (sectors S2 writes them; never your labels) | `sectors.resolve` | kept |
+| `phone_pin` | phone-core.cjs | id 1, payload JSON `{salt, hash, params, wrong, locked, setAt}` | the phone PIN's salted scrypt hash and its lock (1.6.0) | `PhoneCore` | kept |
+| `phone_seen` | phone-core.cjs | id PK, at | Discord interaction ids already acted on or refused, kept an hour | `PhoneCore` | pruned |
+| `phone_commands` | phone-core.cjs | id PK, at, payload JSON `{command, result}` | the record of phone commands (no PIN, token or id) | `PhoneCore.records` | kept |
 | `sector_runs` | sectors.cjs `SectorStore` | day PK, payload JSON `{asked, failedAt}` | the sector assignment's daily count (cap 60) and a failure that waits for the next day | `automation.assignSectors` | kept |
 | `index_codes` | security-master.cjs | code PK, div, name, updatedAt | KIS's index-sector names (`idxcode.mst.zip`, the same KIS host as the masters), replaced only by a good list at the master refresh | `SecurityMaster.indexName` | replaced |
 | `watchlist` | discovery.cjs:8 | scope, symbol, payload JSON; PK(scope, symbol) | one watched symbol of an account (source user or AI, reason, pin) | Watchlist | removal; AI entries capped (discovery.cjs:12) |

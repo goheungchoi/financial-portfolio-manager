@@ -1608,3 +1608,23 @@ Found in live use: every KIS request failed with EGW00123 for over an hour, unti
 - Known limits (accepted): with the PC's clock set forward, two sign-in requests can leave inside a real minute (KIS
   refuses the second; the app tries again after the minute). When the app's data folder cannot be written, the
   minute is not shared between the KIS broker and market-calendar workers (each keeps its own).
+
+## Phone control (1.6.0; in progress)
+Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; artifacts/reviews/2026-11-25-phone-control):
+- Seven commands: `status`, `stop`, `stopall`, `start`, `orders`, `link` (options `order`, `number`), `nottaken`
+  (option `order`). `start`, `link` and `nottaken` need the PIN.
+- `accept(interaction)` takes what the phone worker hands over (`id`, `type` 2 command / 3 component / 5 form submit,
+  `applicationId`, `serverId`, `channelId`, `userId`, `command`, `options`, `customId`, `pin`) and returns `{act}`, a
+  fixed sentence `{reply}`, or `{silent}`.
+- Who: the application, server, channel and user ids must all equal the allowed ones; otherwise no answer.
+- Once: each interaction id once (`phone_seen`, kept an hour, survives a restart).
+- Age: Discord's time from the id's snowflake; more than 60 s old or more than 60 s ahead of the PC's clock is refused
+  with its sentence; three such in a row set `clockSuspect` (said once on Home in a later stage).
+- At most 10 commands a minute are acted on.
+- Start: the slash command gives step `summary` with a nonce held 2 minutes (the main process attaches its launch
+  token); the confirm button gives `ask-pin`; the form submit with the right PIN gives `run` with what was held.
+  `link` and `nottaken` go straight to `ask-pin`. A nonce is used once.
+- PIN: set on the desktop only, 6 to 12 digits, a salted scrypt hash (N 2^15, r 8, p 1, 64-byte key) in `phone_pin`;
+  5 wrong entries lock every PIN command until the desktop unlocks; a right PIN resets the count; Status and Stop work
+  while locked. The PIN is compared and dropped: it is in no returned object, record or error.
+- Record (`phone_commands`): the command name and the result only; never a PIN, a token, an id or anything typed.

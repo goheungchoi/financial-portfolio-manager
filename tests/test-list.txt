@@ -292,3 +292,4 @@ tests/sectors-s1.test.cjs
 tests/sectors-s2.test.cjs
 tests/sectors-s3.test.cjs
 tests/validation-clock.test.cjs
+tests/phone-core.test.cjs
