@@ -40,11 +40,20 @@ function parseOverseas(buffer,market){
   }
   return rows;
 }
+// Sectors S1: KIS's index-sector names (idxcode.mst, the same KIS host). Layout per KIS's header 업종코드정보.h: market
+// digit (1), index code (4), name (40), cp949. KIS's own parser (sector_code.py) reads the name from another offset, so the
+// name here is the text after the code, trimmed; a row whose code is not 4 digits or whose name is empty is skipped.
+const INDEX_FILE='idxcode.mst.zip';
+function parseIndexCodes(buffer){const decoder=new TextDecoder('euc-kr'),rows=[];
+  for(const row of lines(buffer)){const text=decoder.decode(row);if(text.length<6)continue;const div=text.slice(0,1),code=text.slice(1,5),name=text.slice(5,45).trim();
+    if(!/^\d$/.test(div)||!/^\d{4}$/.test(code)||!name||name.length>40)continue;rows.push({div,code,name});}
+  return rows;}
 class SecurityMaster {
   constructor(db,fetcher=globalThis.fetch,clock=Date.now){
     this.db=db;this.fetcher=fetcher;this.clock=clock;this.refreshing=null;this.error=null;
     db.exec('CREATE TABLE IF NOT EXISTS securities(symbol TEXT PRIMARY KEY,name TEXT NOT NULL,englishName TEXT NOT NULL,market TEXT NOT NULL,type TEXT NOT NULL,isin TEXT NOT NULL,industry TEXT);CREATE INDEX IF NOT EXISTS securities_market ON securities(market);CREATE TABLE IF NOT EXISTS security_master_meta(market TEXT PRIMARY KEY,count INTEGER NOT NULL,updatedAt INTEGER NOT NULL)');
     // Sector and market cap arrived later; older lists are refreshed once to fill them.
+    db.exec('CREATE TABLE IF NOT EXISTS index_codes(code TEXT PRIMARY KEY,div TEXT NOT NULL,name TEXT NOT NULL,updatedAt INTEGER NOT NULL)');
     const columns=db.prepare('PRAGMA table_info(securities)').all().map(c=>c.name);if(!columns.includes('sector')){db.exec('ALTER TABLE securities ADD COLUMN sector TEXT;ALTER TABLE securities ADD COLUMN marketCap REAL;DELETE FROM security_master_meta');}
   }
   status(){const markets=this.db.prepare('SELECT market,count,updatedAt FROM security_master_meta ORDER BY market').all();return {markets,total:markets.reduce((sum,row)=>sum+row.count,0),updatedAt:markets.length?Math.min(...markets.map(row=>row.updatedAt)):null,refreshing:Boolean(this.refreshing),error:this.error};}
@@ -59,10 +68,19 @@ class SecurityMaster {
     if(this.refreshing)return this.refreshing;if(!force&&!this.stale())return Promise.resolve(this.status());
     this.refreshing=(async()=>{const failures=[];
       for(const source of SOURCES){try{const rows=await this.download(source);if(rows.length<10)throw new Error('MASTER_FORMAT');this.replace(source.market,rows);}catch(error){failures.push(source.market+': '+(error.message==='MASTER_FORMAT'?'unexpected file format':'download failed'));}}
+      // The index-sector names: replaced only by a good list; a failure keeps the last good one and is named with the others.
+      try{await this.refreshIndexCodes();}catch(error){failures.push('index names: '+(error.message==='MASTER_FORMAT'?'unexpected file format':'download failed'));}
       this.error=failures.length?failures.join('; '):null;return this.status();
     })().finally(()=>{this.refreshing=null;});
     return this.refreshing;
   }
+  async refreshIndexCodes(){const response=await this.fetcher(BASE+INDEX_FILE,{redirect:'error',signal:AbortSignal.timeout(60000)});
+    if(!response.ok)throw new Error('MASTER_DOWNLOAD_FAILED');const buffer=Buffer.from(await response.arrayBuffer());if(buffer.length>MAX_ZIP)throw new Error('MASTER_FORMAT');
+    const rows=parseIndexCodes(unzipSingle(buffer));if(rows.length<10)throw new Error('MASTER_FORMAT');const at=this.clock();
+    const insert=this.db.prepare('INSERT INTO index_codes VALUES(?,?,?,?) ON CONFLICT(code) DO UPDATE SET div=excluded.div,name=excluded.name,updatedAt=excluded.updatedAt');
+    this.db.exec('BEGIN IMMEDIATE');try{this.db.prepare('DELETE FROM index_codes').run();for(const r of rows)insert.run(r.code,r.div,r.name,at);this.db.exec('COMMIT');}catch(error){this.db.exec('ROLLBACK');throw error;}return rows.length;}
+  // The index-sector name for a master sector code (4 digits), or null.
+  indexName(code){if(!/^\d{4}$/.test(String(code??'')))return null;try{return this.db.prepare('SELECT name FROM index_codes WHERE code=?').get(code)?.name??null;}catch{return null;}}
   replace(market,rows){
     const insert=this.db.prepare('INSERT INTO securities(symbol,name,englishName,market,type,isin,industry,sector,marketCap) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name,englishName=excluded.englishName,market=excluded.market,type=excluded.type,isin=excluded.isin,industry=excluded.industry,sector=excluded.sector,marketCap=excluded.marketCap');
     this.db.exec('BEGIN IMMEDIATE');
@@ -84,4 +102,4 @@ class SecurityMaster {
     return rows.map(row=>({...row})).sort((a,b)=>rank(a)-rank(b)||(a.type==='stock'?0:1)-(b.type==='stock'?0:1)||a.name.length-b.name.length).slice(0,Math.min(50,Math.max(1,limit)));
   }
 }
-module.exports={SecurityMaster,parseDomestic,parseOverseas,unzipSingle,SOURCES};
+module.exports={SecurityMaster,parseDomestic,parseOverseas,parseIndexCodes,unzipSingle,SOURCES};

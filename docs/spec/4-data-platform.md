@@ -291,6 +291,8 @@ here; parts 2 and 3 describe them.
 | `securities` | security-master.cjs:46, 48 | symbol PK, name, englishName, market, type, isin, industry, sector (added), marketCap (added) | one listed instrument | SecurityMaster | replaced per market at refresh (security-master.cjs:69) |
 | `security_master_meta` | security-master.cjs:46 | market PK, count, updatedAt | when a market's list was loaded | SecurityMaster | one row per market |
 | `instrument_metadata` | portfolio-view.cjs:22 | symbol PK, payload JSON | the user's own labels for a holding | PortfolioView (`portfolio:metadata`) | kept |
+| `sector_assignments` | sectors.cjs `SectorStore` | symbol PK, payload JSON `{sector, detail, model, at, …}` | the app's own sector assignments (sectors S2 writes them; never your labels) | `sectors.resolve` | kept |
+| `index_codes` | security-master.cjs | code PK, div, name, updatedAt | KIS's index-sector names (`idxcode.mst.zip`, the same KIS host as the masters), replaced only by a good list at the master refresh | `SecurityMaster.indexName` | replaced |
 | `watchlist` | discovery.cjs:8 | scope, symbol, payload JSON; PK(scope, symbol) | one watched symbol of an account (source user or AI, reason, pin) | Watchlist | removal; AI entries capped (discovery.cjs:12) |
 | `research_cache` | research-service.cjs:39 | symbol, source, at, payload JSON; PK(symbol, source) | the latest answer of one source for one symbol | ResearchService | one row per pair; overwritten |
 | `research_snapshots` | research-service.cjs:39 | symbol, day, payload JSON; PK(symbol, day) | a per-day research record (inferred) | ResearchService | kept |

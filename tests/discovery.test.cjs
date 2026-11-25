@@ -24,10 +24,14 @@ test('search ranks exact codes and name prefixes first and filters by market and
 
 test('a failed market keeps its previous rows and refresh only runs when stale',async()=>{
   const db=new DatabaseSync(':memory:');let now=Date.now();const files=masterFiles();let calls=0;
-  const fetcher=fetcherFor(files);const master=new SecurityMaster(db,async url=>{calls++;return fetcher(url);},()=>now);await master.refresh();assert.equal(calls,5);
-  await master.refresh();assert.equal(calls,5,'fresh master is not downloaded again');
+  const fetcher=fetcherFor(files);const master=new SecurityMaster(db,async url=>{calls++;return fetcher(url);},()=>now);await master.refresh();assert.equal(calls,6,'five stock lists and the index-sector names (sectors S1)');
+  await master.refresh();assert.equal(calls,6,'fresh master is not downloaded again');
   now+=21*3600000;const failing=new SecurityMaster(db,fetcherFor(files,{fail:['nasmst.cod.zip']}),()=>now);await failing.refresh();
   assert.match(failing.status().error,/NASD: download failed/);assert.ok(failing.get('NASD:AAPL'),'previous NASDAQ rows remain');
+  // Sectors S1: the index-sector names; a failed or bad file keeps the last good list, named with the other failures.
+  assert.equal(failing.indexName('0021'),'금융');assert.equal(failing.indexName('1009'),'Manufacturing');assert.equal(failing.indexName('9999'),null);assert.equal(failing.indexName('21'),null);
+  now+=21*3600000;const noIndex=new SecurityMaster(db,fetcherFor(files,{fail:['idxcode.mst.zip']}),()=>now);await noIndex.refresh();
+  assert.match(noIndex.status().error,/index names: download failed/);assert.equal(noIndex.indexName('0021'),'금융','the last good list is kept');
 });
 
 test('watchlist caps AI entries by evicting the oldest unpinned AI entry and never evicts user entries',async()=>{

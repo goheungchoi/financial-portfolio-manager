@@ -1,9 +1,10 @@
 const COLORS=['#66d9c0','#b8a4ed','#efb76b','#e18da9','#94bf7c','#7bb8d6'];
 // inFlight: U.S. fills KIS may not reflect yet (electron/valuation.cjs InFlight). Totals are the valuation's low bound
 // (electron/valuation.cjs); state.valuation carries both bounds, every component, the scope and the reasons.
-function combinePortfolio(korea,us,fx,metadata={},{inFlight=null,funding=null,now=Date.now()}={}){
+// sectorOf (sectors S1): the resolver (sectors.cjs resolve) for a symbol; without it the typed label only, as before.
+function combinePortfolio(korea,us,fx,metadata={},{inFlight=null,funding=null,now=Date.now(),sectorOf=null}={}){
   const rate=fx?.usdKRW>0&&Number.isFinite(fx.usdKRW)?fx.usdKRW:null;const rows=[];
-  for(const [market,snapshot,currency] of [['KR',korea,'KRW'],['US',us,'USD']])for(const row of snapshot?.holdings??[]){const info=metadata[row.symbol]??{},factor=market==='KR'?1:rate;rows.push({...row,market,currency,sector:info.sector||'Unclassified',region:info.region||(market==='KR'?'South Korea (listing)':'United States (listing)'),color:COLORS[rows.length%COLORS.length],nativeValue:row.quantity*row.price,valueKRW:factor==null?null:row.quantity*row.price*factor,costKRW:factor==null?null:row.quantity*row.cost*factor});}
+  for(const [market,snapshot,currency] of [['KR',korea,'KRW'],['US',us,'USD']])for(const row of snapshot?.holdings??[]){const info=metadata[row.symbol]??{},factor=market==='KR'?1:rate;let s=null;try{s=sectorOf?.(row.symbol)??null;}catch{s=null;}rows.push({...row,market,currency,sector:s?.sector??(info.sector||'Unclassified'),...(s?{sectorInfo:{source:s.source,detail:s.detail??null,label:info.sector||'',app:(a=>({sector:a.sector,source:a.source,category:a.category??null,model:a.model??null,at:a.at??null}))(s.app??s)}}:{}),region:info.region||(market==='KR'?'South Korea (listing)':'United States (listing)'),color:COLORS[rows.length%COLORS.length],nativeValue:row.quantity*row.price,valueKRW:factor==null?null:row.quantity*row.price*factor,costKRW:factor==null?null:row.quantity*row.cost*factor});}
   // Korean equity uses settled (D+2) cash so unsettled purchases are not counted as both cash and shares, less the KRW
   // committed to unsettled U.S. buys through integrated margin, which the U.S. shares already count (all of it, the
   // conservative figure; the part that may have been USD-funded is reported as uncertain).

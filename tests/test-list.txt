@@ -288,3 +288,4 @@ tests/review-from-start.test.cjs
 tests/hourly-cache-b.test.cjs
 tests/hourly-cache-c.test.cjs
 tests/hourly-cache-worker.test.cjs
+tests/sectors-s1.test.cjs
