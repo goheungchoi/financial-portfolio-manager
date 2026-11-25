@@ -701,7 +701,8 @@ determined here.
     automatic as a protective close (`autoClose`), without the Stage 3 approval that a margin repayment still needs.
   - **A switch saved on before shorts on** (the user's "Stay on as saved", 2026-11-25): it stays on; the update writes
     no setting, so such a switch is live at once without a new confirmation. Home shows one notice until dismissed,
-    once per account (1-ui.md, AttentionPanel, "Short selling can now be sent"), and one Activity line.
+    once per live account (stage 4: never on a mock account, where credit orders are not offered; recorded at a balance
+    reading, never on Home's read) (1-ui.md, AttentionPanel, "Short selling can now be sent"), and one Activity line.
   - The review is told about shorts only while short selling is switched on (`shortPathsOpen` is now true, so the
     switch alone decides; 3-ai.md).
   - **With the switch off** (stages 1b-1c): `pathStatus` answers for the short and cover paths exactly as in 1.5.74
@@ -720,7 +721,8 @@ determined here.
       when the tie is unambiguous. Its own dates are KIS's date on its order row (`lotLoanDate`) and the date sent
       (`loanDateSent`, else the plan's first date); lots held by an open tie of a short with other own dates are not
       candidates (shorts of one own date share one lot at KIS), nor is a lot the stock already had at this short's send
-      that did not grow by its fill (`shortLotsAtSend`, stage 2d, in both passes). First every short with exactly one candidate at an own
+      that did not grow by its fill (`shortLotsAtSend`, stage 2d, in both passes), unless an open app short of the same own
+      date already holds it (stage 4: shorts of one date share one lot, and a cover may have shrunk it before the reading). First every short with exactly one candidate at an own
       date (`exact`); then the rest: one candidate at a counterpart date, two Korean business days before or after
       (`counterpart`); else the one candidate that newly appeared or grew by at least the filled quantity since the
       stock's lots recorded on the order at its send (`shortLotsAtSend`; `grew`). Oldest short first, so the result is
@@ -732,11 +734,13 @@ determined here.
       short rows read (complete); an older or stale reading changes nothing. The tied lot absent and the app's covers of
       it filled the shares: closed `covered` at once. Absent otherwise: the first such reading records `absentSince`, and
       the tie is closed `gone` only when the lot is still absent in a reading at least 10 minutes later (`ABSENT_MS`);
-      the lot seen again clears it. A tie closed `gone` reopens when its lot is seen again with the same loan date. While
+      the lot seen again clears it. A tie closed `gone` reopens when its lot is seen again with the same loan date, unless an
+      app short of that date sent after the close explains it (stage 4). While
       closed `gone`, Home lists "The app's short of <stock> is no longer in KIS's balance" until dismissed (detail: "The
-      app sold N <stock> short (loan <date>) and did not buy it back, but KIS's balance has not shown that lot for over 10
-      minutes. If you bought it back in KIS's app, nothing more is needed; otherwise check it in KIS's app. The app arms
-      its stop again if the lot comes back."), with one Activity line "Short no longer in the balance". A closed tie is
+      app sold N <stock> short (loan <date>) <and did not buy it back | and its covers bought back C>, but KIS's balance has
+      not shown that lot for over 10 minutes, so U shares are not accounted for. If you bought <it | them> back in KIS's
+      app, nothing more is needed; otherwise check it in KIS's app. The app arms its stop again if the lot comes back.",
+      stage 4: the app's covers of that lot since the short was sent counted), with one Activity line "Short no longer in the balance". A closed tie is
       never unmatched;
     - **the app's shares in a lot** (`appLots`): its tied shorts' fills less the app's covers of that lot (a cover's
       lot is its `credit.loanDate`, a balance date) filled since the first tied short was sent, at most the lot's

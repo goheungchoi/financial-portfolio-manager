@@ -114,7 +114,7 @@ test('2d small: a cover\'s result and cash find its short by the recorded tie (t
 test('2d: main lists a gone short until dismissed and writes one Activity line when its tie closes gone',()=>{
   const fs=require('fs'),path=require('path');const main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8');
   assert.match(main,/for\(const g of require\('\.\/short-stops\.cjs'\)\.goneShorts\(live\.orders\(\)\)\)items\.push\(\{id:'short-gone-'\+g\.orderId,tone:'warning'/);
-  assert.match(main,/live\.acknowledgeGoneShort\(id\.slice\('short-gone-'\.length\)\)/);assert.match(main,/live\.onShortGone=order=>\{try\{automation\.log\(order\.id,'System','Short no longer in the balance'/);
+  assert.match(main,/live\.acknowledgeGoneShort\(id\.slice\('short-gone-'\.length\)\)/);assert.match(main,/live\.onShortGone=order=>\{try\{const SS=require\('\.\/short-stops\.cjs'\);const g=SS\.goneShorts\(live\.orders\(\)\)\.find\(x=>x\.orderId===order\.id\);if\(g\)automation\.log\(order\.id,'System','Short no longer in the balance',SS\.goneWords\(g\)\);/,'stage 4: the same words as Home');
   const d=new DatabaseSync(':memory:');const snap={accountKey:'acct',environment:'live',shorts:[lot('2026-10-13',5)],holdings:[],timestamp:at(5000)};const l=new LiveEngine(d,{request:async()=>({})},()=>({status:'connected',snapshot:snap}));
   const seen=[];l.onShortGone=o=>seen.push(o.id);l.writeOrder({accountKey:'acct',...sold('G1','2026-10-13',5)});l.tieShorts(snap);
   l.tieShorts({...snap,shorts:[],timestamp:at(6000)});l.tieShorts({...snap,shorts:[],timestamp:at(6000+SS.ABSENT_MS)});l.tieShorts({...snap,shorts:[],timestamp:at(7000+SS.ABSENT_MS)});

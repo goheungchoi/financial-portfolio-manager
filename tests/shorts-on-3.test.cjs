@@ -74,7 +74,10 @@ test('the notice\'s switch sentence is the confirmation\'s, and main wires it: l
   const N=require('../electron/shorts-live-notice.cjs');const {coverStopsWords}=await import('../src/short-confirm.mjs');
   for(const c of [null,{armed:false,whenHit:null},{armed:true,whenHit:'sent'},{armed:true,whenHit:'proposed'}])assert.equal(N.coverStopsWords(c),coverStopsWords(c),JSON.stringify(c));
   const main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8');
-  assert.match(main,/const d=shortsLiveNotice\.due\(account,p\?\.enabled===true\);/);assert.match(main,/'Short selling can now be sent',require\('\.\/shorts-live-notice\.cjs'\)\.ACTIVITY_WORDS/);
+  // Stage 4: Home reads the record only (listed); the reading records it (noteShortsLive, live accounts only).
+  assert.match(main,/const account=kisState\.snapshot\?\.environment==='live'\?kisState\.snapshot\.accountKey:null;/);assert.match(main,/if\(shortsLiveNotice\.listed\(account,p\?\.enabled===true\)\)\{/);
+  assert.match(main,/noteShortsLive=snapshot=>\{try\{if\(snapshot\?\.environment!=='live'\|\|!snapshot\.accountKey\)return;/);assert.match(main,/live\?\.observeBalance\(snapshot\);noteShortsLive\(snapshot\);/);
+  assert.match(main,/'Short selling can now be sent',require\('\.\/shorts-live-notice\.cjs'\)\.ACTIVITY_WORDS/);
   assert.match(main,/noticeText\(\{auto:p\.auto===true,coverStops:automation\.coverStopsNow\(\)\}\);items\.push\(\{id:'shorts-live',tone:'warning'/);
   assert.match(main,/else if\(id==='shorts-live'\)\{const a=kisState\.snapshot\?\.accountKey;if\(a\)try\{shortsLiveNotice\.note\(a,'dismissed'\);\}catch\{\}\}/);
   assert.match(main,/if\(turningOn\)try\{shortsLiveNotice\.note\(account,'confirmed'\);\}catch\{\}/);

@@ -9,7 +9,10 @@ class ShortsLiveNotice{
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS shorts_live_notice(account TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   state(account){try{const r=this.db.prepare('SELECT payload FROM shorts_live_notice WHERE account=?').get(String(account));const v=r?JSON.parse(r.payload):null;return STATES.includes(v?.state)?v.state:null;}catch{return null;}}
   note(account,state){if(!account||!STATES.includes(state))return;this.db.prepare('INSERT INTO shorts_live_notice VALUES(?,?) ON CONFLICT(account) DO UPDATE SET payload=excluded.payload').run(String(account),JSON.stringify({state,at:this.clock()}));}
-  // Whether the notice is listed now, and whether this read is its first (record it shown, write the Activity line).
+  // Home's read (stage 4: no write): listed while recorded shown and the switch is on.
+  listed(account,switchOn){return Boolean(account)&&switchOn===true&&this.state(account)==='shown';}
+  // At a reading: whether the notice is listed, and whether this is its first (record it shown; the caller writes the
+  // Activity line).
   // switchOn: the account's saved short.enabled.
   due(account,switchOn){if(!account||switchOn!==true)return {listed:false,first:false};const s=this.state(account);
     if(s==='dismissed'||s==='confirmed')return {listed:false,first:false};if(s===null){this.note(account,'shown');return {listed:true,first:true};}return {listed:true,first:false};}

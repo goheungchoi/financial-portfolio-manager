@@ -107,7 +107,9 @@ function tieShorts({orders=[],balance=null,isOpen=null}={}){const LD=require('./
   //   absent in a reading at least ABSENT_MS (10 minutes) later. The lot seen again clears absentSince.
   // - A tie closed 'gone' reopens when its lot is seen again with the same loan date in a reading newer than the close.
   const newer=o=>at>(Number(o.lotTie?.at)||0)&&at>seenOf(o);const present=o=>lots.some(s=>s.symbol===o.symbol&&s.loanDate===o.lotTie.loanDate);
-  for(const o of list.filter(o=>isAppShort(o)&&o.lotTie?.closed?.reason==='gone'&&present(o)&&at>(Number(o.lotTie.closed.at)||0))){const {closed:_,absentSince:__,...rest}=o.lotTie;
+  // Stage 4: not when an app short of that date sent after the close explains the lot (a new short on the same day).
+  const explained=o=>list.some(x=>x.id!==o.id&&isAppShort(x)&&x.symbol===o.symbol&&!x.lotTie?.closed&&(Number(x.createdAt)||0)>(Number(o.lotTie.closed.at)||0)&&(x.lotTie?x.lotTie.loanDate===o.lotTie.loanDate:ownDates(x).includes(o.lotTie.loanDate)));
+  for(const o of list.filter(o=>isAppShort(o)&&o.lotTie?.closed?.reason==='gone'&&present(o)&&at>(Number(o.lotTie.closed.at)||0)&&!explained(o))){const {closed:_,absentSince:__,...rest}=o.lotTie;
     const t={...rest,reopenedAt:at};out.push({id:o.id,set:{lotTie:t}});open.set(o.id,{...o,lotTie:t});}
   for(const o of [...open.values()]){if(!newer(o))continue;const L=o.lotTie.loanDate;
     if(present(o)){if(o.lotTie.absentSince!=null){const {absentSince:_,...rest}=o.lotTie;out.push({id:o.id,set:{lotTie:rest}});open.set(o.id,{...o,lotTie:rest});}continue;}
@@ -123,7 +125,10 @@ function tieShorts({orders=[],balance=null,isOpen=null}={}){const LD=require('./
   const untied=list.filter(o=>isAppShort(o)&&!o.lotTie&&seenOf(o)>0&&at>seenOf(o)&&ownDates(o).length);const done=new Set();
   const candsOf=o=>{const own=ownDates(o);const held=new Set([...open.values()].filter(x=>x.symbol===o.symbol&&!ownDates(x).some(d=>own.includes(d))).map(x=>x.lotTie.loanDate));
     // Stage 2d: a lot the stock already had at this short's send that did not grow by its fill is not its lot.
-    const before=o.shortLotsAtSend&&typeof o.shortLotsAtSend==='object'?o.shortLotsAtSend:null;const grewBy=s=>!before||before[s.loanDate]==null||Number(s.quantity)-Number(before[s.loanDate])>=Number(o.filled);
+    // Stage 4: a lot already tied to an open app short of the same own date is a candidate whatever its growth (shorts of
+    // one date share one lot at KIS; a cover may have shrunk it before the reading).
+    const shared=new Set([...open.values()].filter(x=>x.symbol===o.symbol&&ownDates(x).some(d=>own.includes(d))).map(x=>x.lotTie.loanDate));
+    const before=o.shortLotsAtSend&&typeof o.shortLotsAtSend==='object'?o.shortLotsAtSend:null;const grewBy=s=>shared.has(s.loanDate)||!before||before[s.loanDate]==null||Number(s.quantity)-Number(before[s.loanDate])>=Number(o.filled);
     const cands=lots.filter(s=>s.symbol===o.symbol&&!held.has(s.loanDate)&&grewBy(s)).sort((p,q)=>p.loanDate<q.loanDate?-1:p.loanDate>q.loanDate?1:0);const near=new Set(own.flatMap(d=>LD.counterparts(d,isOpen)));
     return {exact:cands.filter(s=>own.includes(s.loanDate)),counter:cands.filter(s=>!own.includes(s.loanDate)&&near.has(s.loanDate))};};
   const tie=(o,lot,how)=>{const t={loanDate:lot.loanDate,at,how};out.push({id:o.id,set:{lotTie:t,lotTieAmbiguous:null}});open.set(o.id,{...o,lotTie:t});done.add(o.id);};
@@ -156,5 +161,9 @@ function appLots({orders=[],balance=null,now=Date.now(),exclude=null}={}){const 
   return {lots,unmatched,ambiguous,leftovers};}
 // Stage 2d: the app's shorts whose tie was closed 'gone' (the lot left KIS's balance with no app cover filling it) and
 // not yet acknowledged: Home says so once each.
-function goneShorts(orders=[]){return (Array.isArray(orders)?orders:[]).filter(o=>isAppShort(o)&&o.lotTie?.closed?.reason==='gone'&&!o.lotTie.closed.acknowledgedAt).map(o=>({orderId:o.id,symbol:o.symbol,loanDate:o.lotTie.loanDate,quantity:Number(o.filled)}));}
-module.exports={ABSENT_MS,goneShorts,appLots,tieShorts,loanEnd,businessDaysTo,trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};
+// Stage 4: with how many the app's covers of that lot filled since the short was sent, and how many are unaccounted for.
+function goneShorts(orders=[]){const list=Array.isArray(orders)?orders:[];return list.filter(o=>isAppShort(o)&&o.lotTie?.closed?.reason==='gone'&&!o.lotTie.closed.acknowledgedAt).map(o=>{const q=Number(o.filled),c=Math.min(q,coveredSince(list,o.symbol,o.lotTie.loanDate,Number(o.createdAt)||0));
+  return {orderId:o.id,symbol:o.symbol,loanDate:o.lotTie.loanDate,quantity:q,covered:c,unaccounted:q-c};});}
+// The words for one (Home's item and the Activity line).
+function goneWords(g){return `The app sold ${g.quantity} ${g.symbol} short (loan ${g.loanDate})${g.covered>0?` and its covers bought back ${g.covered}`:' and did not buy it back'}, but KIS's balance has not shown that lot for over 10 minutes, so ${g.unaccounted} ${g.unaccounted===1?'share is':'shares are'} not accounted for. If you bought ${g.covered>0?'them':'it'} back in KIS's app, nothing more is needed; otherwise check it in KIS's app. The app arms its stop again if the lot comes back.`;}
+module.exports={ABSENT_MS,goneShorts,goneWords,appLots,tieShorts,loanEnd,businessDaysTo,trailStep,coverStopLevel,lotChanges,unprotectedShorts,isCover,isCoverStop,lotDecision};

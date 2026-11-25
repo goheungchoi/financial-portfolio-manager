@@ -10,6 +10,9 @@ let exitRecord=null,previousStop=null;
 let restartNotice=null,restartBase=null,restartNoticeDismissed=null;
 // Shorts on, stage 3: the one-time notice for a short-selling switch saved on before the paths could be sent.
 let shortsLiveNotice=null;
+// Stage 4: at a Korean balance reading of a live account with the switch saved on and no record: recorded shown, with
+// one Activity line (never on Home's read path). Set where the stores are made.
+let noteShortsLive=()=>{};
 app.on('second-instance',()=>{const window=mainWindow&&!mainWindow.isDestroyed()?mainWindow:BrowserWindow.getAllWindows()[0];if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
 const { PortfolioStore } = require('./storage.cjs');
 const { KisService } = require('./kis-service.cjs');
@@ -175,7 +178,7 @@ async function refreshKisBalance() {
   kisBusy=true;const generation=kisGeneration;
   try {
     const snapshot=await kisService.request('refresh');
-    if(generation===kisGeneration){kisState={status:'connected',...useKr(snapshot),error:null};live?.observeBalance(snapshot);detectFlows();kisQuotes=new Map([...kisQuotes].filter(([symbol])=>snapshot.holdings.some(h=>h.symbol===symbol)));broadcastMarket();}
+    if(generation===kisGeneration){kisState={status:'connected',...useKr(snapshot),error:null};live?.observeBalance(snapshot);noteShortsLive(snapshot);detectFlows();kisQuotes=new Map([...kisQuotes].filter(([symbol])=>snapshot.holdings.some(h=>h.symbol===symbol)));broadcastMarket();}
   } catch(error){if(generation===kisGeneration){kisState={...kisState,status:'error',error:kisErrorCode(error),...failedRequest('balance',error)};broadcastMarket();}}
   finally {kisBusy=false;}
   return kisState;
@@ -661,6 +664,8 @@ app.whenReady().then(async () => {
   // Shorts on (2026-11-25): the loan-date form KIS accepted, kept across restarts, and the app's Korean calendar for the
   // dates; one Activity line when KIS took the alternate date.
   shortsLiveNotice=new (require('./shorts-live-notice.cjs').ShortsLiveNotice)(store.db);
+  noteShortsLive=snapshot=>{try{if(snapshot?.environment!=='live'||!snapshot.accountKey)return;const p=exposure.policy(snapshot.accountKey).short;
+    if(shortsLiveNotice.due(snapshot.accountKey,p?.enabled===true).first)automation.log(require('node:crypto').randomUUID(),'System','Short selling can now be sent',require('./shorts-live-notice.cjs').ACTIVITY_WORDS);}catch{}};
   {const LD=require('./short-loan-date.cjs');live.loanForms=new LD.LoanDateForms(store.db);live.closedKrDays=()=>[...(automation.closedDays??[]),...(automation.officialClosedDays?.()??[])];
     // Stage 1b: what the app keeps from it (LoanDateForms.accepted): back to the default at once, the other form only on
     // its second time, else once only.
@@ -668,7 +673,7 @@ app.whenReady().then(async () => {
       const kept=changed?` The app sends ${w(s.form)} first from now on.`:count===1?` Kept as once only: the app still sends ${w(f.form)} first, and changes only if KIS takes ${w(s.form)} this way again.`:'';
       try{automation.log(order.id,'System','Short loan date',`${what} ${order.quantity} ${order.symbol}: KIS refused the loan date ${f.date} (${w(f.form)})${f.brokerMessage?` ("${f.brokerMessage}")`:''} and accepted ${s.date} (${w(s.form)}).${kept}`);}catch{}};
     // Stage 1b: KIS's record of the app's short or cover differs from what the app sent (short-rules creditRowCheck).
-    live.onShortGone=order=>{try{automation.log(order.id,'System','Short no longer in the balance',`Short ${order.filled} ${order.symbol} (loan ${order.lotTie.loanDate}): KIS's balance has not shown the lot for over 10 minutes and no cover of the app's filled it; if you bought it back in KIS's app, nothing more is needed.`);}catch{}};
+    live.onShortGone=order=>{try{const SS=require('./short-stops.cjs');const g=SS.goneShorts(live.orders()).find(x=>x.orderId===order.id);if(g)automation.log(order.id,'System','Short no longer in the balance',SS.goneWords(g));}catch{}};
     live.onCreditCheck=order=>{try{automation.log(order.id,'System','Short order at KIS',`${order.credit.kind==='short'?'Short sale':'Buy-back'} ${order.quantity} ${order.symbol}: ${order.creditCheck}`);}catch{}};}usLive.netEquityOf=snapshot=>marketValue('US',snapshot);
   usLive.flowsToday=()=>{const a=kisState.snapshot?.accountKey;return a?performance.flowsOn(a,require('./kis-activity.cjs').seoulDate(),'US'):0;};
   // C1c (W5): after a failed U.S. refresh, the day's record waits while a U.S. buy may be awaiting settlement
@@ -797,11 +802,11 @@ app.whenReady().then(async () => {
     try{for(const o of automation.desk.plannedTrailsMissing(automation.watchScope()))items.push({id:'plan-trail-'+o.id,tone:'warning',title:`Stop for ${o.symbol} has no trailing`,detail:`A fixed stop at ${(v=>/:/.test(o.symbol)?Number(v).toFixed(2):Math.round(v).toLocaleString('en-US'))(o.conditions?.[0]?.value)} protects ${o.quantity} ${o.symbol}; its plan gave a trail. ${o.trailWanted&&o.linkedBuy?'The trail is added when the purchase fills. ':''}Why: ${o.trailNotUsed}`,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers'});}catch{}
     try{const rn=currentRestartNotice();if(rn&&restartNoticeDismissed!==rn.title&&!require('./auto-launch.cjs').launchState(automation).running)items.push({id:'restart-notice',tone:'warning',title:rn.title,detail:rn.message,tab:'Journal',view:'Orders and triggers',action:'Orders and triggers',dismissible:true});}catch{}
     // Shorts on, stage 2d: an app short whose lot left KIS's balance with no app cover filling it, until dismissed.
-    try{for(const g of require('./short-stops.cjs').goneShorts(live.orders()))items.push({id:'short-gone-'+g.orderId,tone:'warning',title:`The app's short of ${g.symbol} is no longer in KIS's balance`,detail:`The app sold ${g.quantity} ${g.symbol} short (loan ${g.loanDate}) and did not buy it back, but KIS's balance has not shown that lot for over 10 minutes. If you bought it back in KIS's app, nothing more is needed; otherwise check it in KIS's app. The app arms its stop again if the lot comes back.`,tab:'KIS trading',action:'KIS trading',dismissible:true});}catch{}
+    try{for(const g of require('./short-stops.cjs').goneShorts(live.orders()))items.push({id:'short-gone-'+g.orderId,tone:'warning',title:`The app's short of ${g.symbol} is no longer in KIS's balance`,detail:require('./short-stops.cjs').goneWords(g),tab:'KIS trading',action:'KIS trading',dismissible:true});}catch{}
     // Shorts on, stage 3: a short-selling switch saved on before the paths could be sent (shorts-live-notice.cjs).
-    try{const account=kisState.snapshot?.accountKey;const p=account?exposure.policy(account).short:null;const d=shortsLiveNotice.due(account,p?.enabled===true);
-      if(d.first)try{automation.log(require('node:crypto').randomUUID(),'System','Short selling can now be sent',require('./shorts-live-notice.cjs').ACTIVITY_WORDS);}catch{}
-      if(d.listed){const t=require('./shorts-live-notice.cjs').noticeText({auto:p.auto===true,coverStops:automation.coverStopsNow()});items.push({id:'shorts-live',tone:'warning',title:t.title,detail:t.detail,tab:'Short & leverage',action:'Short & leverage',dismissible:true});}}catch{}
+    // Stage 4: listed from the record only (written at the balance reading, noteShortsLive); live accounts only.
+    try{const account=kisState.snapshot?.environment==='live'?kisState.snapshot.accountKey:null;const p=account?exposure.policy(account).short:null;
+      if(shortsLiveNotice.listed(account,p?.enabled===true)){const t=require('./shorts-live-notice.cjs').noticeText({auto:p.auto===true,coverStops:automation.coverStopsNow()});items.push({id:'shorts-live',tone:'warning',title:t.title,detail:t.detail,tab:'Short & leverage',action:'Short & leverage',dismissible:true});}}catch{}
     if(updates.view().status==='downloaded')items.push({id:'update',tone:'info',title:`Version ${updates.view().available?.version} is ready to install`,detail:'Install from Connections when no trading is active.',tab:'Connections',action:'Install'});
     return {items,counts};
   };
