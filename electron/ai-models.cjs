@@ -44,7 +44,7 @@ const contextKeep=model=>onClaude(model)?CLAUDE_CONTEXT_KEEP:[];
 function reservation(config,context={},options={}){const input=options.continuation??[{role:'user',content:JSON.stringify(context)}];const bytes=Buffer.byteLength(JSON.stringify(input));if(bytes>(options.maxBytes??70000))throw new Error('CONTEXT_TOO_LARGE');return reservationAt(config,bytes,options.kind);}
 // B3: Claude's output cap per agent (thinking counts toward it): the decision and the scout 32,000; condensing 16,000 (it
 // hit 4,096 on GPT-6 Luna with no reasoning); the narrative and reflection 8,000. OpenAI keeps its own (settings()).
-const CLAUDE_OUTPUT=Object.freeze({decide:32000,scout:32000,compact:16000,narrative:8000,reflect:8000});
+const CLAUDE_OUTPUT=Object.freeze({decide:32000,scout:32000,compact:16000,narrative:8000,reflect:8000,classify:4000});
 // M-4 (multi-order, m4-plan.md; the user's D1 "As many as fit"): the most orders one review may return for a model: 1 plus
 // the further orders that fit its output cap after the longest stored answer of any kind and a 20% reserve, at about
 // 1,000 tokens a further order (the longest stored order, 2,931 bytes, at about 3 bytes a token). Measured from the

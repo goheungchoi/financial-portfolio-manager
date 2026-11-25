@@ -88,14 +88,51 @@ function resolve({symbol,user=null,type=null,kisNames=[],stored=null}={}){
   const label=clean(user);if(label)return {sector:label,detail:null,source:'user'};
   const market=marketOf(symbol),fund=FUND_TYPES.has(type);const names=fund?[]:kisNames.map(clean).filter(Boolean);
   for(const name of names){const m=kisSector(market,name);if(m)return {...m,source:'kis',category:name};}
+  // The AI could not tell (S2 review, change 2): stored like any answer, shown as Unclassified with where it came from.
+  if(stored?.sector===UNCLASSIFIED)return {sector:UNCLASSIFIED,detail:null,source:'ai',untold:true,model:typeof stored.model==='string'?stored.model:null,at:Number.isFinite(stored.at)?stored.at:null};
   if(stored&&ALL.includes(stored.sector))return {sector:stored.sector,detail:clean(stored.detail).slice(0,40)||null,source:'ai',model:typeof stored.model==='string'?stored.model:null,at:Number.isFinite(stored.at)?stored.at:null};
   return {sector:UNCLASSIFIED,detail:null,source:'none',category:names[0]??null};
 }
 // The app's own assignments (stage S2 writes them); the user's labels stay in instrument_metadata, never written here.
+// onWrite(symbol): called after every write or removal (main clears the resolver's cache for the symbol).
 class SectorStore{
-  constructor(db){this.db=db;db.exec('CREATE TABLE IF NOT EXISTS sector_assignments(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
+  constructor(db,{onWrite=null}={}){this.db=db;this.onWrite=onWrite;db.exec('CREATE TABLE IF NOT EXISTS sector_assignments(symbol TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS sector_runs(day TEXT PRIMARY KEY,payload TEXT NOT NULL)');}
   get(symbol){try{const row=this.db.prepare('SELECT payload FROM sector_assignments WHERE symbol=?').get(symbol);return row?JSON.parse(row.payload):null;}catch{return null;}}
+  write(symbol,{sector,detail=null,model=null,at,category=null}){if(!ALL.includes(sector)&&sector!==UNCLASSIFIED)throw new Error('INVALID_SECTOR');
+    this.db.prepare('INSERT INTO sector_assignments VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET payload=excluded.payload').run(symbol,JSON.stringify({sector,detail:clean(detail).slice(0,40)||null,model,at,category:clean(category)||null}));try{this.onWrite?.(symbol);}catch{}}
+  // "Assign again" in the editor: the stored assignment is removed, so the next run asks for it.
+  forget(symbol){const n=this.db.prepare('DELETE FROM sector_assignments WHERE symbol=?').run(symbol).changes;try{this.onWrite?.(symbol);}catch{}return n>0;}
+  // The day's count of instruments asked (the cap of 60) and whether a call failed today (tried again the next day).
+  day(day){try{const row=this.db.prepare('SELECT payload FROM sector_runs WHERE day=?').get(day);return row?JSON.parse(row.payload):{asked:0,failedAt:null};}catch{return {asked:0,failedAt:null};}}
+  noteDay(day,patch){const next={...this.day(day),...patch};this.db.prepare('INSERT INTO sector_runs VALUES(?,?) ON CONFLICT(day) DO UPDATE SET payload=excluded.payload').run(day,JSON.stringify(next));return next;}
 }
+// Stage S2, the AI assignment: one call for several instruments, on the helper model set for condensing. It is sent only
+// what describes the instrument (no quantity, value, weight, cost, cash or anything else of the account), and answers one
+// sector of the list per symbol (a strict enum) and an optional short detail. Classification only; nothing about trading.
+const CLASSIFY_LIMIT=20,CLASSIFY_DAILY=60;
+const CLASSIFY_INSTRUCTIONS=['Classify each listed instrument into one sector from the list, for grouping holdings by sector.',
+  'Use what is given (the name, the English name, the listing, the instrument type, the exchange\'s own category and, for a fund, its index and its largest holdings) and what you reliably know about the instrument.',
+  'A company: the sector of its main business. A fund: the sector most of its holdings are in; a broad equity index fund: Broad index; bonds: Bonds; commodities or precious metals: Commodities; currencies: Currency; several asset classes: Multi-asset.',
+  'detail: a short label of at most 40 characters, such as "Semiconductors", "Gold" or "S&P 500"; an empty string when none fits.',
+  'If neither tells you the sector, answer Unclassified; do not guess.',
+  'Answer once for every symbol given, and for no other.'].join('\n');
+const CLASSIFY_SCHEMA=Object.freeze({type:'object',properties:{items:{type:'array',items:{type:'object',properties:{symbol:{type:'string'},sector:{type:'string',enum:[...ALL,UNCLASSIFIED]},detail:{type:'string'}},required:['symbol','sector','detail'],additionalProperties:false}}},required:['items'],additionalProperties:false});
+// One instrument as sent: only these fields, each checked here (a caller passing more sends nothing more).
+const text=(v,n)=>{const t=clean(v);return t?t.slice(0,n):null;};
+function classifyItem(i){const fund=i.fund&&typeof i.fund==='object'?{...(text(i.fund.index,80)?{index:text(i.fund.index,80)}:{}),...(text(i.fund.structure,60)?{structure:text(i.fund.structure,60)}:{}),
+    ...(Array.isArray(i.fund.holdings)&&i.fund.holdings.length?{largestHoldings:i.fund.holdings.slice(0,10).map(h=>({name:text(h.name,60),weightPct:Number.isFinite(h.weightPct)?Math.round(h.weightPct*10)/10:null})).filter(h=>h.name)}:{})}:null;
+  return {symbol:String(i.symbol),name:text(i.name,80),englishName:text(i.englishName,80),listing:text(i.listing,20),type:text(i.type,20),exchangeCategory:text(i.category,60),...(fund&&Object.keys(fund).length?{fund}:{})};}
+// Whether an instrument needs an assignment, and the KIS category it would be made from: not when you labelled it, not
+// when the table gives its sector, not when a stored assignment was made from the category KIS gives now (a fund has none).
+function needsAssignment({symbol,label=null,type=null,kisNames=[],stored=null}){if(clean(label))return {need:false,why:'label'};
+  const fund=FUND_TYPES.has(type);if(resolve({symbol,type,kisNames}).source==='kis')return {need:false,why:'table'};
+  const category=fund?null:kisNames.map(clean).find(Boolean)??null;if(stored&&(ALL.includes(stored.sector)||stored.sector===UNCLASSIFIED)&&(stored.category??null)===category)return {need:false,why:'stored',category};
+  return {need:true,category};}
+function classifyPayload(items){return {sectors:[...ALL],instruments:items.slice(0,CLASSIFY_LIMIT).map(classifyItem)};}
+// The answer: only symbols asked, a sector of the list, a detail of at most 40 characters; anything else is dropped.
+function parseClassification(answer,asked){const want=new Set(asked),out=new Map();
+  for(const r of Array.isArray(answer?.items)?answer.items:[]){const s=String(r?.symbol??'');if(!want.has(s)||out.has(s)||!(ALL.includes(r?.sector)||r?.sector===UNCLASSIFIED))continue;out.set(s,{sector:r.sector,detail:clean(r.detail).slice(0,40)||null});}
+  return out;}
 // The resolver as the screens use it (review of S1, change 2): one result per symbol kept in memory for a short time, so
 // building the portfolio state (asked for often) does not read the database per holding each time. read(symbol) gives
 // resolve()'s input without the label, label(symbol) the typed label. clear(symbol) after a label is saved or an assignment
@@ -107,4 +144,4 @@ class SectorResolver{
     this.cache.set(symbol,{at:now,value});return value;}
   clear(symbol){if(symbol==null)this.cache.clear();else this.cache.delete(symbol);}
 }
-module.exports={SectorResolver,US_INDUSTRY_NAMES,usIndustryName,SECTORS,FUND_SECTORS,ALL,UNCLASSIFIED,KIS_TABLE,UNMAPPED,kisSector,resolve,SectorStore,marketOf};
+module.exports={needsAssignment,CLASSIFY_LIMIT,CLASSIFY_DAILY,CLASSIFY_INSTRUCTIONS,CLASSIFY_SCHEMA,classifyPayload,parseClassification,SectorResolver,US_INDUSTRY_NAMES,usIndustryName,SECTORS,FUND_SECTORS,ALL,UNCLASSIFIED,KIS_TABLE,UNMAPPED,kisSector,resolve,SectorStore,marketOf};

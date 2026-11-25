@@ -20,6 +20,8 @@ const SHORTFALL_WAIT=require('./short-rules.cjs').SHORTFALL_UNKNOWN_WORDS;
 // Hourly cache, stage C: the keep-alive is sent 55 minutes after the entry was written or renewed, at most 2 in a row without a
 // review; it reserves a read of 40,000 tokens and 100 output tokens at the model's rates (settled at the real usage).
 const KEEP_ALIVE_AFTER_MS=55*60000,KEEP_ALIVE_MAX=2;
+// Sectors S2: the sector assignment looks for work at most every 10 minutes.
+const SECTOR_CHECK_MS=10*60000;
 const keepAliveReserve=model=>{const r=require('./ai-models.cjs').MODELS[model];return r?Math.max(1000,Math.ceil(40000*(r.cached??r.input*0.1)+100*r.output)):10000;};
 const COND_OFF_WORDS="conditional orders are off, so it has no cover stop and no loan-end buy-back; turn them on in Engine settings or buy it back in KIS's own app";
 const DEFAULTS={alertTrial:'off',notHeldPriceReviews:'default',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithOpenAI:false,shareKisWithAnthropic:false,anthropicCallsPerDay:10,anthropicUSDPerDay:1,anthropicUnlimitedCalls:false,anthropicUnlimitedBudget:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,orderUpdateReviews:false,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutAiRequests:true,screenStocksPerExchange:300,screenEtfs:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,ordersPerReview:1,severalOpenOrders:false,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS,...require('./scout-timing.cjs').TIMING_DEFAULTS};
@@ -1471,6 +1473,35 @@ class Automation {
       // refusal at zero (Claude refused-request diff review F2).
       try{const r=await this.provider.request('decision',{context,options});this.noteAnswerForm(r);return r;}catch(retry){if(retry&&typeof retry==='object')retry.earlierUncertain=true;throw retry;}}
   }
+  // Sectors S2: instruments held, in the scout plan or on the watchlist with no label of yours, no table result and no
+  // current assignment (sectorCandidates, from main) are given a sector by the helper model set for condensing: at most 20
+  // in one call and 60 a day, never while a review, a scout run or a keep-alive is in flight, never while background AI is
+  // paused; with that model's key, its data-sharing switch and, on Claude, its dry run, as for condensing. Counted in the
+  // budget and the daily calls (an ai_calls row of kind 'sectors'), one AI activity line; a failure is said once and the
+  // next try is the next day, with no alert.
+  sectorTick(now=Date.now()){if(this.sectorBusy||this.busy||this.scouting||this.keepAliveBusy||this.backgroundPaused||!this.sectorStore||typeof this.sectorCandidates!=='function')return;
+    if(now-(this.lastSectorCheck??0)<SECTOR_CHECK_MS)return;this.lastSectorCheck=now;this.sectorBusy=true;void this.assignSectors(now).catch(()=>{}).finally(()=>{this.sectorBusy=false;});}
+  async assignSectors(now=Date.now()){const S=require('./sectors.cjs'),models=require('./ai-models.cjs');const day=seoulDate();const d=this.sectorStore.day(day);
+    if(d.failedAt)return {skipped:'failed today'};if(d.asked>=S.CLASSIFY_DAILY)return {skipped:'daily cap'};
+    let list=[];try{list=this.sectorCandidates()??[];}catch{return {skipped:'candidates'};}
+    const take=list.slice(0,Math.min(S.CLASSIFY_LIMIT,S.CLASSIFY_DAILY-d.asked));if(!take.length)return {skipped:'none'};
+    const modelConfig=this.agentModel('compacting');if(this.vendorOf(modelConfig.openaiModel)==='anthropic'&&this.claudeGateClosed('compacting'))return {skipped:'dry run'};
+    try{this.vendorAllowed(modelConfig.openaiModel);}catch(error){return {skipped:error.message};}if(this.providerWaitFor(modelConfig.openaiModel))return {skipped:'provider wait'};
+    const payload=S.classifyPayload(take);const reserve=models.reservation(modelConfig,payload,{maxBytes:60000,kind:'classify'});const callId=randomUUID();
+    try{this.reserveCall(modelConfig,reserve,callId,day,JSON.stringify({kind:'sectors',model:modelConfig.openaiModel,reasoningEffort:modelConfig.reasoningEffort,reservedMicro:reserve,status:'pending',timestamp:now}));}catch{return {skipped:'budget'};}
+    this.sectorStore.noteDay(day,{asked:d.asked+take.length});
+    let r;try{r=await this.provider.request('classify',{payload,options:modelConfig});}
+    catch(error){require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,error,'failed-or-uncertain');this.sectorStore.noteDay(day,{failedAt:Date.now()});
+      this.log(callId,'System','Sector assignment failed',`The request to give ${take.length} instrument${take.length===1?'':'s'} a sector failed (${error?.message??'error'}). They stay as they are; the next try is tomorrow.`);return {failed:error?.message??'error'};}
+    require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,callId,r,'completed');
+    const got=S.parseClassification(r,take.map(i=>i.symbol)),at=Date.now(),model=r?.model??modelConfig.openaiModel;
+    // A symbol the answer leaves out, or gives in a form the filter drops, is stored as not told (Unclassified), so it is asked
+    // again only when its KIS category changes or you press Assign again (S2 review, change 2).
+    for(const i of take){const a=got.get(i.symbol)??{sector:S.UNCLASSIFIED,detail:null};try{this.sectorStore.write(i.symbol,{...a,model,at,category:i.category??null});}catch{}}
+    const told=take.filter(i=>(got.get(i.symbol)?.sector??S.UNCLASSIFIED)!==S.UNCLASSIFIED).length;
+    const usd=models.costDetails(model,r?.usage)?.micro;
+    this.log(callId,'Program','Sectors assigned',`${told} of ${take.length} instrument${take.length===1?'':'s'} given a sector by ${model}${Number.isFinite(usd)?`, about $${(usd/1e6).toFixed(usd<100000?3:2)}`:''}.${told<take.length?` ${take.length-told} could not be told; they stay Unclassified until KIS's category changes or you press Assign again.`:''}`);
+    return {asked:take.length,assigned:told};}
   // Cheap-model condensation of older research results in a review near its size limit; metered like other AI calls.
   async compactResearch(reviewId,payload){
     const modelConfig=this.agentModel('compacting');const models=require('./ai-models.cjs');
@@ -2631,6 +2662,7 @@ class Automation {
   tick() {
     this.restoreClock();
     try{this.keepAliveTick();}catch{}
+    try{this.sectorTick();}catch{}
     this.checkAiAlerts();// fix R3: one alert per AI outage or stall while a market is open
     if(!this.learningLastRun||Date.now()-this.learningLastRun>=15000)this.syncLearning();
     if(!this.busy&&!this.learningError&&!this.backgroundPaused&&!this.providerWaitFor(this.agentModel('reflection').openaiModel))void this.reflections.tick({...this.config,...this.agentModel('reflection'),shareKisAllowed:this.consentFor(this.agentModel('reflection').openaiModel),providerBudget:this.reflectionProviderBudget()},this.providerStatus.aiConnected,this.provider,this.log).catch(()=>{this.reflections.reason='Local reflection error';});

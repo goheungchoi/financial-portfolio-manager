@@ -19,6 +19,8 @@ process.parentPort.on('message',async({data})=>{
     else if(data.operation==='reflection') {result=await router.clientFor(data.options?.openaiModel).reflect(data.context,data.options);}
     else if(data.operation==='scout') {result=await router.clientFor(data.options?.openaiModel).scout(data.context,data.options);}
     else if(data.operation==='narrative') {result=await router.clientFor(data.options?.openaiModel).narrative(data.context,data.options);}
+    // Sectors S2: the sector classification on the helper model.
+    else if(data.operation==='classify') {result=await router.clientFor(data.options?.openaiModel).classify(data.payload,data.options);}
     else if(data.operation==='compact') {result=await router.clientFor(data.options?.openaiModel).compact(data.payload,data.options);}
     else if(data.operation==='push') {
       if(!pushURL)throw 0;

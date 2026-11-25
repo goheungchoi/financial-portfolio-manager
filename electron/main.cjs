@@ -411,10 +411,24 @@ app.whenReady().then(async () => {
   // listing, then the research overview's name), the app's stored assignment, else Unclassified (sectors.cjs).
   // Per symbol, at most once in 30 seconds: the master row, its index name, the research overview, the stored assignment
   // and the label table (sectors.cjs SectorResolver); cleared when you save a label and at every master refresh.
-  {const S=require('./sectors.cjs'),sectorStore=new S.SectorStore(store.db);
+  {const S=require('./sectors.cjs'),sectorStore=new S.SectorStore(store.db,{onWrite:symbol=>sectorResolver?.clear(symbol)});automation.sectorStore=sectorStore;
     sectorResolver=new S.SectorResolver({label:symbol=>portfolioView.metadata()[symbol]?.sector,read:symbol=>{const sec=master.get(symbol);let overview=null;try{overview=research.cached(symbol,'overview')?.value?.sectorName??null;}catch{}
       return {type:sec?.type??null,kisNames:[sec&&/^(KOSPI|KOSDAQ)$/.test(sec.market)?master.indexName(sec.sector):sec?S.usIndustryName(sec.industry):null,overview],stored:sectorStore.get(symbol)};}});
-    sectorOf=symbol=>sectorResolver.of(symbol);}
+    sectorOf=symbol=>sectorResolver.of(symbol);
+    // Sectors S2: what needs an assignment: held, in the scout plan or on the watchlist; no label of yours; no table result;
+    // no stored assignment, or one made from another KIS category than KIS gives now. Only what describes the instrument.
+    const read=symbol=>{const sec=master.get(symbol);let overview=null;try{overview=research.cached(symbol,'overview')?.value?.sectorName??null;}catch{}
+      return {sec,kisNames:[sec&&/^(KOSPI|KOSDAQ)$/.test(sec.market)?master.indexName(sec.sector):sec?S.usIndustryName(sec.industry):null,overview]};};
+    automation.sectorCandidates=()=>{const labels=portfolioView.metadata(),out=[],seen=new Set();
+      let plan=[];try{plan=(automation.scoutStore.latest(automation.watchScope())?.plan?.targets??[]).map(t=>t.symbol);}catch{}
+      let watch=[];try{watch=automation.discovery.list().map(w=>w.symbol);}catch{}
+      const held=[...(kisState.snapshot?.holdings??[]),...(usSnapshot?.holdings??[])].map(h=>h.symbol);
+      for(const symbol of [...held,...plan,...watch]){if(seen.has(symbol)||typeof symbol!=='string')continue;seen.add(symbol);if(String(labels[symbol]?.sector??'').trim())continue;
+        const {sec,kisNames}=read(symbol);if(!sec)continue;const fund=['etf','etn','fund'].includes(sec.type);const n=S.needsAssignment({symbol,type:sec.type,kisNames,stored:sectorStore.get(symbol)});if(!n.need)continue;const category=n.category;
+        let fundFacts=null;if(fund)try{const f=research.cached(symbol,'fund')?.value,h=research.cached(symbol,'holdings')?.value;fundFacts={index:f?.underlyingIndex??null,structure:f?.structure??null,holdings:h?.holdings??[]};}catch{}
+        out.push({symbol,name:sec.name,englishName:sec.englishName,listing:sec.market,type:sec.type,category,...(fundFacts?{fund:fundFacts}:{})});}
+      return out;};
+    ipcMain.handle('sectors:reassign',(event,symbol)=>{authorize(event);if(typeof symbol!=='string'||!(/^(\d{6}|(NASD|NYSE|AMEX):[A-Z][A-Z0-9.-]{0,14})$/.test(symbol)))throw new Error('INVALID_REQUEST');sectorStore.forget(symbol);automation.lastSectorCheck=0;return portfolioState();});}
   automation.discovery.marketOverview=async()=>{const m=await research.market();if(m.status!=='ok')return {status:'unavailable',reason:m.reason};const sectors=m.data.kospiSectors??[];return {asOf:new Date(m.retrievedAt).toISOString(),...m.data,kospiSectors:undefined,strongestSectors:sectors.slice(0,8),weakestSectors:sectors.length>8?sectors.slice(-6).reverse():[],foreignTopBuys:m.data.foreignTopBuys?.slice(0,6),institutionTopBuys:m.data.institutionTopBuys?.slice(0,6)};};
   ipcMain.handle('research:market',async(event,refresh)=>{authorize(event);return research.market(refresh===true);});
   // U.S. market today, with the latest VIX close from the macro data.

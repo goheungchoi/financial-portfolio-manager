@@ -3,7 +3,7 @@
 // bounded summaries: rules, counts, tool names and sizes, never arguments, keys or portfolio data.
 // compact joined the AI operations after the 2026-11-10 incident, where a failed condensing step showed only
 // PROVIDER_REQUEST_FAILED and was charged at its full reservation.
-const AI_USAGE=['decision','reflection','scout','narrative','compact'],AI_CODES=['decision','scout','narrative','compact'];
+const AI_USAGE=['decision','reflection','scout','narrative','compact','classify'],AI_CODES=['decision','scout','narrative','compact','classify'];
 // A provider error's lookup keys (Anthropic A3b): the request id and error type, pattern-checked again here.
 const lookup=d=>({...(typeof d.requestId==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(d.requestId)?{requestId:d.requestId}:{}),...(typeof d.errorType==='string'&&/^[a-z_]{1,40}$/.test(d.errorType)?{errorType:d.errorType}:{})});
 function decisionDetail(error){

@@ -242,6 +242,19 @@ class AiClient {
   }
   // Market narrative: one structured answer from headlines and signals; no tools.
   // Condenses older research results inside a review that is near its size limit (cheap model; see context-fit.cjs).
+  // Sectors S2 on an OpenAI helper model: the same instructions and schema as on Claude (sectors.cjs).
+  async classify(payload,options={}) {
+    const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;const S=require('./sectors.cjs');
+    const input=[{role:'user',content:JSON.stringify(payload)}];if(Buffer.byteLength(JSON.stringify(input))>60000)throw new Error('CONTEXT_TOO_LARGE');
+    try {
+      const response=await this.transport('https://api.openai.com/v1/responses',{method:'POST',redirect:'error',signal:AbortSignal.timeout(60000),headers:{'content-type':'application/json',authorization:'Bearer '+this.#key},body:JSON.stringify({model:selected.model,service_tier:'default',store:false,prompt_cache_key:'sector-classify-v1',max_output_tokens:Math.max(selected.maxOutput,4000),reasoning:{effort:selected.effort},instructions:S.CLASSIFY_INSTRUCTIONS,text:{format:{type:'json_schema',name:'sector_classification',strict:true,schema:S.CLASSIFY_SCHEMA}},input})});
+      if(!response.ok)throw await require('./ai-errors.cjs').responseError(response,[this.#key]);
+      const text=await response.text();if(text.length>RESPONSE_CHAR_LIMIT)throw new Error('INVALID_AI_RESPONSE');const body=JSON.parse(text);reportedUsage=require('./ai-models.cjs').normalizeUsage(body);returnedModel=body.model??selected.model;
+      if(body.status!=='completed')throw new Error(body.incomplete_details?.reason==='max_output_tokens'?'AI_OUTPUT_LIMIT':'INVALID_AI_RESPONSE');
+      const output=(body.output??[]).filter(i=>i.type==='message').flatMap(i=>i.content??[]).filter(i=>i.type==='output_text').map(i=>i.text).join('');
+      return {...JSON.parse(output),usage:reportedUsage,provider:'ai',model:returnedModel};
+    }catch(error){const safe=new Error(require('./ai-errors.cjs').publicCode(error)??(['TimeoutError','AbortError'].includes(error.name)?'AI_TIMEOUT':'AI_REQUEST_FAILED'));safe.usage=reportedUsage;safe.model=returnedModel;if(error?.providerError)safe.providerError=error.providerError;throw safe;}
+  }
   async compact(payload,options={}) {
     const selected=require('./ai-models.cjs').settings(options);let reportedUsage=null,returnedModel=selected.model;const f=require('./context-fit.cjs');
     const input=[{role:'user',content:JSON.stringify(payload)}];if(Buffer.byteLength(JSON.stringify(input))>400000)throw new Error('CONTEXT_TOO_LARGE');

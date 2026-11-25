@@ -63,7 +63,7 @@ test('A5: the dry-run override is refused without its key, without the sharing s
   assert.ok(main.includes("automation.dryRun(mode,options&&typeof options==='object'?{model:options.model??null}:{})"));assert.ok(preload.includes("dryRun: (mode, options) => ipcRenderer.invoke('runtime:dry-run', mode, options)"));
 });
 test('A5: Claude calls get their own timeout, and the worker cap leaves room for it',()=>{
-  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:300000,narrative:240000,compact:450000,reflect:240000,keepAlive:20000});assert.ok(Object.isFrozen(R.CLAUDE_TIMEOUT_MS));
+  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:300000,narrative:240000,compact:450000,reflect:240000,keepAlive:20000,classify:60000});assert.ok(Object.isFrozen(R.CLAUDE_TIMEOUT_MS));
   // B2 and B3: 300 s for a decision of up to 32,000 tokens; condensing 450 s (16,000 tokens); reflection 240 s.
   assert.equal(R.workerCapMs('decision',{options:CLAUDE}),315000);assert.equal(R.workerCapMs('compact',{options:CLAUDE}),465000);assert.equal(R.workerCapMs('reflection',{options:CLAUDE}),255000);
   for(const [op,payload] of [['decision',{options:{openaiModel:'gpt-6-sol'}}],['decision',{}],['decision',{options:{openaiModel:'gpt-7'}}],['news',{options:CLAUDE}],['import',{}]])assert.equal(R.workerCapMs(op,payload),90000,op);
