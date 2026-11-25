@@ -16,7 +16,10 @@ const METHOD={decision:'decide',reflection:'reflect',scout:'scout',narrative:'na
 // 15 s, so the client's timeout ends the call first and is reported as AI_TIMEOUT, not a broken worker.
 function workerCapMs(operation,payload){const method=METHOD[operation];if(!method)return 90000;let vendor;try{vendor=payload?.options?.openaiModel==null?'openai':models.vendorOf(payload.options.openaiModel);}catch{return 90000;}
   return vendor==='anthropic'?Math.max(90000,CLAUDE_TIMEOUT_MS[method]+15000):90000;}
-const FILE_KEYS=['openaiApiKey','anthropicApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey','secContactEmail'];
+// Phone control (1.6.0): the five Discord keys are accepted here so the file is not refused, and their values are dropped
+// at once: only the phone worker reads and checks them (phone-worker.cjs readKeys). A malformed one never stops the AI keys.
+const PHONE_KEYS=['discordBotToken','discordApplicationId','discordServerId','discordChannelId','discordUserId'];
+const FILE_KEYS=['openaiApiKey','anthropicApiKey','dartApiKey','pushWebhookURL','ecosApiKey','fredApiKey','secContactEmail',...PHONE_KEYS];
 const EMAIL=/^[^\s@<>()"]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
 function createRouter({openai=null,anthropic=null}={}){
   return {
@@ -41,6 +44,7 @@ function claudeClient(key,transport){const client=new (require('./anthropic-clie
 // rejects the file (the caller reports it as a failed import); nothing is half-applied. Values are never logged.
 function parseProviderFile(text){
   const value=JSON.parse(text);if(!value||typeof value!=='object'||Object.keys(value).some(key=>!FILE_KEYS.includes(key)))throw new Error('INVALID_PROVIDER_FILE');
+  for(const key of PHONE_KEYS)delete value[key];
   // An empty or missing AI key means "not connected", as before; anything else must look like a key.
   for(const key of ['openaiApiKey','anthropicApiKey'])if(value[key]!=null&&value[key]!==''&&!(typeof value[key]==='string'&&KEY.test(value[key])))throw new Error('INVALID_PROVIDER_FILE');
   if(value.ecosApiKey&&!/^[A-Za-z0-9]{10,100}$/.test(value.ecosApiKey))throw new Error('INVALID_PROVIDER_FILE');if(value.fredApiKey&&!/^[a-z0-9]{32}$/.test(value.fredApiKey))throw new Error('INVALID_PROVIDER_FILE');
