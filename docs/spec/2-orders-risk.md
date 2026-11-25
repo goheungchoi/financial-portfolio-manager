@@ -699,6 +699,9 @@ determined here.
     whether an app short is sent by itself is the user's "Submit automatically" switch for short selling
     (`exposure.checkCredit`, `requiresApproval:!short.auto`); off, it is proposed for approval. The cover path is
     automatic as a protective close (`autoClose`), without the Stage 3 approval that a margin repayment still needs.
+  - **A switch saved on before shorts on** (the user's "Stay on as saved", 2026-11-25): it stays on; the update writes
+    no setting, so such a switch is live at once without a new confirmation. Home shows one notice until dismissed,
+    once per account (1-ui.md, AttentionPanel, "Short selling can now be sent"), and one Activity line.
   - The review is told about shorts only while short selling is switched on (`shortPathsOpen` is now true, so the
     switch alone decides; 3-ai.md).
   - **With the switch off** (stages 1b-1c): `pathStatus` answers for the short and cover paths exactly as in 1.5.74
@@ -706,28 +709,70 @@ determined here.
     on, or for a cover of a short the app itself opened (`appLots`, below). So with the switch off: no new short; a short
     opened in KIS's app is not bought back by the app (refused `CREDIT_PATH_UNVERIFIED`, as in 1.5.74); the app's own
     short keeps its cover stop, its loan-end cover, your ticket's cover and a review's cover, for no more of the lot than
-    the app sold there less its covers filled (`appCoverLimit`, `EXCEEDS_LOT` "With short selling off, the app buys back
-    only the N shares it sold in this lot."). The review's context shows both paths as in 1.5.74 when no app short is
+    the app's own shares left there less the unfilled shares of its other open covers of that lot (`appCoverLimit`, stages 2a-2c;
+    `EXCEEDS_LOT` "With short selling off, the app buys back only the N shares it sold in this lot."). The review's context shows both paths as in 1.5.74 when no app short is
     held; while one is (`holdsAppShort`) only the cover path reads open, so the review may buy back that short but never
     open one. The worker checks the code's paths (`shortsOn:true`), the switch being the engine's.
-  - **The app's own short lots** (`short-stops appLots`, stage 1c; the engine and automation both call it): an app short
-    with shares filled is tied to a balance lot of the same stock whose loan date is any of KIS's date on its order row
-    (`lotLoanDate`), the date the app sent (`loanDateSent`, or the plan's first date before the reply was read), or either
-    one's counterpart in the other form (two Korean business days before or after); exact dates first. False-match risk:
-    a short of the same stock opened in KIS's app with one of those loan dates (the same day, or two business days apart)
-    is taken for the app's lot, wholly, so it gets the app's cover stop for the whole lot (a lot partly opened by hand on
-    the same day counts wholly as the app's); with the switch off its buy-back is limited to what the app sold. The cover
-    stop, the loan-end cover, Short positions' "opened in the KIS app" mark and the unprotected list use these lots.
-  - **A lot the app cannot tie**: while the app has a filled short of a stock that ties to no lot in a balance read after
-    its fill, every lot of that stock that is not the app's is listed on Home as unprotected (cause `unmatched`): "the
-    app sold a short of this stock but cannot tie it to this lot's loan date, so it has no cover stop; buy it back in
-    KIS's own app". Never silently without a stop.
+  - **The app's own short lots** (stage 2c: a tie recorded once on each short's order record, never re-derived from
+    dates; the engine and automation both read it, automation at most once a second per balance reading and order write):
+    - **the tie** (`short-stops tieShorts`, at each Korean balance reading in `LiveEngine.observeBalance`): an app short
+      with shares filled and no tie, once a balance read after its fill is in hand, is tied to a lot of its stock only
+      when the tie is unambiguous. Its own dates are KIS's date on its order row (`lotLoanDate`) and the date sent
+      (`loanDateSent`, else the plan's first date); lots held by an open tie of a short with other own dates are not
+      candidates (shorts of one own date share one lot at KIS), nor is a lot the stock already had at this short's send
+      that did not grow by its fill (`shortLotsAtSend`, stage 2d, in both passes). First every short with exactly one candidate at an own
+      date (`exact`); then the rest: one candidate at a counterpart date, two Korean business days before or after
+      (`counterpart`); else the one candidate that newly appeared or grew by at least the filled quantity since the
+      stock's lots recorded on the order at its send (`shortLotsAtSend`; `grew`). Oldest short first, so the result is
+      the same for any order of orders and lots. The tie is written on the order (`lotTie`: loanDate, at, how);
+    - **an ambiguous tie** is not guessed: its candidates are recorded (`lotTieAmbiguous`) and those lots are listed on
+      Home as unprotected (cause `ambiguous`): "the app sold a short of this stock and cannot tell which of its lots is
+      the app's, so none has the app's cover stop; buy it back in KIS's own app", until a reading settles it;
+    - **a closed tie** (stage 2d): only a reading newer than the tie and than the short's last fill counts, with the
+      short rows read (complete); an older or stale reading changes nothing. The tied lot absent and the app's covers of
+      it filled the shares: closed `covered` at once. Absent otherwise: the first such reading records `absentSince`, and
+      the tie is closed `gone` only when the lot is still absent in a reading at least 10 minutes later (`ABSENT_MS`);
+      the lot seen again clears it. A tie closed `gone` reopens when its lot is seen again with the same loan date. While
+      closed `gone`, Home lists "The app's short of <stock> is no longer in KIS's balance" until dismissed (detail: "The
+      app sold N <stock> short (loan <date>) and did not buy it back, but KIS's balance has not shown that lot for over 10
+      minutes. If you bought it back in KIS's app, nothing more is needed; otherwise check it in KIS's app. The app arms
+      its stop again if the lot comes back."), with one Activity line "Short no longer in the balance". A closed tie is
+      never unmatched;
+    - **the app's shares in a lot** (`appLots`): its tied shorts' fills less the app's covers of that lot (a cover's
+      lot is its `credit.loanDate`, a balance date) filled since the first tied short was sent, at most the lot's
+      quantity; and the unfilled shares of its open covers of the lot, the order being sent or approved not counted;
+    - false-match risk: a short of the same stock opened in KIS's app on one of the short's dates, with no other
+      candidate, is taken for the app's lot; with the switch off its buy-back and stop are limited to the app's shares;
+      with it on the stop covers the whole lot (as before);
+    - used by the cover stop (with the switch off for min(lot, the app's shares left less its open covers); a stop armed
+      larger is reduced to it, `lotChanges` `capOf`; at 0 it is closed "Not needed now: the app's shares in its short lot
+      are already being bought back by an open cover; it is armed again if that cover does not take them."), a cover's
+      result and cash (`short-result`, `flow-detector cashEffect`, by the tie, else `lotLoanDate`), the loan-end cover, its alarms, Short positions' "opened in the KIS app" mark and the
+      unprotected list.
+  - **A short the app cannot tie**: an app short with no tie and no candidate in a balance read after its fill: the
+    stock's lots not tied (`leftovers`) are listed on Home as unprotected (cause `unmatched`): "the app sold a short of
+    this stock but cannot tie it to this lot's loan date, so it has no cover stop; buy it back in KIS's own app". Never
+    silently without a stop. Shorts sent before stage 2c have no tie; none was ever sent (the paths were closed), so
+    there is no other path for them.
+  - **With conditional orders off** (stage 3): the app's cover stop and loan-end cover are conditional orders, so none
+    is armed; every app lot is listed as unprotected (cause `conditional-off`, in place of its own record's): "conditional
+    orders are off, so it has no cover stop and no loan-end buy-back; turn them on in Engine settings or buy it back in
+    KIS's own app", on Home, in Short positions and in the review's `coverStop`. With them on and not sent automatically, a
+    hit stop is proposed for approval (as for a long's stop). Nothing the app may send changes.
+  - **What a hit cover does now** (`automation.coverStopsNow`, stage 3b; the review's `coverStops`, the confirmation and
+    the Short & leverage line): by the fire's own rule. While Korean auto trading runs: `sent` when conditional orders
+    are sent automatically, "Submit automatically" is on and the engine's automatic is on; otherwise `proposed`. While
+    stopped: the engine's permit (`start-notice permitState`): `sent`, `proposed`, or `not` when it holds none or the
+    orders are not kept working while stopped. Words for `not`: "Conditional orders are on, but they are not watched now,
+    so a stop or buy-back that is hit is neither sent nor proposed until you press Start (or keep them working while auto
+    trading is stopped)."
   - **Turning short selling on while auto trading runs on Claude is refused** (`automation.shortsSwitchRefusal`,
     `CLAUDE_SHORTS_RUNNING`): "Stop auto trading first: turning short selling on changes what Claude is sent, so Start
     asks one new dry run." A review checks the dry run only at a settings save, so without this the next reviews would
     be sent the short part with no dry run under its fingerprints. Turning it off is never refused: the fingerprints in
-    force go back to those without shorts, so the dry run made without shorts counts again. OpenAI and a stopped app:
-    not refused (Start on Claude asks the dry run).
+    force go back to those without shorts, so the dry run made without shorts counts again. OpenAI, a stopped app and a
+    U.S.-only scope (the short text is sent only with a Korean or combined scope): not refused. The refusal saves
+    nothing of that save (the screen says "Nothing was saved.").
 - The switches still exist and can be on (`exposure.cjs:9`): margin (cap 30% of equity as loans, collateral floor
   140%), short (cap 20% gross, stop 15%, 90 days). Their limits (`MARGIN_NOT_ENABLED`, `MARGIN_LIMIT`,
   `SHORT_NOT_ENABLED`, `SHORT_LIMIT`, `checkCredit`) are unreachable for margin (its paths are closed) and reached
@@ -836,8 +881,11 @@ determined here.
     calendar; refused `SHORT_SESSION_CLOSED` otherwise or when it cannot be read);
   - the cap (`exposure.checkCredit`, through `capCheck`): open shorts by their obligation, every open short order of the
     app whatever the several-open switch (`openShortOrders`), filled shorts the balance does not show yet
-    (`laggingShorts`), this one, at most 20% of the account value's low bound (`shortCapBase`, never KIS's total); an
-    amount or value that cannot be read refuses (`SHORT_CAP_UNKNOWN`);
+    (`laggingShorts`), your open short orders in KIS, this one, at most 20% of the account value's low bound
+    (`shortCapBase`, never KIS's total); an amount or value that cannot be read refuses (`SHORT_CAP_UNKNOWN`). The same
+    inputs at the proposal, at the send's re-check and in the send's approval check (`shortCapInputs`, stage 2b: the
+    send used KIS's reported total and no waiting shorts before), from the preparation's reading at the send (its
+    balance, and your open orders from its open-order read), the order itself not counted twice;
   - the price: a review's short goes at its placement price raised to the uptick floor from the polled last trade
     (`shortLimit`); in the opening auction without the previous close it is not priced or sent
     (`SHORT_AUCTION_NO_CLOSE`, it waits for the regular session); at the send, KIS's price read then sets the floor again and a lower limit is refused

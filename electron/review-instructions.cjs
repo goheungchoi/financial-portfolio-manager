@@ -37,14 +37,14 @@ const MORE_ORDERS_PART=Object.freeze({id:'more-orders',when:f=>f.moreOrders,text
 // byte; with shorts on the record carries the set's short version and fingerprint(set,{short:true}). Placed after the
 // credit part. Same text in both sets.
 const SHORT_TEXT=`SHORT SELLING
-These are the rules the app and KIS apply to a short (credit "short", a Sell of borrowed shares) and its cover (credit "cover", a Buy that repays it). They are facts, not reasons to short.
+These are the rules the app and KIS apply to a short (credit "short", a Sell of borrowed shares) and its cover (credit "cover", a Buy that repays it).
 - Instruments: stocks listed on KOSPI or KOSDAQ only; an ETF short is refused for now.
 - Price and venue: a short sale goes to KRX only, during the regular session or the opening auction, never as a market order. Its price must be above the last trade (in the auction, above the previous close). The app sends it at least one tick above, so it may not fill while the price is falling.
 - Borrowing: productRisk.credit.short.candidates says, for each universe stock, whether KIS's lending list showed it borrowable at the app's last short of it and when that was read (readAt). The list is read only when a short is prepared, so borrowable null means not read. The app cannot see the regulator's ban list or KIS's limit for this account, so a short that passes every check here can still be refused.
-- The loan: KIS lends for 90 days with no extension. daysToRepay is the app's count from loanDate, and the app covers by itself from coverBeforeDays business days before the last day it counts. KIS requires collateral of 120% of the borrowed value and may cover a short by itself below it.
+- The loan: KIS lends for 90 days with no extension. daysToRepay is the app's count from loanDate. The app's covers are conditional orders: productRisk.credit.short.coverStops.armed says whether the app arms them now, and whenHit whether one that is hit is sent by itself ("sent"), proposed for approval ("proposed") or not watched now ("not"). When armed, a cover is armed from coverBeforeDays business days before the last day the app counts. KIS requires collateral of 120% of the borrowed value and may cover a short by itself below it.
 - Costs: the borrow fee is estimated at annualFeePct a year on the sale proceeds per calendar day (feePerDay, and estimatedFee so far); KIS's own figure replaces it when known. Fees and tax apply to the sale and to the cover. The loss of a short has no limit, because the price can keep rising.
 - Sending: productRisk.credit.short.automatic says whether a short you decide is sent by itself or proposed for approval.
-- Each open short in productRisk.credit.shorts: quantity, entryPrice, price, adversePct, loanDate, daysToRepay, the fees and coverStop. The app arms a cover stop at stopLossPct above the entry: coverStop.state "armed" with its level. coverStop.state "unprotected" means no stop is working for that short, with the cause. coverStop null means none was armed for it.
+- Each open short in productRisk.credit.shorts: quantity, entryPrice, price, adversePct, loanDate, daysToRepay, the fees and coverStop. When coverStops.armed is true, the app arms a cover stop at stopLossPct above the entry: coverStop.state "armed" with its level. coverStop.state "unprotected" means no stop is working for that short, with the cause. coverStop null means none was armed for it.
 - shortfall is the cash the app holds back from its own buys because buying the losing shorts back now would cost more than their proceeds. It lowers the cash a Buy can use.
 - maxGrossPctOfEquity caps all shorts together (open shorts, filled shorts the balance does not show yet and open short orders) as a share of the account value. capUsedPct is the share they use now and capLeftPct what is left.
 - A Sell or Buy of a stock held both as shares and short carries its credit kind: "none" sells shares, "short" opens a new short, "cover" with the short's loanDate buys it back. Without the kind the order is refused.`;
@@ -87,7 +87,10 @@ const INSTRUCTIONS_VERSION='review 2026-11-25.5';// .5: "Being far from the plan
 // M-6 part 2: a review that may return several orders (the more-orders part, the decision schema with moreOrders).
 const ORDERS_VERSION='review 2026-11-25.5 orders';
 // B3e: the same, with the short part (shorts enabled).
-const SHORT_VERSION=INSTRUCTIONS_VERSION+' short',ORDERS_SHORT_VERSION=ORDERS_VERSION+' short';
+// Shorts on, stage 3: the short part names coverStops (the two sentences no longer promise a stop): ' short.2'; and
+// "They are facts, not reasons to short." removed (the user's "Remove it", 2026-11-25): ' short.3'; whenHit's third
+// value "not" (stage 3b): ' short.4'. The versions without shorts are unchanged.
+const SHORT_VERSION=INSTRUCTIONS_VERSION+' short.4',ORDERS_SHORT_VERSION=ORDERS_VERSION+' short.4';
 
 // Step 3: the proposed text, draft-2.md with the rulings of review.md (W1 to W6, the quantity and execution sentences,
 // the desk part, R1). No live review sends it: only the replay's "Built-in text: proposed" does, so the user can compare
@@ -95,7 +98,7 @@ const SHORT_VERSION=INSTRUCTIONS_VERSION+' short',ORDERS_SHORT_VERSION=ORDERS_VE
 // conditions as the current set, so a context gives the same part list under both.
 const PROPOSED_VERSION='proposed 2026-11-25.3';// .3: the far-from-the-plan sentences removed, as in the current text; .2: .2: the plan-gap sentence removed, as in the current text; 2026-11-25: the unknown-tax clause removed, as in the current text; 2026-11-24: trailing stops T2: the trail variants, as for the current set
 const PROPOSED_ORDERS_VERSION='proposed 2026-11-25.3 orders';// M-6 part 2, as ORDERS_VERSION
-const PROPOSED_SHORT_VERSION=PROPOSED_VERSION+' short',PROPOSED_ORDERS_SHORT_VERSION=PROPOSED_ORDERS_VERSION+' short';
+const PROPOSED_SHORT_VERSION=PROPOSED_VERSION+' short.4',PROPOSED_ORDERS_SHORT_VERSION=PROPOSED_ORDERS_VERSION+' short.4';
 const PROPOSED_REVIEW_CORE=`TASK
 Review this portfolio for the goals in userGuidelines. Answer with one bounded trade or Hold. Count transaction costs and estimated taxes in every comparison.
 Hold is a complete answer when the evidence does not justify a trade. When uncertainty is the reason, name what is unknown and whether it could change the decision. A trade whose expected gain does not cover its costs is not justified.

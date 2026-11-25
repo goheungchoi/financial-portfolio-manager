@@ -16,6 +16,8 @@ const ORDER_EVENTS=['Filled','Partially filled','Canceled','Rejected'],PENDING_O
 // creditProtectionApproved: the user approved Stage 3 (audit 2026-11-04); until then no credit close is automatic.
 const SHORT_CASH_WAIT='a short is open and KIS\'s orderable cash could not be read';
 const SHORTFALL_WAIT=require('./short-rules.cjs').SHORTFALL_UNKNOWN_WORDS;
+// Shorts on, stage 3: an app short while conditional orders are off.
+const COND_OFF_WORDS="conditional orders are off, so it has no cover stop and no loan-end buy-back; turn them on in Engine settings or buy it back in KIS's own app";
 const DEFAULTS={alertTrial:'off',notHeldPriceReviews:'default',researchSuppression:'off',creditProtectionApproved:false,unlimitedCalls:false,unlimitedBudget:false,reflectionUnlimitedCalls:false,reflectionUnlimitedBudget:false,autoReviewInterval:false,reflectionEnabled:false,reflectionCallsPerDay:5,reflectionUSDPerDay:1,enabled:false,autoSubmit:false,scope:'paper',shareKisWithOpenAI:false,shareKisWithAnthropic:false,anthropicCallsPerDay:10,anthropicUSDPerDay:1,anthropicUnlimitedCalls:false,anthropicUnlimitedBudget:false,provider:'local',openaiModel:'gpt-6-luna',reasoningEffort:'none',intervalMinutes:10,eventTolerancePct:3,maxCallsPerDay:20,maxUSDPerDay:1,desktopAlerts:false,mobileAlerts:false,closedMarketReviews:'pre-open',sessionKrNxt:false,sessionUsPre:false,sessionUsAfter:false,sessionUsDaytime:false,extendedMaxOrderPct:5,phoneSnapshots:true,phoneAmounts:true,newsURL:'',guidelines:'',lossAction:'review',maxAutoOrdersPerDay:0,maxConsecutiveFailures:0,digestEnabled:false,digestHour:16,newsTrigger:'disclosures',watchlistAlerts:'observe',reviewGate:'observe',routineReviews:'full',orderTracking:true,orderUpdateReviews:false,watchlistMovePct:null,skipUnchanged:true,maxSkipMinutes:120,routineModel:'gpt-6-luna',routineEffort:'none',degradeNearBudget:true,scoutEnabled:false,scoutAiRequests:true,screenStocksPerExchange:300,screenEtfs:true,newsFeeds:[],kisNews:true,usTickerNews:true,narrativeEnabled:true,sizingRiskPct:1,sizingAtrMultiple:2,ordersPerReview:1,severalOpenOrders:false,...require('./agent-desk.cjs').COND_DEFAULTS,...require('./agent-models.cjs').AGENT_DEFAULTS,...require('./scout-timing.cjs').TIMING_DEFAULTS};
 // Settings that no longer exist: accepted from a saved profile or the window and ignored. sessionKrxSingle switched on
 // the KRX after-hours single-price auction, which KRX ended on 2026-09-14 (fact check X1).
@@ -651,13 +653,26 @@ class Automation {
   // B3e (rulings-b3e-text.md): coverStop on each open short of the Korean context's productRisk.credit.shorts, only while
   // shorts are enabled: armed with its level, unprotected with the cause (the B3d-2 rule: rejected, lapsed or held), or
   // null when none was armed. Nothing changes with shorts off.
+  // Stage 3: credit.short.coverStops, what the app's covers do now (the conditional-order switches): armed or not, and a
+  // hit one sent by itself or proposed for approval.
   coverStopFacts(context,scope){if(!this.shortFactsInForce())return;const kr=context?.environment==='kis-combined'?(context.markets??[]).find(m=>m?.market==='KR'):context;
+    if(kr?.productRisk?.credit?.short)kr.productRisk.credit.short.coverStops=this.coverStopsNow();
     const shorts=kr?.productRisk?.credit?.shorts;if(!Array.isArray(shorts)||!shorts.length)return;let unprotected=[];try{unprotected=this.unprotectedNow(scope).filter(u=>u.short);}catch{unprotected=[];}
     kr.productRisk.credit.shorts=shorts.map(p=>{const u=unprotected.find(x=>x.symbol===p.symbol&&x.loanDate===p.loanDate);if(u)return {...p,coverStop:{state:'unprotected',cause:u.held?`held: ${u.waiting}`:(u.outcome??u.cause??'its stop is not working')}};
       let armed=null;try{armed=this.desk.lotStops(scope,p.symbol,p.loanDate).find(o=>o.status==='armed'||o.status==='firing')??null;}catch{armed=null;}const level=Number(armed?.conditions?.[0]?.value);
       return {...p,coverStop:armed?{state:'armed',level:Number.isFinite(level)?level:null}:null};});}
   // B3e: the short facts, short lessons and memory, and the instructions in force for the dry run apply only while shorts
   // are enabled and their paths can be sent (credit-paths shortPathsOpen; open since shorts on, so the switch decides).
+  // Stages 3-3b: whether the app's cover stops and loan-end covers are armed (conditional orders on) and what a hit one does
+  // now, by the rule the fire itself and the start notice use: while Korean auto trading runs, sent by itself when
+  // conditionalAutoSubmit, autoSubmit and the engine's automatic are all on, else proposed for approval; while stopped,
+  // the engine's permit (start-notice permitState: sent, proposed, or not watched when it holds none). whenHit: 'sent',
+  // 'proposed' or 'not'.
+  coverStopsNow(){if(this.config.conditionalOrders!==true||this.config.scope==='paper')return {armed:false,whenHit:null};const e=this.live;
+    let running=false;try{running=this.autoTradingRuns()&&e?.enabled!==false&&require('./watch-while-stopped.cjs').inScope(this.config.scope,'KR');}catch{running=false;}
+    if(running)return {armed:true,whenHit:this.config.conditionalAutoSubmit===true&&this.config.autoSubmit===true&&e?.autoEnabled!==false?'sent':'proposed'};
+    let watching=false;try{watching=this.watchingWhileStopped();}catch{watching=false;}if(!watching)return {armed:true,whenHit:'not'};
+    return {armed:true,whenHit:require('./start-notice.cjs').permitState(e)};}
   shortFactsInForce(){if(!this.shortsEnabled())return false;try{return require('./credit-paths.cjs').shortPathsOpen({approved:this.live?.creditApproved?.()===true});}catch{return false;}}
   // The instructions in force carry the short part when the review's context would get it: a Korean or combined scope
   // (only the Korean context has a credit block) with the short facts in force. A U.S.-only or paper scope: today's text.
@@ -667,12 +682,19 @@ class Automation {
   // a review checks the dry run only at a settings save. So while auto trading runs on Claude the switch is not turned on:
   // CLAUDE_SHORTS_RUNNING. Turning it off is never refused: the fingerprints go back to those without shorts, so the dry
   // run made without shorts counts again. was/next: the saved and the new short.enabled.
-  shortsSwitchRefusal({was,next}){if(next!==true||was===true||!this.autoTradingRuns())return null;
+  // Stage 2a: only when the scope in force sends the Korean context (instructionsShort's scopes).
+  shortsSwitchRefusal({was,next}){if(next!==true||was===true||!this.autoTradingRuns()||!['kis','both'].includes(this.config.scope))return null;
     if(require('./ai-models.cjs').decisionMaker(this.config)!=='ai'||this.vendorOf(this.agentModel('trading').openaiModel)!=='anthropic')return null;return 'CLAUDE_SHORTS_RUNNING';}
   // Stage 1c: the app's own short lots as the engine ties them (live-engine appLots).
-  appLotsNow(){let orders=[];try{orders=this.live?.orders?.()??[];}catch{orders=[];}let closed=new Set();try{closed=new Set([...(this.closedDays??[]),...(this.officialClosedDays?.()??[])]);}catch{}
+  // Stage 2a: one read per second for the desk step's several callers (the same balance reading).
+  // Stage 2c: the cache also follows the engine's order writes (ordersVersion), so a tie or fill written now is read now.
+  appLotsNow(){const raw=this.shortBalanceRaw(),ver=this.live?.ordersVersion??null;const c=this.appLotsCache;if(c&&c.raw===raw&&c.ver===ver&&Date.now()-c.at<1000)return c.value;const value=this.appLotsRead();this.appLotsCache={raw,ver,at:Date.now(),value};return value;}
+  appLotsRead(){let orders=[];try{orders=this.live?.orders?.()??[];}catch{orders=[];}
     const {shorts,known}=this.shortBalance();const balance={...(this.shortBalanceRaw()??{}),...(known?{shorts}:{shorts:undefined})};
-    return require('./short-stops.cjs').appLots({orders,balance,isOpen:d=>closed.has(d)?false:null});}
+    return require('./short-stops.cjs').appLots({orders,balance});}
+  // Stage 2c: with the switch off, the most an app cover of a lot may take: the app's own shares left there less its open
+  // covers (null with the switch on: the whole lot, as before).
+  appCoverCap(appInfo,lot){if(this.shortsEnabled())return null;const e=appInfo.lots.get(`${lot.symbol}|${lot.loanDate}`);return e?Math.max(0,e.quantity-e.open):0;}
   shortsOnFor(kind,symbol,loanDate){try{return this.live?.shortsOnFor?.({kind,loanDate:loanDate||null},symbol)===true;}catch{return false;}}
   shortsEnabled(){try{return this.live?.exposure?.policy?.(this.live.identity())?.short?.enabled===true;}catch{return false;}}
   // The short's trail (short.trailingStop, off by default): each armed stop-loss cover of the Korean account follows the
@@ -702,6 +724,8 @@ class Automation {
     const toArm=shorts.filter(l=>Number(l.quantity)>0&&mine.has(`${l.symbol}|${l.loanDate}`)&&this.shortLotDecision(scope,l).arm);
     for(const lot0 of toArm){let left=lot0.quantity;try{const bal=this.shortBalanceRaw();left=Math.max(0,lot0.quantity-require('./credit-paths.cjs').remaining(bal,{symbol:lot0.symbol,side:'Buy',credit:{kind:'cover',loanDate:lot0.loanDate}},this.live.orders()).reserved);}catch{left=0;}
       // Covers filled or open that the balance has not shown yet take their shares: arm only for what is left, none at 0.
+      // With the switch off, at most the app's own shares (stage 2c).
+      {const cap=this.appCoverCap(appInfo,lot0);if(cap!=null)left=Math.min(left,cap);}
       if(left<1)continue;const lot={...lot0,quantity:left};const entry=lot.entryPrice??appInfo.lots.get(`${lot.symbol}|${lot.loanDate}`)?.fillPrice;let level=SS.coverStopLevel(entry,pct);
       // A stop re-armed for the same lot keeps the trail its last app stop had reached (its low and level).
       // Only from the lot's newest stop, when it was the app's, trailed, and its cover filled with shares of the lot still open
@@ -713,10 +737,11 @@ class Automation {
       if(r?.status==='armed'||r?.status==='saved'){try{const made=this.desk.orders(scope).find(o=>o.id===r.id);if(made)this.desk.update(made,{armedBy:'app',...(carried?{shortTrail:carried}:{})});}catch{}this.log(r.id??randomUUID(),'System','Cover stop armed',said(` at ${level}${carried?' (its trail kept)':''}.`));}
       else if(this.shortStopNoted?.[lot.symbol+lot.loanDate]!=='refused'){(this.shortStopNoted??={})[lot.symbol+lot.loanDate]='refused';this.log(randomUUID(),'System','Cover stop not armed',said(`: ${r?.reason??r?.error??'refused'}`));}}
     this.shortLoanEnds(scope,shorts,appShorts);
-    const {reduce,close,raise}=SS.lotChanges({shorts,deskOrders,balanceKnown:known});
+    const capInfo=this.appLotsNow();const {reduce,close,raise}=SS.lotChanges({shorts,deskOrders,balanceKnown:known,capOf:lot=>this.appCoverCap(capInfo,lot)});
     for(const {order,quantity} of raise){this.desk.update(order,{quantity});this.log(order.id,'System','Cover stop raised',`Buy ${order.symbol} (cover): ${order.quantity} → ${quantity}, the shares its short lot now holds; its level stays at ${order.conditions?.[0]?.value}.`);}
     for(const {order,quantity} of reduce){this.desk.update(order,{quantity});this.log(order.id,'System','Cover stop reduced',`Buy ${order.symbol} (cover): ${order.quantity} → ${quantity}, the shares its short lot still holds.`);}
-    for(const {order} of close){this.desk.update(order,{status:'cancelled',outcome:'Not needed: its short lot is covered.',closedAt:Date.now(),closedBy:'app'});this.log(order.id,'System','Cover stop closed',`Buy ${order.quantity} ${order.symbol} (cover): not needed, its short lot is covered.`);}}
+    for(const {order,why} of close){const capped=why==='capped';this.desk.update(order,{status:'cancelled',outcome:capped?"Not needed now: the app's shares in its short lot are already being bought back by an open cover; it is armed again if that cover does not take them.":'Not needed: its short lot is covered.',closedAt:Date.now(),closedBy:'app'});
+      this.log(order.id,'System','Cover stop closed',capped?`Buy ${order.quantity} ${order.symbol} (cover): not needed now, the app's shares in the lot are already being bought back by an open cover.`:`Buy ${order.quantity} ${order.symbol} (cover): not needed, its short lot is covered.`);}}
   // Short selling B3d-3: the loan's end. A short is lent for maxDays (90) calendar days from its loan date, with no
   // extension; the last day a cover can be made is taken as the last business day strictly before the end (until a real short shows
   // KIS's figure). For the app's own lots: from coverBeforeDays + 5 business days before that day, one warning a day (the
@@ -733,7 +758,7 @@ class Automation {
     const appInfo=this.appLotsNow(),mine=new Set(appInfo.lots.keys());
     for(const lot of shorts.filter(l=>Number(l.quantity)>0&&/^\d{4}-\d{2}-\d{2}$/.test(String(l.loanDate))&&mine.has(`${l.symbol}|${l.loanDate}`))){
       const {end,lastDay}=SS.loanEnd(lot.loanDate,maxDays,isOpen),left=SS.businessDaysTo(today,lastDay,isOpen),key=`${account}|${lot.symbol}|${lot.loanDate}`;
-      if(left<=before){const d=this.loanEndDecision(scope,lot);if(!d.arm)continue;let qty=lot.quantity;try{qty=Math.max(0,lot.quantity-require('./credit-paths.cjs').remaining(this.shortBalanceRaw(),{symbol:lot.symbol,side:'Buy',credit:{kind:'cover',loanDate:lot.loanDate}},this.live.orders()).reserved);}catch{qty=0;}if(qty<1)continue;
+      if(left<=before){const d=this.loanEndDecision(scope,lot);if(!d.arm)continue;let qty=lot.quantity;try{qty=Math.max(0,lot.quantity-require('./credit-paths.cjs').remaining(this.shortBalanceRaw(),{symbol:lot.symbol,side:'Buy',credit:{kind:'cover',loanDate:lot.loanDate}},this.live.orders()).reserved);}catch{qty=0;}{const cap=this.appCoverCap(appInfo,lot);if(cap!=null)qty=Math.min(qty,cap);}if(qty<1)continue;
         const r=this.desk.setOrder(scope,{action:'add',id:'',symbol:lot.symbol,side:'Buy',quantity:qty,limitPrice:null,conditions:[{expr:`price("${lot.symbol}")`,op:'>=',value:1}],combine:'all',purpose:'exit',expiresInHours:this.config.conditionalMaxHours,reason:`Cover before the ${maxDays}-day loan ends on ${end}.`,credit:{kind:'cover',loanDate:lot.loanDate,source:lot.source??'distribution'}},{config:this.config,universe:[lot.symbol],lot:{ok:true,account}});
         if(r?.status==='armed'||r?.status==='saved'){try{const made=this.desk.orders(scope).find(o=>o.id===r.id);if(made)this.desk.update(made,{armedBy:'app'});}catch{}this.log(r.id??randomUUID(),'System','Short loan ends: cover armed',`The short of ${qty} ${lot.symbol} (loan ${lot.loanDate}) ends its ${maxDays}-day loan on ${end}; the last day to cover is taken as ${lastDay}, ${left<0?'already past':left+' business '+(left===1?'day':'days')+' away'}, so ${this.ordersWatched()?'it is covered now':'its cover is armed and is sent once orders are watched'}.`);}}
       else if(left<=before+5){const row=this.db.prepare('SELECT day FROM short_loan_warnings WHERE lot=?').get(key);if(row?.day===today)continue;this.db.prepare('INSERT INTO short_loan_warnings VALUES(?,?) ON CONFLICT(lot) DO UPDATE SET day=excluded.day').run(key,today);
@@ -787,9 +812,13 @@ class Automation {
     const appInfo=this.appLotsNow(),appLots=new Set(appInfo.lots.keys());
     // Stage 1c: a short lot the app cannot tie to its own filled short of that stock (no lot matched it) is listed, never
     // left silently without a stop.
-    const untied=shorts.filter(l=>Number(l.quantity)>0&&!appLots.has(`${l.symbol}|${l.loanDate}`)&&appInfo.unmatched.some(u=>u.symbol===l.symbol)).map(l=>({symbol:l.symbol,short:true,loanDate:l.loanDate,orderId:appInfo.unmatched.find(u=>u.symbol===l.symbol).orderId,quantity:l.quantity,heldQuantity:l.quantity,coveredQuantity:0,cause:'unmatched',rejectedAt:new Date().toISOString(),outcome:"the app sold a short of this stock but cannot tie it to this lot's loan date, so it has no cover stop; buy it back in KIS's own app"}));
+    const untied=shorts.filter(l=>Number(l.quantity)>0&&appInfo.leftovers.some(x=>x.symbol===l.symbol&&x.loanDate===l.loanDate)).map(l=>({symbol:l.symbol,short:true,loanDate:l.loanDate,...(amb=>amb?{orderId:amb.orderId,cause:'ambiguous',outcome:"the app sold a short of this stock and cannot tell which of its lots is the app's, so none has the app's cover stop; buy it back in KIS's own app"}:{orderId:appInfo.unmatched.find(u=>u.symbol===l.symbol)?.orderId??null,cause:'unmatched',outcome:"the app sold a short of this stock but cannot tie it to this lot's loan date, so it has no cover stop; buy it back in KIS's own app"})(appInfo.ambiguous.find(u=>u.symbol===l.symbol&&u.candidates.includes(l.loanDate))),quantity:l.quantity,heldQuantity:l.quantity,coveredQuantity:0,rejectedAt:new Date().toISOString()}));
     const appList=shorts.filter(l=>Number(l.quantity)>0&&appLots.has(`${l.symbol}|${l.loanDate}`)).map(l=>[l,this.shortLotDecision(scope,l)]).filter(([,d])=>d.list).map(([l,d])=>{const last=(()=>{try{return this.desk.lotStops(scope,l.symbol,l.loanDate)[0];}catch{return null;}})();return last?.acknowledgedAt?null:{symbol:l.symbol,short:true,loanDate:l.loanDate,orderId:last?.id??null,quantity:l.quantity,heldQuantity:l.quantity,coveredQuantity:0,cause:d.list.cause,...(d.list.held?{held:true,waiting:'your approval of its cover'}:{}),rejectedAt:new Date(last?.closedAt??Date.now()).toISOString(),outcome:d.list.words};}).filter(Boolean);
-    const shortList=[...appList,...untied,...SS.unprotectedShorts({shorts:shorts.filter(l=>!appLots.has(`${l.symbol}|${l.loanDate}`)&&!untied.some(u=>u.symbol===l.symbol&&u.loanDate===l.loanDate)),rows,lapsed:o=>{try{return ['Canceled','Rejected','Expired'].includes(this.desk.sellStatus?.(o));}catch{return false;}}})];
+    // Shorts on, stage 3: with conditional orders off the app arms no cover stop and no loan-end cover, so every app lot is
+    // listed with that cause (in place of its own record's), never shown as stopped.
+    const condOff=this.config.conditionalOrders!==true&&this.config.scope!=='paper';
+    const offList=condOff?shorts.filter(l=>Number(l.quantity)>0&&appLots.has(`${l.symbol}|${l.loanDate}`)).map(l=>({symbol:l.symbol,short:true,loanDate:l.loanDate,orderId:null,quantity:l.quantity,heldQuantity:l.quantity,coveredQuantity:0,cause:'conditional-off',rejectedAt:new Date().toISOString(),outcome:COND_OFF_WORDS})):[];
+    const shortList=[...(condOff?offList:appList),...untied,...SS.unprotectedShorts({shorts:shorts.filter(l=>!appLots.has(`${l.symbol}|${l.loanDate}`)&&!untied.some(u=>u.symbol===l.symbol&&u.loanDate===l.loanDate)),rows,lapsed:o=>{try{return ['Canceled','Rejected','Expired'].includes(this.desk.sellStatus?.(o));}catch{return false;}}})];
     let heldCovers=[];try{heldCovers=this.desk.orders(scope).filter(o=>SS.isCover(o)&&!shortList.some(u=>u.symbol===o.symbol&&u.loanDate===o.credit.loanDate)).map(o=>[o,this.stopHeldNow(o),shorts.find(l=>l.symbol===o.symbol&&l.loanDate===o.credit.loanDate)]).filter(([,h,l])=>h&&l?.quantity>0);}catch{heldCovers=[];}
     const shortsOut=[...shortList,...heldCovers.map(([o,h,l])=>({symbol:o.symbol,short:true,loanDate:l.loanDate,orderId:o.id,quantity:Math.min(l.quantity,o.quantity),heldQuantity:l.quantity,coveredQuantity:0,held:true,waiting:h.why}))];
     const listed=this.desk.unprotected(scope,positions);const seen=new Set(listed.map(u=>u.symbol));

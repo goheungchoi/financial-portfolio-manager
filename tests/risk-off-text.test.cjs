@@ -20,7 +20,7 @@ test('the gauge itself is unchanged: regime, score and components for the same r
 test('versions and fingerprints moved: the review asks for a new Claude dry run once',()=>{
   assert.equal(RI.INSTRUCTIONS_VERSION,'review 2026-11-25.5');assert.equal(RI.ORDERS_VERSION,'review 2026-11-25.5 orders');assert.equal(RI.SCOUT_INSTRUCTIONS_VERSION,'scout 2026-11-25b');
   assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
-  assert.equal(RI.fingerprint(undefined,{short:true}),'748298e5b27c1087');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'cc58f9a9d4c59f9e');
+  assert.equal(RI.fingerprint(undefined,{short:true}),'5108190b5fb2a210');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'b28c18f472365dab');
 });
 test('the four other preference sentences are gone (the user\'s "Remove all four"); what stays reads cleanly; the proposed set had none of the four (its fingerprints are those of the .3 step, which changed its unknown-tax line)',()=>{
   const F=require('./fixtures/risk-off-text.cjs');

@@ -14,7 +14,7 @@ function engine({switchOn=false,appShort=true,place=null}={}){
   const d=new DatabaseSync(':memory:');const snapshot={...balance,accountKey:'acct'};const calls=[];
   const l=new LiveEngine(d,{request:async(op,payload)=>{calls.push([op,payload]);if(op==='prepare-order')return {ticket:'t',balance:snapshot};if(op==='place-order'){if(place)return place(payload);return {brokerOrderId:'9'};}throw new Error(op);}},()=>({status:'connected',snapshot}));
   l.exposure=new Exposure(d);l.configure({symbols:[],lossLimit:{mode:'off',value:0}},'ENABLE LIVE');l.exposure.savePolicy('acct',{short:{enabled:switchOn,auto:false}});
-  if(appShort)l.writeOrder({id:'S0',accountKey:'acct',symbol:'990010',side:'Sell',quantity:2,filled:2,status:'Filled',credit:{kind:'short',type:'22'},lotLoanDate:'2026-10-13',createdAt:1,expiresAt:1});
+  if(appShort)l.writeOrder({id:'S0',accountKey:'acct',symbol:'990010',side:'Sell',quantity:2,filled:2,status:'Filled',credit:{kind:'short',type:'22'},lotLoanDate:'2026-10-13',lotTie:{loanDate:'2026-10-13',at:1,how:'exact'},createdAt:1,expiresAt:1});
   return {l,calls};}
 const cover=(symbol,loanDate)=>({symbol,side:'Buy',quantity:1,limitPrice:symbol==='990010'?1000:2000,credit:{kind:'cover',loanDate}});
 test('switch off: a cover of a short opened in KIS is refused as in 1.5.74; the app\'s own short keeps its buy-back',()=>{
@@ -57,6 +57,7 @@ test('an unclear alternate: the order is Uncertain and keeps the first refusal a
 test('the engine sends the plan with the order, and the screen lines read saved values',()=>{
   const fs=require('fs'),path=require('path');const s=fs.readFileSync(path.join(__dirname,'..','src','ShortLeverage.tsx'),'utf8');
   assert.match(s,/Opening a short: sent \$\{data\.policy!\.short\.auto&&ps\.automatic\?'by itself':'after your approval'\}, within your cap\./,'the saved switch, not the form');
-  assert.match(s,/"Buying a short back: the app's cover stops and loan-end buy-backs are sent as your conditional-order switches decide\. You can always buy a short back in KIS's own app\."/);
+  // Stage 3: the conditional-order switches' state, from saved values (short-confirm coverStopsWords).
+  assert.match(s,/`Buying a short back: the app's cover stops and loan-end buy-backs are conditional orders\.\$\{coverStopsWords\(data\.coverStops\?\?null\)\?' '\+coverStopsWords\(data\.coverStops\?\?null\):''\} You can always buy a short back in KIS's own app\.`/);
   assert.doesNotMatch(s,/sent \$\{ps\.automatic\?'by themselves'/);
 });

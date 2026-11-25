@@ -9,7 +9,7 @@ const output=process.env.PORTFOLIO_REPORT_DIR??path.resolve('artifacts/short-pos
 const ACCOUNT='short-fixture';const now=Date.now();
 {const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(path.join(process.env.PORTFOLIO_SMOKE_DATA,'portfolio.sqlite'));
   db.exec('CREATE TABLE IF NOT EXISTS live_intents(id TEXT PRIMARY KEY,accountKey TEXT NOT NULL,payload TEXT NOT NULL)');
-  db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('fixture-short',ACCOUNT,JSON.stringify({id:'fixture-short',accountKey:ACCOUNT,market:'KR',environment:'mock',symbol:'990010',name:'Fixture short A',side:'Sell',quantity:10,filled:10,status:'Filled',createdAt:now-5*86400000,credit:{kind:'short',type:'22',loanDate:'2026-11-17'},lotLoanDate:'2026-11-17',madeBy:'review',reviewId:'fixture-review',limitPrice:1000}));db.close();}
+  db.prepare('INSERT INTO live_intents VALUES(?,?,?)').run('fixture-short',ACCOUNT,JSON.stringify({id:'fixture-short',accountKey:ACCOUNT,market:'KR',environment:'mock',symbol:'990010',name:'Fixture short A',side:'Sell',quantity:10,filled:10,status:'Filled',createdAt:now-5*86400000,credit:{kind:'short',type:'22',loanDate:'2026-11-17'},lotLoanDate:'2026-11-17',lotTie:{loanDate:'2026-11-17',at:1,how:'exact'},madeBy:'review',reviewId:'fixture-review',limitPrice:1000}));db.close();}
 const {KisService}=require('../electron/kis-service.cjs');
 const holdings=[{symbol:'990010',name:'Fixture short A',quantity:3,cost:900,price:1200,marketValue:3600,unrealized:900},{symbol:'990030',name:'Fixture holding C',quantity:20,cost:5000,price:5200,marketValue:104000,unrealized:4000}];
 const shorts=[{symbol:'990010',name:'Fixture short A',quantity:10,price:1200,entryPrice:1000,proceeds:10000,loanAmount:12000,loanDate:'2026-11-17',source:'distribution'},

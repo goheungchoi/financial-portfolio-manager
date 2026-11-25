@@ -2,7 +2,7 @@ import {toast} from './Toast';
 import {Note} from './Note';
 import {Card,Row,Switch,NumberField} from './SettingsUI';
 import {useEffect,useState} from 'react';
-import {shortConfirmLines} from './short-confirm.mjs';
+import {shortConfirmLines,coverStopsWords} from './short-confirm.mjs';
 type Section={enabled:boolean;auto:boolean;[key:string]:number|boolean|string|null};
 type Policy={leveragedEtps:Section;margin:Section;short:Section};
 type Position={symbol:string;name:string;factor:number;kind:string;value:number;heldDays:number|null;short:boolean};
@@ -11,10 +11,11 @@ type Short={symbol:string;quantity:number;entryPrice:number|null;price:number;ad
 type Credit={margin:{loanTotal:number;estimatedCollateralPct:number|null;loans:Loan[]};short:{positions:Short[]};warnings:string[]}|null;
 // What each credit path can do now (electron/credit-paths.cjs): the saved preference stays, this is what applies.
 type PathStatus={executable:boolean;automatic:boolean;reason?:string;label?:string};
-type Market={account:boolean;policy?:Policy;summary?:{equity:number;positions:Position[];leveragedPct:number|null;effectivePct:number|null};credit?:Credit;creditPaths?:Record<string,PathStatus>};
+type CoverStops={armed:boolean;whenHit:'sent'|'proposed'|null};
+type Market={account:boolean;policy?:Policy;summary?:{equity:number;positions:Position[];leveragedPct:number|null;effectivePct:number|null};credit?:Credit;creditPaths?:Record<string,PathStatus>;coverStops?:CoverStops};
 export type ExposureState={markets:{KR:Market;US:Market};overrides:{symbol:string;factor:number}[];kinds?:{symbol:string;singleStock:boolean}[];environment:string|null};
 export type ExposureReply={ok:boolean;error?:string;state:ExposureState};
-const ERRORS:Record<string,string>={KIS_NOT_CONNECTED:'Connect the KIS account first.',INVALID_SETTINGS:'Check the limits: percentages 1–100, days 1–365, buying back before the last day 1–20 whole business days.',INVALID_REQUEST:'Enter a valid symbol and a non-zero multiple between −5 and 5 (a single-stock setting takes a 6-digit Korean symbol).',FEATURE_UNAVAILABLE:'KIS does not offer margin or short selling for U.S. stocks.',CLAUDE_SHORTS_RUNNING:'Stop auto trading first: turning short selling on changes what Claude is sent, so Start asks one new dry run.'};
+const ERRORS:Record<string,string>={KIS_NOT_CONNECTED:'Connect the KIS account first.',INVALID_SETTINGS:'Check the limits: percentages 1–100, days 1–365, buying back before the last day 1–20 whole business days.',INVALID_REQUEST:'Enter a valid symbol and a non-zero multiple between −5 and 5 (a single-stock setting takes a 6-digit Korean symbol).',FEATURE_UNAVAILABLE:'KIS does not offer margin or short selling for U.S. stocks.',CLAUDE_SHORTS_RUNNING:'Nothing was saved. Stop auto trading first: turning short selling on changes what Claude is sent, so Start asks one new dry run.'};
 const pct=(n:number|null|undefined)=>n==null?'—':`${n>0?'+':''}${n.toFixed(1)}%`;
 const krw=(n:number|null|undefined)=>n==null?'—':new Intl.NumberFormat('ko-KR',{style:'currency',currency:'KRW',maximumFractionDigits:0}).format(n);
 const factorLabel=(f:number)=>f<0?`${Math.abs(f)}x inverse`:`${f}x`;
@@ -46,7 +47,7 @@ function MarketCard({name,market,data,busy,environment,onSave}:{name:string;mark
         // Shorts on (2026-11-25): what each path does once it can be sent.
         const plain=x.key==='short'?(!ps.executable?(k==='short'?'Opening a short: not available yet. The app cannot send a short until one real test on your account has confirmed how KIS handles it.':'Buying a short back: not available yet for the same reason; until then a cover the app proposes waits for your approval.')
           // Stage 1b: the saved switch (not the unsaved form), and covers as the conditional-order switches decide.
-          :k==='short'?`Opening a short: sent ${data.policy!.short.auto&&ps.automatic?'by itself':'after your approval'}, within your cap.`:"Buying a short back: the app's cover stops and loan-end buy-backs are sent as your conditional-order switches decide. You can always buy a short back in KIS's own app."):null;
+          :k==='short'?`Opening a short: sent ${data.policy!.short.auto&&ps.automatic?'by itself':'after your approval'}, within your cap.`:`Buying a short back: the app's cover stops and loan-end buy-backs are conditional orders.${coverStopsWords(data.coverStops??null)?' '+coverStopsWords(data.coverStops??null):''} You can always buy a short back in KIS's own app.`):null;
         if(plain&&ps.executable)return <p key={k} className="muted small-line" role="status">{plain}</p>;
         return plain?<p key={k} className="notice warning small-line" role="status">{plain}</p>:<p key={k} className="notice warning small-line" role="status"><b>{what}:</b> {!ps.executable?'Not available. ':''}{ps.label??(ps.automatic?'Automatic.':'')} {ps.reason?`Why: ${ps.reason}.`:''}</p>;})}
       <Row title={`Allow ${x.allow}`} hint={x.note}><Switch label={`${name} allow ${x.allow}`} checked={p.enabled} onChange={v=>set(x.key,'enabled',v)}/></Row>
@@ -60,7 +61,7 @@ function MarketCard({name,market,data,busy,environment,onSave}:{name:string;mark
       {x.key==='short'&&p.enabled&&<Row title="Trail the cover stop" hint={p.trailingStop?'The app\'s cover stop follows the low of confirmed prices and only moves down.':'Off: the cover stop stays at its level above the sale price.'}><Switch label={`${name} trail the cover stop`} checked={p.trailingStop===true} onChange={v=>set(x.key,'trailingStop',v)}/></Row>}
       {p.enabled&&x.fields.map(([key,label,kind,min,max,step])=>kind==='source'?<Row key={key} title={label}><select aria-label={`${name} ${label}`} value={p[key] as string} onChange={ev=>set(x.key,key,ev.target.value)}><option value="self">KIS own (자기)</option><option value="distribution">KSFC distribution (유통)</option></select></Row>:<Row key={key} title={label.replace(/ \((%|days|business days)\)$/,'')}><NumberField label={`${name} ${label}`} {...(key==='coverBeforeDays'?{integer:true,errorText:'Whole business days, 1–20'}:{})} min={min!} max={max!} step={step??0.1} unit={/business days/.test(label)?'business days':/days/.test(label)?'days':'%'} value={p[key] as number} onChange={v=>set(x.key,key,v)}/></Row>)}
     </div>;})}
-    {asking&&(()=>{const paths=data.creditPaths??{},lines=shortConfirmLines(draft.short,{pathsOpen:paths.short?.executable===true&&paths.cover?.executable===true,automatic:paths.short?.automatic===true});return <div className="notice" role="dialog" aria-label="Turn on short selling">
+    {asking&&(()=>{const paths=data.creditPaths??{},lines=shortConfirmLines(draft.short,{pathsOpen:paths.short?.executable===true&&paths.cover?.executable===true,automatic:paths.short?.automatic===true,coverStops:data.coverStops??null});return <div className="notice" role="dialog" aria-label="Turn on short selling">
       {lines.main.map((l,i)=><p key={i}>{i===0?<b>{l}</b>:l}</p>)}
       <details className="inline-help"><summary>More</summary>{lines.more.map((l,i)=><p key={i} className="muted">{l}</p>)}</details>
       <div className="actions"><button className="primary" disabled={busy} onClick={()=>{setAsking(false);save();}}>Turn on short selling</button><button disabled={busy} onClick={()=>setAsking(false)}>Cancel</button></div></div>;})()}

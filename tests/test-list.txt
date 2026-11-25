@@ -182,6 +182,9 @@ tests/short-rules.test.cjs
 tests/short-orders.test.cjs
 tests/shorts-on-1b.test.cjs
 tests/shorts-on-1c.test.cjs
+tests/shorts-on-2a.test.cjs
+tests/shorts-on-2b.test.cjs
+tests/shorts-on-3.test.cjs
 tests/short-propose.test.cjs
 tests/short-stops.test.cjs
 tests/short-loan.test.cjs

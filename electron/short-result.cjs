@@ -24,7 +24,7 @@ function shortResult(cover,orders){
   if(!isCover(cover)||!(cover.filled>0))return null;
   const loanDate=cover.credit.loanDate??null;if(!loanDate)return {gaps:['Credit lot identity unknown']};
   const sameLot=o=>o.accountKey===cover.accountKey&&o.symbol===cover.symbol&&o.filled>0;
-  const shorts=orders.filter(o=>isShort(o)&&sameLot(o)&&o.lotLoanDate===loanDate);
+  const shorts=orders.filter(o=>isShort(o)&&sameLot(o)&&(o.lotTie?.loanDate??o.lotLoanDate)===loanDate);// stage 2d: the recorded tie first
   if(!shorts.length)return {gaps:['Short-sale proceeds of the covered lot unavailable']};
   const covers=orders.filter(o=>isCover(o)&&sameLot(o)&&o.credit.loanDate===loanDate).sort((a,b)=>(a.createdAt??0)-(b.createdAt??0)||String(a.id).localeCompare(String(b.id)));
   const before=covers.slice(0,Math.max(0,covers.findIndex(o=>o.id===cover.id))).reduce((n,o)=>n+o.filled,0);

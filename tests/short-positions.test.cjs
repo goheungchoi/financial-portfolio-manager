@@ -9,7 +9,7 @@ const LOT=(symbol,loanDate,extra={})=>({symbol,name:`Fixture ${symbol}`,quantity
 function automation({shorts,orders=[],unprotected=[],stops={}}){return Object.assign(Object.create(Automation.prototype),{watchScope:()=>'s',shortBalance:()=>({shorts,known:true}),
   live:{orders:()=>orders,identity:()=>'acct',exposure:{policy:()=>({short:{maxDays:90}})}},unprotectedNow:()=>unprotected,desk:{recentRows:()=>{reads.n++;return Object.entries(stops).flatMap(([k,list])=>list.map(o=>({side:'Buy',purpose:'stop_loss',symbol:k.split('|')[0],credit:{kind:'cover',loanDate:k.split('|')[1]},...o})));}},closedDays:[],officialClosedDays:()=>[]});}
 const reads={n:0};
-const sold=(symbol,loanDate)=>({side:'Sell',credit:{kind:'short'},filled:10,symbol,lotLoanDate:loanDate});
+const sold=(symbol,loanDate)=>({side:'Sell',credit:{kind:'short'},filled:10,symbol,lotLoanDate:loanDate,lotTie:{loanDate,at:1,how:'exact'}});
 test('the rows: one per open lot, result so far = proceeds less buying back now, KIS\'s end and the days to it, and the stop by its state',()=>{
   const now=Date.parse('2026-11-24T03:00:00Z');
   const a=automation({shorts:[LOT('990010','2026-11-03'),LOT('990020','2026-11-04',{price:900}),LOT('990030','2026-11-05'),LOT('990040','2026-11-06'),LOT('990050','2026-11-07'),LOT('990060','2026-11-07',{quantity:0})],

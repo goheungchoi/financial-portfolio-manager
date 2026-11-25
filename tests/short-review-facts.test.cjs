@@ -33,11 +33,11 @@ test('shorts on: both paths open in the code; the switch alone decides whether t
 });
 test('the off pin: both fingerprints, versions and the text exactly as before; on: the short part after CREDIT, its own versions and fingerprints',()=>{
   assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
-  assert.equal(RI.fingerprint(undefined,{short:true}),'748298e5b27c1087');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'cc58f9a9d4c59f9e');
+  assert.equal(RI.fingerprint(undefined,{short:true}),'5108190b5fb2a210');assert.equal(RI.fingerprint(undefined,{orders:true,short:true}),'b28c18f472365dab');
   assert.deepEqual(RI.record(OFF),{version:'review 2026-11-25.5',fingerprint:'1004c642ceabd60d',parts:['extended','credit']});
-  assert.deepEqual(RI.record(ON),{version:'review 2026-11-25.5 short',fingerprint:'748298e5b27c1087',parts:['extended','credit','short']});
-  assert.deepEqual(RI.record({...ON,ordersPerReview:3}),{version:'review 2026-11-25.5 orders short',fingerprint:'cc58f9a9d4c59f9e',parts:['extended','credit','short','more-orders']});
-  assert.equal(RI.record(ON,'proposed').version,'proposed 2026-11-25.3 short');assert.equal(RI.record({...ON,ordersPerReview:2},'proposed').version,'proposed 2026-11-25.3 orders short');
+  assert.deepEqual(RI.record(ON),{version:'review 2026-11-25.5 short.4',fingerprint:'5108190b5fb2a210',parts:['extended','credit','short']});
+  assert.deepEqual(RI.record({...ON,ordersPerReview:3}),{version:'review 2026-11-25.5 orders short.4',fingerprint:'b28c18f472365dab',parts:['extended','credit','short','more-orders']});
+  assert.equal(RI.record(ON,'proposed').version,'proposed 2026-11-25.3 short.4');assert.equal(RI.record({...ON,ordersPerReview:2},'proposed').version,'proposed 2026-11-25.3 orders short.4');
   // No credit at all, or a U.S. context: no short part.
   assert.deepEqual(RI.partsFor({environment:'kis-us',universe:[],positions:{}}),['extended']);
   const off=RI.setReviewText(RI.partsFor(OFF)),on=RI.setReviewText(RI.partsFor(ON));
@@ -46,7 +46,9 @@ test('the off pin: both fingerprints, versions and the text exactly as before; o
   // Claude's two blocks: the short part with the other parts, the core unchanged.
   const blocks=RI.reviewBlocks(RI.partsFor(ON));assert.equal(blocks.core,RI.REVIEW_CORE);assert.ok(blocks.parts.endsWith(RI.SHORT_TEXT));
   // Facts only: the ruled wording.
-  for(const s of ['They are facts, not reasons to short.','Stocks listed on KOSPI or KOSDAQ only; an ETF short is refused for now.','KIS lends for 90 days with no extension. daysToRepay is the app\'s count from loanDate','the borrow fee is estimated at annualFeePct','KIS\'s own figure replaces it when known','productRisk.credit.short.automatic says whether a short you decide is sent by itself or proposed for approval','coverStop.state "unprotected" means no stop is working for that short, with the cause.','borrowable null means not read','shortfall is the cash the app holds back from its own buys','maxGrossPctOfEquity caps all shorts together','capUsedPct is the share they use now and capLeftPct what is left','Without the kind the order is refused.'])assert.ok(RI.SHORT_TEXT.includes(s.replace(/^Stocks/,'stocks')),s);
+  // Stage 3: "They are facts, not reasons to short." removed (the user's "Remove it").
+  assert.doesNotMatch(RI.SHORT_TEXT,/They are facts, not reasons to short/);
+  for(const s of ['Stocks listed on KOSPI or KOSDAQ only; an ETF short is refused for now.','KIS lends for 90 days with no extension. daysToRepay is the app\'s count from loanDate','the borrow fee is estimated at annualFeePct','KIS\'s own figure replaces it when known','productRisk.credit.short.automatic says whether a short you decide is sent by itself or proposed for approval','coverStop.state "unprotected" means no stop is working for that short, with the cause.','borrowable null means not read','shortfall is the cash the app holds back from its own buys','maxGrossPctOfEquity caps all shorts together','capUsedPct is the share they use now and capLeftPct what is left','Without the kind the order is refused.'])assert.ok(RI.SHORT_TEXT.includes(s.replace(/^Stocks/,'stocks')),s);
   assert.doesNotMatch(RI.SHORT_TEXT,/dividend|your buys|long plus short|must be covered within/i);
 });
 test('both providers\' decision schemas take the credit kinds the text names',()=>{
@@ -67,11 +69,11 @@ function harness(){require('./fixtures/order-book.cjs');const {Automation}=requi
 test('a Claude dry run counts only for the instructions in force: switching shorts on asks a new one, and Start is refused until then',()=>{
   const M=require('../electron/ai-models.cjs');M.setClaudeTradingForTests(true);try{const a=harness();let shorts=false;a.shortFactsInForce=()=>shorts;
     const use=fp=>{a.completedClaudeDryRun=()=>record(fp);return a.claudeTradingDryRun();};
-    assert.ok(use('1004c642ceabd60d'));assert.ok(use('ed412ea0edf116a2'));assert.equal(use('748298e5b27c1087'),null,'off: a short dry run does not count');
+    assert.ok(use('1004c642ceabd60d'));assert.ok(use('ed412ea0edf116a2'));assert.equal(use('5108190b5fb2a210'),null,'off: a short dry run does not count');
     shorts=true;assert.equal(use('1004c642ceabd60d'),null,'shorts on: the off dry run no longer counts');assert.equal(use('ed412ea0edf116a2'),null);
-    assert.ok(use('748298e5b27c1087'));assert.ok(use('cc58f9a9d4c59f9e'));
+    assert.ok(use('5108190b5fb2a210'));assert.ok(use('b28c18f472365dab'));
     a.completedClaudeDryRun=()=>record('ed412ea0edf116a2');assert.throws(()=>a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true,enabled:true}),/CLAUDE_TRADING_DRY_RUN/,'Start is refused');
-    a.completedClaudeDryRun=()=>record('cc58f9a9d4c59f9e');a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'with a dry run under the short text: Start goes through');
+    a.completedClaudeDryRun=()=>record('b28c18f472365dab');a.configure({openaiModel:'claude-opus-5-5',claudeTradingConfirmed:true});a.configure({enabled:true,autoSubmit:true});assert.equal(a.config.enabled,true,'with a dry run under the short text: Start goes through');
   }finally{M.setClaudeTradingForTests(false);}
 });
 // The context fields, from readings already held (no KIS read for the context).
@@ -154,10 +156,10 @@ test('the dry-run gate follows the instructions the scope\'s context gets: Korea
     const contexts={kis:open=>({environment:'kis',universe:[],positions:{},productRisk:kr(open)}),both:open=>({environment:'kis-combined',universe:[],positions:{},markets:[{market:'KR',productRisk:kr(open)},{market:'US'}]}),
       us:()=>({environment:'kis',market:'US',universe:[],positions:{}}),paper:()=>({environment:'local-paper',universe:[],positions:{}})};
     for(const scope of ['kis','both','us','paper'])for(const inForce of [false,true]){const a=harness();a.configure({scope});a.shortFactsInForce=()=>inForce;
-      const want=RI.record(contexts[scope](inForce)).fingerprint,other=want==='1004c642ceabd60d'?'748298e5b27c1087':'1004c642ceabd60d';
+      const want=RI.record(contexts[scope](inForce)).fingerprint,other=want==='1004c642ceabd60d'?'5108190b5fb2a210':'1004c642ceabd60d';
       a.completedClaudeDryRun=()=>record(want);assert.ok(a.claudeTradingDryRun(),`${scope}, in force ${inForce}: the dry run under the context's own text counts`);
       a.completedClaudeDryRun=()=>record(other);assert.equal(a.claudeTradingDryRun(),null,`${scope}, in force ${inForce}: another text does not`);
-      assert.equal(want,inForce&&['kis','both'].includes(scope)?'748298e5b27c1087':'1004c642ceabd60d',`${scope} ${inForce}`);}
+      assert.equal(want,inForce&&['kis','both'].includes(scope)?'5108190b5fb2a210':'1004c642ceabd60d',`${scope} ${inForce}`);}
   }finally{M.setClaudeTradingForTests(false);}
 });
 test('the review step itself: a Korean review\'s context carries each short\'s coverStop while the facts are in force, and none otherwise',async()=>{

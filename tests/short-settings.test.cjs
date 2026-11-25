@@ -9,7 +9,7 @@ const ROOT=path.join(__dirname,'..');
 test('the confirmation\'s words: three short lines from the settings, a fourth while a short cannot be sent, the rest under More',async()=>{
   const {shortConfirmLines}=await import('../src/short-confirm.mjs');const short={maxGrossPctOfEquity:20,stopLossPct:15,maxDays:90,auto:false};
   const closed=shortConfirmLines(short);assert.deepEqual(closed.main,['Turn on short selling? The app may then sell borrowed shares and buy them back later. A short loses when the price rises, and its loss has no limit.',
-    'All shorts together stay within 20% of the account value. Each gets a stop 15% above its sale price, and is bought back before its 90-day loan ends.',
+    'All shorts together stay within 20% of the account value. Each gets a stop 15% above its sale price, and is bought back before its 90-day loan ends; both are conditional orders.',
     "While the app is closed, or after Stop everything, a short has no stop: only KIS's own forced buy-back protects it.",
     'The app cannot send a short yet. That is switched on by a later update, after one real test on your account.']);
   assert.equal(closed.more.length,5);for(const w of [/uptick rule/,/KRX only.*ETF short is refused for now/,/estimate until KIS reports it/,/holds the difference back/,/ban list or your KIS loan limit/])assert.ok(closed.more.some(l=>w.test(l)),String(w));
@@ -17,6 +17,12 @@ test('the confirmation\'s words: three short lines from the settings, a fourth w
   assert.equal(shortConfirmLines({...short,auto:true},{pathsOpen:true,automatic:true}).main[3],'A short the AI decides is sent by itself.');
   assert.equal(shortConfirmLines({...short,auto:true},{pathsOpen:true,automatic:false}).main[3],'A short the AI decides is proposed and waits for your approval.','the setting alone does not send it');
   assert.match(shortConfirmLines({...short,maxGrossPctOfEquity:10,stopLossPct:8,maxDays:60}).main[1],/within 10% .* 8% above .* its 60-day loan/);
+  // Shorts on, stage 3: what the saved conditional-order switches make the stop and the loan-end buy-back now.
+  const at=c=>shortConfirmLines(short,{pathsOpen:true,coverStops:c}).main[2];
+  assert.equal(at({armed:false,whenHit:null}),'Conditional orders are off now, so a short will have no stop and no loan-end buy-back until you turn them on in Engine settings.');
+  assert.equal(at({armed:true,whenHit:'sent'}),'Conditional orders are on now, and a stop or buy-back that is hit is sent by itself.');
+  assert.equal(at({armed:true,whenHit:'proposed'}),'Conditional orders are on now, but a stop or buy-back that is hit is only proposed and waits for your approval.');
+  assert.equal(shortConfirmLines(short,{pathsOpen:true}).main.length,4,'not known: no line');
 });
 test('the settings: "buy back before the last day" is a whole number of business days from 1 to 20; the trailing stop is on or off',()=>{
   const {Exposure}=require('../electron/exposure.cjs');const e=new Exposure(new DatabaseSync(':memory:'));
@@ -43,7 +49,7 @@ test('the Short & leverage card: the two controls, the stop\'s label, and the co
   // (stage 1b: the saved switch, and covers as the conditional-order switches decide; pinned in shorts-on-1b)
   assert.match(s,/k==='short'\?`Opening a short: sent \$\{data\.policy!\.short\.auto&&ps\.automatic\?'by itself':'after your approval'\}, within your cap\.`/);
   const CP=require('../electron/credit-paths.cjs');assert.equal(CP.pathStatus('short',{shortsOn:true}).executable,true);assert.equal(CP.pathStatus('cover',{shortsOn:true}).executable,true);
-  assert.match(s,/shortConfirmLines\(draft\.short,\{pathsOpen:paths\.short\?\.executable===true&&paths\.cover\?\.executable===true,automatic:paths\.short\?\.automatic===true\}\)/);
+  assert.match(s,/shortConfirmLines\(draft\.short,\{pathsOpen:paths\.short\?\.executable===true&&paths\.cover\?\.executable===true,automatic:paths\.short\?\.automatic===true,coverStops:data\.coverStops\?\?null\}\)/);
   assert.match(s,/role="dialog" aria-label="Turn on short selling"/);
 });
 test('Stop everything names open shorts; with none, its reply is as before',()=>{

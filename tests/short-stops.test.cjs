@@ -25,10 +25,10 @@ test('unprotected shorts: the last cover stop rejected or lapsed and not replace
 });
 function app({shorts=[LOT],orders=[],extra={}}={}){const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');const events=[];
   const a=new Automation(db,new PaperEngine(db,[{symbol:'990010',name:'F',price:1000}],()=>[]),{request:async()=>({})},(id,k,title,body)=>events.push({title,body}));
-  const live={market:'KR',enabled:true,autoEnabled:true,severalOpen:false,identity:()=>'acct',riskBalance:{shorts,holdings:[]},getConnection:()=>({snapshot:{accountKey:'acct',environment:'mock',shorts,holdings:[]}}),orders:()=>orders,policy:()=>({day:'d'}),exposure:{policy:()=>({short:{stopLossPct:15}})},getState:()=>({}),...extra};
+  const live={market:'KR',enabled:true,autoEnabled:true,severalOpen:false,identity:()=>'acct',riskBalance:{shorts,holdings:[]},getConnection:()=>({snapshot:{accountKey:'acct',environment:'mock',shorts,holdings:[]}}),orders:()=>orders,policy:()=>({day:'d'}),exposure:{policy:()=>({short:{enabled:true,stopLossPct:15}})},getState:()=>({}),...extra};
   a.live=live;a.usLive=null;a.configure({scope:'kis',conditionalOrders:true});a.marketQuotes=()=>[{symbol:'990010',price:1000,timestamp:Date.now()}];return {a,live,events};}
 test('the app arms a cover stop when its short has filled and its lot shows; once; reduced and closed with the lot',()=>{
-  const short={id:'S1',symbol:'990010',side:'Sell',credit:{kind:'short'},status:'Filled',filled:5,fillPrice:1000,lotLoanDate:'2026-10-09'};const {a,live,events}=app({orders:[short]});
+  const short={id:'S1',symbol:'990010',side:'Sell',credit:{kind:'short'},status:'Filled',filled:5,fillPrice:1000,lotLoanDate:'2026-10-09',lotTie:{loanDate:'2026-10-09',at:1,how:'exact'}};const {a,live,events}=app({orders:[short]});
   a.syncShortStops();let stops=a.desk.orders(a.watchScope());assert.equal(stops.length,1);
   assert.deepEqual({side:stops[0].side,quantity:stops[0].quantity,purpose:stops[0].purpose,credit:stops[0].credit,condition:stops[0].conditions[0]},{side:'Buy',quantity:5,purpose:'stop_loss',credit:{kind:'cover',loanDate:'2026-10-09',source:'distribution',account:'acct'},condition:{expr:'price("990010")',op:'>=',value:1150}});
   assert.ok(events.some(e=>e.title==='Cover stop armed'&&/at 1150\./.test(e.body)));a.syncShortStops();assert.equal(a.desk.orders(a.watchScope()).length,1,'once');
@@ -54,7 +54,7 @@ test('the cover stop under orders-while-stopped: watched while stopped, a closin
   a.watchStopped.stopEverything();assert.equal(a.conditionalMonitoringActive(),false,'Stop everything halts it');assert.deepEqual(a.watchedSymbols('KR'),[]);
 });
 // B3d-2 review.
-const SHORT_ORDER={id:'S1',symbol:'990010',side:'Sell',credit:{kind:'short'},status:'Filled',filled:5,fillPrice:1000,lotLoanDate:'2026-10-09'};
+const SHORT_ORDER={id:'S1',symbol:'990010',side:'Sell',credit:{kind:'short'},status:'Filled',filled:5,fillPrice:1000,lotLoanDate:'2026-10-09',lotTie:{loanDate:'2026-10-09',at:1,how:'exact'}};
 test('review 1: a rejected cover stop is not re-armed by the app; the short is listed as unprotected; an expired one is re-armed',()=>{
   const {a}=app({orders:[SHORT_ORDER]});a.syncShortStops();const [stop]=a.desk.orders(a.watchScope());a.desk.update(stop,{status:'rejected',outcome:'refused (fixture)',closedAt:Date.now()});
   a.syncShortStops();a.syncShortStops();assert.equal(a.desk.orders(a.watchScope()).length,0,'not re-armed');assert.equal(a.desk.rows('conditional_orders',a.watchScope()).length,1,'one row');

@@ -2,7 +2,7 @@
 // that); an unfilled short at the close and the next morning. Fake engines; made-up codes, prices, quantities and dates.
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');
 const LOT={symbol:'990010',quantity:5,loanDate:'2026-07-01',entryPrice:1000,source:'distribution'};
-const SHORT={id:'S1',symbol:'990010',side:'Sell',credit:{kind:'short'},status:'Filled',filled:5,fillPrice:1000,lotLoanDate:'2026-07-01'};
+const SHORT={id:'S1',symbol:'990010',side:'Sell',credit:{kind:'short'},status:'Filled',filled:5,fillPrice:1000,lotLoanDate:'2026-07-01',lotTie:{loanDate:'2026-07-01',at:1,how:'exact'}};
 function app({shorts=[LOT],orders=[SHORT],policy={},db=new DatabaseSync(':memory:')}={}){const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const events=[];
   const a=new Automation(db,new PaperEngine(db,[{symbol:'990010',name:'F',price:1000}],()=>[]),{request:async()=>({})},(id,k,title,body)=>events.push({title,body}));
   a.live={market:'KR',identity:()=>'acct',riskBalance:{shorts,holdings:[]},getConnection:()=>({snapshot:{accountKey:'acct',environment:'mock'}}),orders:()=>orders,policy:()=>({day:'d'}),exposure:{policy:()=>({short:{enabled:true,stopLossPct:15,maxDays:90,coverBeforeDays:5,...policy}})},getState:()=>({})};
@@ -74,7 +74,10 @@ test('run: a partly filled short at the close and an auction short that never fi
   const R=require('../electron/short-rules.cjs');assert.deepEqual(R.laggingShorts(e.orders(),{timestamp:new Date().toISOString(),shorts:[]}).map(x=>x.notional),[1001],'its filled share counts until the balance shows it');
   assert.deepEqual(R.laggingShorts(e.orders(),{timestamp:new Date().toISOString(),shorts:[{symbol:'990010',quantity:1}]}),[],'then the balance carries it');
   // The filled share is a lot with its stop.
-  const w=app({shorts:[{symbol:'990010',quantity:1,loanDate:'2026-10-12',entryPrice:1001}],orders:[{...next,filled:1}]});w.a.syncShortStops();assert.deepEqual(w.a.desk.orders(w.a.watchScope()).filter(o=>o.purpose==='stop_loss').map(o=>[o.quantity,o.conditions[0].value]),[[1,1152]]);
+  // Stage 2c: the next balance reading ties it to its lot (the engine's tieShorts, recorded on the order).
+  const lot12={symbol:'990010',quantity:1,loanDate:'2026-10-12',entryPrice:1001};const seen={...next,filled:1,filledObservedAt:Date.now()-1000};
+  const [tie]=require('../electron/short-stops.cjs').tieShorts({orders:[seen],balance:{timestamp:new Date().toISOString(),shorts:[lot12]}});assert.deepEqual(tie.set.lotTie.loanDate,'2026-10-12');
+  const w=app({shorts:[lot12],orders:[{...seen,...tie.set}]});w.a.syncShortStops();assert.deepEqual(w.a.desk.orders(w.a.watchScope()).filter(o=>o.purpose==='stop_loss').map(o=>[o.quantity,o.conditions[0].value]),[[1,1152]]);
   // An auction short that never fills: nothing filled and nothing open at the end of the day.
   const auction={...order,id:'S4',brokerOrderId:'0000557',session:'auction'};e.writeOrder(auction);const gone=e.applyHistory(auction,[{orderId:'0000557',originalOrderId:null,symbol:'990010',side:'Sell',quantity:3,filled:0,remaining:0,orderPrice:1001,status:'Canceled',timestamp:Date.now()}]);
   assert.deepEqual([gone.status,gone.filled],['Canceled',0]);e.writeOrder(gone);assert.deepEqual(e.openShortOrders(),[]);assert.deepEqual(R.laggingShorts(e.orders().filter(o=>o.id==='S4'),{timestamp:new Date().toISOString(),shorts:[]}),[]);

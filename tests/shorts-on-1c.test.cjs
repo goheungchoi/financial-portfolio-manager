@@ -33,28 +33,32 @@ function engine({switchOn=false,order={},lot={symbol:'990010',quantity:5,loanDat
   const l=new LiveEngine(d,{request:async(op)=>{if(op==='prepare-order')return {ticket:'t',balance:snapshot};if(op==='place-order')return {brokerOrderId:'9'};throw new Error(op);}},()=>({status:'connected',snapshot}));
   l.exposure=new Exposure(d);l.configure({symbols:[],lossLimit:{mode:'off',value:0}},'ENABLE LIVE');l.exposure.savePolicy('acct',{short:{enabled:switchOn,auto:false}});l.closedKrDays=()=>[];
   l.writeOrder({id:'S0',accountKey:'acct',symbol:'990010',side:'Sell',quantity:1,filled:1,status:'Filled',credit:{kind:'short',type:'22'},createdAt:1,expiresAt:1,fillPrice:1000,filledObservedAt:Date.now(),...order});
+  l.observeBalance(snapshot);// stage 2c: the reading that ties it (recorded on the order)
   return {l,snapshot};}
 test('3: the app\'s short is tied to its lot by either date or its counterpart; with the switch off its buy-back is limited to what it sold',()=>{
   // The order row's date two business days before the balance's (trade day against settlement day).
   for(const order of [{lotLoanDate:'2026-10-09'},{loanDateSent:{date:'2026-10-09',form:'trade-day',alternate:false}},{credit:{kind:'short',type:'22',send:{first:{form:'trade-day',date:'2026-10-09'},alternate:null}}},{lotLoanDate:'2026-10-13'}]){
-    const {l}=engine({order});assert.deepEqual([...l.appLots().lots],[['990010|2026-10-13',{quantity:1,fillPrice:1000}]],JSON.stringify(order));assert.equal(l.holdsAppShort(),true);}
+    const {l}=engine({order});assert.deepEqual([...l.appLots().lots],[['990010|2026-10-13',{quantity:1,open:0,fillPrice:1000}]],JSON.stringify(order));assert.equal(l.holdsAppShort(),true);}
   // Switch off: the cover of what the app sold goes; the hand-opened rest of the lot does not.
   const {l}=engine({order:{lotLoanDate:'2026-10-09'}});const cover=q=>({symbol:'990010',side:'Buy',quantity:q,limitPrice:1000,credit:{kind:'cover',loanDate:'2026-10-13'}});
   assert.throws(()=>l.propose(cover(5)),e=>e.message==='EXCEEDS_LOT'&&/only the 1 shares it sold/.test(e.detail));assert.equal(l.propose(cover(1)).status,'Ready');
   const on=engine({switchOn:true,order:{lotLoanDate:'2026-10-09'}}).l;assert.equal(on.appCoverLimit({kind:'cover',loanDate:'2026-10-13'},'990010'),null,'switch on: no limit');assert.equal(on.propose(cover(5)).status,'Ready');
   // A date that ties to nothing: unmatched once a balance read after the fill shows no lot it ties to.
-  const far=SS.appLots({orders:[{id:'S9',side:'Sell',symbol:'990010',filled:1,credit:{kind:'short'},lotLoanDate:'2026-09-01',filledObservedAt:1000}],balance:{timestamp:new Date(2000).toISOString(),shorts:[{symbol:'990010',quantity:5,loanDate:'2026-10-13'}]}});
-  assert.equal(far.lots.size,0);assert.deepEqual(far.unmatched,[{symbol:'990010',orderId:'S9'}]);
+  const farOrder={id:'S9',side:'Sell',symbol:'990010',filled:1,credit:{kind:'short'},lotLoanDate:'2026-09-01',filledObservedAt:1000},farBal={timestamp:new Date(2000).toISOString(),shorts:[{symbol:'990010',quantity:5,loanDate:'2026-10-13'}]};
+  assert.deepEqual(SS.tieShorts({orders:[farOrder],balance:farBal}),[],'no candidate: no tie');
+  const far=SS.appLots({orders:[farOrder],balance:farBal});
+  assert.equal(far.lots.size,0);assert.deepEqual(far.unmatched,[{symbol:'990010',orderId:'S9'}]);assert.deepEqual(far.leftovers,[{symbol:'990010',loanDate:'2026-10-13'}]);
   assert.deepEqual(SS.appLots({orders:[{id:'S9',side:'Sell',symbol:'990010',filled:1,credit:{kind:'short'},lotLoanDate:'2026-09-01',filledObservedAt:3000}],balance:{timestamp:new Date(2000).toISOString(),shorts:[]}}).unmatched,[],'a balance read before the fill: not yet');
 });
 test('3: the cover stop is armed for a lot tied by its counterpart; a lot that cannot be tied is listed with the KIS-app words',()=>{
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'990010',name:'F',price:1000}],()=>[]),{request:async()=>({})},()=>{});a.configure({scope:'kis',conditionalOrders:true});
   const shorts=[{symbol:'990010',quantity:5,loanDate:'2026-10-13',source:'distribution',entryPrice:1000,price:1000}];let orders=[{id:'S0',side:'Sell',symbol:'990010',filled:5,quantity:5,status:'Filled',credit:{kind:'short'},lotLoanDate:'2026-10-09',fillPrice:1000,filledObservedAt:1}];
-  a.live={market:'KR',identity:()=>'acct',orders:()=>orders,riskBalance:{shorts,timestamp:new Date(Date.now()+60000).toISOString(),holdings:[]},exposure:{policy:()=>({short:{stopLossPct:15,maxDays:90,coverBeforeDays:5}})},getState:()=>({})};
+  const riskBalance={shorts,timestamp:new Date(Date.now()+60000).toISOString(),holdings:[]};const [tie]=SS.tieShorts({orders,balance:riskBalance});assert.equal(tie.set.lotTie.how,'counterpart');orders=[{...orders[0],...tie.set}];
+  a.live={market:'KR',identity:()=>'acct',orders:()=>orders,riskBalance,exposure:{policy:()=>({short:{enabled:true,stopLossPct:15,maxDays:90,coverBeforeDays:5}})},getState:()=>({})};
   a.syncShortStops(a.watchScope());const armed=a.desk.orders(a.watchScope());assert.equal(armed.length,1,'armed for the counterpart lot');assert.equal(armed[0].credit.loanDate,'2026-10-13');
   // The order's date ties to nothing in the balance: listed, never silent.
-  orders=[{...orders[0],lotLoanDate:'2026-09-01'}];a.desk.update(armed[0],{status:'cancelled',closedBy:'app',closedAt:Date.now()});a.brokerPositions=()=>({});
+  {const {lotTie:_,...rest}=orders[0];orders=[{...rest,lotLoanDate:'2026-09-01'}];}a.desk.update(armed[0],{status:'cancelled',closedBy:'app',closedAt:Date.now()});a.brokerPositions=()=>({});a.appLotsCache=null;
   const u=a.unprotectedNow(a.watchScope()).filter(x=>x.short);assert.equal(u.length,1);assert.equal(u[0].cause,'unmatched');assert.match(u[0].outcome,/cannot tie it to this lot's loan date, so it has no cover stop; buy it back in KIS's own app/);
 });
 test('4: turning short selling on while auto trading runs on Claude is refused; turning it off never is, and the dry run without shorts counts again',()=>{
@@ -69,7 +73,7 @@ test('4: turning short selling on while auto trading runs on Claude is refused; 
   const b=Object.create(Automation.prototype);b.config={scope:'kis'};b.live={creditApproved:()=>false};b.completedClaudeDryRun=()=>({instructions:{fingerprint:'1004c642ceabd60d'}});
   b.shortsEnabled=()=>true;assert.equal(b.claudeTradingDryRun(),null,'on: one new dry run');b.shortsEnabled=()=>false;assert.ok(b.claudeTradingDryRun(),'off again: the earlier dry run counts');
   const fs=require('fs'),path=require('path');const main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(main,/const refused=automation\.shortsSwitchRefusal\(\{was:exposure\.policy\(account\)\.short\.enabled===true,next:value\.short\.enabled===true\}\);if\(refused\)throw new Error\(refused\);/);
-  assert.match(fs.readFileSync(path.join(__dirname,'..','src','ShortLeverage.tsx'),'utf8'),/CLAUDE_SHORTS_RUNNING:'Stop auto trading first: turning short selling on changes what Claude is sent, so Start asks one new dry run\.'/);
+  assert.match(fs.readFileSync(path.join(__dirname,'..','src','ShortLeverage.tsx'),'utf8'),/CLAUDE_SHORTS_RUNNING:'Nothing was saved. Stop auto trading first: turning short selling on changes what Claude is sent, so Start asks one new dry run\.'/);
 });
 test('small: the pending count lapses after 10 days, counts different orders only, reads strictly; a null row gives defaults; real dates never throw',()=>{
   let now=0;const db=new DatabaseSync(':memory:');const f=new LD.LoanDateForms(db,()=>now);

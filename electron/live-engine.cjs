@@ -37,7 +37,8 @@ class LiveEngine {
   orders(){let key;try{key=this.identity();}catch{return [];}return this.db.prepare('SELECT payload FROM live_intents WHERE accountKey=? ORDER BY rowid DESC').all(key).map(row=>JSON.parse(row.payload));}
   // The order and its funding commitment (electron/funding-ledger.cjs) are written in one transaction.
   save(order){this.db.exec('SAVEPOINT order_save');try{this.writeOrder(order);this.funding?.track(order);this.db.exec('RELEASE order_save');}catch(error){this.db.exec('ROLLBACK TO order_save');this.db.exec('RELEASE order_save');throw error;}}
-  writeOrder(order){this.db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,order.accountKey,JSON.stringify(order));}
+  // ordersVersion: bumped on every write, so a reader's cache of the app's lots (automation appLotsNow) is never older.
+  writeOrder(order){this.ordersVersion=(this.ordersVersion??0)+1;this.db.prepare('INSERT INTO live_intents VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(order.id,order.accountKey,JSON.stringify(order));}
   configure(value,confirmation) {
     if(this.busy)throw new Error('KIS_ORDER_BUSY');
     const connection=this.getConnection();const key=this.identity();
@@ -93,7 +94,7 @@ class LiveEngine {
   // no risk balance; the last consistent reading stays in use.
   // S3a (G2): nor does a U.S. reading the settlement hold marks (main.cjs useUs): settlementHeld (the last consistent
   // reading standing in for one KIS is moving a settlement in) or settlementProvisional (used after the hold's bound).
-  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;if(snapshot.settlementCheck?.overnight||snapshot.settlementHeld||snapshot.settlementProvisional)return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;const policy=this.policy();if(!policy)return;const today=this.day(),key=this.identity();
+  observeBalance(snapshot){if(snapshot.accountKey!==this.identity())return;if(snapshot.settlementCheck?.overnight||snapshot.settlementHeld||snapshot.settlementProvisional)return;this.annotateBalance?.(snapshot);this.riskBalance=snapshot;if(this.market==='KR')this.tieShorts(snapshot);const policy=this.policy();if(!policy)return;const today=this.day(),key=this.identity();
     const write=next=>this.db.prepare('UPDATE live_policy SET payload=? WHERE accountKey=?').run(JSON.stringify(next),key);
     const {baselineSnapshot:_s,baselinePending:pending,baselineLate:_l,...carried}=policy;
     if(policy.day!==today||!Number.isFinite(policy.baseline)){const basis=this.basisFrom(snapshot,policy.day===today?pending??{since:Date.now(),reason:'the day\'s opening value was not recorded'}:null);
@@ -175,7 +176,7 @@ class LiveEngine {
       if(order.status!=='Ready')return order;
       // The same contract checks again at submission: a path not confirmed now is never sent, approval or not.
       if(order.credit&&!require('./credit-paths.cjs').pathStatus(order.credit.kind,{shortsOn:this.shortsOnFor(order.credit,order.symbol)}).executable)throw new Error('CREDIT_PATH_UNVERIFIED');
-      {const lim=this.appCoverLimit(order.credit,order.symbol);if(lim!=null&&order.quantity>lim)throw new Error('EXCEEDS_LOT');}
+      {const lim=this.appCoverLimit(order.credit,order.symbol,{exclude:order.id});if(lim!=null&&order.quantity>lim)throw new Error('EXCEEDS_LOT');}
       const environment=this.getConnection().snapshot.environment;
       if(confirmation!==(environment==='live'?'PLACE LIVE ORDER':'PLACE MOCK ORDER'))throw new Error('APPROVAL_REQUIRED');
       if(!this.admits(order)||Date.now()>order.expiresAt)throw new Error('DISABLED_OR_EXPIRED');
@@ -220,7 +221,7 @@ class LiveEngine {
       if(prepared.shortCash)order={...order,shortOrderableCash:Number.isFinite(prepared.shortCash.orderableCash)?prepared.shortCash.orderableCash:null,shortCashFact:Number.isFinite(prepared.shortCash.orderableCash)?`a short is open; KIS's orderable cash is ${prepared.shortCash.orderableCash.toLocaleString('en-US')}`:'a short is open; KIS\'s orderable cash could not be read'};
       // B3c: the lot as read now, so a fill is released only once a later balance shows it (short-rules balanceShows).
       if(order.credit?.kind==='cover'){const l=prepared.balance.shorts?.find(s=>s.symbol===order.symbol&&s.loanDate===order.credit.loanDate);order={...order,lotAtSend:Number.isFinite(l?.quantity)?l.quantity:null,lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};}
-      else if(order.credit?.kind==='short')order={...order,lotAtSend:require('./short-rules.cjs').shortQuantity(prepared.balance,order.symbol),lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};
+      else if(order.credit?.kind==='short')order={...order,shortLotsAtSend:Object.fromEntries((prepared.balance.shorts??[]).filter(s=>s.symbol===order.symbol&&Number.isFinite(s.quantity)).map(s=>[s.loanDate,s.quantity])),lotAtSend:require('./short-rules.cjs').shortQuantity(prepared.balance,order.symbol),lotAtSendAt:Date.parse(prepared.balance.timestamp??'')||Date.now()};
       if(prepared.balance.accountKey!==order.accountKey)throw new Error('ACCOUNT_CHANGED');
       // M-1.4: the other open orders (the app's, and yours in KIS from this preparation) every limit counts with this one;
       // none with the switch off.
@@ -245,10 +246,10 @@ class LiveEngine {
       this.observeBalance(this.acceptReading?this.acceptReading(prepared.balance):prepared.balance);
       policy=this.policy();
       if(policy.day!==this.day())throw new Error('DAILY_SESSION_SETUP_REQUIRED');
-      if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate,pending});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
+      if(order.credit){if(prepared.balance.environment!=='live')throw new Error('FEATURE_UNAVAILABLE');const again=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:prepared.balance.reportedTotal,balance:prepared.balance,loanDate:order.credit.loanDate,pending,...(order.credit.kind==='short'?this.shortCapInputs(prepared.balance,{exclude:order.id,prepared,pending}):{})});if(again.type!==order.credit.type)throw new Error('LIMIT_CHANGED');}
       // The product and credit rules as they are now (1.5.48 review, R2): an approval they require now holds an automatic
       // submission, whatever the proposal recorded. Checked here and again after the funds are admitted.
-      const approvalNow=()=>this.approvalNow(order,prepared.balance,accountBase,pending);
+      const approvalNow=()=>this.approvalNow(order,prepared.balance,accountBase,pending,prepared);
       if(automatic){const why=approvalNow();if(why)this.holdForApproval(order,why);}else approvalNow();
       // Company share: held, plus the unfilled shares of the stock's other open buys (the balance was read after the app's
       // last fill count, so a fill not yet counted is in both: over, never under), plus this order.
@@ -316,8 +317,17 @@ class LiveEngine {
   noteLoanDate(order){const s=order.loanDateSent;if(!s?.form||!['short','cover'].includes(order.credit?.kind))return;let r={changed:false,count:0};try{r=this.loanForms?.accepted?.(order.credit.kind,s.form,{alternate:s.alternate===true,orderId:order.id})??r;}catch{}
     if(s.alternate===true){try{this.onLoanDateLearned?.(order,r);}catch{}}}
   // Shorts on, stage 1c: the app's own short lots in a balance (default: the engine's), short-stops appLots.
-  appLots(balance=null){let bal=balance;try{bal=bal??this.riskBalance??this.getConnection().snapshot;}catch{bal=null;}let orders=[];try{orders=this.orders();}catch{orders=[];}
-    let closed=new Set();try{closed=new Set(this.closedKrDays?.()??[]);}catch{}const isOpen=d=>closed.has(d)?false:null;return require('./short-stops.cjs').appLots({orders,balance:bal,isOpen});}
+  // Stage 2c: from the ties recorded on the app's short orders (short-stops tieShorts, written at each reading).
+  appLots(balance=null,{exclude=null}={}){let bal=balance;try{bal=bal??this.riskBalance??this.getConnection().snapshot;}catch{bal=null;}let orders=[];try{orders=this.orders();}catch{orders=[];}
+    return require('./short-stops.cjs').appLots({orders,balance:bal,exclude});}
+  // Each Korean balance reading: the app's shorts tied to their lots once, ties closed when the lot leaves (tieShorts).
+  tieShorts(balance){let orders=[];try{orders=this.orders();}catch{return;}let closed=new Set();try{closed=new Set(this.closedKrDays?.()??[]);}catch{}const isOpen=d=>closed.has(d)?false:null;
+    let changes=[];try{changes=require('./short-stops.cjs').tieShorts({orders,balance,isOpen});}catch{return;}
+    for(const c of changes){const o=orders.find(x=>x.id===c.id);if(o){const next={...o,...c.set};if(next.lotTieAmbiguous===null)delete next.lotTieAmbiguous;this.writeOrder(next);
+      // Stage 2d: a tie closed 'gone' is said once in Activity (onShortGone); Home lists it until dismissed.
+      if(next.lotTie?.closed?.reason==='gone'&&o.lotTie?.closed?.reason!=='gone')try{this.onShortGone?.(next);}catch{}}}}
+  // Stage 2d: Home's notice of a short whose lot left the balance, dismissed (once).
+  acknowledgeGoneShort(id){const o=this.orders().find(x=>x.id===id);if(o?.lotTie?.closed?.reason!=='gone')return false;this.writeOrder({...o,lotTie:{...o.lotTie,closed:{...o.lotTie.closed,acknowledgedAt:Date.now()}}});return true;}
   appShortLots(balance=null){return new Set(this.appLots(balance).lots.keys());}
   holdsAppShort(balance){return this.appLots(balance).lots.size>0;}
   // Whether the short paths are open for this order: the short-selling switch on; with it off, only a cover of a short the
@@ -326,9 +336,11 @@ class LiveEngine {
   shortsSwitchOn(){try{return this.exposure?.policy?.(this.identity())?.short?.enabled===true;}catch{return false;}}
   shortsOnFor(credit,symbol){if(!credit||!['short','cover'].includes(credit.kind))return true;
     return this.shortsSwitchOn()||credit.kind==='cover'&&this.appShortLots().has(`${symbol}|${credit.loanDate}`);}
-  // With the switch off, the app buys back no more of a lot than it sold there (a lot partly opened by hand); null when the
+  // With the switch off, the app buys back no more of a lot than its own shares left there (a lot partly opened by hand); null when the
   // switch is on or the order is not a cover.
-  appCoverLimit(credit,symbol){if(credit?.kind!=='cover'||this.shortsSwitchOn())return null;return this.appLots().lots.get(`${symbol}|${credit.loanDate}`)?.quantity??0;}
+  // Stage 2a: less the unfilled shares of the app's open covers of that lot.
+  // Stage 2c: the order being sent or approved is not counted among the open covers (exclude).
+  appCoverLimit(credit,symbol,{exclude=null}={}){if(credit?.kind!=='cover'||this.shortsSwitchOn())return null;const e=this.appLots(null,{exclude}).lots.get(`${symbol}|${credit.loanDate}`);return e?Math.max(0,e.quantity-e.open):0;}
   // Rule U (M-1.2, several orders open allowed): why a new order may not be sent while others are open, or null.
   // - Order history unreadable while this account has an open order: no open order's state is known, so nothing is sent,
   //   protective sales included (D4, unchanged).
@@ -368,12 +380,12 @@ class LiveEngine {
     return [...app,...yours];}
   // Why the current product and credit rules require your approval for an order, or null; their refusals throw.
   // Protective orders (sales, repayments, short covers) never need it (1.5.48 review, R2). Synchronous.
-  approvalNow(order,balance,base,pending=[]){const why=[];let product=null;
+  approvalNow(order,balance,base,pending=[],prepared=null){const why=[];let product=null;
     if(this.exposure&&order.credit?.kind!=='cover'){const g=this.exposure.check({account:order.accountKey,symbol:order.symbol,side:order.side,notional:order.notional,equity:base,holdings:balance.holdings,pending});
       if(g.requiresApproval){product=g.product??null;why.push(g.product?.kind==='unclassified'?'the security master cannot classify this product now':`the ${g.product?.kind??'product'} rule requires your approval now`);}}
     if(order.credit&&['margin-buy','short'].includes(order.credit.kind)){const CP=require('./credit-paths.cjs');
       if(!CP.pathStatus(order.credit.kind,{approved:this.creditApproved?.()===true,shortsOn:this.shortsOnFor(order.credit,order.symbol)}).automatic)why.push('this credit path requires your approval');
-      else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null,pending});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
+      else if(this.exposure){const c=this.exposure.checkCredit({account:order.accountKey,kind:order.credit.kind,symbol:order.symbol,notional:order.notional,equity:balance.reportedTotal,balance,loanDate:order.credit.loanDate??null,pending,...(order.credit.kind==='short'?this.shortCapInputs(balance,{exclude:order.id,prepared,pending}):{})});if(c.requiresApproval)why.push('the credit rule requires your approval now');}}
     return why.length?{why:why.join('; '),product}:null;}
   // Why the daily-loss check holds an automatic order that opens exposure now, or null (1.5.48 review rounds 2-3): the
   // check unavailable (including a pending day), unreadable, or the day restricted after a late basis. Orders that close
@@ -502,6 +514,12 @@ class LiveEngine {
   // which can be higher (1.5.48 audit, A4); a sale or cover keeps KIS's total, so protective orders are not held back.
   // Short selling B3d-1: the cap's base is the valuation's low bound only (never KIS's total); 0 when it cannot be read
   // (the cap then refuses as unknown).
+  // Stage 2b: the short cap's inputs at the proposal and at the send alike (the send's check used KIS's reported total
+  // and no waiting shorts before): the valuation's low bound; the app's open short orders other than this one; its filled
+  // shorts the balance does not show yet; your open short orders in KIS, from the preparation's open-order read at the
+  // send (from the stored order history otherwise), counted once.
+  shortCapInputs(balance,{exclude=null,prepared=null,pending=[]}={}){const R=require('./short-rules.cjs');const yours=prepared?this.othersOpen(prepared).map(yoursRow):this.outsideOpenShorts();
+    return {equity:this.shortCapBase(balance),lagging:R.laggingShorts(this.orders(),balance),openShorts:this.openShortOrders().filter(o=>o.id!==exclude),pending:[...(pending??[]).filter(o=>!o.yours),...yours]};}
   shortCapBase(balance){let v=null;try{v=this.netEquityOf?.(balance)??null;}catch{v=null;}return Number.isFinite(v?.low)&&v.low>0?v.low:0;}
   // The app's open short orders, every one whatever the several-open switch: unexpired proposals and orders at KIS, by
   // their unfilled notional.

@@ -59,13 +59,13 @@ const OPEN=['Submitting','Uncertain','Accepted','Partially filled','Cancellation
 // An order's cash effect in its market currency: the broker's net cash when known, otherwise the gross amount.
 // B3a (found in live use: KIS's cash moved by a short sale's fees only, and by its proceeds less the buy-back at the
 // cover): the app's own short sale moves Korean cash by its fees and tax only; its cover by the proceeds of the lot it
-// repays less the buy-back and fees. The lot is the app's short sales of the stock whose loan date KIS gives in their
-// history (lotLoanDate) is the cover's (credit.loanDate, the lot's loan date the cover sends), by their average fill
+// repays less the buy-back and fees. The lot is the app's short sales of the stock whose tied lot (stage 2d: the recorded
+// tie, lotTie; else KIS's date in their history, lotLoanDate) is the cover's (credit.loanDate, the lot's loan date the cover sends), by their average fill
 // price. A cover with no short of its lot known is not explained (0), so its change is held and recorded for you.
 function cashEffect(order,orders=null){
   if(!(order.filled>0)||!(order.fillPrice>0))return 0;const net=order.resultCosts?.netCash,gross=order.filled*order.fillPrice,kind=order.credit?.kind;
   if(kind==='short')return Number.isFinite(net)?net-gross:0;
-  if(kind==='cover'){const lot=order.credit?.loanDate??null;const sold=lot?(Array.isArray(orders)?orders:[]).filter(o=>o.credit?.kind==='short'&&o.symbol===order.symbol&&o.lotLoanDate===lot&&o.filled>0&&o.fillPrice>0):[];const shares=sold.reduce((n,o)=>n+o.filled,0);if(!(shares>0))return 0;
+  if(kind==='cover'){const lot=order.credit?.loanDate??null;const sold=lot?(Array.isArray(orders)?orders:[]).filter(o=>o.credit?.kind==='short'&&o.symbol===order.symbol&&(o.lotTie?.loanDate??o.lotLoanDate)===lot&&o.filled>0&&o.fillPrice>0):[];const shares=sold.reduce((n,o)=>n+o.filled,0);if(!(shares>0))return 0;
     const proceeds=sold.reduce((n,o)=>n+o.filled*o.fillPrice,0)/shares*order.filled,fees=Number.isFinite(net)?-net-gross:0;return proceeds-gross-fees;}
   if(Number.isFinite(net))return net;return order.side==='Sell'?gross:-gross;
 }
