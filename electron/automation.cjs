@@ -794,7 +794,10 @@ class Automation {
     let unprotected=[];try{unprotected=this.unprotectedNow(scope).filter(u=>u.short);}catch{unprotected=[];}
     let stops=[];try{stops=this.desk.recentRows('conditional_orders',scope,500).filter(o=>o.side==='Buy'&&o.credit?.kind==='cover'&&o.purpose==='stop_loss'&&['armed','firing'].includes(o.status));}catch{stops=[];}
     const num=v=>typeof v==='number'&&Number.isFinite(v)?v:null,pos=v=>num(v)!=null&&v>0?v:null;
-    return open.map(l=>{const byHand=!mine.has(`${l.symbol}|${l.loanDate}`);let lastDay=null,businessDaysLeft=null;try{if(l.loanDate){lastDay=SS.loanEnd(l.loanDate,maxDays,isOpen).lastDay;businessDaysLeft=SS.businessDaysTo(today,lastDay,isOpen);}}catch{}
+    // A lot listed because the app sold a short of the stock and cannot tie it (unmatched or ambiguous) is not shown as
+    // opened by hand: its row says why it has no stop (found in the 1.5.75 desktop run).
+    const untiedKey=new Set(unprotected.filter(u=>['unmatched','ambiguous'].includes(u.cause)).map(u=>`${u.symbol}|${u.loanDate}`));
+    return open.map(l=>{const byHand=!mine.has(`${l.symbol}|${l.loanDate}`)&&!untiedKey.has(`${l.symbol}|${l.loanDate}`);let lastDay=null,businessDaysLeft=null;try{if(l.loanDate){lastDay=SS.loanEnd(l.loanDate,maxDays,isOpen).lastDay;businessDaysLeft=SS.businessDaysTo(today,lastDay,isOpen);}}catch{}
       const price=pos(l.price),result=num(l.proceeds)!=null&&price!=null?Math.round(l.proceeds-Number(l.quantity)*price):null;
       const armed=stops.find(o=>o.symbol===l.symbol&&o.credit?.loanDate===l.loanDate)??null,level=Number(armed?.conditions?.[0]?.value);let stop=null;
       if(byHand){if(armed)stop={state:'armed',level:Number.isFinite(level)?level:null,notApps:true};}

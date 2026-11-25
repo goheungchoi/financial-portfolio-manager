@@ -60,6 +60,9 @@ test('3: the cover stop is armed for a lot tied by its counterpart; a lot that c
   // The order's date ties to nothing in the balance: listed, never silent.
   {const {lotTie:_,...rest}=orders[0];orders=[{...rest,lotLoanDate:'2026-09-01'}];}a.desk.update(armed[0],{status:'cancelled',closedBy:'app',closedAt:Date.now()});a.brokerPositions=()=>({});a.appLotsCache=null;
   const u=a.unprotectedNow(a.watchScope()).filter(x=>x.short);assert.equal(u.length,1);assert.equal(u[0].cause,'unmatched');assert.match(u[0].outcome,/cannot tie it to this lot's loan date, so it has no cover stop; buy it back in KIS's own app/);
+  // Home's Short positions row (found in the 1.5.75 desktop run): the untied lot is not shown as opened by hand; its stop
+  // says why there is none.
+  const [row]=a.shortPositionsRead(a.watchScope(),Date.now());assert.equal(row.byHand,false);assert.equal(row.stop.state,'none');assert.match(row.stop.cause,/cannot tie it to this lot's loan date/);
 });
 test('4: turning short selling on while auto trading runs on Claude is refused; turning it off never is, and the dry run without shorts counts again',()=>{
   const {Automation}=require('../electron/automation.cjs');const a=Object.create(Automation.prototype);a.config={scope:'kis',openaiModel:'claude-opus-5-5'};
