@@ -8,6 +8,9 @@
 const API='https://discord.com/api/v10';
 const NEVER_RECONNECT=new Set([4004,4010,4011,4012,4013,4014]);
 const WAIT_FIRST=5000,WAIT_MAX=300000;
+// The bot token goes only to Discord's own gateway: a wss URL whose host is discord.gg or ends with .discord.gg, with no
+// credentials and the default port (P2 review, change 1). Anything else is treated as a failed connect, said once.
+function gatewayUrlOk(u){try{const x=new URL(u);return x.protocol==='wss:'&&!x.username&&!x.password&&x.port===''&&(x.hostname==='discord.gg'||x.hostname.endsWith('.discord.gg'));}catch{return false;}}
 const OP={DISPATCH:0,HEARTBEAT:1,IDENTIFY:2,RESUME:6,RECONNECT:7,INVALID_SESSION:9,HELLO:10,ACK:11};
 class Gateway{
   // fetch, WebSocket, timers and random are injected (the tests use a stand-in gateway). onDispatch(t, d) gets every event
@@ -25,7 +28,7 @@ class Gateway{
   stop(){this.stopped=true;this.ct(this.timer);this.ct(this.retry);try{this.ws?.close(1000);}catch{}this.ws=null;this.onState({state:'stopped'});}
   async open(resume){if(this.stopped)return;this.onState({state:'connecting'});let url=resume&&this.resumeUrl?this.resumeUrl:null;
     if(!url){try{url=(await this.api('GET','/gateway/bot'))?.url;}catch(error){if([401,403].includes(error.status)){this.refuse(error.status);return;}this.later();return;}}
-    if(this.stopped)return;if(typeof url!=='string'||!/^wss:\/\//.test(url)){this.later();return;}
+    if(this.stopped)return;if(typeof url!=='string'||!gatewayUrlOk(url)){if(url===this.resumeUrl)this.resumeUrl=null;this.badUrl();this.later();return;}
     const ws=new this.WS(url+(url.includes('?')?'&':'?')+'v=10&encoding=json');this.ws=ws;this.acked=true;
     ws.onmessage=ev=>{if(this.ws===ws)this.message(ev.data,resume);};
     ws.onclose=ev=>{if(this.ws!==ws)return;this.ws=null;this.ct(this.timer);const code=Number(ev?.code);
@@ -40,7 +43,7 @@ class Gateway{
     if(m.op===OP.HEARTBEAT){this.send({op:OP.HEARTBEAT,d:this.seq});return;}
     if(m.op===OP.RECONNECT){this.drop(4000);return;}
     if(m.op===OP.INVALID_SESSION){if(m.d!==true){this.session=null;this.seq=null;}this.drop(4000);return;}
-    if(m.op===OP.DISPATCH){if(m.t==='READY'){this.session=typeof m.d?.session_id==='string'?m.d.session_id:null;this.resumeUrl=typeof m.d?.resume_gateway_url==='string'?m.d.resume_gateway_url:null;this.wait=WAIT_FIRST;this.onState({state:'ready'});return;}
+    if(m.op===OP.DISPATCH){if(m.t==='READY'){this.session=typeof m.d?.session_id==='string'?m.d.session_id:null;const r=m.d?.resume_gateway_url;this.resumeUrl=typeof r==='string'&&gatewayUrlOk(r)?r:null;if(typeof r==='string'&&!this.resumeUrl)this.badUrl();this.wait=WAIT_FIRST;this.onState({state:'ready'});return;}
       if(m.t==='RESUMED'){this.wait=WAIT_FIRST;this.onState({state:'ready'});return;}
       try{this.onDispatch(m.t,m.d);}catch{}}}
   tokenFor(){return this.auth().slice(4);}
@@ -49,6 +52,7 @@ class Gateway{
   beat(delay){this.ct(this.timer);this.timer=this.st(()=>{if(!this.ws)return;if(!this.acked){this.drop(4000);return;}this.acked=false;this.send({op:OP.HEARTBEAT,d:this.seq});this.beat(this.every);},Math.max(0,delay));}
   drop(code){const ws=this.ws;this.ws=null;this.ct(this.timer);try{ws?.close(code);}catch{}this.later();}
   later(){if(this.stopped)return;const wait=this.wait;this.wait=Math.min(WAIT_MAX,this.wait*2);this.onState({state:'waiting',waitMs:wait});this.ct(this.retry);this.retry=this.st(()=>void this.open(Boolean(this.session)),wait);}
+  badUrl(){if(this.badUrlSaid)return;this.badUrlSaid=true;this.onState({state:'bad-gateway-url'});}
   refuse(code){this.stopped=true;this.ct(this.timer);this.ct(this.retry);this.onState({state:'refused',code});}
 }
-module.exports={Gateway,API,NEVER_RECONNECT,WAIT_FIRST,WAIT_MAX,OP};
+module.exports={gatewayUrlOk,Gateway,API,NEVER_RECONNECT,WAIT_FIRST,WAIT_MAX,OP};

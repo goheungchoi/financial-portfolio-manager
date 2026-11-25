@@ -12,6 +12,8 @@ const KEYS=Object.freeze(['discordBotToken','discordApplicationId','discordServe
 const SNOWFLAKE=/^\d{17,20}$/,TOKEN=/^[A-Za-z0-9._-]{20,200}$/;
 const REF_MS=14*60000,MODAL_WAIT_MS=2500,TEXT_MAX=1900;
 const PIN_FORM_FIRST=new Set(['link','nottaken']);
+// No message the bot posts or edits can ever mention anyone (P2 review, change 2).
+const NO_MENTIONS=Object.freeze({parse:[]});
 // The commands, for the one server only; usable by the server's administrators only (default_member_permissions "0").
 const s=(name,description,required=true)=>({type:3,name,description,required,max_length:64});
 const COMMANDS=Object.freeze([
@@ -60,14 +62,14 @@ class PhoneWorker{
       ...(name?{command:name.slice(0,20)}:{}),...(Array.isArray(d.data?.options)?{options:d.data.options.slice(0,5).map(o=>({name:String(o?.name??'').slice(0,20),value:typeof o?.value==='string'?o.value.slice(0,64):null}))}:{}),
       ...(typeof d.data?.custom_id==='string'?{customId:d.data.custom_id.slice(0,100)}:{}),...(d.type===5?{pin:pinOf(d.data?.components)}:{})};
     if(formFirst){const r=this.refs.get(ref);r.timer=this.st(()=>{if(!this.refs.has(ref)||this.refs.get(ref).answered)return;this.refs.get(ref).answered=true;
-        void this.callback(ref,{type:4,data:{content:'The app did not answer in time. Try again.',flags:64}}).catch(e=>this.replyFailed(e)).finally(()=>this.refs.delete(ref));},MODAL_WAIT_MS);}
+        void this.callback(ref,{type:4,data:{content:'The app did not answer in time. Try again.',flags:64,allowed_mentions:NO_MENTIONS}}).catch(e=>this.replyFailed(e)).finally(()=>this.refs.delete(ref));},MODAL_WAIT_MS);}
     else{try{await this.callback(ref,{type:5,data:{flags:64}});this.refs.get(ref).deferred=true;}catch(error){this.replyFailed(error);this.refs.delete(ref);return;}}
     this.post({type:'interaction',ref,data});}
   // The main process's answer: the PIN form, a sentence, the Start summary with its confirm button, or nothing.
   async reply(m){const r=this.refs.get(m?.ref);if(!r||r.answered)return;r.answered=true;this.ct(r.timer);const text=typeof m.text==='string'?m.text.slice(0,TEXT_MAX):'';
     try{if(m.kind==='modal'&&!r.deferred&&/^[a-f0-9]{32}$/.test(m.nonce))await this.callback(m.ref,{type:9,data:{custom_id:'pin:'+m.nonce,title:'Enter your PIN',components:[{type:18,label:'PIN',description:'Shows on your screen as you type; it is not posted.',component:{type:4,custom_id:'pin',style:1,min_length:6,max_length:12,required:true}}]}});
-      else if(m.kind==='summary'&&r.deferred&&/^[a-f0-9]{32}$/.test(m.nonce))await this.original(m.ref,'PATCH',{content:text,components:[{type:1,components:[{type:2,style:1,label:'Confirm with PIN',custom_id:'start-confirm:'+m.nonce}]}]});
-      else if(m.kind==='message')await(r.deferred?this.original(m.ref,'PATCH',{content:text,components:[]}):this.callback(m.ref,{type:4,data:{content:text,flags:64}}));
+      else if(m.kind==='summary'&&r.deferred&&/^[a-f0-9]{32}$/.test(m.nonce))await this.original(m.ref,'PATCH',{content:text,allowed_mentions:NO_MENTIONS,components:[{type:1,components:[{type:2,style:1,label:'Confirm with PIN',custom_id:'start-confirm:'+m.nonce}]}]});
+      else if(m.kind==='message')await(r.deferred?this.original(m.ref,'PATCH',{content:text,allowed_mentions:NO_MENTIONS,components:[]}):this.callback(m.ref,{type:4,data:{content:text,flags:64,allowed_mentions:NO_MENTIONS}}));
       else if(m.kind==='drop'&&r.deferred)await this.original(m.ref,'DELETE');}
     catch(error){this.replyFailed(error);}finally{this.refs.delete(m.ref);}}
 }
