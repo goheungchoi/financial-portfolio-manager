@@ -2756,4 +2756,4 @@ function opportunityNote(accounts,usTradable){
 // S4: a review's script budget (all its scripts, warm-up included), the daily-history warm-up's bounds, and the functions
 // that read daily history.
 Automation.REVIEW_SCRIPTS=Object.freeze({ms:60000,warmMs:10000,warmMax:24,warmNamed:6,history:/\b(close|change|ret|sma|ema|std|high|low|rsi|zscore|ratio_z|corr|avgvalue|atr|adx|macd|cci|stochrsi|ultimate|at)\s*\(/});
-module.exports={loggableContext,dryRunSummary,dryRunMeasurement,answerRule,Automation,DEFAULTS,opportunityNote};
+module.exports={validationOf,loggableContext,dryRunSummary,dryRunMeasurement,answerRule,Automation,DEFAULTS,opportunityNote};
