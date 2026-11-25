@@ -30,8 +30,8 @@ test('the connection line: each state of the service in plain words; "action" on
 
 test('the PIN handlers: authorize, take the PIN twice, never echo it; the window learns only "set" and "locked"',()=>{
   assert.ok(main.includes("ipcMain.handle('phone:set-pin',(event,pin,again)=>{authorize(event);if(typeof pin!=='string'||typeof again!=='string'||!/^\\d{6,12}$/.test(pin))return {ok:false,error:'PIN_FORMAT',state:runtimeState()};"));
-  assert.ok(main.includes("if(pin!==again)return {ok:false,error:'PIN_DIFFERENT',state:runtimeState()};try{phonePins().setPin(pin);}"));
-  assert.ok(main.includes("ipcMain.handle('phone:unlock',event=>{authorize(event);try{phonePins().unlock();}"));
+  assert.ok(main.includes("if(pin!==again)return {ok:false,error:'PIN_DIFFERENT',state:runtimeState()};try{phonePins().setPin(pin);phonePinView.drop();}"));
+  assert.ok(main.includes("ipcMain.handle('phone:unlock',event=>{authorize(event);try{phonePins().unlock();phonePinView.drop();}"));
   assert.ok(main.includes("return {enabled:view.enabled,pin,line:require('./phone-words.cjs').phoneLine(view)};"),'the view: the switch, two booleans and the line');
   assert.ok(main.includes("const runtimeState=()=>lightState({...automation.getState(),phone:phoneView(),"));
   const handler=main.slice(main.indexOf("ipcMain.handle('phone:set-pin'"),main.indexOf("ipcMain.handle('runtime:configure'"));
@@ -64,4 +64,24 @@ test('the confirmation and the setup guide say what the release notes say',async
   assert.equal(PHONE_GUIDE.length,10);assert.ok(PHONE_GUIDE.some(s=>s.includes('scope=bot+applications.commands&permissions=0')));
   assert.ok(PHONE_GUIDE.some(s=>s.includes('Reset Token')&&s.includes('new PIN')),'the leaked-token step');
   for(const key of W.KEY_NAMES)assert.ok(PHONE_GUIDE.join(' ').includes(key),key);
+});
+
+test('P6 review A: the PIN view is kept 5 s; a second runtime state reads nothing; set, unlock and a PIN entry drop it',async()=>{
+  let now=0,reads=0;const store={set:true,locked:false};const c=W.pinCache(()=>{reads++;return {...store};},{clock:()=>now});
+  assert.deepEqual(c.get(),{set:true,locked:false});c.get();now=4999;c.get();assert.equal(reads,1,'kept for 5 s');now=5000;c.get();assert.equal(reads,2,'read again after 5 s');
+  store.locked=true;c.drop();assert.deepEqual(c.get(),{set:true,locked:true},'dropped: read at once');
+  const bad=W.pinCache(()=>{throw new Error('disk');});assert.deepEqual(bad.get(),{set:false,locked:false});
+  // main.cjs: the view comes from the cache, dropped on set-pin, unlock and the service's onPinChange.
+  assert.ok(main.includes("function phoneView(){const pin=phonePinView.get();"));assert.ok(main.includes("try{phonePins().setPin(pin);phonePinView.drop();}"));
+  assert.ok(main.includes("try{phonePins().unlock();phonePinView.drop();}"));assert.ok(main.includes("onPinChange:()=>phonePinView.drop(),"));
+  // Five wrong PINs through the real core and service: onPinChange after each, so the lock shows at the next state.
+  const {DatabaseSync}=require('node:sqlite');const {PhoneCore}=require('../electron/phone-core.cjs');const {PhoneService}=require('../electron/phone-service.cjs');
+  const db=new DatabaseSync(':memory:');let t=1795600000000;const allow={user:'100000000000000001',server:'100000000000000002',channel:'100000000000000003',application:'100000000000000004'};
+  const core=new PhoneCore(db,{allow,clock:()=>t});core.setPin('482913');let drops=0;const view=W.pinCache(()=>({set:core.hasPin(),locked:core.locked()}),{clock:()=>t});
+  const svc=new PhoneService({core,spawn:()=>({postMessage(){},on(){},kill(){}}),clock:()=>t,onPinChange:()=>{drops++;view.drop();},executor:{summary:async()=>({ok:true,text:'x',held:{shown:'x'}}),run:async()=>'x'}});svc.start('p','s');
+  assert.equal(view.get().locked,false);let seq=0n;const idAt=ms=>String(((BigInt(ms)-1420070400000n)<<22n)|(seq++));
+  const ix=extra=>({id:idAt(t),applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,...extra});
+  for(let i=0;i<5;i++){t+=25000;const s=core.accept(ix({type:2,command:'nottaken',options:[{name:'order',value:'A1'}]}));core.attach(s.act.nonce,{shown:'x'});core.accept(ix({type:3,customId:'start-confirm:'+s.act.nonce}));
+    await svc.handle({type:'interaction',ref:'a'.repeat(24),interaction:ix({type:5,customId:'pin:'+s.act.nonce,pin:'000000'})});}
+  assert.equal(drops,5);assert.equal(view.get().locked,true,'the lock shows at once, within the 5 s');
 });

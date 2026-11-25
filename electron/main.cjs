@@ -11,7 +11,7 @@ let restartNotice=null,restartBase=null,restartNoticeDismissed=null;
 // Shorts on, stage 3: the one-time notice for a short-selling switch saved on before the paths could be sent.
 let shortsLiveNotice=null;
 // Phone control (1.6.0): the service is running only while the switch is on and a provider file is remembered.
-let phoneControl=null,phoneSync=()=>{},phoneAlertSeq=0,phonePinStore=null;
+let phoneControl=null,phoneSync=()=>{},phoneAlertSeq=0,phonePinStore=null,phonePinView={get:()=>({set:false,locked:false}),drop(){}};
 // A provider file chosen, reconnected or forgotten: the phone worker is restarted (or stopped) so the keys in force apply.
 const phoneRestart=()=>{try{phoneControl?.stop();}catch{}phoneControl=null;try{phoneSync();}catch{}};
 // Stage 4: at a Korean balance reading of a live account with the switch saved on and no record: recorded shown, with
@@ -923,7 +923,9 @@ app.whenReady().then(async () => {
   // P6: phone control as the window sees it: the switch, whether a PIN is set and locked, and the status line
   // (phone-words.cjs). No PIN, token, key value or Discord id.
   function phonePins(){if(!phonePinStore){const {PhoneCore}=require('./phone-core.cjs');phonePinStore=new PhoneCore(store.db,{allow:null});}return phonePinStore;}
-  function phoneView(){let pin={set:false,locked:false};try{const p=phonePins();pin={set:p.hasPin(),locked:p.locked()};}catch{}
+  // P6 review A: "set" and "locked" kept for 5 s, dropped on set-pin, unlock and any PIN entry the service counts.
+  phonePinView=require('./phone-words.cjs').pinCache(()=>{const p=phonePins();return {set:p.hasPin(),locked:p.locked()};});
+  function phoneView(){const pin=phonePinView.get();
     const status=phoneControl?.status??null;const view={enabled:automation.config.phoneControl===true,providerFile:Boolean(remembered.get('providers')),pin,service:status,clockSuspect:Boolean(phoneControl?.core?.clockSuspect)};
     return {enabled:view.enabled,pin,line:require('./phone-words.cjs').phoneLine(view)};}
   const runtimeState=()=>lightState({...automation.getState(),phone:phoneView(),funding:(()=>{try{return automation.fundingState?.()??null;}catch{return null;}})(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()},{version:automation.historyVersion()});
@@ -970,7 +972,7 @@ app.whenReady().then(async () => {
     if(!on){if(phoneControl){phoneControl.stop();phoneControl=null;}return;}if(phoneControl)return;
     const {PhoneService}=require('./phone-service.cjs'),{PhoneCore}=require('./phone-core.cjs');
     phoneControl=new PhoneService({makeCore:allow=>new PhoneCore(store.db,{allow}),spawn:()=>require('electron').utilityProcess.fork(path.join(__dirname,'phone-worker.cjs'),[],{serviceName:'Phone control'}),
-      log:(title,body)=>{try{automation.log(require('node:crypto').randomUUID(),'System',title,body);}catch{}},
+      log:(title,body)=>{try{automation.log(require('node:crypto').randomUUID(),'System',title,body);}catch{}},onPinChange:()=>phonePinView.drop(),
       // The outbox ignores a repeated id: the command and a counter beside the time keep two alerts in one millisecond apart.
       notify:(text,command)=>{try{automation.notify?.('phone-'+String(command)+'-'+Date.now()+'-'+(++phoneAlertSeq),text);}catch{}},
       executor:require('./phone-commands.cjs').createExecutor({automation,equity:()=>{try{const t=portfolioState()?.totals;return Number.isFinite(t?.equityKRW)?t.equityKRW:Number.isFinite(t?.KRW)?t.KRW:null;}catch{return null;}}})});
@@ -979,9 +981,9 @@ app.whenReady().then(async () => {
   // P6: the PIN is set, changed and unlocked on the desktop only. Each handler authorizes as the others do and takes
   // nothing else; the PIN is never echoed, logged or put in the runtime state (only "set" and "locked").
   ipcMain.handle('phone:set-pin',(event,pin,again)=>{authorize(event);if(typeof pin!=='string'||typeof again!=='string'||!/^\d{6,12}$/.test(pin))return {ok:false,error:'PIN_FORMAT',state:runtimeState()};
-    if(pin!==again)return {ok:false,error:'PIN_DIFFERENT',state:runtimeState()};try{phonePins().setPin(pin);}catch{return {ok:false,error:'PIN_NOT_SAVED',state:runtimeState()};}
+    if(pin!==again)return {ok:false,error:'PIN_DIFFERENT',state:runtimeState()};try{phonePins().setPin(pin);phonePinView.drop();}catch{return {ok:false,error:'PIN_NOT_SAVED',state:runtimeState()};}
     try{automation.log(require('node:crypto').randomUUID(),'System','Phone control','The phone control PIN was set on this PC.');}catch{}return {ok:true,state:runtimeState()};});
-  ipcMain.handle('phone:unlock',event=>{authorize(event);try{phonePins().unlock();}catch{return {ok:false,error:'PIN_NOT_SAVED',state:runtimeState()};}
+  ipcMain.handle('phone:unlock',event=>{authorize(event);try{phonePins().unlock();phonePinView.drop();}catch{return {ok:false,error:'PIN_NOT_SAVED',state:runtimeState()};}
     try{automation.log(require('node:crypto').randomUUID(),'System','Phone control','The phone control PIN was unlocked on this PC.');}catch{}return {ok:true,state:runtimeState()};});
   // P6: phone control turns on only with a PIN set (PHONE_PIN_REQUIRED).
   ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);if(value?.phoneControl===true&&automation.config.phoneControl!==true&&!phonePins().hasPin())return {ok:false,error:'PHONE_PIN_REQUIRED',state:runtimeState()};try{automation.configure(value);phoneSync();return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});

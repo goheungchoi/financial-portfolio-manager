@@ -29,4 +29,10 @@ function phoneLine(view){const v=view??{};
   if(v.pin.locked)return {tone:'action',text:'Start and the lost-order fixes are locked after 5 wrong PINs. Unlock them in Engine settings.'};
   if(v.clockSuspect&&line.tone!=='action')return {tone:'action',text:'The PC clock may be wrong: phone commands looked too old or too new. Check the time in Windows settings.'};
   return line;}
-module.exports={phoneLine,KEY_NAMES};
+// The PIN's "set" and "locked", kept for a few seconds (P6 review, A): the window asks for the runtime state every 2
+// seconds and after most actions, and each answer would read the PIN row. Dropped at once when the PIN is set or
+// unlocked on the PC and when the phone service sees a PIN entry counted or a lock (onPinChange), so a lock shows at the
+// next state. read() gives {set, locked}; one that throws gives "not set, not locked" and is not kept.
+function pinCache(read,{ttl=5000,clock=Date.now}={}){let kept=null,at=0;
+  return {get(){if(kept&&clock()-at<ttl)return kept;try{kept=read();at=clock();return kept;}catch{kept=null;return {set:false,locked:false};}},drop(){kept=null;}};}
+module.exports={phoneLine,pinCache,KEY_NAMES};

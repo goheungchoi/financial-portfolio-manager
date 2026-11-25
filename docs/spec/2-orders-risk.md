@@ -1717,7 +1717,9 @@ Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; a
   - The PIN: set and changed on this PC only (`phone:set-pin`: typed twice, 6 to 12 digits, else PIN_FORMAT or
     PIN_DIFFERENT; stored by the core's own `setPin` in `phone_pin`, which also clears a lock), unlocked with
     `phone:unlock`. Both authorize as the other handlers and take nothing else; an Activity line says that the PIN
-    was set or unlocked, never the PIN. The window learns only `phone: {enabled, pin: {set, locked}, line}`.
+    was set or unlocked, never the PIN. The window learns only `phone: {enabled, pin: {set, locked}, line}`; "set" and
+    "locked" are kept in memory for 5 s (`phone-words.cjs pinCache`), dropped at once on set-pin, on unlock and after
+    every PIN form the phone service checks (`onPinChange`), so a lock shows at the next state.
   - The connection line (`phoneLine`) from the switch, the PIN record, the provider file and the service's status:
     Off; set a PIN; choose the provider file; not set up (the key names missing or not valid, or the file unreadable);
     connecting; the connection lost and the wait; restarting; Discord gave an unexpected address; Discord refused the

@@ -20,8 +20,8 @@ class PhoneService{
   // typed.
   // inactive: commands that answer "not active yet" at once (no PIN form, no PIN counted) until their stage. notify(text):
   // one alert, through the app's own alert path, for a command that changed the app's state (Stop, Stop everything).
-  constructor({core=null,makeCore=null,spawn,executor=null,log=()=>{},notify=()=>{},inactive=new Set(),onState=()=>{},clock=Date.now,setTimeout:st=setTimeout,clearTimeout:ct=clearTimeout}){
-    Object.assign(this,{core,makeCore,spawn,log,notify,inactive,onState,clock,st,ct});this.silentLoggedAt=0;this.executor=executor??{summary:async()=>({ok:false,text:NOT_YET}),run:async()=>NOT_YET};
+  constructor({core=null,makeCore=null,spawn,executor=null,log=()=>{},notify=()=>{},onPinChange=()=>{},inactive=new Set(),onState=()=>{},clock=Date.now,setTimeout:st=setTimeout,clearTimeout:ct=clearTimeout}){
+    Object.assign(this,{core,makeCore,spawn,log,notify,onPinChange,inactive,onState,clock,st,ct});this.silentLoggedAt=0;this.executor=executor??{summary:async()=>({ok:false,text:NOT_YET}),run:async()=>NOT_YET};
     this.worker=null;this.stopping=false;this.wait=RESTART_FIRST;this.recent=[];this.recentStates=[];this.restartTimer=null;this.status={state:'stopped',lastCommandAt:null,dropped:0};}
   start(providerPath,statePath){this.stopping=false;this.paths={providerPath,statePath};this.launch();}
   stop(){this.stopping=true;this.ct(this.restartTimer);const w=this.worker;this.worker=null;try{w?.postMessage({op:'stop'});w?.kill();}catch{}this.setStatus({state:'stopped'});}
@@ -52,6 +52,9 @@ class PhoneService{
     if(m.type!=='interaction'||typeof m.ref!=='string'||!REF.test(m.ref)||!m.interaction||typeof m.interaction!=='object'||Array.isArray(m.interaction))return;
     if(!this.core)return;const ref=m.ref,data=m.interaction;this.recent=this.recent.filter(t=>now-t<60000);
     if(this.recent.length>=MSG_PER_MIN){data.pin=undefined;this.status.dropped++;this.send({ref,kind:'message',text:require('./phone-core.cjs').SENTENCES.busy});return;}this.recent.push(now);let r;try{r=this.core.accept(data);}catch{r={reply:'The app could not handle this command.'};}finally{data.pin=undefined;}
+    // A PIN form was checked (a wrong entry counted, a lock, or a right one resetting the count): the desktop's view of the
+    // PIN is read again at once (P6 review A).
+    if(data.type===5)try{this.onPinChange();}catch{}
     const name=data.type===2&&COMMAND_NAMES.includes(data.command)?data.command:data.type===3?'confirm':data.type===5?'pin':'unknown';
     const line=(title,body)=>{try{this.log(title,body);}catch{}};
     try{if(r.silent){this.send({ref,kind:'drop'});if(now-this.silentLoggedAt>=60000){this.silentLoggedAt=now;line('Phone command refused',`A command was not answered (${r.why}). Refusals like this are noted at most once a minute.`);}return;}

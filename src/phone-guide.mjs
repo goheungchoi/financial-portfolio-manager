@@ -11,10 +11,12 @@ export const PHONE_GUIDE=[
   'Put the five keys in your provider file beside your AI keys, then reconnect the file in Connections.',
   'Set the PIN here, then turn on Phone control and save.',
   'First test with the Korean and U.S. markets closed: send /status, then /stop, then /start (it shows what would start; press Confirm with PIN and enter the PIN).',
-  'If the bot token leaks: press Reset Token in the Developer Portal, put the new token in the provider file, reconnect it, and set a new PIN here.'];
+  'If the bot token leaks: press Reset Token in the Developer Portal, put the new token in the provider file, reconnect it, and set a new PIN here. Someone with the token could have read a PIN typed after the leak; they still could not command the app, which answers only your own Discord account.'];
 export const PHONE_CONFIRM={title:'Turn on phone control?',
   body:'Use Discord on your phone for Status, Stop, Stop everything, Start, and fixing orders whose KIS reply was lost. It cannot place, change or cancel orders, or change settings.',
   more:['Start and the lost-order fixes need your PIN. Status and the two Stops do not.',
+    'Discord has no hidden input, so the PIN shows on your own screen as you type it. It is not posted to the channel.',
+    'It does nothing while the app or the PC is off, and it cannot run a dry run.',
     'Replies can show stock codes, and /orders shows order quantities and prices. Account amounts follow Show amounts.',
     'Needs the PIN set below and the five Discord keys in your provider file (see the setup guide).',
     'Only your user, in your server and channel, through your bot, is answered.',
