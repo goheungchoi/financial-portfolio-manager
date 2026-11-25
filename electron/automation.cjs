@@ -112,7 +112,7 @@ function stopSideGap(decision,context){
   return q?.price>0&&!(side==='below'?decision.plan.stopPrice<q.price:decision.plan.stopPrice>q.price)?{side,q,eff}:null;}
 class Automation {
   constructor(db,paper,provider,log) {
-    this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastPrices=new Map();this.usVenues=new Map();
+    this.db=db;this.paper=paper;this.provider=provider;this.log=log;this.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};this.news=[];this.newsError=null;this.busy=false;this.lastRun=0;this.lastStart=0;this.lastPrices=new Map();this.usVenues=new Map();
     db.exec('CREATE TABLE IF NOT EXISTS ai_usage_vendor(day TEXT NOT NULL,vendor TEXT NOT NULL,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL,PRIMARY KEY(day,vendor))');db.exec('CREATE TABLE IF NOT EXISTS dry_runs(id TEXT PRIMARY KEY,timestamp INTEGER NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS review_clock(scope TEXT PRIMARY KEY,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS automation_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS lessons(id TEXT PRIMARY KEY,text TEXT NOT NULL,approved INTEGER NOT NULL DEFAULT 0);CREATE TABLE IF NOT EXISTS ai_usage(day TEXT PRIMARY KEY,calls INTEGER NOT NULL,reservedMicro INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS reviewed_fills(id TEXT PRIMARY KEY);');
     db.exec('CREATE TABLE IF NOT EXISTS ai_calls(id TEXT PRIMARY KEY,day TEXT NOT NULL,payload TEXT NOT NULL)');
     db.exec('CREATE TABLE IF NOT EXISTS claude_trading_state(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)');// Claude trading D-3 (review F1: created once)
@@ -170,11 +170,13 @@ class Automation {
   // first scope adopted keeps a clock set before any scope was known, unless its saved one is later. A saved time in
   // the future (the system clock moved back) counts as now, so the interval still applies.
   saveClock(){const scope=this.clockScope;if(!scope||scope.endsWith(':disconnected')||!(this.lastRun>0)&&!this.preOpenKey)return;
-    try{this.db.prepare('INSERT INTO review_clock VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({lastRun:this.lastRun,preOpenKey:this.preOpenKey??null}));}catch{}}
+    try{this.db.prepare('INSERT INTO review_clock VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET payload=excluded.payload').run(scope,JSON.stringify({lastRun:this.lastRun,lastStart:this.lastStart,preOpenKey:this.preOpenKey??null}));}catch{}}
   restoreClock(){if(this.busy)return;const scope=this.watchScope();if(scope===this.clockScope)return;if(scope.endsWith(':disconnected')){this.clockScope??=scope;return;}let c=null;
     try{const row=this.db.prepare('SELECT payload FROM review_clock WHERE scope=?').get(scope);c=row?JSON.parse(row.payload):null;}catch{}
     const first=this.clockScope==null,saved=Number.isFinite(c?.lastRun)&&c.lastRun>0?Math.min(c.lastRun,Date.now()):0;this.clockScope=scope;
-    this.lastRun=first?Math.max(this.lastRun,saved):saved;this.preOpenKey=typeof c?.preOpenKey==='string'?c.preOpenKey:first?this.preOpenKey??null:null;}
+    this.lastRun=first?Math.max(this.lastRun,saved):saved;
+    // An old row has no lastStart: its start counts as its end (the interval as before, once).
+    const savedStart=Number.isFinite(c?.lastStart)&&c.lastStart>0?Math.min(c.lastStart,saved||Date.now()):saved;this.lastStart=first?Math.max(this.lastStart,savedStart):savedStart;this.preOpenKey=typeof c?.preOpenKey==='string'?c.preOpenKey:first?this.preOpenKey??null:null;}
   saveConfig(){this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(this.config));}
   configure(value) {
     value=value&&typeof value==='object'?Object.fromEntries(Object.entries(value).filter(([k])=>!LEGACY_SETTINGS.includes(k))):value;
@@ -276,11 +278,15 @@ class Automation {
     if(kr&&kr.open===false&&kr.status==='closed'&&krOpen(Date.now(),this.closedDays??=new Set()))this.closedDays.add(seoulDay(Date.now()));}
   // When the next scheduled review is due: while markets are closed, the pre-open review or the open itself.
   // The pre-open review already ran for the next open: the next one is a scheduled review after that open.
+  // The scheduled interval counts from the start of the last review that ran or was skipped (the user, 2026-11-25:
+  // "measured from the start of the review not after the review finished"); a failed review counts from its failure.
+  // Everything else (the 60-second rest, order waits, trigger waits, the emergency retry) counts from its end (lastRun).
+  scheduleBase(){return this.lastStart>0?Math.min(this.lastStart,this.lastRun||this.lastStart):this.lastRun;}
   nextReviewAt(){if(!this.config.enabled||!this.sessionArmed)return null;this.restoreClock();const hours=this.marketHours(),emergency=this.emergencyState().active;
     const interval=Math.max(60000,emergency?60000:this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*this.slowFactor());
     if(!hours.open&&this.config.closedMarketReviews!=='keep'&&!emergency&&hours.next){if(this.config.closedMarketReviews!=='pre-open')return hours.next.at;
-      return this.preOpenRan(hours)?Math.max(hours.next.at,this.lastRun+interval):hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS;}
-    const due=Math.max(Date.now(),this.lastRun+interval);
+      return this.preOpenRan(hours)?Math.max(hours.next.at,this.scheduleBase()+interval,this.lastRun+60000):hours.next.at-require('./market-hours.cjs').PRE_OPEN_MS;}
+    const due=Math.max(Date.now(),this.scheduleBase()+interval,this.lastRun+60000);
     const defer=this.emergencyState().active?null:this.deferForPendingOrder();return defer?Math.max(due,defer.until):due;}
   preOpenRan(hours=this.marketHours()){return Boolean(hours.next)&&this.preOpenKey===`${hours.next.market}:${hours.next.at}`;}
   // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping (tick and nextReviewAt).
@@ -1132,10 +1138,10 @@ class Automation {
       const oldSkip=skippable&&saver.shouldSkip({trigger,config:this.config,fingerprint:hash,last:this.lastFingerprint?.scope===watchScope?this.lastFingerprint:null});
       const gateLog=(ran,extra={})=>{if(gate)try{this.reviewGate.log(Date.now(),{scope:watchScope,trigger,mode:gateMode,alerts:this.alertTag(),oldSkip,ran,reviewId:ran?id:null,...extra,gate});}catch{}};
       if(gateMode==='on'&&gate&&skippable&&trigger==='Scheduled review'&&!gate.needsReview){
-        gateLog(false);this.lastRun=Date.now();this.recordSaving('skipped');const stamp=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'});
+        gateLog(false);this.lastRun=Date.now();this.lastStart=startedAt;this.recordSaving('skipped');const stamp=t=>new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'});
         this.log(id,'System','Review skipped · nothing decision-relevant changed',`Holdings, orders, cash, execution, risk, protection, exposure, prices (cumulative since the decision), entry levels and filings are unchanged since the last decision. No AI call was made. A full review runs by ${stamp(gate.nextBackstopAt)} KST at the latest.${gate.degraded.length?` Data missing or stale: ${gate.degraded.join(', ')}.`:''}`);return {skipped:true,id};}
       if(gateMode!=='on'&&oldSkip){
-        gateLog(false);this.lastRun=Date.now();this.recordSaving('skipped');this.log(id,'System','Review skipped · no change',`Holdings, cash, prices (within ${this.config.eventTolerancePct/2}%), news, lessons and market sessions are unchanged since the review at ${new Date(this.lastFingerprint.completedAt).toLocaleTimeString()}. No AI call was made. A full review runs at least every ${this.config.maxSkipMinutes} minutes.`);return {skipped:true,id};
+        gateLog(false);this.lastRun=Date.now();this.lastStart=startedAt;this.recordSaving('skipped');this.log(id,'System','Review skipped · no change',`Holdings, cash, prices (within ${this.config.eventTolerancePct/2}%), news, lessons and market sessions are unchanged since the review at ${new Date(this.lastFingerprint.completedAt).toLocaleTimeString()}. No AI call was made. A full review runs at least every ${this.config.maxSkipMinutes} minutes.`);return {skipped:true,id};
       }
       // A review that failed for its size is not retried on materially the same inputs; a material change (prices beyond
       // the tolerance, holdings, cash, sessions, important news), an emergency or the user's own request runs again.
@@ -1144,7 +1150,7 @@ class Automation {
       const failed=this.failedInput?.scope===watchScope?this.failedInput:null;const inputState=require('./review-gate.cjs').decisionState(context);
       const eventKeys=require('./size-retry.cjs').eventKeys(entryEvidence);
       if(failed){const verdict=require('./size-retry.cjs').retryAfterSizeFailure(failed,{trigger,evidence:entryEvidence,emergency:emergency.active,version:this.appVersion(),state:inputState,events:this.newsEvents.list(300),config:this.config});
-        if(!verdict.retry){gateLog(false,{failedInputs:true});this.lastRun=Date.now();failed.skipped=(failed.skipped??0)+1;failed.eventKeys=[...new Set([...(failed.eventKeys??[]),...eventKeys])];this.restoreEvents(watchScope,entryEvidence);
+        if(!verdict.retry){gateLog(false,{failedInputs:true});this.lastRun=Date.now();this.lastStart=startedAt;failed.skipped=(failed.skipped??0)+1;failed.eventKeys=[...new Set([...(failed.eventKeys??[]),...eventKeys])];this.restoreEvents(watchScope,entryEvidence);
           if(failed.skipped===1)this.log(id,'System','Review skipped · same inputs as a failed review',`The review at ${new Date(failed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST failed (${failed.code}) and ${verdict.why.replace(/^nothing/,'nothing')}. No AI call was made. A fill, an order change, a lost stop loss, a risk limit, a filing, a price move past the review gate's limits, a newly reached price level or met agent trigger, an app update, your own request or an emergency tries again; so does a 30-minute backstop. Later skips for this failure are not logged.`);
           return {skipped:true,id};}
         this.log(id,'System','Retrying after a size failure',`${failed.code} at ${new Date(failed.at).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'})} KST${failed.skipped?` (${failed.skipped} checks skipped since)`:''}; retried because: ${verdict.why}.`);}
@@ -1255,8 +1261,8 @@ class Automation {
       if(gateMode!=='off'||this.config.routineReviews==='focused')try{this.reviewGate.settle(watchScope,require('./review-gate.cjs').decisionState(context),{decision:{action:result.decision?.action,symbol:result.decision?.symbol,orderId:order?.id??proposal?.id??null,...(batchRows?{placed:batchRows.filter(r=>r.item>0&&(r.order?.id||r.proposal?.id)).map(r=>({symbol:r.symbol,action:r.action}))}:{})},contextAt:startedAt,events:(gateMode!=='off'?gateEvents:this.newsEvents.list(300)).filter(e=>e.firstSeenAt<=startedAt)});}catch{}
       // D-3: the first completed review on Claude ends the wait; automatic reviews continue.
       if(this.vendorOf(this.agentModel('trading').openaiModel)==='anthropic'&&this.claudeFirstReview()?.state==='pending'){const fr=this.claudeFirstReview();this.setClaudeFirstReview({...fr,state:'done',doneAt:Date.now()});this.claudeFirstShown=false;this.log(randomUUID(),'System','First Claude review completed','Automatic reviews on Claude Opus 5.5 continue at your interval.');}
-      this.noteReviewOutcome(null);this.lastRun=Date.now();this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;{const base=this.tradedBaselineQuotes(context.quotes);this.lastPrices=new Map(base.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,base);this.tradedBaselines=new Map(this.reviewTraded??[]);}this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
-    }catch(error){this.lastRun=Date.now();this.lastErrorAt=this.lastRun;this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+require('./ai-errors.cjs').sizeDetail(error);
+      this.noteReviewOutcome(null);this.lastRun=Date.now();this.lastStart=startedAt;this.lastSuccess=this.lastRun;this.guardrails.succeeded();this.lastError=null;this.failedInput=null;this.eventHold=null;this.lastErrorDetail=null;{const base=this.tradedBaselineQuotes(context.quotes);this.lastPrices=new Map(base.map(row=>[row.symbol,row.price]));this.watches.rebase(watchScope,base);this.tradedBaselines=new Map(this.reviewTraded??[]);}this.lastWatchScope=watchScope;this.log(id,'System','Review completed',result.usage?JSON.stringify(result.usage):'No provider tokens used.');if(result.metrics)this.log(id,'System','Research metrics',JSON.stringify(result.metrics));return review;
+    }catch(error){this.lastRun=Date.now();this.lastStart=this.lastRun;this.lastErrorAt=this.lastRun;this.lastError=require('./ai-errors.cjs').publicCode(error)??(['AI_NOT_CONNECTED','AI_BUDGET_EXHAUSTED','EXTERNAL_DECISION_REQUIRED','PROVIDER_REQUEST_FAILED','AI_REQUEST_FAILED','DATA_SHARING_NOT_ENABLED','KIS_TRADING_DISABLED','STALE_DECISION','SESSION_CLOSED','AUTH_FAILED','RATE_LIMITED','REQUEST_FAILED','BROKER_REJECTED','FEATURE_UNAVAILABLE','INCOMPLETE_BALANCE'].includes(error.message)?error.message:'REVIEW_FAILED');this.lastErrorDetail=require('./ai-errors.cjs').detail(this.lastError,stage,error)+require('./ai-errors.cjs').sizeDetail(error);
       // B(2), 2026-11-19: a failure from a KIS request names its code, KIS's own code and the request, whatever the review's
       // code shows (01:22 read only "REVIEW_FAILED · Stage: Account data"). App codes only; no reply text.
       // Order-rule audit item 13: a STOP code from the order path says why, in words (activity-today.cjs).
@@ -2639,7 +2645,7 @@ class Automation {
       {const {title,body}=this.orderUpdateLine(list);this.log(list[0].id,'System',title,body);}void this.review('Order update').catch(()=>{});return;}
     // Agent triggers: met conditions start a review with the values that met them.
     if(deskDue&&!this.busy&&this.config.scope!=='paper'&&Date.now()-this.lastRun>=60000){const open={KR:this.sessionOpen('KR'),US:this.sessionOpen('US')};const held=this.heldEvents(this.watchScope());const holding=this.config.notHeldPriceReviews==='never'?this.heldNow():null;const hit=this.desk.checkTriggers(this.watchScope(),this.formulaData(),t=>(!holding||require('./not-held.cjs').triggerLive('never',t.symbols,holding))&&!held.has('agent:'+t.id)&&(t.symbols??[]).every(sym=>open[/:/.test(sym)?'US':'KR']));if(hit){this.triggerEvidence={kind:'agent-trigger',trigger:{id:hit.trigger.id,name:hit.trigger.name,reason:hit.trigger.reason},results:hit.results};this.log(hit.trigger.id,'System','Agent trigger met',`${hit.trigger.name}: ${hit.results.map(r=>`${r.expr} = ${r.actual} (${r.op} ${r.value})`).join('; ')}`);void this.review('Agent trigger').catch(()=>{});return;}}
-    const elapsed=Date.now()-this.lastRun;
+    const elapsed=Date.now()-this.lastRun,sinceStart=Date.now()-this.scheduleBase();
     if(emergency.active){if((this.lastEmergencyAttempt??0)<this.emergencyStartedAt||elapsed>=60000){this.lastEmergencyAttempt=Date.now();void this.review('Emergency loss response').catch(()=>{});}return;}
     if(elapsed<60000)return;
     const quotes=this.config.scope==='both'?[...(this.usQuotes??[]),...(this.marketQuotes?.()??[])]:this.config.scope==='us'?(this.usQuotes??[]):this.config.scope==='kis'?(this.marketQuotes?.()??[]):this.paper.getState().quotes;
@@ -2652,9 +2658,9 @@ class Automation {
     if(!drift&&this.config.newsTrigger!=='off'&&Date.now()-(this.lastNewsTrigger??0)>=600000){const held=this.heldEvents(scope);const pending=this.newsEvents.pending(this.config.newsTrigger).filter(event=>!held.has('news:'+event.id)).slice(0,5);if(pending.length){this.lastNewsTrigger=Date.now();this.newsEvents.markTriggered(pending.map(event=>event.id));this.triggerEvidence={kind:'news',events:pending.map(({id,title,source,published,symbols,importance})=>({id,title,source,published,symbols,importance}))};void this.review('News event trigger').catch(()=>{});return;}}
     // Near the daily AI budget, scheduled reviews run at twice the interval instead of stopping.
     const interval=this.reviewInterval.get(this.watchScope(),this.config).minutes*60000*this.slowFactor();
-    if(!drift&&elapsed>=interval){const defer=this.deferForPendingOrder();if(defer){if(this.deferredAfter!==this.lastRun){this.deferredAfter=this.lastRun;const o=defer.orders[0];
+    if(!drift&&sinceStart>=interval){const defer=this.deferForPendingOrder();if(defer){if(this.deferredAfter!==this.lastRun){this.deferredAfter=this.lastRun;const o=defer.orders[0];
       this.log(o.id,'System','Review waits for the pending order',`${o.side} ${o.quantity} ${o.symbol} is waiting at the broker (${o.status}${defer.orders.length>1?`, with ${defer.orders.length-1} more`:''}). The next review starts ${this.config.orderUpdateReviews===true?'when it fills, partly fills or is cancelled':'at the scheduled time once it has filled or been cancelled'}, on a price, news or agent trigger, when a market opens or closes, or at ${new Date(defer.until).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Seoul'})} KST at the latest.`);}return;}}
-    if(elapsed>=interval||drift)void this.review(drift?'Price movement trigger':this.firstAfterStart?'Auto trading started':'Scheduled review').catch(()=>{});
+    if(sinceStart>=interval||drift)void this.review(drift?'Price movement trigger':this.firstAfterStart?'Auto trading started':'Scheduled review').catch(()=>{});
   }
   approveLesson(id,approved){if(typeof id!=='string'||typeof approved!=='boolean')throw new Error('INVALID_REQUEST');this.syncLearning();if(this.learningError)throw new Error('LESSON_REVIEW_FAILED');const lifecycle=this.memory.lifecycle(id);if(lifecycle)this.memory.review(id,{expectedSignature:lifecycle.signature,action:approved?'approve':'retire'});else this.db.prepare('UPDATE lessons SET approved=? WHERE id=?').run(approved?1:0,id);return this.getState();}
 }

@@ -56,7 +56,7 @@ must read "Monitoring".
 
 | # | Step | Mechanics |
 |---|---|---|
-| 1 | Restore the review clock | `restoreClock()` (`:167`): last review time and the pre-open key per watch scope, from table `review_clock`, so a restart does not review again at once. |
+| 1 | Restore the review clock | `restoreClock()` (`:167`): last review end and start times (an old row without the start uses its end) and the pre-open key per watch scope, from table `review_clock`, so a restart does not review again at once. |
 | 2 | AI outage alerts | `checkAiAlerts()` (`:672`), section 4.7. |
 | 3 | Local learning sync, every 15 s | `syncLearning()` (`:1925`): outcome ledger, learning memory, reflection queue, lesson trials. No model call. |
 | 4 | Reflection | `this.reflections.tick(...)` (`:1931`) unless a review is running, background AI is paused or the reflection model's provider is waiting. Section 2.5. |
@@ -104,7 +104,7 @@ against the provider's daily limits; section 4) unless skipped.
 
 | Trigger (the `trigger` string) | What starts it | Settings (default) | Gate can skip? | Cost |
 |---|---|---|---|---|
-| `Scheduled review` | `elapsed >= interval` since the last review (`:1994-1997`). Interval = `reviewInterval.get(...).minutes` × `slowFactor()`. | `intervalMinutes` (10; 1–1440, capped at 60 when auto interval is on, `review-interval.cjs:10`); `autoReviewInterval` (false): the model may set 1–60 min with `set_review_interval`, shorter than the user's only for a moving holding, for one hour, never under 5 min (`review-interval.cjs:17-23`); `degradeNearBudget` (true): interval doubles at 80 % of the provider's daily USD or calls (`slowFactor`, `:272`; `token-saver.cjs:79`). | **Yes** | Model review, or none when skipped |
+| `Scheduled review` | `interval` since the **start** of the last review that ran or was skipped (`scheduleBase`, `lastStart`; since 1.5.76, the user's "measured from the start of the review"); a failed review counts from its failure; and at least 60 s after the last review ended (`lastRun`). The agent's interval is compared the same way. `nextReviewAt` (Home's next review) is the same moment: max(now, start + interval, end + 60 s), the order wait applied after. Interval = `reviewInterval.get(...).minutes` × `slowFactor()`. | `intervalMinutes` (10; 1–1440, capped at 60 when auto interval is on, `review-interval.cjs:10`); `autoReviewInterval` (false): the model may set 1–60 min with `set_review_interval`, shorter than the user's only for a moving holding, for one hour, never under 5 min (`review-interval.cjs:17-23`); `degradeNearBudget` (true): interval doubles at 80 % of the provider's daily USD or calls (`slowFactor`, `:272`; `token-saver.cjs:79`). | **Yes** | Model review, or none when skipped |
 | `Auto trading started` | Same as scheduled, but it is the first review due within 5 s of pressing Start (`auto-launch.cjs:35`, `firstAfterStart`; label chosen at `:1997`). Start itself never starts a review. | — | No (the skip tests `trigger==='Scheduled review'`) | Model review |
 | `Pre-open review` | Every market in scope closed and the next open is within `PRE_OPEN_MS` = 10 min (`market-hours.cjs:4`); once per open (`preOpenKey`, `:1976`). | `closedMarketReviews` (`'pre-open'`; also `'off'`, `'keep'`) | No | Model review |
 | `Price movement trigger` | `priceTrigger()` (`:1331`): a quoted symbol moved `eventTolerancePct` from its price at the last review (for a stock that review traded: the price its order was placed at, then its fill price once it fills, since 1.5.70; `tradedBaselineQuotes`, `applyFillBaselines`), or reached a price level the model set with `set_review_watch` (`review-watches.cjs`). Selective rules: `watch-alerts.cjs:1-12`. | `eventTolerancePct` (3 %); `watchlistAlerts` (`'observe'`; `'off'`/`'on'`); `watchlistMovePct` (null = twice the tolerance); `notHeldPriceReviews` (`'default'`; `'levels'`, `'never'`, `not-held.cjs:1-6`); `alertTrial` (`'off'`) | No | Model review |
@@ -1294,7 +1294,7 @@ All are SQLite tables in the app's own database, mostly `(id, payload JSON)`. "W
 | `reviews` | `id`, `payload` (1.12) | `review()` | Journal/Home, `previousReview`, gate, outcome ledger, scoreboard, replay, scout |
 | `events` | `seq`, `id` (unique), `payload` | `interaction()` (`main.cjs:101`) — every Console line of the app | AI console; `review()` (research gaps), `claudeReservation` ("Review size") |
 | `automation_settings` | `id`=1, `payload` | `saveConfig` (`automation.cjs:171`) | constructor |
-| `review_clock` | `scope`, `payload {lastRun, preOpenKey}` | `saveClock` | `restoreClock` |
+| `review_clock` | `scope`, `payload {lastRun, lastStart, preOpenKey}` | `saveClock` | `restoreClock` |
 | `review_intervals` | `scope`, `payload` | `set_review_interval` | scheduler, context |
 | `review_watches` | `scope`, `symbol`, `payload` | `set_review_watch`, price trigger | price trigger, context |
 | `review_gate` | `scope`, `payload` (baseline at the last decision) | `reviewGate.settle` | `compare` |
