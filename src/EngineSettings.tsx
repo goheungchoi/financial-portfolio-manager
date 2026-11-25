@@ -6,6 +6,7 @@ import {Note} from './Note';
 import {Guardrails} from './Guardrails';
 import {KeepWorking} from './KeepWorking';
 import {TokenSaving} from './TokenSaving';
+import {PhoneControl} from './PhoneControl';
 import {useDraftState,setDraft} from './useDraftState';
 import {AGENT_KEYS as DRAFT_KEYS,claudeGateText,effortOptions} from './agentDraft.mjs';
 import {isClaudeModel} from './model-company.mjs';
@@ -223,6 +224,7 @@ function AlertsTab({state,config,busy,dirty,edit,onState}:Props){
       {config.mobileAlerts&&!state.providerStatus.pushConnected&&<div className="notice error">Phone alerts are on, but no webhook is set. Alerts are queued, not sent.</div>}
       {state.notifications.length>0&&<details className="inline-help"><summary>Phone alert outbox · {state.notifications.length}</summary>{state.notifications.map(item=><p key={item.id}>{item.delivered?'Delivered':item.attempts>=99?'Expired':item.attempts>=5?'Failed':'Queued'} · {item.message}</p>)}</details>}
     </Card>
+    <PhoneControl state={state} config={config} busy={busy} edit={edit} onState={onState}/>
     <Card title="AI review alerts" hint="Price levels and moves the AI asked to be woken up for." aside={<button onClick={async()=>{const value=await window.portfolio?.resetReviewWatches();if(value)onState(value);}}>Reset to default alerts</button>}>
       {state.watches?.length?<ul className="watch-list">{state.watches.map(w=><li key={w.symbol}><b>{w.symbol}</b><span>{w.percent??state.config.eventTolerancePct}% move{w.price!=null?` · ${w.direction} ${w.price.toLocaleString()} ${/^\d{6}$/.test(w.symbol)?'KRW':'USD'}${w.priceFired?' (triggered)':''}`:''}</span><small>{w.reason}</small></li>)}</ul>:<p className="muted">Default movement threshold: {state.config.eventTolerancePct}%</p>}
     </Card>

@@ -27,6 +27,7 @@ const cases=[
   ['Shorts on: Short & leverage when a hit stop is sent by itself (kept working with a switches record)','shorts-desktop.cjs',['--mode=settings-sent'],data('shorts-settings-sent')],
   ['Shorts on: Start on Claude with short selling on asks the dry run, then Start works; turning short selling on while running is refused on screen','shorts-desktop.cjs',['--mode=claude'],data('shorts-claude')],
   ["Sectors: Holdings rows and the allocation by sector, the editor's source lines, your label wins and clears, Assign again",'sectors-desktop.cjs',[],data('sectors')],
+  ["Phone control: the switch and its confirmation, the PIN, each connection state from a stand-in worker, the lock and Unlock, Home's line, off",'phone-desktop.cjs',[],data('phone')],
   ['Claude trading with several orders: Start, Stop with a dry run that no longer counts, and the refusal sentence','claude-start-stop-desktop.cjs',[],data('claude-start-stop')],
   ['Activity: opens with rows, totals with a corrected order, Today and not-sent, From, a failed refresh keeps rows, both themes','activity-desktop.cjs',[],data('activity')],
   ["Scripts: the Scout panel's Screens section with a partly read history and a failed run's scripts",'s5-desktop.cjs',['--mode=screens'],data('s5-screens')],

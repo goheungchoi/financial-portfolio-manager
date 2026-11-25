@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('portfolio', {
   resetReviewWatches: () => ipcRenderer.invoke('runtime:reset-watches'),
   previewDigest: () => ipcRenderer.invoke('runtime:digest-preview'),
   testPhoneSnapshot: () => ipcRenderer.invoke('phone:test'),
+  setPhonePin: (pin, again) => ipcRenderer.invoke('phone:set-pin', pin, again),
+  unlockPhonePin: () => ipcRenderer.invoke('phone:unlock'),
   importCalendarKey: () => ipcRenderer.invoke('calendar:import'),
   getSecContact: () => ipcRenderer.invoke('sec:get'),
   setSecContact: email => ipcRenderer.invoke('sec:set', email),

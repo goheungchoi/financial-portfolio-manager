@@ -11,7 +11,7 @@ let restartNotice=null,restartBase=null,restartNoticeDismissed=null;
 // Shorts on, stage 3: the one-time notice for a short-selling switch saved on before the paths could be sent.
 let shortsLiveNotice=null;
 // Phone control (1.6.0): the service is running only while the switch is on and a provider file is remembered.
-let phoneControl=null,phoneSync=()=>{},phoneAlertSeq=0;
+let phoneControl=null,phoneSync=()=>{},phoneAlertSeq=0,phonePinStore=null;
 // A provider file chosen, reconnected or forgotten: the phone worker is restarted (or stopped) so the keys in force apply.
 const phoneRestart=()=>{try{phoneControl?.stop();}catch{}phoneControl=null;try{phoneSync();}catch{}};
 // Stage 4: at a Korean balance reading of a live account with the switch saved on and no record: recorded shown, with
@@ -789,6 +789,8 @@ app.whenReady().then(async () => {
   // What needs the user's attention, for the Overview panel and navigation badges. Read-only.
   const attentionState=()=>{
     const items=[],counts={approvals:{'KIS trading':0,'U.S. stocks':0},lessons:0,news:0},now=Date.now();const plural=(n,word)=>`${n} ${word}${n===1?'':'s'}`;
+    // P6: one line about phone control, only when it needs the user (phone-words.cjs tone 'action').
+    try{const p=phoneView();if(p.enabled&&p.line.tone==='action')items.push({id:'phone-control',tone:'action',title:'Phone control: '+p.line.text,detail:p.line.text,tab:'Engine settings',action:'Open'});}catch{}
     // Item 9: a cash change the flow detector holds (not yet a return, a deposit or a withdrawal). One item per market,
     // or one for both when they may be an exchange; [Record it] opens Performance with the form filled (the draft).
     try{const a=kisState.snapshot?.accountKey;if(a)items.push(...require('./cash-checks.cjs').attentionItems(flowDetector.pending(a)));}catch{}
@@ -918,7 +920,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('discovery:watch',discoveryAction((action,symbol,value)=>{if(action==='add')setTimeout(()=>void pollKisQuotes(),0);const scope=watchScope();if(!scope)throw new Error('KIS_NOT_CONNECTED');if(action==='add')return watchlist.add(scope,symbol,{source:'user',reason:typeof value==='string'?value.slice(0,300):''}).entry;if(action==='remove')return watchlist.remove(scope,symbol);if(action==='pin')return watchlist.pin(scope,symbol,value===true);throw new Error('INVALID_REQUEST');}));
   ipcMain.handle('discovery:refresh-master',discoveryAction(()=>masterFetch?masterRefresh(true):master.status()));
   const {lightState,historyOf}=require('./runtime-state.cjs');
-  const runtimeState=()=>lightState({...automation.getState(),funding:(()=>{try{return automation.fundingState?.()??null;}catch{return null;}})(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()},{version:automation.historyVersion()});
+  // P6: phone control as the window sees it: the switch, whether a PIN is set and locked, and the status line
+  // (phone-words.cjs). No PIN, token, key value or Discord id.
+  function phonePins(){if(!phonePinStore){const {PhoneCore}=require('./phone-core.cjs');phonePinStore=new PhoneCore(store.db,{allow:null});}return phonePinStore;}
+  function phoneView(){let pin={set:false,locked:false};try{const p=phonePins();pin={set:p.hasPin(),locked:p.locked()};}catch{}
+    const status=phoneControl?.status??null;const view={enabled:automation.config.phoneControl===true,providerFile:Boolean(remembered.get('providers')),pin,service:status,clockSuspect:Boolean(phoneControl?.core?.clockSuspect)};
+    return {enabled:view.enabled,pin,line:require('./phone-words.cjs').phoneLine(view)};}
+  const runtimeState=()=>lightState({...automation.getState(),phone:phoneView(),funding:(()=>{try{return automation.fundingState?.()??null;}catch{return null;}})(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()},{version:automation.historyVersion()});
   ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='calendar'){calendarService.disconnect();return runtimeState();}if(kind==='providers'){providerService.disconnect();phoneRestart();automation.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();live.revokeConditional();usLive?.revokeConditional();usSnapshot=null;if(usLive)usLive.refreshError=null;usHeldReading=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
   ipcMain.handle('connections:reconnect',async(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');const file=remembered.get(kind);if(file&&remembered.progress[kind]!=='connecting'){try{await(kind==='kis'?connectKisFile(file):kind==='calendar'?connectCalendarFile(file):connectProviderFile(file));}catch{}}return runtimeState();});
   ipcMain.handle('calendar:import',async event=>{authorize(event);if(remembered.progress.calendar==='connecting')return {ok:false,error:'BUSY',state:runtimeState()};
@@ -968,7 +976,15 @@ app.whenReady().then(async () => {
       executor:require('./phone-commands.cjs').createExecutor({automation,equity:()=>{try{const t=portfolioState()?.totals;return Number.isFinite(t?.equityKRW)?t.equityKRW:Number.isFinite(t?.KRW)?t.KRW:null;}catch{return null;}}})});
     phoneControl.start(providers,path.join(app.getPath('userData'),'phone-state.json'));};
   phoneSync();
-  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);phoneSync();return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});
+  // P6: the PIN is set, changed and unlocked on the desktop only. Each handler authorizes as the others do and takes
+  // nothing else; the PIN is never echoed, logged or put in the runtime state (only "set" and "locked").
+  ipcMain.handle('phone:set-pin',(event,pin,again)=>{authorize(event);if(typeof pin!=='string'||typeof again!=='string'||!/^\d{6,12}$/.test(pin))return {ok:false,error:'PIN_FORMAT',state:runtimeState()};
+    if(pin!==again)return {ok:false,error:'PIN_DIFFERENT',state:runtimeState()};try{phonePins().setPin(pin);}catch{return {ok:false,error:'PIN_NOT_SAVED',state:runtimeState()};}
+    try{automation.log(require('node:crypto').randomUUID(),'System','Phone control','The phone control PIN was set on this PC.');}catch{}return {ok:true,state:runtimeState()};});
+  ipcMain.handle('phone:unlock',event=>{authorize(event);try{phonePins().unlock();}catch{return {ok:false,error:'PIN_NOT_SAVED',state:runtimeState()};}
+    try{automation.log(require('node:crypto').randomUUID(),'System','Phone control','The phone control PIN was unlocked on this PC.');}catch{}return {ok:true,state:runtimeState()};});
+  // P6: phone control turns on only with a PIN set (PHONE_PIN_REQUIRED).
+  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);if(value?.phoneControl===true&&automation.config.phoneControl!==true&&!phonePins().hasPin())return {ok:false,error:'PHONE_PIN_REQUIRED',state:runtimeState()};try{automation.configure(value);phoneSync();return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
   ipcMain.handle('scout:screens',event=>{authorize(event);try{return automation.scoutScreens();}catch{return {failed:false,at:null,screens:[]};}});

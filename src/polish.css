@@ -223,6 +223,8 @@ label.setting-row{cursor:pointer}
 .number-field .unit{padding:0 10px 0 2px;font-size:12px;color:var(--muted)}
 .number-field:has(input:disabled){opacity:.5}
 .limit-control{display:flex;align-items:center;gap:14px}
+.pin-fields{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pin-fields input{width:9em}
 .mini-switch{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);cursor:pointer}
 .control-pair{display:flex;gap:8px}
 .control-pair select{min-width:0}

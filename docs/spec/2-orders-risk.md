@@ -1708,3 +1708,21 @@ Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; a
     no longer waiting on a lost reply; an order being processed; KIS not connected). One alert on success ("A lost
     order reply was linked to its KIS order from the phone.", "A lost order was counted as not sent from the phone."),
     none on a refusal; one order is handled by one command at a time; a confirmation is used once.
+- Stage P6 (Engine settings → Alerts → Phone control; `src/PhoneControl.tsx`, `electron/phone-words.cjs`, `main.cjs`):
+  - The switch: off by default; turning it on shows a confirmation before the save (`src/phone-guide.mjs`
+    PHONE_CONFIRM: what the phone can and cannot do, the PIN, stock codes and order quantities and prices in replies,
+    the five keys, that trading goes on if phone control fails; details behind More) and needs the PIN set: its Turn
+    on button is disabled without one, and `runtime:configure` refuses `phoneControl: true` with PHONE_PIN_REQUIRED.
+    Turning it off is at once.
+  - The PIN: set and changed on this PC only (`phone:set-pin`: typed twice, 6 to 12 digits, else PIN_FORMAT or
+    PIN_DIFFERENT; stored by the core's own `setPin` in `phone_pin`, which also clears a lock), unlocked with
+    `phone:unlock`. Both authorize as the other handlers and take nothing else; an Activity line says that the PIN
+    was set or unlocked, never the PIN. The window learns only `phone: {enabled, pin: {set, locked}, line}`.
+  - The connection line (`phoneLine`) from the switch, the PIN record, the provider file and the service's status:
+    Off; set a PIN; choose the provider file; not set up (the key names missing or not valid, or the file unreadable);
+    connecting; the connection lost and the wait; restarting; Discord gave an unexpected address; Discord refused the
+    bot token (4004) or the connection (other codes); the command list refused (HTTP status); a reply refused (HTTP
+    status); connected, with the last command's time or "no command received yet"; locked after 5 wrong PINs; the PC
+    clock may be wrong (the core's clock flag). Tone 'action' for those the user must act on; Home shows one line
+    ("Phone control: " and the sentence) only then.
+  - The setup guide behind More (`PHONE_GUIDE`, ten steps, checked against Discord's documentation on 2026-11-26).
