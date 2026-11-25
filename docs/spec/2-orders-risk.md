@@ -1647,7 +1647,37 @@ Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; a
   - Activity: one line per command ("Phone command · <name>": "Status sent.", the stop sentence, "Asked for the PIN.",
     or the refusal sentence); a refusal that gets no answer at most once a minute ("Phone command refused"). No PIN,
     token or id.
-  - Start, `link` and `nottaken` answer "not active yet" at once until P4 and P5: no PIN form, no PIN counted, nothing held, also with no PIN set or the PIN locked.
+  - `link` and `nottaken` answer "not active yet" at once until P5 (Start did until P4): no PIN form, no PIN counted, nothing held, also with no PIN set or the PIN locked.
   - Alerts: Stop and Stop everything from the phone raise one alert each through the app's own alert path ("Auto trading stopped from the phone.", "Everything stopped from the phone."), only when the desktop function carried it out (not after "Not stopped: …"); the alert id holds the command, the time and a counter. Status and refusals raise none.
   - Who may command is set once per worker launch (the first `keys-ok`); each launch starts with no command core, so a command before that report is ignored and a launch that never reports its keys accepts nothing; a later report changes nothing and is said once in Activity. The service follows the provider file: choosing or reconnecting one restarts the worker with its keys (also when the import fails), forgetting it stops the worker.
   - Status: each line is read on its own, so a failing getter drops that line, never the reply; a value that could not be read says so ("Auto trading: not known.", "Armed orders: not known.") and with nothing read the reply is "Status could not be read."; the Activity title uses one of the seven command names or "unknown". The Phone control switch is left out of the start token and of the keep-alive's stamp.
+- Stage P4 (Start from the phone; `phone-commands.cjs startSummary` and the executor's `start`):
+  - `/start` (PIN set and not locked, else the core's sentence) answers with what Start would start: the account label
+    as the desktop shows it (`launchState` label), the trading model, how orders go out (paper: nothing to KIS; else
+    buys and sales sent to KIS automatically), orders per review when above 1, short selling for a scope with Korea
+    (always on or off; on: automatic, a short the AI decides is sent by itself, or propose only, each waits for
+    approval; and the cap in percent of net assets), margin buying and leveraged and inverse ETFs when on (in the
+    Short and leverage card's words, "automatic" or "propose only", with their caps), conditional orders when on (a hit armed order submitted
+    automatically, or a proposal that waits for approval), each market's saved limits (Korea in won; the U.S. in the
+    Start message's words: sent automatically, counted against won cash, limits in dollars; with "Show amounts in
+    snapshots" off a money limit says only "set" or "not set") and how many armed orders become watched. A line that
+    cannot be read says "not known" ("Korea: limits not known.", "Short selling: not known."), never a default.
+    Already running or starting: "Auto trading is already running.", nothing held.
+  - The launch token is taken with the summary and held with the 2-minute nonce, with the phone's own fingerprint
+    beside it (`phoneFingerprint`: only what the user set, for each market in scope: the saved policy's limit fields,
+    `live-engine.cjs LIMIT_FIELDS`, with `maxDailyLossKRW` only as a typed amount, since in percent mode it is figured
+    from the day's baseline; and each section's user-set keys of the exposure policy, `exposure.cjs DEFAULT_POLICY`. The
+    running values, day, baseline, valuation and day peak, are left out, so a new high or the day's rollover never
+    refuses a Start. The desktop token is unchanged). The button marks the held Start confirmed and
+    opens the PIN form; a PIN form for a Start not confirmed is "expired" and checks no PIN. The PIN compares the
+    fingerprint (a change, or one that cannot be read: "Settings or account changed. Check the updated account label
+    and try again.", nothing started), then runs `auto-launch.cjs start(automation, token)`, the function
+    `runtime:start` calls, with the same token. Every refusal is start()'s own sentence (a review running, settings or
+    the account changed, the loss-limit guardrail, no model, no key, no consent, the budget, no funded balance, an
+    order in process, a launch cancelled). The Claude dry run is checked inside start(): its save of
+    `{enabled:true, autoSubmit:true}` runs `claudeTradingRefusal` with saving, which refuses without a counted dry run
+    ("Trading on Claude Opus 5.5 needs a dry run on this version first: …") and start() puts the engines back. Start
+    does nothing besides start(), as the desktop handler.
+  - One alert on a real start ("Auto trading started from the phone."), none on a refusal. At most once: a PIN form
+    used twice finds nothing held; a second Start confirmed at once is refused by the token (the first changed the
+    settings) or by the review guard; a worker restart drops the held Start (each launch has a new core).

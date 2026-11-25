@@ -80,9 +80,10 @@ class PhoneCore{
       const prefix=m[1],nonce=m[2];if((x.type===3)!==(prefix==='start-confirm'))return this.silent('shape');
       const p=this.takePending(nonce,{peek:x.type===3});
       // A held Start answers only with its launch token attached; a confirm button only for a held Start.
-      if(!p||(p.command==='start'&&!p.held)||(x.type===3&&p.command!=='start')){if(p&&x.type===5)this.pending.delete(nonce);this.record({command:'confirm',result:'expired'});return {reply:SENTENCES.expired,why:'expired'};}
+      // The confirm button is a gate (P4 review, 4): a PIN form for a Start is accepted only after its button was pressed.
+      if(!p||(p.command==='start'&&!p.held)||(x.type===3&&p.command!=='start')||(x.type===5&&p.command==='start'&&p.confirmed!==true)){if(p&&x.type===5)this.pending.delete(nonce);this.record({command:'confirm',result:'expired'});return {reply:SENTENCES.expired,why:'expired'};}
       command=p.command;options=p.options;
-      if(x.type===3)return {act:{command,step:'ask-pin',nonce,options}};// the confirm button: the worker answers with the PIN form
+      if(x.type===3){p.confirmed=true;return {act:{command,step:'ask-pin',nonce,options}};}// the confirm button: the worker answers with the PIN form
       // The PIN form: checked here and dropped; it goes no further than this function.
       if(PIN_COMMANDS.has(command)){const c=this.checkPin(x.pin);if(!c.ok){this.record({command,result:c.why});return {reply:SENTENCES[c.why],why:c.why,...(c.justLocked?{justLocked:true}:{})}}}
       return {act:{command,step:'run',options,...(p.held?{held:p.held}:{})}};}

@@ -788,4 +788,4 @@ class LiveEngine {
     this.save({...order,brokerOrderId:match.orderId,status:'Accepted',reason:null});return this.reconcile();
   }
 }
-module.exports={LiveEngine,WON_RULE};
+module.exports={LiveEngine,WON_RULE,LIMIT_FIELDS};

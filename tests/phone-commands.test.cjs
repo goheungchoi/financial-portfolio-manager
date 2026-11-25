@@ -28,7 +28,9 @@ test('Stop and Stop everything call the desktop\'s functions and answer with the
   const calls=[];const launch={stop:a=>{calls.push('stop');return 'Auto trading stopped. Existing broker orders remain active.';}};
   const a={...fakeAutomation({}),stopEverything:()=>{calls.push('stopall');return L.EVERYTHING_STOPPED;}};const ex=C.createExecutor({automation:a,launch});
   assert.deepEqual(await ex.run({command:'stop'}),{text:'Auto trading stopped. Existing broker orders remain active.',changed:true});assert.deepEqual(await ex.run({command:'stopall'}),{text:L.EVERYTHING_STOPPED,changed:true});assert.deepEqual(calls,['stop','stopall']);
-  assert.equal(await ex.run({command:'start'}),C.NOT_YET);assert.equal(await ex.run({command:'link'}),C.NOT_YET);assert.deepEqual(await ex.summary(),{ok:false,text:C.NOT_YET});
+  assert.equal(await ex.run({command:'link'}),C.NOT_YET);assert.deepEqual(await ex.summary({command:'link'}),{ok:false,text:C.NOT_YET});
+  // P4: a Start with no held token never reaches start().
+  assert.deepEqual(await ex.run({command:'start'}),{text:'Settings or account changed. Check the updated account label and try again.',changed:false});
   const failing=C.createExecutor({automation:a,launch:{stop:()=>{throw Object.assign(new Error('X'),{text:'the account is changing'});}}});assert.deepEqual(await failing.run({command:'stop'}),{text:'Not stopped: the account is changing.',changed:false});
 });
 
@@ -113,7 +115,7 @@ test('review 3: the service follows the provider file (choose, reconnect, forget
 
 test('review 4: link and nottaken answer "not active yet" at once: no PIN form, no PIN counted, nothing held',async()=>{
   const r=serviceRig();await r.svc.handle({type:'state',state:'keys-ok',allow});r.svc.core.setPin('482913');
-  for(const [cmd,options] of [['link',[{name:'order',value:'A1'},{name:'number',value:'1'}]],['nottaken',[{name:'order',value:'A1'}]],['start',[]]]){
+  for(const [cmd,options] of [['link',[{name:'order',value:'A1'},{name:'number',value:'1'}]],['nottaken',[{name:'order',value:'A1'}]]]){
     await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options})});assert.deepEqual(r.sent.at(-1),{op:'reply',ref:'c'.repeat(24),kind:'message',text:C.NOT_YET},cmd);}
   assert.equal(r.sent.some(m=>m.kind==='modal'),false);assert.equal(r.svc.core.pending.size,0);assert.equal(r.svc.core.pinState().wrong,0);
 });
@@ -166,13 +168,13 @@ test('follow-up C: no alert after "Not stopped"; two alerts in one millisecond k
   await q.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:q.data('stop')});await q.svc.handle({type:'interaction',ref:'d'.repeat(24),interaction:q.data('stopall')});assert.deepEqual(got,['stop','stopall'],'the command goes with the alert');
 });
 
-test('follow-up D: each launch starts with no core; start, link and nottaken say "not active yet" with no PIN or a locked PIN',async()=>{
+test('follow-up D: each launch starts with no core; link and nottaken (and Start until P4) say "not active yet" with no PIN or a locked PIN',async()=>{
   const r=serviceRig();await r.svc.handle({type:'state',state:'keys-ok',allow});assert.ok(r.svc.core);
   r.svc.launch();assert.equal(r.svc.core,null,'a new launch: no core until its own keys-ok');
   await r.svc.handle({type:'interaction',ref:'a'.repeat(24),interaction:r.data('stop')});assert.equal(r.sent.filter(m=>m.op==='reply').length,0,'a command in the gap is ignored');
   await r.svc.handle({type:'state',state:'keys-ok',allow});assert.ok(r.svc.core,'the new launch\'s keys-ok is accepted');
-  for(const cmd of ['start','link','nottaken']){await r.svc.handle({type:'interaction',ref:'b'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:cmd==='link'?[{name:'order',value:'A1'},{name:'number',value:'1'}]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,C.NOT_YET,cmd+', no PIN set');}
+  for(const cmd of ['link','nottaken']){await r.svc.handle({type:'interaction',ref:'b'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:cmd==='link'?[{name:'order',value:'A1'},{name:'number',value:'1'}]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,C.NOT_YET,cmd+', no PIN set');}
   r.svc.core.setPin('482913');const s=r.svc.core.pinState();r.svc.core.writePin({...s,wrong:5,locked:true});
-  for(const cmd of ['start','nottaken']){await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,C.NOT_YET,cmd+', PIN locked');}
+  for(const cmd of ['nottaken']){await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,C.NOT_YET,cmd+', PIN locked');}
   await r.svc.handle({type:'interaction',ref:'d'.repeat(24),interaction:r.data('status')});assert.match(r.sent.at(-1).text,/^Auto trading:/,'Status still works');
 });
