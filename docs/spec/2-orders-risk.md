@@ -1681,3 +1681,30 @@ Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; a
   - One alert on a real start ("Auto trading started from the phone."), none on a refusal. At most once: a PIN form
     used twice finds nothing held; a second Start confirmed at once is refused by the token (the first changed the
     settings) or by the review guard; a worker restart drops the held Start (each launch has a new core).
+- Stage P5 (lost order replies; `phone-commands.cjs`):
+  - `/orders` lists every order in status Uncertain of the Korean and the U.S. engine: the app's short order id (the
+    first 8 characters of its id; the full id beside it when two share it), market, side, quantity, stock, limit price
+    and the time it was sent (KST; New York for the U.S.), with the renderer's lines on what KIS showed and whether a
+    stop armed again would be sent (`src/not-taken.mjs`, copied for the main process and tested equal). Quantities and
+    prices are shown whatever "Show amounts in snapshots" says: they are what identifies the order in KIS. A market
+    whose orders cannot be read says so.
+  - A reply that can grow (/orders, Status, the Start summary) is built to fit the worker's 1,900 characters, never
+    cut silently: its first and closing lines stay, then as many whole orders or lines as fit, then "and N more; see
+    the PC.".
+  - `/link order number` and `/nottaken order`: the typed id must equal one order's short id or full id (case aside);
+    anything else, or two orders sharing it, is said at once and costs no PIN entry. Only an order still Uncertain (the
+    desktop's link also takes a Submitting one; the phone does not). Like Start, two steps: a reply with the order's
+    line, the renderer's evidence and outlook lines and, for `/nottaken`, the desktop dialog's warning ("Only if you
+    checked in KIS that it has no such order…"), for `/link` the KIS number typed and what will be checked; a confirm
+    button (a gate in the core: a PIN form before it is "expired" and checks no PIN); then the PIN. The order is held
+    by its full id with the lines shown and read again at the run: no longer Uncertain refuses, and lines that differ
+    refuse with "This order changed since it was shown. Send the command again." After the PIN they run what the
+    desktop handlers run: the engine's `linkUncertain(id, number, 'LINK BROKER ORDER')`
+    (`live:link`, `us:link`) and `automation.markNotTaken(market, id, 'KIS NEVER TOOK IT')` (`live:not-taken`,
+    `us:not-taken`), and for Korea `refreshWatchRecord` after, as `liveAction` does. `linkUncertain` reads KIS's order
+    inquiry for the order's day and then reconciles (order inquiries only); `markNotTaken` sends nothing to KIS. A
+    link saved before a failed reconcile is said as linked. Refusals in plain words (KIS lists no order with that
+    number that matches this one: the stock, side, quantity or price differ, or the number is not KIS's;
+    no longer waiting on a lost reply; an order being processed; KIS not connected). One alert on success ("A lost
+    order reply was linked to its KIS order from the phone.", "A lost order was counted as not sent from the phone."),
+    none on a refusal; one order is handled by one command at a time; a confirmation is used once.

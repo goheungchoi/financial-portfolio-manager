@@ -5,7 +5,8 @@
 // sentences; amounts follow "Show amounts in snapshots" (config.phoneAmounts). Start (P4) shows what would start, holds
 // the desktop's launch token (auto-launch.cjs launchState) and, after the button and the PIN, calls auto-launch.cjs
 // start(automation, token): the function the desktop's Start calls (main.cjs runtime:start), with every refusal in its own
-// words. The lost-order fixes come in P5; until then they answer that they are not active yet.
+// words. The lost-order commands (P5): /orders lists the orders whose KIS reply was lost; /link and /nottaken, after the
+// PIN, run the desktop's linkUncertain and markNotTaken on one of them.
 const L=require('./auto-launch.cjs');
 const MODEL_NAMES={'gpt-6-luna':'GPT-6 Luna','gpt-6-sol':'GPT-6 Sol','gpt-6-astra':'GPT-6 Astra','claude-opus-5-5':'Claude Opus 5.5','claude-haiku-5-5':'Claude Haiku 5.5'};
 const CHANGED='Settings or account changed. Check the updated account label and try again.';
@@ -43,7 +44,8 @@ function statusText(automation,{equity=()=>null}={}){if(!automation||typeof auto
     if(u)line(()=>`${plural(u,'order has','orders have')} a lost KIS reply (/orders lists them).`);}
   let waits=[];try{waits=a.providerWaitState?.()??[];}catch{waits=[];}
   for(const w of Array.isArray(waits)?waits:[])fact(()=>w&&typeof w.name==='string'&&typeof w.nextTry==='string'?`${w.name}: waiting, next try ${w.nextTry} KST.`:null);
-  return known&&lines.length?lines.join('\n'):'Status could not be read.';}
+  // Many provider waits could pass the reply's limit: as many whole lines as fit, then how many more (P5 review, 2).
+  return known&&lines.length?fitReply([lines[0]],lines.slice(1).map(l=>[l]),[]):'Status could not be read.';}
 // The executor the phone service calls (phone-service.cjs). Every outcome is the desktop function's own sentence or a
 // fixed one; an error answers with its public text, never a stack or a value from Discord.
 // The markets Start would enable, by scope (auto-launch.cjs engines).
@@ -90,16 +92,107 @@ function startSummary(a){const c=a.config??{},amounts=c.phoneAmounts===true;cons
     else add(()=>`U.S.: buys and sales are sent automatically, each counted against your won cash; limits: ${limits(e,usd)}`,'U.S.: buys and sales are sent automatically, each counted against your won cash; limits not known.');}
   add(()=>{const armed=c.conditionalOrders?a.desk.orders(a.watchScope()):[];if(!Array.isArray(armed))throw 0;return armed.length?`${plural(armed.length,'armed order becomes','armed orders become')} watched.`:'No armed orders.';},'Armed orders: not known.');
   let fingerprint=null;try{fingerprint=phoneFingerprint(a);}catch{fingerprint=null;}
-  lines.push(START_CONFIRM);return {text:lines.join('\n'),token:state.token,fingerprint,state};}
+  return {text:fitReply([lines[0]],lines.slice(1).map(l=>[l]),[START_CONFIRM]),token:state.token,fingerprint,state};}
+// ---- P5: lost order replies. An order whose KIS reply was lost is in status Uncertain (live-engine.cjs). /orders lists
+// them with what is needed to find each in KIS's own app; /link and /nottaken run the desktop's own functions on one.
+// The words after "KIS never took it" and the evidence before it are src/not-taken.mjs's (the renderer's), copied here
+// for the main process; tests/phone-lost-orders.test.cjs checks both copies give the same text.
+const NT_STATUS={Filled:'filled','Partially filled':'partly filled',Canceled:'cancelled',Cancelled:'cancelled',Pending:'open',Open:'open',Accepted:'open',Rejected:'rejected'};
+const ntTime=(t,market)=>Number.isFinite(t)?new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:market==='US'?'America/New_York':'Asia/Seoul'})+(market==='US'?' New York':''):null;
+const ntRow=(r,market)=>{const what=[r.side,Number.isFinite(r.quantity)?r.quantity:null,r.symbol].filter(x=>x!=null&&x!=='').join(' ');
+  const status=r.status!=null&&r.status!==''?(NT_STATUS[r.status]??String(r.status).toLowerCase()):null;
+  return [what||(r.orderId?`order ${r.orderId}`:null),status,ntTime(r.timestamp,market)].filter(Boolean).join(', ');};
+function notTakenEvidence(order,market='KR',outlook='running'){const list=order?.kisCandidates;
+  const rows=Array.isArray(list)?list.filter(x=>x&&typeof x==='object'):null;const read=Array.isArray(list)&&rows.length===list.length;
+  const lines=[!read?'The app has not checked KIS for this order. Look in KIS before you confirm.':rows.length?`KIS shows: ${rows.slice(0,3).map(r=>ntRow(r,market)).join('; ')}`:'KIS showed no order like it.'];
+  const who=market==='US'?'U.S.':'Korean';
+  if(outlook==='halted')lines.push(`${who} auto trading is stopped: a stop armed again sends nothing until you press Start.`);
+  else if(outlook!=='running')lines.push(`${who} auto trading is stopped, but orders are watched while stopped: a stop armed again may be sent right away.`);
+  return lines;}
+function notTakenDone(data){const r=Array.isArray(data?.rearmed)?data.rearmed:[];if(!r.length)return 'Counted as not sent.';
+  const what=r.map(o=>`${o.purpose==='stop_loss'?'the stop':'the order'} for ${o.symbol}`).join(', ');
+  return `Counted as not sent; ${what} armed again.${data?.halted?` Nothing is sent until you press Start: ${data.market==='US'?'U.S.':'Korean'} auto trading is stopped.`:data?.watched?' It is watched while auto trading is stopped, so it may be sent before you press Start.':''}`;}
+// The id typed on the phone: the app's order id (a UUID), as its first 8 characters (what /orders shows) or in full,
+// matched exactly, case aside. Never a prefix of another length, never the closest one.
+const SHORT=8;const shortId=id=>String(id).slice(0,SHORT).toLowerCase();
+const MARKET_NAME={KR:'Korea',US:'U.S.'};
+// Every order of both engines, each market apart; a market whose orders cannot be read is reported, not skipped.
+function ordersByMarket(a){const out=[];for(const [m,e] of [['KR',a.live],['US',a.usLive]]){if(!e)continue;let rows=null;try{rows=e.orders();if(!Array.isArray(rows))rows=null;}catch{rows=null;}out.push({market:m,engine:e,rows});}return out;}
+const orderLine=(o,m)=>{const price=Number.isFinite(o.limitPrice)?(m==='US'?`$${o.limitPrice.toFixed(2)}`:won(o.limitPrice)):'price not known';
+  return `${shortId(o.id)} · ${MARKET_NAME[m]} · ${o.side} ${o.quantity} ${o.symbol}${typeof o.name==='string'&&o.name?` (${o.name})`:''} at ${price}${ntTime(o.createdAt,m)?` · sent ${ntTime(o.createdAt,m)}${m==='US'?'':' KST'}`:''}`;};
+const outlookOf=e=>{try{const s=e.getState?.();return s?.enabled?'running':s?.notTakenOutlook??'unknown';}catch{return 'unknown';}};
+// A reply that can grow is built to fit the worker's limit (phone-worker.cjs TEXT_MAX, 1,900 characters) and is never
+// cut silently (P5 review, 2): the head and tail lines stay, then as many whole blocks as fit, then "and N more; see
+// the PC." when some do not.
+const REPLY_MAX=1900;
+function fitReply(head,blocks,tail,more=n=>`and ${n} more; see the PC.`){const join=l=>l.join('\n');
+  for(let i=blocks.length;i>=0;i--){const lines=[...head,...blocks.slice(0,i).flat(),...(i<blocks.length?[more(blocks.length-i)]:[]),...tail];const text=join(lines);if(text.length<=REPLY_MAX||i===0)return text.length<=REPLY_MAX?text:join([...head,more(blocks.length),...tail]).slice(0,REPLY_MAX);}}
+// /orders: quantities and prices are shown whatever "Show amounts in snapshots" says: they are what identifies the order
+// in KIS (P5 note, 1).
+function lostOrdersText(a){const blocks=[];let any=false;
+  for(const {market,engine,rows} of ordersByMarket(a)){if(rows===null){blocks.push([`${MARKET_NAME[market]}: orders could not be read.`]);continue;}
+    const lost=rows.filter(o=>o&&o.status==='Uncertain');const dup=new Set(lost.map(o=>shortId(o.id)).filter((s,i,all)=>all.indexOf(s)!==i));
+    for(const o of lost){any=true;blocks.push([orderLine(o,market)+(dup.has(shortId(o.id))?` (full id ${o.id})`:''),...notTakenEvidence(o,market,outlookOf(engine)).map(l=>'  '+l)]);}}
+  if(!any&&!blocks.length)return 'No orders have a lost KIS reply.';
+  if(!any)return fitReply(['No orders have a lost KIS reply in what could be read.'],blocks,[]);
+  return fitReply([],blocks,['Match each in KIS by stock, side, quantity, price and time. Then /link order:<id> number:<KIS order number>, or /nottaken order:<id> if KIS has no such order.'],n=>`and ${n} more; see the PC.`);}
+// What /link and /nottaken show before the button (P5 review, 1): the order's line and the renderer's evidence and
+// outlook lines, as the desktop's "KIS never took it" dialog shows them. The same lines are read again at the run;
+// any difference refuses.
+const shownLines=(order,market,engine)=>[orderLine(order,market),...notTakenEvidence(order,market,outlookOf(engine))];
+const SHOWN_CHANGED='This order changed since it was shown. Send the command again.';
+const NOT_TAKEN_WARNING='Only if you checked in KIS that it has no such order. The app then counts it as not sent and may send it again.';
+function lostSummary(a,act){const r=resolveLost(a,act.options?.order);if(!r.order)return {ok:false,text:r.text};const {market,engine,order}=r;const shown=shownLines(order,market,engine);
+  const text=act.command==='nottaken'?fitReply(['Count this order as not sent?'],[shown],[NOT_TAKEN_WARNING,START_CONFIRM]):
+    fitReply([`Link this order to KIS order ${act.options?.number}?`],[shown],[`The app reads KIS's orders of ${order.day} and links only if KIS order ${act.options?.number} has the same stock, side, quantity and price.`,START_CONFIRM]);
+  return {ok:true,text,held:{orderId:order.id,market,shown:shown.join('\n')}};}
+// One order from the typed id: {market, engine, order} or {text} saying why not.
+function resolveLost(a,typed){const t=String(typed??'').toLowerCase();const found=[];let unreadable=false;
+  for(const {market,engine,rows} of ordersByMarket(a)){if(rows===null){unreadable=true;continue;}for(const o of rows)if(o&&typeof o.id==='string'&&(o.id.toLowerCase()===t||t.length===SHORT&&shortId(o.id)===t))found.push({market,engine,order:o});}
+  if(found.length>1){const lost=found.filter(f=>f.order.status==='Uncertain');return {text:`More than one order has that short id. Type the full id: ${(lost.length?lost:found).map(f=>f.order.id).join(', ')}.`};}
+  if(!found.length)return {text:unreadable?'That order was not found, and the orders of one market could not be read. Try again, or check on the PC.':'No order has that id. /orders lists the orders with a lost KIS reply.'};
+  if(found[0].order.status!=='Uncertain')return {text:'That order is not waiting on a lost KIS reply any more. Nothing was changed.'};
+  return found[0];}
+// The engines' refusal codes in plain words (the desktop's order tab shows these codes as they are).
+// BROKER_ORDER_MISMATCH covers both a number KIS does not list and one whose order differs, so the sentence says both
+// (P5 review, 3).
+const LOST_REFUSALS={BROKER_ORDER_MISMATCH:'KIS lists no order with that number that matches this one (the stock, side, quantity or price differ, or the number is not KIS\'s). Nothing was changed.',
+  UNKNOWN_ORDER:'That order is not waiting on a lost KIS reply any more. Nothing was changed.',KIS_ORDER_BUSY:'An order is being processed. Try again after it completes.',
+  KIS_NOT_CONNECTED:'Connect your KIS account first.',APPROVAL_REQUIRED:'The app could not confirm this. Nothing was changed.'};
+const lostRefusal=error=>{const code=typeof error?.message==='string'&&/^[A-Z_]{3,40}$/.test(error.message)?error.message:null;return LOST_REFUSALS[code]??`Not done${code?` (${code})`:''}. Check the order on the PC.`;};
 function createExecutor({automation,equity=()=>null,launch=L}){
+  const handling=new Set();// orders a /link or /nottaken is working on now: a second one waits its turn by refusing
   return {
-    // Start's first step: the summary and the launch token, taken now and held unchanged until the PIN (P4). Already
-    // running or starting: said, and nothing held.
-    async summary(act){if(act?.command!=='start')return {ok:false,text:NOT_YET};
+    // The first step of a PIN command. /link and /nottaken: the order and what KIS showed, held by its id with the lines
+    // shown (a mistyped id, or one not lost, is said here and asks no PIN). Start: the summary and the launch token,
+    // taken now and held unchanged until the PIN (P4); already running or starting: said, and nothing held.
+    async summary(act){if(act?.command==='link'||act?.command==='nottaken'){try{return lostSummary(automation,act);}catch{return {ok:false,text:'The orders could not be read. Try again, or check on the PC.'};}}
+      if(act?.command!=='start')return {ok:false,text:NOT_YET};
       try{const s=startSummary(automation);if(s.state.running||s.state.starting)return {ok:false,text:'Auto trading is already running.'};return {ok:true,text:s.text,held:{token:s.token,fingerprint:s.fingerprint}};}
       catch{return {ok:false,text:'What Start would start could not be read. Try again from the PC.'};}},
     async run(act){
       if(act.command==='status')return statusText(automation,{equity});
+      if(act.command==='orders'){try{return lostOrdersText(automation);}catch{return 'The orders could not be read. Try again, or check on the PC.';}}
+      // /link and /nottaken: the desktop's handlers, line by line (main.cjs live:link and live:not-taken, and us:link and
+      // us:not-taken): the engine's linkUncertain, or automation.markNotTaken, with the desktop's confirmation phrase; on
+      // Korea liveAction then refreshes the watch record (the U.S. twins do not). Only an order still Uncertain (the
+      // desktop's link also takes a Submitting one; the phone does not).
+      // The order is the one held at the summary (its full id, its market), read again now: still Uncertain, and the
+      // lines shown then are the lines it gives now, or nothing is done (P5 review, 1).
+      if(act.command==='link'||act.command==='nottaken'){const h=act.held;if(!h||typeof h.orderId!=='string'||!['KR','US'].includes(h.market))return {text:SHOWN_CHANGED,changed:false};
+        const engine=h.market==='US'?automation.usLive:automation.live;let order=null;try{order=engine?.orders().find(o=>o&&o.id===h.orderId)??null;}catch{order=null;}
+        if(!order||order.status!=='Uncertain')return {text:LOST_REFUSALS.UNKNOWN_ORDER,changed:false};
+        const market=h.market;if(shownLines(order,market,engine).join('\n')!==h.shown)return {text:SHOWN_CHANGED,changed:false};if(handling.has(order.id))return {text:'That order is being handled already. Nothing more was done.',changed:false};handling.add(order.id);
+        try{if(act.command==='nottaken'){const data=automation.markNotTaken(market,order.id,'KIS NEVER TOOK IT');if(market==='KR')try{automation.refreshWatchRecord?.();}catch{}return {text:notTakenDone(data),changed:true};}
+          const number=String(act.options?.number??'');
+          try{await engine.linkUncertain(order.id,number,'LINK BROKER ORDER');}
+          catch(error){// linkUncertain saves the link, then reconciles: a failure after the save leaves it linked.
+            let now=null;try{now=engine.orders().find(o=>o.id===order.id);}catch{}
+            if(now?.brokerOrderId===number&&now.status!=='Uncertain'){if(market==='KR')try{automation.refreshWatchRecord?.();}catch{}return {text:`Linked to KIS order ${number}. The app could not refresh from KIS just now; it does on its next check.`,changed:true};}
+            return {text:lostRefusal(error),changed:false};}
+          if(market==='KR')try{automation.refreshWatchRecord?.();}catch{}
+          return {text:`Linked to KIS order ${number}. The app follows it from here.`,changed:true};}
+        catch(error){return {text:lostRefusal(error),changed:false};}finally{handling.delete(order.id);}}
       // Start: auto-launch.cjs start with the token held at the summary, as runtime:start does; every refusal (a review
       // running, settings or the account changed, the loss-limit guardrail, no model, no key, no consent, the budget, no
       // funded balance, an order in process, a launch cancelled) is start()'s own sentence.
@@ -112,4 +205,4 @@ function createExecutor({automation,equity=()=>null,launch=L}){
       if(act.command==='stop'){try{return {text:String(launch.stop(automation)),changed:true};}catch(error){return {text:`Not stopped: ${error?.text??error?.message??'error'}.`,changed:false};}}
       if(act.command==='stopall'){try{return {text:String(automation.stopEverything()),changed:true};}catch(error){return {text:`Not stopped: ${error?.text??error?.message??'error'}.`,changed:false};}}
       return NOT_YET;}};}
-module.exports={createExecutor,statusText,startSummary,phoneFingerprint,NOT_YET,START_CONFIRM,MODEL_NAMES,CHANGED};
+module.exports={createExecutor,statusText,startSummary,phoneFingerprint,lostOrdersText,resolveLost,notTakenEvidence,notTakenDone,shortId,LOST_REFUSALS,NOT_YET,START_CONFIRM,MODEL_NAMES,CHANGED};

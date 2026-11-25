@@ -8,6 +8,8 @@ const allow={user:'100000000000000001',server:'100000000000000002',channel:'1000
 const PIN='482913',BOT_TOKEN='MTAwMDAwMDAwMDAwMDAwMDA0.FAKE.made-up-bot-token',INTERACTION_TOKEN='aW50ZXJhY3Rpb246bWFkZS11cA-made-up';
 function core(now=1795600000000){const db=new DatabaseSync(':memory:');let t=now;const c=new P.PhoneCore(db,{allow,clock:()=>t});return {c,db,set:v=>{t=v;},get now(){return t;}};}
 const cmd=(k,name,extra={})=>({id:idAt(k.now),type:2,applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,command:name,options:[],token:INTERACTION_TOKEN,...extra});
+// Since the P5 review every PIN command goes summary, button, PIN form: this takes one to its PIN form and gives the nonce.
+const confirmed=(k,name,options=[],held={shown:'x'})=>{const s=k.c.accept(cmd(k,name,{options}));k.c.attach(s.act.nonce,held);const b=k.c.accept({...cmd(k,name),type:3,customId:'start-confirm:'+s.act.nonce,command:undefined});assert.equal(b.act.step,'ask-pin');return s.act.nonce;};
 
 test('the snowflake gives Discord\'s time; ids are checked',()=>{
   assert.equal(P.snowflakeTime(idAt(1795600000000)),1795600000000);assert.equal(P.snowflakeTime('abc'),null);assert.equal(P.snowflakeTime('12'),null);
@@ -49,12 +51,15 @@ test('Start: a summary step holding a nonce, the confirm button asks for the PIN
   assert.equal(k.c.accept({...cmd(k,'start'),type:5,customId:'pin:'+s.act.nonce,command:undefined,pin:PIN}).why,'expired','once');
 });
 
-test('the 2-minute hold; the lost-order fixes go straight to the PIN form with their options checked',()=>{
+test('the 2-minute hold; the lost-order fixes show the order first (P5 review) with their options checked; the button is a gate',()=>{
   const k=core();k.c.setPin(PIN);const l=k.c.accept(cmd(k,'link',{options:[{name:'order',value:'A1b2-c3'},{name:'number',value:'0001234567'}]}));
-  assert.equal(l.act.step,'ask-pin');assert.deepEqual(l.act.options,{order:'A1b2-c3',number:'0001234567'});
+  assert.equal(l.act.step,'summary');assert.deepEqual(l.act.options,{order:'A1b2-c3',number:'0001234567'});k.c.attach(l.act.nonce,{orderId:'o',market:'KR',shown:'x'});
+  {const k2=core();k2.c.setPin(PIN);const l2=k2.c.accept(cmd(k2,'nottaken',{options:[{name:'order',value:'A1'}]}));k2.c.attach(l2.act.nonce,{shown:'x'});
+    assert.equal(k2.c.accept({...cmd(k2,'x'),type:5,customId:'pin:'+l2.act.nonce,command:undefined,pin:PIN}).why,'expired','a PIN form before the button');assert.equal(k2.c.pinState().wrong,0,'no PIN checked');
+    const l3=k2.c.accept(cmd(k2,'nottaken',{options:[{name:'order',value:'A1'}]}));assert.equal(k2.c.accept({...cmd(k2,'x'),type:3,customId:'start-confirm:'+l3.act.nonce,command:undefined}).why,'expired','a button with nothing attached');}
   k.set(k.now+121000);assert.equal(k.c.accept({...cmd(k,'link'),type:5,customId:'pin:'+l.act.nonce,command:undefined,pin:PIN}).why,'expired');
   assert.equal(k.c.accept(cmd(k,'link',{options:[{name:'order',value:'x y'},{name:'number',value:'1'}]})).silent,true,'bad options');
-  assert.equal(k.c.accept(cmd(k,'nottaken',{options:[{name:'order',value:'A1'}]})).act.step,'ask-pin');
+  assert.equal(k.c.accept(cmd(k,'nottaken',{options:[{name:'order',value:'A1'}]})).act.step,'summary');
   assert.deepEqual(k.c.accept(cmd(k,'sell')),{reply:P.SENTENCES.unknown,why:'unknown'});
 });
 
@@ -63,7 +68,7 @@ test('the PIN: 6 to 12 digits, a salted scrypt hash, 5 wrong entries lock it unt
   assert.equal(k.c.accept(cmd(k,'start')).why,'noPin');k.c.setPin(PIN);
   const s=JSON.parse(k.db.prepare('SELECT payload FROM phone_pin').get().payload);assert.equal(s.params.N,32768);assert.ok(!JSON.stringify(s).includes(PIN));
   const other=core();other.c.setPin(PIN);assert.notEqual(JSON.parse(other.db.prepare('SELECT payload FROM phone_pin').get().payload).hash,s.hash,'salted');
-  const ask=()=>{k.set(k.now+13000);return k.c.accept(cmd(k,'nottaken',{options:[{name:'order',value:'A1'}]})).act.nonce;};
+  const ask=()=>{k.set(k.now+25000);return confirmed(k,'nottaken',[{name:'order',value:'A1'}]);};
   for(let i=1;i<=4;i++)assert.equal(k.c.accept({...cmd(k,'x'),type:5,customId:'pin:'+ask(),command:undefined,pin:'000000'}).why,'wrongPin',String(i));
   const fifth=k.c.accept({...cmd(k,'x'),type:5,customId:'pin:'+ask(),command:undefined,pin:'000000'});assert.deepEqual([fifth.why,fifth.justLocked],['locked',true]);
   k.set(k.now+61000);assert.equal(k.c.accept(cmd(k,'start')).why,'locked');assert.equal(k.c.accept(cmd(k,'stop')).act.command,'stop');assert.equal(k.c.accept(cmd(k,'status')).act.command,'status');
@@ -102,7 +107,7 @@ test('review 2: once-only fails closed: a seen table that cannot be read or writ
   k.db.prepare=sql=>{if(/phone_seen/.test(sql))throw new Error('disk');return prep(sql);};
   assert.deepEqual(k.c.accept(x),{reply:P.SENTENCES.unrecorded,why:'unrecorded'});assert.deepEqual(k.c.accept(x),{reply:P.SENTENCES.unrecorded,why:'unrecorded'},'never acted on twice');
   k.db.prepare=sql=>{if(/INSERT INTO phone_seen/.test(sql))throw new Error('disk');return prep(sql);};assert.equal(k.c.accept(cmd(k,'stop')).why,'unrecorded','read works, write fails');
-  k.db.prepare=prep;const p=core();p.c.setPin(PIN);const n=p.c.accept(cmd(p,'nottaken',{options:[{name:'order',value:'A1'}]})).act.nonce;const pp=p.db.prepare.bind(p.db);
+  k.db.prepare=prep;const p=core();p.c.setPin(PIN);const n=confirmed(p,'nottaken',[{name:'order',value:'A1'}]);const pp=p.db.prepare.bind(p.db);
   p.db.prepare=sql=>{if(/INSERT INTO phone_pin/.test(sql))throw new Error('disk');return pp(sql);};
   assert.equal(p.c.accept({...cmd(p,'x'),type:5,customId:'pin:'+n,command:undefined,pin:'000000'}).why,'unrecorded','the wrong entry could not be counted: the check fails');
 });

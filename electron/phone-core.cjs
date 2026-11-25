@@ -79,19 +79,21 @@ class PhoneCore{
     else if(x.type===3||x.type===5){const m=/^(start-confirm|pin):([a-f0-9]{32})$/.exec(typeof x.customId==='string'?x.customId:'');if(!m)return this.silent('shape');
       const prefix=m[1],nonce=m[2];if((x.type===3)!==(prefix==='start-confirm'))return this.silent('shape');
       const p=this.takePending(nonce,{peek:x.type===3});
-      // A held Start answers only with its launch token attached; a confirm button only for a held Start.
+      // A held command answers only with what its summary attached (Start: the launch token; a lost-order fix: the order
+      // and what was shown); the confirm button only for such a one.
       // The confirm button is a gate (P4 review, 4): a PIN form for a Start is accepted only after its button was pressed.
-      if(!p||(p.command==='start'&&!p.held)||(x.type===3&&p.command!=='start')||(x.type===5&&p.command==='start'&&p.confirmed!==true)){if(p&&x.type===5)this.pending.delete(nonce);this.record({command:'confirm',result:'expired'});return {reply:SENTENCES.expired,why:'expired'};}
+      // P5 review, 1: every PIN command goes summary, button, PIN form, so the same gate holds for /link and /nottaken.
+      if(!p||!p.held||(x.type===5&&p.confirmed!==true)){if(p&&x.type===5)this.pending.delete(nonce);this.record({command:'confirm',result:'expired'});return {reply:SENTENCES.expired,why:'expired'};}
       command=p.command;options=p.options;
       if(x.type===3){p.confirmed=true;return {act:{command,step:'ask-pin',nonce,options}};}// the confirm button: the worker answers with the PIN form
       // The PIN form: checked here and dropped; it goes no further than this function.
       if(PIN_COMMANDS.has(command)){const c=this.checkPin(x.pin);if(!c.ok){this.record({command,result:c.why});return {reply:SENTENCES[c.why],why:c.why,...(c.justLocked?{justLocked:true}:{})}}}
       return {act:{command,step:'run',options,...(p.held?{held:p.held}:{})}};}
     else return this.silent('shape');
-    // A slash command that needs the PIN: Start first shows what would start (step 'summary'); the lost-order fixes go
-    // straight to the PIN form. Either way a nonce holds the command for 2 minutes.
+    // A slash command that needs the PIN first shows what it would do (step 'summary'; the lost-order fixes too since the
+    // P5 review); a nonce holds the command for 2 minutes through the button and the PIN form.
     if(PIN_COMMANDS.has(command)){if(!this.hasPin())return {reply:SENTENCES.noPin,why:'noPin'};if(this.locked())return {reply:SENTENCES.locked,why:'locked'};
-      const n=this.hold(command,options);return {act:{command,step:command==='start'?'summary':'ask-pin',nonce:n,options}};}
+      const n=this.hold(command,options);return {act:{command,step:'summary',nonce:n,options}};}
     return {act:{command,step:'run',options}};}
   // The launch token (or other data) the main process kept for a held command, for its run.
   attach(nonce,held){const p=this.pending.get(nonce);if(p)p.held=held;}

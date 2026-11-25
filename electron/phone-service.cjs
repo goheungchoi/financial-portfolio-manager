@@ -11,7 +11,7 @@ const STATES=new Set(['keys-ok','bad-gateway-url','not-set-up','connecting','rea
 const NOT_YET='Phone control is being built: this command is not active yet.';
 const REF=/^[a-f0-9]{24}$/;
 const COMMAND_NAMES=require('./phone-core.cjs').COMMANDS;
-const ALERTS=Object.freeze({start:'Auto trading started from the phone.',stop:'Auto trading stopped from the phone.',stopall:'Everything stopped from the phone.'});
+const ALERTS=Object.freeze({link:'A lost order reply was linked to its KIS order from the phone.',nottaken:'A lost order was counted as not sent from the phone.',start:'Auto trading started from the phone.',stop:'Auto trading stopped from the phone.',stopall:'Everything stopped from the phone.'});
 class PhoneService{
   // spawn() returns the worker: {postMessage(m), on('message', fn), on('exit', fn), kill()}. executor: {summary(), run(act)}.
   // core: the command core, or makeCore(allow) to build it from the ids the worker read (P3: the app builds it so).
@@ -20,7 +20,7 @@ class PhoneService{
   // typed.
   // inactive: commands that answer "not active yet" at once (no PIN form, no PIN counted) until their stage. notify(text):
   // one alert, through the app's own alert path, for a command that changed the app's state (Stop, Stop everything).
-  constructor({core=null,makeCore=null,spawn,executor=null,log=()=>{},notify=()=>{},inactive=new Set(['link','nottaken']),onState=()=>{},clock=Date.now,setTimeout:st=setTimeout,clearTimeout:ct=clearTimeout}){
+  constructor({core=null,makeCore=null,spawn,executor=null,log=()=>{},notify=()=>{},inactive=new Set(),onState=()=>{},clock=Date.now,setTimeout:st=setTimeout,clearTimeout:ct=clearTimeout}){
     Object.assign(this,{core,makeCore,spawn,log,notify,inactive,onState,clock,st,ct});this.silentLoggedAt=0;this.executor=executor??{summary:async()=>({ok:false,text:NOT_YET}),run:async()=>NOT_YET};
     this.worker=null;this.stopping=false;this.wait=RESTART_FIRST;this.recent=[];this.recentStates=[];this.restartTimer=null;this.status={state:'stopped',lastCommandAt:null,dropped:0};}
   start(providerPath,statePath){this.stopping=false;this.paths={providerPath,statePath};this.launch();}
@@ -61,10 +61,12 @@ class PhoneService{
       const act=r.act;this.setStatus({lastCommandAt:now});
       if(this.inactive.has(act.command)){if(act.nonce)this.core.takePending?.(act.nonce);this.send({ref,kind:'message',text:NOT_YET});line('Phone command · '+act.command,NOT_YET);return;}
       if(act.step==='ask-pin'){this.send({ref,kind:'modal',nonce:act.nonce});line('Phone command · '+act.command,'Asked for the PIN.');return;}
-      if(act.step==='summary'){const s=await this.executor.summary(act);if(s?.ok&&s.held){this.core.attach(act.nonce,s.held);this.send({ref,kind:'summary',text:String(s.text??''),nonce:act.nonce});line('Phone command · '+act.command,'Showed what Start would start.');}
+      // Every PIN command shows what it would do first (P5 review, 1): Start what it would start, /link and /nottaken the
+      // order and what KIS showed; a mistyped or no longer lost order is said here and asks no PIN.
+      if(act.step==='summary'){const s=await this.executor.summary(act);if(s?.ok&&s.held){this.core.attach(act.nonce,s.held);this.send({ref,kind:'summary',text:String(s.text??''),nonce:act.nonce});line('Phone command · '+act.command,act.command==='start'?'Showed what Start would start.':'Showed the order to confirm.');}
         else{this.core.takePending?.(act.nonce);const t=String(s?.text??NOT_YET);this.send({ref,kind:'message',text:t});line('Phone command · '+act.command,t);}return;}
       // run() gives a sentence, or {text, changed}: changed only when the desktop function carried the command out.
-      const out=await this.executor.run(act);const text=String((out&&typeof out==='object'?out.text:out)??NOT_YET);this.send({ref,kind:'message',text});line('Phone command · '+act.command,act.command==='status'?'Status sent.':text);
+      const out=await this.executor.run(act);const text=String((out&&typeof out==='object'?out.text:out)??NOT_YET);this.send({ref,kind:'message',text});line('Phone command · '+act.command,act.command==='status'?'Status sent.':act.command==='orders'?'Lost orders listed.':text);
       // The alert only for a command that did change the app's state, never after "Not stopped: …" (P3 follow-up C).
       const alert=ALERTS[act.command];if(alert&&out?.changed===true)try{this.notify(alert,act.command);}catch{}}
     catch{this.send({ref,kind:'message',text:'The app could not carry out this command.'});}}

@@ -88,14 +88,15 @@ test('the worker answers within 3 s itself, hands over only checked fields (no t
   await k.w.reply({ref:m.ref,kind:'message',text:'again'});assert.equal(k.api.at(-1).body.content,'Running.','one answer per interaction');
 });
 
-test('the PIN form: link answers with the form once the main process gives the nonce; the form submit carries the PIN to the main process only',async()=>{
-  const k=worker();await k.dispatch(ix({data:{name:'link',options:[{name:'order',value:'A1'},{name:'number',value:'99'}]}}));assert.equal(k.api.length,0,'no defer: the form must be the first answer');
-  const m=k.posted.find(p=>p.type==='interaction');const nonce='a'.repeat(32);await k.w.reply({ref:m.ref,kind:'modal',nonce});
+test('the PIN form: since the P5 review /link shows the order first (deferred), and its button answers with the form; the form submit carries the PIN to the main process only',async()=>{
+  const k=worker();await k.dispatch(ix({data:{name:'link',options:[{name:'order',value:'A1'},{name:'number',value:'99'}]}}));assert.deepEqual(k.api.map(c=>c.body?.type),[5],'the command is deferred: the summary comes first');k.api.length=0;
+  const nonce='a'.repeat(32);await k.dispatch(ix({id:'1400000000000000003',type:3,data:{custom_id:'start-confirm:'+nonce}}));assert.equal(k.api.length,0,'no defer on the button: the form must be its first answer');
+  const m=k.posted.filter(p=>p.type==='interaction').at(-1);await k.w.reply({ref:m.ref,kind:'modal',nonce});
   const form=k.api[0].body;assert.equal(form.type,9);assert.equal(form.data.custom_id,'pin:'+nonce);assert.deepEqual(form.data.components[0].component,{type:4,custom_id:'pin',style:1,min_length:6,max_length:12,required:true});
   await k.dispatch(ix({id:'1400000000000000002',type:5,data:{custom_id:'pin:'+nonce,components:[{type:18,component:{type:4,custom_id:'pin',value:'482913'}}]}}));
   const sub=k.posted.filter(p=>p.type==='interaction').at(-1);assert.equal(sub.interaction.pin,'482913');assert.equal(sub.interaction.customId,'pin:'+nonce);
   // The main process does not answer in time: the worker says so itself before Discord's 3 seconds.
-  const j=worker();await j.dispatch(ix({data:{name:'nottaken',options:[{name:'order',value:'A1'}]}}));j.t.advance(2500);await tick();
+  const j=worker();await j.dispatch(ix({type:3,data:{custom_id:'start-confirm:'+'b'.repeat(32)}}));j.t.advance(2500);await tick();
   assert.deepEqual(j.api[0].body,{type:4,data:{content:'The app did not answer in time. Try again.',flags:64,allowed_mentions:{parse:[]}}});
 });
 

@@ -28,7 +28,7 @@ test('Stop and Stop everything call the desktop\'s functions and answer with the
   const calls=[];const launch={stop:a=>{calls.push('stop');return 'Auto trading stopped. Existing broker orders remain active.';}};
   const a={...fakeAutomation({}),stopEverything:()=>{calls.push('stopall');return L.EVERYTHING_STOPPED;}};const ex=C.createExecutor({automation:a,launch});
   assert.deepEqual(await ex.run({command:'stop'}),{text:'Auto trading stopped. Existing broker orders remain active.',changed:true});assert.deepEqual(await ex.run({command:'stopall'}),{text:L.EVERYTHING_STOPPED,changed:true});assert.deepEqual(calls,['stop','stopall']);
-  assert.equal(await ex.run({command:'link'}),C.NOT_YET);assert.deepEqual(await ex.summary({command:'link'}),{ok:false,text:C.NOT_YET});
+  assert.deepEqual(await ex.run({command:'link',options:{order:'a1',number:'1'}}),{text:'This order changed since it was shown. Send the command again.',changed:false},'P5: nothing held, nothing done');assert.deepEqual(await ex.summary({command:'link'}),{ok:false,text:'No order has that id. /orders lists the orders with a lost KIS reply.'});assert.deepEqual(await ex.summary({command:'status'}),{ok:false,text:C.NOT_YET});
   // P4: a Start with no held token never reaches start().
   assert.deepEqual(await ex.run({command:'start'}),{text:'Settings or account changed. Check the updated account label and try again.',changed:false});
   const failing=C.createExecutor({automation:a,launch:{stop:()=>{throw Object.assign(new Error('X'),{text:'the account is changing'});}}});assert.deepEqual(await failing.run({command:'stop'}),{text:'Not stopped: the account is changing.',changed:false});
@@ -73,7 +73,7 @@ test('one Activity line per command, in fixed words or the desktop\'s sentence; 
   await svc.handle({type:'interaction',ref:'a'.repeat(24),interaction:data('status')});await svc.handle({type:'interaction',ref:'b'.repeat(24),interaction:data('stop')});
   for(let i=0;i<5;i++)await svc.handle({type:'interaction',ref:String(i).repeat(24).slice(0,24).replace(/\d/g,'c'),interaction:data('stop',{userId:'100000000000000099'})});
   svc.core.setPin('482913');await svc.handle({type:'interaction',ref:'e'.repeat(24),interaction:data('nottaken',{options:[{name:'order',value:'A1'}]})});
-  assert.deepEqual(lines,[['Phone command · status','Status sent.'],['Phone command · stop','Auto trading stopped. Existing broker orders remain active.'],['Phone command refused','A command was not answered (not-user). Refusals like this are noted at most once a minute.'],['Phone command · nottaken',C.NOT_YET]]);
+  assert.deepEqual(lines,[['Phone command · status','Status sent.'],['Phone command · stop','Auto trading stopped. Existing broker orders remain active.'],['Phone command refused','A command was not answered (not-user). Refusals like this are noted at most once a minute.'],['Phone command · nottaken','No order has that id. /orders lists the orders with a lost KIS reply.']]);
   const all=JSON.stringify(lines);for(const secret of ['482913',...Object.values(allow),'100000000000000099'])assert.ok(!all.includes(secret),secret.slice(0,4));
 });
 
@@ -116,7 +116,7 @@ test('review 3: the service follows the provider file (choose, reconnect, forget
 test('review 4: link and nottaken answer "not active yet" at once: no PIN form, no PIN counted, nothing held',async()=>{
   const r=serviceRig();await r.svc.handle({type:'state',state:'keys-ok',allow});r.svc.core.setPin('482913');
   for(const [cmd,options] of [['link',[{name:'order',value:'A1'},{name:'number',value:'1'}]],['nottaken',[{name:'order',value:'A1'}]]]){
-    await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options})});assert.deepEqual(r.sent.at(-1),{op:'reply',ref:'c'.repeat(24),kind:'message',text:C.NOT_YET},cmd);}
+    await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options})});assert.deepEqual(r.sent.at(-1),{op:'reply',ref:'c'.repeat(24),kind:'message',text:cmd==='start'?C.NOT_YET:'No order has that id. /orders lists the orders with a lost KIS reply.'},cmd);}
   assert.equal(r.sent.some(m=>m.kind==='modal'),false);assert.equal(r.svc.core.pending.size,0);assert.equal(r.svc.core.pinState().wrong,0);
 });
 
@@ -168,13 +168,13 @@ test('follow-up C: no alert after "Not stopped"; two alerts in one millisecond k
   await q.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:q.data('stop')});await q.svc.handle({type:'interaction',ref:'d'.repeat(24),interaction:q.data('stopall')});assert.deepEqual(got,['stop','stopall'],'the command goes with the alert');
 });
 
-test('follow-up D: each launch starts with no core; link and nottaken (and Start until P4) say "not active yet" with no PIN or a locked PIN',async()=>{
+test('follow-up D: each launch starts with no core; since P5, link and nottaken with no PIN or a locked PIN get the core sentence',async()=>{
   const r=serviceRig();await r.svc.handle({type:'state',state:'keys-ok',allow});assert.ok(r.svc.core);
   r.svc.launch();assert.equal(r.svc.core,null,'a new launch: no core until its own keys-ok');
   await r.svc.handle({type:'interaction',ref:'a'.repeat(24),interaction:r.data('stop')});assert.equal(r.sent.filter(m=>m.op==='reply').length,0,'a command in the gap is ignored');
   await r.svc.handle({type:'state',state:'keys-ok',allow});assert.ok(r.svc.core,'the new launch\'s keys-ok is accepted');
-  for(const cmd of ['link','nottaken']){await r.svc.handle({type:'interaction',ref:'b'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:cmd==='link'?[{name:'order',value:'A1'},{name:'number',value:'1'}]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,C.NOT_YET,cmd+', no PIN set');}
+  for(const cmd of ['link','nottaken']){await r.svc.handle({type:'interaction',ref:'b'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:cmd==='link'?[{name:'order',value:'A1'},{name:'number',value:'1'}]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,require('../electron/phone-core.cjs').SENTENCES.noPin,cmd+', no PIN set (P5: the core sentence)');}
   r.svc.core.setPin('482913');const s=r.svc.core.pinState();r.svc.core.writePin({...s,wrong:5,locked:true});
-  for(const cmd of ['nottaken']){await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,C.NOT_YET,cmd+', PIN locked');}
+  for(const cmd of ['nottaken']){await r.svc.handle({type:'interaction',ref:'c'.repeat(24),interaction:r.data(cmd,{options:cmd==='start'?[]:[{name:'order',value:'A1'}]})});assert.equal(r.sent.at(-1).text,require('../electron/phone-core.cjs').SENTENCES.locked,cmd+', PIN locked (P5: the core sentence)');}
   await r.svc.handle({type:'interaction',ref:'d'.repeat(24),interaction:r.data('status')});assert.match(r.sent.at(-1).text,/^Auto trading:/,'Status still works');
 });

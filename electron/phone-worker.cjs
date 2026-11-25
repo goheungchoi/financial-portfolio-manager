@@ -11,7 +11,9 @@ const {Gateway}=require('./discord-gateway.cjs');
 const KEYS=Object.freeze(['discordBotToken','discordApplicationId','discordServerId','discordChannelId','discordUserId']);
 const SNOWFLAKE=/^\d{17,20}$/,TOKEN=/^[A-Za-z0-9._-]{20,200}$/;
 const REF_MS=14*60000,MODAL_WAIT_MS=2500,TEXT_MAX=1900;
-const PIN_FORM_FIRST=new Set(['link','nottaken']);
+// P5 review, 1: /link and /nottaken show the order first (a summary with its confirm button), as Start does; only the
+// button opens the PIN form.
+const PIN_FORM_FIRST=new Set();
 // No message the bot posts or edits can ever mention anyone (P2 review, change 2).
 const NO_MENTIONS=Object.freeze({parse:[]});
 // The commands, for the one server only; usable by the server's administrators only (default_member_permissions "0").

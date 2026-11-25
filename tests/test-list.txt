@@ -296,3 +296,4 @@ tests/phone-core.test.cjs
 tests/phone-gateway.test.cjs
 tests/phone-commands.test.cjs
 tests/phone-start.test.cjs
+tests/phone-lost-orders.test.cjs
