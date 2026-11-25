@@ -2,6 +2,7 @@ const fs=require('node:fs');const path=require('node:path');const {spawnSync}=re
 const root=path.resolve(__dirname,'..'),artifacts=path.join(root,'artifacts/ui-tests');fs.mkdirSync(artifacts,{recursive:true});
 const directory=fs.mkdtempSync(path.join(artifacts,'run-'));const data=group=>{const dir=path.join(directory,'data-'+group);fs.mkdirSync(dir,{recursive:true});return dir;};
 const groups={smoke:data('smoke'),connections:data('connections'),overseas:data('overseas'),regression:data('regression')};
+const shortsSaved=data('shorts-saved');// the saved-switch case and its restart share one folder
 const cases=[
   ['Application and market smoke','electron-smoke.cjs',[],groups.smoke],['Restart persistence','electron-smoke.cjs',['--restore'],groups.smoke],
   ['Korean portfolio and charts','kis-desktop.cjs',[],groups.smoke],['Paper, engine settings and broker approvals','runtime-desktop.cjs',[],groups.smoke],
@@ -18,6 +19,13 @@ const cases=[
   ['Short positions: the section below the holdings on Home and the Holdings tab, an app short and one opened in the KIS app, both themes','short-positions-desktop.cjs',[],data('short-positions')],
   ['Short & leverage: the controls of the short section, and the confirmation when short selling is turned on (Cancel saves nothing), both themes','short-settings-desktop.cjs',[],data('short-settings')],
   ['The Korea tab Orders card: your buy prepared while a short was open shows KIS orderable cash, a cover its buy-back cost, both themes','short-ticket-desktop.cjs',[],data('short-ticket')],
+  ['Shorts on: a fake short through the opened paths on the stand-in KIS: sent, tied, its cover stop armed, hit, approved, sent, filled; Short positions on Home','shorts-desktop.cjs',['--mode=flow'],data('shorts-flow')],
+  ['Shorts on: the unprotected listings: conditional orders off, a tie gone (with its dismissal), a lot the app cannot tie','shorts-desktop.cjs',['--mode=unprotected'],data('shorts-unprotected')],
+  ['Shorts on: a short-selling switch saved on by an earlier version: the Home notice after the first balance reading, one Activity line, dismissed','shorts-desktop.cjs',['--mode=saved-switch'],shortsSaved],
+  ['Shorts on: the saved-switch notice after a restart: gone','shorts-desktop.cjs',['--mode=saved-restart'],shortsSaved],
+  ['Shorts on: the saved-switch notice on a mock account: none','shorts-desktop.cjs',['--mode=saved-mock'],data('shorts-saved-mock')],
+  ['Shorts on: Short & leverage when a hit stop is sent by itself (kept working with a switches record)','shorts-desktop.cjs',['--mode=settings-sent'],data('shorts-settings-sent')],
+  ['Shorts on: Start on Claude with short selling on asks the dry run, then Start works; turning short selling on while running is refused on screen','shorts-desktop.cjs',['--mode=claude'],data('shorts-claude')],
   ['Claude trading with several orders: Start, Stop with a dry run that no longer counts, and the refusal sentence','claude-start-stop-desktop.cjs',[],data('claude-start-stop')],
   ['Activity: opens with rows, totals with a corrected order, Today and not-sent, From, a failed refresh keeps rows, both themes','activity-desktop.cjs',[],data('activity')],
   ["Scripts: the Scout panel's Screens section with a partly read history and a failed run's scripts",'s5-desktop.cjs',['--mode=screens'],data('s5-screens')],

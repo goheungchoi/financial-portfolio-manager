@@ -1,7 +1,8 @@
 // Short selling B3f-3 (artifacts/reviews/2026-11-24-short-selling/rulings-b3f-plan.md 3): the Short & leverage card's short
 // section on a stubbed KIS account: the trailing-stop switch, "buy back before the last day", the cover stop's label, and
-// the confirmation when short selling is switched on (with the line that the app cannot send a short yet); Cancel saves
-// nothing. Both themes are captured. Made-up data only; no credential file is read.
+// the confirmation when short selling is switched on; Cancel saves nothing. Shorts on (1.5.75): the paths are open, so the
+// section's two lines and the confirmation say what applies, with the conditional-order sentence in three states (off;
+// on but not watched while stopped; kept working while stopped without a permit's record: proposed). Both themes are captured. Made-up data only; no credential file is read.
 const {app,dialog}=require('electron');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
 if(!process.env.PORTFOLIO_SMOKE_DATA)throw new Error('Isolated UI data directory required');
 app.setPath('userData',process.env.PORTFOLIO_SMOKE_DATA);
@@ -31,7 +32,8 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   assert.match(text,/Cover stop above the sale price/);assert.doesNotMatch(text,/Stop warning at adverse move/);assert.match(text,/Buy back before the last day/);assert.match(text,/Trail the cover stop/);
   assert.equal(await run(`document.querySelector('[aria-label="Korea trail the cover stop"]').getAttribute('aria-checked')??String(document.querySelector('[aria-label="Korea trail the cover stop"]').checked)`),'false','off by default');
   assert.equal(await run(`document.querySelector('[aria-label="Korea Buy back before the last day (business days)"]')?.value`),'5','5 business days by default');
-  assert.match(text,/Opening a short: not available yet\. The app cannot send a short until one real test on your account has confirmed how KIS handles it\./);assert.match(text,/Buying a short back: not available yet for the same reason; until then a cover the app proposes waits for your approval\./);
+  assert.match(text,/Opening a short: sent after your approval, within your cap\./);assert.match(text,/Buying a short back: the app's cover stops and loan-end buy-backs are conditional orders\. Conditional orders are off now, so a short will have no stop and no loan-end buy-back until you turn them on in Engine settings\. You can always buy a short back in KIS's own app\./);
+  assert.doesNotMatch(text,/not available yet/);
   assert.doesNotMatch(text,/U1|U3|U5|LOAN_DT|CRDT_TYPE|lendable_by_company/,'no internal shorthand on screen');
   // A fraction in "buy back before": its own words inline, and Save asks no confirmation (the engine refuses it, as before).
   const typeInto=v=>run(`(()=>{const i=document.querySelector('[aria-label="Korea Buy back before the last day (business days)"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,${JSON.stringify(v)});i.dispatchEvent(new Event('input',{bubbles:true}));return true;})()`);
@@ -44,13 +46,27 @@ app.once('browser-window-created',(_event,win)=>{win.webContents.setBackgroundTh
   await run(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Save Korea settings').click()`);
   await until(`Boolean(document.querySelector('[role="dialog"][aria-label="Turn on short selling"]'))`,'the confirmation');
   const dlg=await run(`document.querySelector('[role="dialog"][aria-label="Turn on short selling"]').innerText`);
-  for(const w of [/Turn on short selling\? The app may then sell borrowed shares and buy them back later\. A short loses when the price rises, and its loss has no limit\./,/All shorts together stay within 20% of the account value\. Each gets a stop 15% above its sale price, and is bought back before its 90-day loan ends\./,/only KIS's own forced buy-back protects it/,/The app cannot send a short yet\. That is switched on by a later update, after one real test on your account\./])assert.match(dlg,w);
+  for(const w of [/Turn on short selling\? The app may then sell borrowed shares and buy them back later\. A short loses when the price rises, and its loss has no limit\./,/All shorts together stay within 20% of the account value\. Each gets a stop 15% above its sale price, and is bought back before its 90-day loan ends; both are conditional orders\./,/only KIS's own forced buy-back protects it/,/both are conditional orders\./,/Conditional orders are off now, so a short will have no stop and no loan-end buy-back until you turn them on in Engine settings\./,/A short the AI decides is proposed and waits for your approval\./])assert.match(dlg,w);
+  // The first-short warning is behind More (a closed details element: textContent, not innerText).
+  assert.match(await run(`document.querySelector('[role="dialog"][aria-label="Turn on short selling"]').textContent`),/No short has been sent by this app yet, so the first one is also the first test with KIS\./);
+  assert.doesNotMatch(dlg,/The app cannot send a short yet/);
   for(const theme of ['dark','light']){if(await run('document.documentElement.dataset.theme')!==theme){await run(`document.querySelector('[aria-label="Dark mode"]').click()`);await until(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`,'the theme switch');}
     await run(`document.querySelector('[role="dialog"][aria-label="Turn on short selling"]').scrollIntoView({block:'center'})`);await capture(`short-confirm-${theme}`);}
   await run(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Turn on short selling"] button')).find(b=>b.textContent==='Cancel').click()`);
   await until(`!document.querySelector('[role="dialog"][aria-label="Turn on short selling"]')`,'the confirmation closed');
   assert.equal(await run(`window.portfolio.getExposure().then(r=>r.state.markets.KR.policy.short.enabled)`),false,'Cancel saves nothing');
   await run(`${sec}.scrollIntoView({block:'start'})`);await capture('short-settings-section');
+  // The conditional-order sentence in its other states: on but not watched (auto trading stopped, not kept working); kept
+  // working while stopped with no switches record (a hit stop is proposed).
+  const sentence=async(want,label)=>{await navigate('Engine settings');await navigate('Short & leverage');await until(`Boolean(document.querySelector('[aria-label="Korea allow short selling"]'))`,'the short section');
+    await run(`document.querySelector('[aria-label="Korea allow short selling"]').click()`);await run(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Save Korea settings').click()`);
+    await until(`Boolean(document.querySelector('[role="dialog"][aria-label="Turn on short selling"]'))`,'the confirmation '+label);assert.match(await run(`document.querySelector('[role="dialog"][aria-label="Turn on short selling"]').innerText`),want,label);
+    await run(`document.querySelector('[role="dialog"][aria-label="Turn on short selling"]').scrollIntoView({block:'center'})`);await capture('short-confirm-'+label);
+    await run(`Array.from(document.querySelectorAll('[role="dialog"][aria-label="Turn on short selling"] button')).find(b=>b.textContent==='Cancel').click()`);};
+  assert.equal((await run(`window.portfolio.configureRuntime({scope:'kis',shareKisWithOpenAI:true,conditionalOrders:true,conditionalAutoSubmit:true})`)).ok,true);
+  await sentence(/Conditional orders are on, but they are not watched now, so a stop or buy-back that is hit is neither sent nor proposed until you press Start/,'not-watched');
+  await run("window.portfolio.setWatchWhileStopped(true,'WATCH WHILE STOPPED LIVE')");await until(`window.portfolio.getExposure().then(r=>r.state.markets.KR.coverStops?.whenHit==='proposed')`,'kept working: proposed');
+  await sentence(/Conditional orders are on now, but a stop or buy-back that is hit is only proposed and waits for your approval\./,'proposed');
   console.log('Short settings desktop passed');clearTimeout(timer);app.exit(0);
 }catch(error){console.error(error);clearTimeout(timer);app.exit(1);}});});
 require('../electron/main.cjs');
