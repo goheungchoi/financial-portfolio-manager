@@ -313,22 +313,27 @@ class Automation {
     if(this.prefixStamp()!==e.stamp){e.stopped='settings changed';return;}
     const next=this.nextReviewAt();if(!next||next<=now||next-now>3600000||!this.scoutMarkets().some(m=>this.sessionOpen(m,next)))return;
     if(this.providerWaitFor(model))return;const reserve=keepAliveReserve(model);if(this.budgetBlocked(model,reserve))return;
-    this.keepAliveBusy=true;void this.keepAlive(e,model,reserve,base+3600000).catch(()=>{}).finally(()=>{this.keepAliveBusy=false;});}
+    this.keepAliveBusy=true;void this.keepAlive(e,model,reserve,base+3600000).catch(()=>{e.stopped??='unexpected';}).finally(()=>{this.keepAliveBusy=false;});}
   async keepAlive(e,model,reserve,deadline){const id=randomUUID(),day=seoulDate(),at=Date.now();
     try{this.reserveCall({openaiModel:model},reserve,id,day,JSON.stringify({kind:'keep-alive',model,reservedMicro:reserve,status:'pending',timestamp:at}));}catch{return;}
     let r;try{r=await this.provider.request('keep-alive',{options:{openaiModel:model,notBefore:e.at,deadline}});}
     catch(error){try{require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,id,{model,usage:null},'failed-or-uncertain');}catch{}e.stopped='failed';this.keepAliveOff='failed';
       if(!this.keepAliveFailLogged){this.keepAliveFailLogged=true;this.log(id,'System','Keeping the saved instructions failed',`Anthropic did not take the request that keeps the saved instructions${error?.detail?.status?` (HTTP ${error.detail.status}${error.detail.type?', '+error.detail.type:''})`:''}. It is not tried again this session; reviews are not affected, and the next one writes the instructions again.`);}return;}
-    if(r?.skipped){this.releaseCall(model,reserve,id,day);e.stopped=r.skipped==='LATE'?'lapsed':String(r.skipped).toLowerCase();return;}
+    // An answer of no known shape (follow-up 1): the request may have been sent, so the row is settled as uncertain (it keeps
+    // its reservation) and the entry stops.
+    if(!r||typeof r!=='object'||!r.skipped&&!(r.cache&&typeof r.cache==='object')){try{require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,id,{model,usage:null},'failed-or-uncertain');}catch{}e.stopped='unexpected';return;}
+    if(r.skipped){this.releaseCall(model,reserve,id,day);e.stopped=r.skipped==='LATE'?'lapsed':String(r.skipped).toLowerCase();return;}
     try{require('./ai-accounting.cjs').settle(this.db,'ai_usage',day,id,r,'completed');}catch{}
     const usd=require('./ai-models.cjs').costDetails(r.model??model,r.usage)?.micro;const cost=Number.isFinite(usd)?`about $${(usd/1e6).toFixed(usd<100000?3:2)}`:'cost not known';
     if(r.cache?.read>0&&!(r.cache.write>0)){e.pings++;e.lastPingAt=at;this.log(id,'Program','Kept the saved instructions for the next review',`${cost}. ${r.cache.read.toLocaleString('en-US')} tokens read from the saved instructions, none written.`);return;}
     e.stopped='wrote';this.log(id,'System','Keeping the saved instructions stopped',`The request read ${(r.cache?.read??0).toLocaleString('en-US')} tokens and wrote ${(r.cache?.write??0).toLocaleString('en-US')}, so the saved instructions had not been kept (${cost}). No more of these until the next review writes them again.`);}
   // A keep-alive that sent nothing (skipped in the client): its reservation and its call are taken back, its row removed.
+  // Follow-up 2: only a row still pending is taken back; an id never reserved, or a row already settled, changes nothing.
   releaseCall(model,reserve,callId,day){const vendor=this.vendorOf(model);this.db.exec('BEGIN IMMEDIATE');try{
+    const gone=this.db.prepare("DELETE FROM ai_calls WHERE id=? AND json_extract(payload,'$.status')='pending'").run(callId).changes;if(gone!==1){this.db.exec('COMMIT');return false;}
     this.db.prepare('UPDATE ai_usage SET calls=MAX(calls-1,0),reservedMicro=MAX(reservedMicro-?,0) WHERE day=?').run(reserve,day);
     this.db.prepare('UPDATE ai_usage_vendor SET calls=MAX(calls-1,0),reservedMicro=MAX(reservedMicro-?,0) WHERE day=? AND vendor=?').run(reserve,day,vendor);
-    this.db.prepare('DELETE FROM ai_calls WHERE id=?').run(callId);this.db.exec('COMMIT');}catch{try{this.db.exec('ROLLBACK');}catch{}}}
+    this.db.exec('COMMIT');return true;}catch{try{this.db.exec('ROLLBACK');}catch{}return false;}}
   // Why the keep-alive did or did not fire, for the runtime state (the planner reads it from the live record).
   keepAliveView(){const e=this.keepAliveEntry;return {off:this.keepAliveOff??null,entry:e?{at:e.at,pings:e.pings,lastPingAt:e.lastPingAt,stopped:e.stopped??null}:null};}
   preOpenRan(hours=this.marketHours()){return Boolean(hours.next)&&this.preOpenKey===`${hours.next.market}:${hours.next.at}`;}

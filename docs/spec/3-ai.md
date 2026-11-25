@@ -981,7 +981,8 @@ The size retry (`size-retry.cjs`) is about re-running a failed review, not about
   answer is needed." with no mark, no top-level mark, `max_tokens` 1 (0 is refused with `output_config.format`). The
   client sends nothing (skipped) when its skeleton is older than the entry's review (`STALE`) or when, about to send, the
   entry's hour has ended (`LATE`: it waited behind another request); a skipped keep-alive's reservation, call and row are
-  taken back (`releaseCall`). Its timeout is 20 s (below the worker's 90 s cap), so a review that becomes due while a
+  taken back (`releaseCall`, only for a row still pending). An answer of no known shape stops the entry and settles its
+  row as uncertain. Its timeout is 20 s (below the worker's 90 s cap), so a review that becomes due while a
   keep-alive is in flight waits for it, at most 20 seconds. Only
   while: the entry was written by this trading model and the settings and exposure policy are unchanged since
   (`prefixStamp`); auto trading runs on Claude; a scheduled review is due within the hour with a session the app trades

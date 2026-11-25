@@ -145,3 +145,23 @@ test('review 5: a replay or any non-review caller leaves the skeleton; a skipped
   assert.equal(rows(c.db).filter(r=>r.kind==='keep-alive').length,0,'no row');const u=c.db.prepare('SELECT calls,reservedMicro FROM ai_usage').get();assert.deepEqual([u.calls,u.reservedMicro],[0,0]);
   assert.equal(c.a.keepAliveEntry.stopped,'no_prefix');
 });
+
+// Follow-up after the second review (two hardening points).
+test('follow-up 1: an answer of no known shape stops the entry and settles its row; later ticks send nothing more',async()=>{
+  const c=engine({answer:async()=>undefined});c.setNext(c.t0+60*MIN);await c.tick(c.t0+55*MIN);await c.tick(c.t0+56*MIN);await c.tick(c.t0+57*MIN);
+  assert.equal(c.pings(),1);assert.equal(c.a.keepAliveEntry.stopped,'unexpected');
+  const ka=rows(c.db).filter(r=>r.kind==='keep-alive');assert.equal(ka.length,1);assert.equal(ka[0].status,'failed-or-uncertain','not left pending');
+});
+
+test('follow-up 2: releaseCall takes back only a row still pending',()=>{
+  const c=engine();const {a,db}=c;const day=require('../electron/kis-activity.cjs').seoulDate();
+  a.reserveCall({openaiModel:'claude-opus-5-5'},10000,'k1',day,JSON.stringify({kind:'keep-alive',status:'pending',reservedMicro:10000}));
+  assert.equal(a.releaseCall('claude-opus-5-5',10000,'never-reserved',day),false,'an id never reserved changes nothing');
+  assert.deepEqual(Object.values(db.prepare('SELECT calls,reservedMicro FROM ai_usage').get()),[1,10000]);
+  assert.equal(a.releaseCall('claude-opus-5-5',10000,'k1',day),true);assert.deepEqual(Object.values(db.prepare('SELECT calls,reservedMicro FROM ai_usage').get()),[0,0]);
+  assert.equal(a.releaseCall('claude-opus-5-5',10000,'k1',day),false,'a second release changes nothing');assert.deepEqual(Object.values(db.prepare('SELECT calls,reservedMicro FROM ai_usage').get()),[0,0]);
+  a.reserveCall({openaiModel:'claude-opus-5-5'},10000,'k2',day,JSON.stringify({kind:'keep-alive',status:'pending',reservedMicro:10000}));
+  require('../electron/ai-accounting.cjs').settle(db,'ai_usage',day,'k2',{model:'claude-opus-5-5',usage:null},'failed-or-uncertain');
+  const before=db.prepare('SELECT calls,reservedMicro FROM ai_usage').get();assert.equal(a.releaseCall('claude-opus-5-5',10000,'k2',day),false,'a settled row is not taken back');
+  assert.deepEqual(db.prepare('SELECT calls,reservedMicro FROM ai_usage').get(),before);
+});
