@@ -8,7 +8,7 @@
 // is AI_REFUSED: a failed review, no order), medium effort for decisions.
 const C=require('./ai-client.cjs');const M=require('./ai-models.cjs');
 const BETA='thinking-binding-controls-2026-08-01';
-const TIMEOUT_MS=require('./ai-router.cjs').CLAUDE_TIMEOUT_MS;
+const TIMEOUT_MS=require('./ai-router.cjs').CLAUDE_TIMEOUT_MS;const KEEP_ALIVE_TEXT='Keep-alive. No answer is needed.';
 // B2: 32,000, because thinking counts toward max_tokens on Claude Opus 5.5 (model-migration.md, Breaking change 1); the
 // reservation follows it (ai-models.cjs maxOutput).
 const MAX_TOKENS=32000;
@@ -248,6 +248,28 @@ class AnthropicClient {
   // credential and header rules as client(), and only this one address allowed. Only the status is read. The key goes
   // as Authorization: Bearer, as the SDK sends it for API version 2026-10-21 (platform.claude.com/docs/en/manage-claude/
   // authentication.md: "Send it as Authorization: Bearer <key>"); no beta header on the model list.
+  // Hourly cache, stage C: the skeleton of the last review call that Anthropic answered: everything but its messages,
+  // max_tokens and top-level mark (model, tier, betas, system blocks with their marks, tools, tool_choice, thinking with its
+  // binding, output_config with effort and format), kept as the exact bytes sent, in memory only, and only when its system
+  // blocks were written with the one-hour lifetime. Only the live review's calls (keepPrefix true) keep or clear it: a
+  // five-minute review call clears it; a replay, a dry run or any other caller leaves it as it is.
+  notePrefix(body,options){if(options?.keepPrefix!==true)return;if(options?.cacheHour!==true){this.keepAlivePrefix=null;return;}
+    const {messages:_m,max_tokens:_x,cache_control:_c,...skeleton}=body;this.keepAlivePrefix={at:this.clock(),skeleton:JSON.stringify(skeleton)};}
+  // The keep-alive (stage C): one request that only reads the cached prefix, so its one-hour life is renewed until the next
+  // review. The kept skeleton byte for byte, one fixed user message with no account data and no mark, no top-level mark,
+  // max_tokens 1 (max_tokens 0 is refused with output_config.format). Its answer is never read as a decision: this is not
+  // decide() and none of its handling (form check, size failure, refusal record) applies. Errors are KEEP_ALIVE_FAILED with
+  // the HTTP status and the error type only.
+  // notBefore: the start of the review that wrote the engine's entry (an older skeleton is not that entry: STALE).
+  // deadline: the end of the entry's hour (a keep-alive that waited behind another request past it would write: LATE).
+  async keepAlive({notBefore=null,deadline=null}={}){const p=this.keepAlivePrefix;if(!p)return {skipped:'NO_PREFIX'};
+    if(Number.isFinite(notBefore)&&p.at<notBefore)return {skipped:'STALE'};if(Number.isFinite(deadline)&&this.clock()>=deadline)return {skipped:'LATE'};const call={responseChars:null,sizes:null};
+    const body={...JSON.parse(p.skeleton),max_tokens:1,messages:[{role:'user',content:KEEP_ALIVE_TEXT}]};
+    let reply;try{reply=await this.client(this.timeoutMs.keepAlive,call).beta.messages.create(body);}
+    catch(error){throw Object.assign(new Error('KEEP_ALIVE_FAILED'),{detail:{status:Number.isInteger(error?.status)?error.status:null,type:typeof error?.error?.error?.type==='string'&&/^[a-z_]{1,40}$/.test(error.error.error.type)?error.error.error.type:null}});}
+    const u=reply?.usage??{},n=v=>Number.isSafeInteger(v)&&v>=0?v:null;
+    return {vendor:'anthropic',model:typeof reply?.model==='string'?reply.model:JSON.parse(p.skeleton).model,usage:M.normalizeUsage(reply,'anthropic'),stopReason:typeof reply?.stop_reason==='string'?reply.stop_reason.replace(/[^a-z_]/g,'').slice(0,30):null,
+      cache:{read:n(u.cache_read_input_tokens)??0,write:n(u.cache_creation_input_tokens)??0,write5m:n(u.cache_creation?.ephemeral_5m_input_tokens),write1h:n(u.cache_creation?.ephemeral_1h_input_tokens)},prefixAt:p.at};}
   async testKey(timeoutMs=require('./key-test.cjs').TIMEOUT_MS){const K=require('./key-test.cjs');const S=SDK();
     const models=url=>{try{const u=new URL(String(url));return u.origin==='https://api.anthropic.com'&&u.pathname==='/v1/models'&&!u.username&&!u.password&&!u.hash;}catch{return false;}};
     const fetchFn=async(url,init={})=>{if(!models(url))throw new Error('UNEXPECTED_ADDRESS');
@@ -372,7 +394,7 @@ class AnthropicClient {
       let reply;try{reply=await this.client(this.timeoutMs.decide,call).beta.messages.create(body);}catch(error){
         if(call.refused)throw Object.assign(new Error('AI_REQUEST_FAILED'),{detail:{rule:call.refused}});
         const detail=errorDetail(error),providerError=refusalRecord(error,call,[this.#key]);throw Object.assign(new Error(mapError(error)??'AI_REQUEST_FAILED'),detail?{detail}:{},providerError?{providerError}:{});}
-      this.lastRequestSizes=call.sizes;
+      this.lastRequestSizes=call.sizes;this.notePrefix(body,options);
       if(call.responseChars>C.RESPONSE_CHAR_LIMIT)throw fail(`a response of ${C.kb(call.responseChars)}, above the ${C.kb(C.RESPONSE_CHAR_LIMIT)} limit`);
       reportedUsage=M.normalizeUsage(reply,'anthropic');returnedModel=typeof reply.model==='string'?reply.model:selected.model;if(typeof reply.stop_reason==='string')call.stopReason=reply.stop_reason.replace(/[^a-z_]/g,'').slice(0,30);
       const blocks=Array.isArray(reply.content)?reply.content:[];

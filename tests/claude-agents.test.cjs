@@ -22,7 +22,7 @@ test('each agent\'s request: model, adaptive thinking, effort, json_schema, its 
     for(const k of ['tools','tool_choice','temperature','top_p','top_k','fallbacks','betas'])assert.equal(b[k],undefined,`${kind}: ${k}`);
     assert.equal(t.sent[0].headers.get('anthropic-beta'),A.BETA,kind+': the locked client sends the one documented beta on every Messages request (not in the body)');}
   assert.deepEqual(M.CLAUDE_OUTPUT,{decide:32000,scout:32000,compact:16000,narrative:8000,reflect:8000});
-  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:300000,narrative:240000,compact:450000,reflect:240000});
+  assert.deepEqual({...R.CLAUDE_TIMEOUT_MS},{decide:300000,scout:300000,narrative:240000,compact:450000,reflect:240000,keepAlive:20000});
 });
 
 test('the scout: tools with auto, then the plan with none on the final round; thinking bound with drop_block and its beta; the continuation stays append-only',async()=>{

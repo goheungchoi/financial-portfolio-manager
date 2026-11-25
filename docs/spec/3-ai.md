@@ -971,6 +971,29 @@ The size retry (`size-retry.cjs`) is about re-running a failed review, not about
   dry run always sends that form on Claude. The context block and the top-level mark stay five minutes, after them
   (Anthropic: a longer lifetime before a shorter one; at most 4 marks). The one-hour write is priced at its own rate
   from `usage.cache_creation.ephemeral_1h_input_tokens` (`normalizeUsage` `cacheWrite1hTokens`, `costDetails`).
+- **Keep-alive** (hourly cache, stage C, since 1.5.76): the Claude client keeps, in memory, the skeleton of the last
+  review call it sent with the one-hour marks (everything but messages, `max_tokens` and the top-level mark, as the exact
+  bytes; `notePrefix`; only the live review's calls, `keepPrefix: true`, keep or clear it: a five-minute review call clears
+  it, a replay, a dry run or any other caller leaves it; a review that fails before any call succeeds leaves no entry). About 55 minutes after
+  the review that wrote the entry started, or after the last keep-alive (`KEEP_ALIVE_AFTER_MS`), at most 2 in a row
+  without a review (`KEEP_ALIVE_MAX`), `automation.cjs keepAliveTick` sends `keep-alive` (provider worker, router
+  `keepAlive`, `anthropic-client.cjs keepAlive`): the skeleton byte for byte, one fixed user message "Keep-alive. No
+  answer is needed." with no mark, no top-level mark, `max_tokens` 1 (0 is refused with `output_config.format`). The
+  client sends nothing (skipped) when its skeleton is older than the entry's review (`STALE`) or when, about to send, the
+  entry's hour has ended (`LATE`: it waited behind another request); a skipped keep-alive's reservation, call and row are
+  taken back (`releaseCall`). Its timeout is 20 s (below the worker's 90 s cap), so a review that becomes due while a
+  keep-alive is in flight waits for it, at most 20 seconds. Only
+  while: the entry was written by this trading model and the settings and exposure policy are unchanged since
+  (`prefixStamp`); auto trading runs on Claude; a scheduled review is due within the hour with a session the app trades
+  open then; no review runs; the provider is not waiting; the budget and call cap allow its reservation (a 40,000-token
+  read and 100 output tokens). It is not a review: no decision is read, nothing is stored as a review, no review clock
+  moves, it never delays a review, and it is outside the provider-wait wrapper (not one of its AI operations). One
+  `ai_calls` row with `kind: 'keep-alive'` (counted in the daily budget and calls; excluded from review cost figures, which
+  read rows without a kind), one AI activity line "Kept the saved instructions for the next review" with its cost and
+  the tokens read. A keep-alive whose usage shows a write stops for that entry (said once); a refusal or error stops
+  keep-alives until the app restarts (`keepAliveOff`, said once), with no retry and no alert; its HTTP status and error
+  type cross the worker (`provider-error-reply.cjs keepAliveDetail`). An entry past its hour is not pinged. The runtime
+  state's `keepAlive` says why one did or did not fire (`off`, and the entry's `pings`, `lastPingAt`, `stopped`).
 - **Refused requests** (`:75-123`; `ai-accounting.cjs:8-15`): HTTP status and error type map to the app's fixed
   codes; a 4xx with a body and no usage was refused before the model ran, so it is settled at **zero cost** (status
   `refused`) but still counts as one call. The provider's message (key-redacted, ≤300 characters) is kept only

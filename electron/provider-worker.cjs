@@ -14,6 +14,8 @@ process.parentPort.on('message',async({data})=>{
       result={...router.flags(),dartConnected:Boolean(dartKey),pushConnected:Boolean(pushURL),ecosConnected:Boolean(ecosKey),fredConnected:Boolean(fredKey),secConnected:Boolean(secContact)};
     } else if(data.operation==='test-key') {result=await router.testKey(data.vendor);
     } else if(data.operation==='decision') {result=await router.clientFor(data.options?.openaiModel).decide(data.context,data.options);}
+    // Hourly cache, stage C: the keep-alive, only for a Claude model (an OpenAI client has none).
+    else if(data.operation==='keep-alive') {const c=router.clientFor(data.options?.openaiModel);result=typeof c.keepAlive==='function'?await c.keepAlive({notBefore:data.options?.notBefore,deadline:data.options?.deadline}):{skipped:'NOT_CLAUDE'};}
     else if(data.operation==='reflection') {result=await router.clientFor(data.options?.openaiModel).reflect(data.context,data.options);}
     else if(data.operation==='scout') {result=await router.clientFor(data.options?.openaiModel).scout(data.context,data.options);}
     else if(data.operation==='narrative') {result=await router.clientFor(data.options?.openaiModel).narrative(data.context,data.options);}

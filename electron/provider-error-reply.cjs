@@ -27,12 +27,15 @@ function providerError(p,redact){
   return {status:p.status,...(vendor?{vendor}:{}),...keys,...(errorCode?{errorCode}:{}),anthropicError:p.anthropicError===true,...(contentType?{contentType}:{}),...(message?{message}:{}),...(retryAfterSec!=null?{retryAfterSec}:{}),...(Object.keys(limits).length?{limits}:{}),noCharge:p.noCharge===true&&p.status<500};
 }
 const sizes=v=>v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k,n])=>/^[a-zA-Z]{1,30}$/.test(k)&&Number.isInteger(n)).slice(0,8)):null;
+// Hourly cache, stage C: a failed keep-alive's HTTP status and Anthropic error type, nothing else.
+function keepAliveDetail(error){const d=error?.detail;if(!d||typeof d!=='object')return null;const status=Number.isInteger(d.status)&&d.status>=100&&d.status<=599?d.status:null,type=typeof d.type==='string'&&/^[a-z_]{1,40}$/.test(d.type)?d.type:null;
+  return status||type?{status,type}:null;}
 function errorReply(operation,error,{redact=null}={}){
   const ai=AI_USAGE.includes(operation);const refused=ai?providerError(error?.providerError,redact):null;
   return {ok:false,usage:ai?error?.usage??null:null,model:ai?error?.model??null:null,
     responseChars:ai&&Number.isInteger(error?.responseChars)&&error.responseChars>=0?error.responseChars:null,
     ...(refused?{providerError:refused}:{}),...(ai&&error?.formFallback===true?{formFallback:true}:{}),...(ai&&['enforced','text'].includes(error?.answerForm)?{answerForm:error.answerForm}:{}),...(ai&&sizes(error?.requestSizes)?{requestSizes:sizes(error.requestSizes)}:{}),...(ai&&typeof error?.stopReason==='string'?{stopReason:error.stopReason.replace(/[^a-z_]/g,'').slice(0,30)}:{}),
-    detail:operation==='scout'&&typeof error?.detail==='string'?error.detail.slice(0,200):operation==='decision'&&error?decisionDetail(error):null,
+    detail:operation==='scout'&&typeof error?.detail==='string'?error.detail.slice(0,200):operation==='decision'&&error?decisionDetail(error):operation==='keep-alive'?keepAliveDetail(error):null,
     code:AI_CODES.includes(operation)?(require('./ai-errors.cjs').publicCode(error)??'PROVIDER_REQUEST_FAILED'):['dart-company','sec-company','sec-filings'].includes(operation)&&/^(DART|SEC)_[A-Z_]{3,30}$/.test(error?.message??'')?error.message:'PROVIDER_REQUEST_FAILED'};
 }
 module.exports={errorReply,providerError,AI_USAGE,AI_CODES};
