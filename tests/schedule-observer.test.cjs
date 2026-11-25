@@ -49,6 +49,12 @@ test('in the app, observation records only: no AI or broker calls, no schedule c
   // The order tracker reads KIS order history once a minute while a market is open; it is off here, and the history
   // reads (which run with tracking off too, syncHistories) are stubbed, so only the observation is measured.
   // A review just ran, so the tick schedules nothing whatever the time of day; the observation still records.
+  // The tick reads the real clock. In the 10 minutes before an open while every market in scope is closed (08:50-09:00
+  // KST for Korea) it starts the one pre-open review of that open (automation tick, closedMarketReviews 'pre-open',
+  // keyed by preOpenKey), whatever lastRun says: an event review the observer records as a second proposed run, and an
+  // AI call. That review is the app's design; here it is taken as already run for this open, so only the observation
+  // is measured at any time of day.
+  {const h=a.marketHours();if(h.preOpen)a.preOpenKey=h.preOpen.key;}
   a.syncHistories=async()=>{};a.lastRun=Date.now();const lastRun=a.lastRun,next=a.nextReviewAt();a.tick();
   assert.equal(db.prepare("SELECT COUNT(*) n FROM schedule_observations WHERE kind='proposed-run'").get().n,1,'first observation recorded');
   assert.equal(supplied.length,0,'no AI call');assert.equal(brokerCalls,0,'no broker call');assert.equal(a.lastRun,lastRun);// With no earlier review, the next review during an open session is "now", which moves between two reads: compare within a second.
