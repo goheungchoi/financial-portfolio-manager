@@ -23,7 +23,11 @@ async function runTest({dir,send,key,model='gpt-6-sol',effort='medium',routineMo
   // neither a list nor that mark is refused.
   const context=structuredClone(fixture.context);const memoryGap=(fixture.meta.unavailable??[]).find(u=>u.field==='positionMemory')??null;
   if(!memoryGap&&!Array.isArray(context.positionMemory))throw Object.assign(new Error('FIXTURE_INVALID'),{detail:'position memory is neither present nor marked unavailable'});
-  const validation={positionMemory:memoryGap?{unavailable:true,reason:memoryGap.reason}:structuredClone(context.positionMemory),quotes:structuredClone(context.quotes??[])};
+  // The answer is validated at the cutoff, the moment the position memory was built for (fixture.cjs now:cutoff); with the
+  // real clock a recorded exit older than the reversal window (30 days) stopped holding back a reopening once the fixture
+  // aged past it (found 2026-11-25 22:30 KST, the test's fixed exit + 30 days).
+  const cutoffAt=Date.parse(fixture.meta.cutoff??'');
+  const validation={positionMemory:memoryGap?{unavailable:true,reason:memoryGap.reason}:structuredClone(context.positionMemory),quotes:structuredClone(context.quotes??[]),...(Number.isFinite(cutoffAt)?{now:cutoffAt}:{})};
   // The key is checked before the folder is claimed, so a key the client would refuse costs no folder.
   const {AiClient,reviewTools,instructions}=require('../../electron/ai-client.cjs');new AiClient(key,async()=>{throw new Error('unused');});
   const run=claim(where.dir);
