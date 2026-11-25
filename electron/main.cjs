@@ -10,6 +10,10 @@ let exitRecord=null,previousStop=null;
 let restartNotice=null,restartBase=null,restartNoticeDismissed=null;
 // Shorts on, stage 3: the one-time notice for a short-selling switch saved on before the paths could be sent.
 let shortsLiveNotice=null;
+// Phone control (1.6.0): the service is running only while the switch is on and a provider file is remembered.
+let phoneControl=null,phoneSync=()=>{};
+// A provider file chosen, reconnected or forgotten: the phone worker is restarted (or stopped) so the keys in force apply.
+const phoneRestart=()=>{try{phoneControl?.stop();}catch{}phoneControl=null;try{phoneSync();}catch{}};
 // Stage 4: at a Korean balance reading of a live account with the switch saved on and no record: recorded shown, with
 // one Activity line (never on Home's read path). Set where the stores are made.
 let noteShortsLive=()=>{};
@@ -90,7 +94,7 @@ let paper;
 let automation;let notifier;let agentBridge;let live;let remembered;let detectFlows=()=>{};let inFlightOf=()=>null;let fundingOf=()=>null;let lastInFlightReading=null;let newsBusy=false;let lastNews=0;let closing=false;let lastReconcile=0;
 async function connectProviderFile(file,selectProvider=true){
   remembered.progress.providers='connecting';remembered.errors.providers=null;
-  try{providerService.disconnect();const flags=await providerService.request('import',file);if(closing)return;automation.providerStatus=flags;if(flags.aiConnected&&selectProvider)automation.configure({provider:'openai'});remembered.remember('providers',file);remembered.progress.providers='connected';}
+  try{providerService.disconnect();const flags=await providerService.request('import',file);if(closing)return;automation.providerStatus=flags;if(flags.aiConnected&&selectProvider)automation.configure({provider:'openai'});remembered.remember('providers',file);remembered.progress.providers='connected';phoneRestart();}
   catch{if(closing)return;providerService.disconnect();automation.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};remembered.progress.providers='error';remembered.errors.providers='Could not reopen provider JSON. Reimport it if moved, deleted or invalid.';throw new Error('PROVIDER_IMPORT_FAILED');}
 }
 // Official Korean market calendar from a live key (read-only, calendar worker only); refreshed every 6 hours.
@@ -915,7 +919,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('discovery:refresh-master',discoveryAction(()=>masterFetch?masterRefresh(true):master.status()));
   const {lightState,historyOf}=require('./runtime-state.cjs');
   const runtimeState=()=>lightState({...automation.getState(),funding:(()=>{try{return automation.fundingState?.()??null;}catch{return null;}})(),launch:require('./auto-launch.cjs').launchState(automation),connections:remembered.state(),bridgePipe:agentBridge.pipe,bridgeScript:path.join(__dirname,'../scripts/agent-bridge.cjs'),notifications:notifier.status()},{version:automation.historyVersion()});
-  ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='calendar'){calendarService.disconnect();return runtimeState();}if(kind==='providers'){providerService.disconnect();automation.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();live.revokeConditional();usLive?.revokeConditional();usSnapshot=null;if(usLive)usLive.refreshError=null;usHeldReading=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
+  ipcMain.handle('connections:forget',(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');if(remembered.progress[kind]==='connecting')return runtimeState();remembered.forget(kind);if(kind==='calendar'){calendarService.disconnect();return runtimeState();}if(kind==='providers'){providerService.disconnect();phoneRestart();automation.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};}else{live.stop();usLive?.stop();live.revokeConditional();usLive?.revokeConditional();usSnapshot=null;if(usLive)usLive.refreshError=null;usHeldReading=null;kisGeneration++;kisService.disconnect();kisQuotes.clear();kisHistory.clear();streamState={status:'disconnected',subscribed:0};kisState={status:'disconnected',snapshot:null,error:null};broadcastMarket();}return runtimeState();});
   ipcMain.handle('connections:reconnect',async(event,kind)=>{authorize(event);if(!['kis','providers','calendar'].includes(kind))throw new Error('INVALID_REQUEST');const file=remembered.get(kind);if(file&&remembered.progress[kind]!=='connecting'){try{await(kind==='kis'?connectKisFile(file):kind==='calendar'?connectCalendarFile(file):connectProviderFile(file));}catch{}}return runtimeState();});
   ipcMain.handle('calendar:import',async event=>{authorize(event);if(remembered.progress.calendar==='connecting')return {ok:false,error:'BUSY',state:runtimeState()};
     const selected=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'Import a live KIS key for the market calendar',filters:[{name:'Credential JSON',extensions:['json']}],properties:['openFile']});if(selected.canceled)return {ok:true,state:runtimeState()};
@@ -951,7 +955,19 @@ app.whenReady().then(async () => {
   ipcMain.handle('runtime:stop',event=>{authorize(event);try{const message=require('./auto-launch.cjs').stop(automation);return {ok:true,message,state:runtimeState()};}catch(error){return {ok:false,error:error.text??error.message,state:runtimeState()};}});
   ipcMain.handle('runtime:get',event=>{authorize(event);return runtimeState();});
   ipcMain.handle('runtime:history',event=>{authorize(event);return historyOf(automation.getState());});
-  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});
+  // Phone control (1.6.0, P3): behind its switch (config.phoneControl, off by default). With it off the phone worker is not
+  // started and nothing connects to Discord; turning it off stops the worker at once. Status, Stop and Stop everything run
+  // the desktop's own functions (phone-commands.cjs).
+  phoneSync=()=>{const providers=remembered.get('providers');const on=automation.config.phoneControl===true&&Boolean(providers);
+    if(!on){if(phoneControl){phoneControl.stop();phoneControl=null;}return;}if(phoneControl)return;
+    const {PhoneService}=require('./phone-service.cjs'),{PhoneCore}=require('./phone-core.cjs');
+    phoneControl=new PhoneService({makeCore:allow=>new PhoneCore(store.db,{allow}),spawn:()=>require('electron').utilityProcess.fork(path.join(__dirname,'phone-worker.cjs'),[],{serviceName:'Phone control'}),
+      log:(title,body)=>{try{automation.log(require('node:crypto').randomUUID(),'System',title,body);}catch{}},
+      notify:text=>{try{automation.notify?.('phone-command-'+Date.now(),text);}catch{}},
+      executor:require('./phone-commands.cjs').createExecutor({automation,equity:()=>{try{const t=portfolioState()?.totals;return Number.isFinite(t?.equityKRW)?t.equityKRW:Number.isFinite(t?.KRW)?t.KRW:null;}catch{return null;}}})});
+    phoneControl.start(providers,path.join(app.getPath('userData'),'phone-state.json'));};
+  phoneSync();
+  ipcMain.handle('runtime:configure',(event,value)=>{authorize(event);try{automation.configure(value);phoneSync();return {ok:true,state:runtimeState()};}catch(error){return {ok:false,error:error?.message==='CLAUDE_NOT_ENABLED_FOR_TRADING'||/^CLAUDE_DRY_RUN_REQUIRED:(scout|narrative|compacting|reflection)$/.test(error?.message??'')||/^CLAUDE_TRADING_(DRY_RUN|KEY|CONSENT|LIMITS|CONFIRM)$/.test(error?.message??'')||error?.message==='CLAUDE_MODEL_NOT_FOR_TRADING'?error.message:'INVALID_SETTINGS'};}});
   ipcMain.handle('runtime:digest-preview',event=>{authorize(event);return require('./daily-digest.cjs').buildDigest(automation);});
   ipcMain.handle('runtime:reset-watches',event=>{authorize(event);automation.revision=(automation.revision??0)+1;automation.watches.reset(automation.watchScope());return runtimeState();});
   ipcMain.handle('scout:screens',event=>{authorize(event);try{return automation.scoutScreens();}catch{return {failed:false,at:null,screens:[]};}});
@@ -1093,7 +1109,7 @@ app.whenReady().then(async () => {
 }).catch(() => { dialog.showErrorBox('Startup failed', 'The local portfolio database could not be opened. The app will close without submitting any orders.'); app.exit(1); });
 app.on('will-quit', () => {
   try{exitRecord?.stop('clean');}catch{}
-  closing=true;if(automation)automation.disposed=true;if(notifier)notifier.disposed=true;live?.stop();
+  closing=true;try{phoneControl?.stop();}catch{}if(automation)automation.disposed=true;if(notifier)notifier.disposed=true;live?.stop();
   agentBridge?.close();providerService.disconnect();
   kisService.disconnect();
   clearInterval(quoteTimer);clearInterval(accountTimer);

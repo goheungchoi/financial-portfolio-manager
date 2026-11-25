@@ -4,7 +4,10 @@ function launchState(a){
   const selected=engines(a);const environment=a.config.scope==='paper'?'PAPER':a.live?.getState().environment?.toUpperCase()??'DISCONNECTED';
   const scope={paper:'Paper',kis:'Korea',us:'U.S.',both:'Korea + U.S.'}[a.config.scope];
   let identity;try{identity=a.live?.identity();}catch{identity='disconnected';}
-  const token=createHash('sha256').update(JSON.stringify({config:a.config,identity,environment,policies:selected.map(e=>{const p=e?.getState().policy??{};return Object.fromEntries(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','lossLimit'].map(k=>[k,p[k]]));})})).digest('hex');
+  // Phone control (1.6.0) is not part of what Start starts: its switch is left out, so turning it on or off never refuses a
+  // Start held with an earlier token (and the token of every other setting is as before).
+  const {phoneControl:_phone,...config}=a.config;
+  const token=createHash('sha256').update(JSON.stringify({config,identity,environment,policies:selected.map(e=>{const p=e?.getState().policy??{};return Object.fromEntries(['symbols','maxOrderKRW','maxDailyTurnoverKRW','maxCompanyPct','lossLimit'].map(k=>[k,p[k]]));})})).digest('hex');
   return {token,label:`${environment} · ${scope}`,running:Boolean(a.config.enabled&&a.config.autoSubmit&&a.sessionArmed&&(selected.length?selected.every(e=>e.enabled&&e.autoEnabled):!a.paper.account().paused)),starting:Boolean(a.launching)};
 }
 async function start(a,token){

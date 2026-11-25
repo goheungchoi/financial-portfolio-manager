@@ -47,7 +47,9 @@ test('a dry run records its model\'s company; the dry-run gate still reads the m
   const RI=require('../electron/review-instructions.cjs');assert.equal(RI.fingerprint(),'1004c642ceabd60d');assert.equal(RI.fingerprint(undefined,{orders:true}),'ed412ea0edf116a2');
 });
 test('pins: the start token of a fixed configuration and each client\'s request body are as before P1 (computed on 3f1a720b..f7698d1f)',async()=>{
-  assert.deepEqual(PINS.startToken(ROOT),{token:'0bb210a088bf48a862bea2630c5e658c7eaae3607d8cfcac2a2d54a156cc2487',config:'4eb88e1b40c61b4f'});
+  // config: the saved settings' hash gains phoneControl (Phone control P3, 1.6.0; '4eb88e1b40c61b4f' before); the start
+  // token leaves that switch out, so it is unchanged.
+  assert.deepEqual(PINS.startToken(ROOT),{token:'0bb210a088bf48a862bea2630c5e658c7eaae3607d8cfcac2a2d54a156cc2487',config:'51ea45c09ba018f7'});
   // The risk-off text ('review 2026-11-25.5') changed the instructions both bodies carry: the pins taken before it were
   // openai dfc4223814d360cb, claude 6c2985ba7acc7046; ai-models-vendor and claude-context-cache put the sentence back and
   // still compare every other byte.

@@ -81,7 +81,7 @@ test('the worker registers the seven commands for the one server once, admins on
 test('the worker answers within 3 s itself, hands over only checked fields (no token), and ignores anyone else',async()=>{
   const k=worker();await k.dispatch(ix());assert.deepEqual(k.api[0].body,{type:5,data:{flags:64}},'an ephemeral defer at once');
   const m=k.posted.find(p=>p.type==='interaction');assert.match(m.ref,/^[a-f0-9]{24}$/);assert.ok(!JSON.stringify(k.posted).includes(ITOKEN)&&!JSON.stringify(k.posted).includes(TOKEN),'no token reaches the main process');
-  assert.deepEqual(m.data,{id:'1400000000000000000',type:2,applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,command:'status'});
+  assert.deepEqual(m.interaction,{id:'1400000000000000000',type:2,applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,command:'status'});
   for(const other of [{member:{user:{id:'100000000000000099'}}},{guild_id:'100000000000000099'},{channel_id:'100000000000000099'},{application_id:'100000000000000099'},{member:undefined,user:{id:allow.user}}]){
     const before=k.api.length;await k.dispatch(ix({...other,id:'1400000000000000001'}));assert.equal(k.api.length,before,'no answer at all');}
   await k.w.reply({ref:m.ref,kind:'message',text:'Running.'});assert.deepEqual(k.api.at(-1),{method:'PATCH',path:`/webhooks/${allow.application}/${ITOKEN}/messages/@original`,body:{content:'Running.',allowed_mentions:{parse:[]},components:[]}});
@@ -93,7 +93,7 @@ test('the PIN form: link answers with the form once the main process gives the n
   const m=k.posted.find(p=>p.type==='interaction');const nonce='a'.repeat(32);await k.w.reply({ref:m.ref,kind:'modal',nonce});
   const form=k.api[0].body;assert.equal(form.type,9);assert.equal(form.data.custom_id,'pin:'+nonce);assert.deepEqual(form.data.components[0].component,{type:4,custom_id:'pin',style:1,min_length:6,max_length:12,required:true});
   await k.dispatch(ix({id:'1400000000000000002',type:5,data:{custom_id:'pin:'+nonce,components:[{type:18,component:{type:4,custom_id:'pin',value:'482913'}}]}}));
-  const sub=k.posted.filter(p=>p.type==='interaction').at(-1);assert.equal(sub.data.pin,'482913');assert.equal(sub.data.customId,'pin:'+nonce);
+  const sub=k.posted.filter(p=>p.type==='interaction').at(-1);assert.equal(sub.interaction.pin,'482913');assert.equal(sub.interaction.customId,'pin:'+nonce);
   // The main process does not answer in time: the worker says so itself before Discord's 3 seconds.
   const j=worker();await j.dispatch(ix({data:{name:'nottaken',options:[{name:'order',value:'A1'}]}}));j.t.advance(2500);await tick();
   assert.deepEqual(j.api[0].body,{type:4,data:{content:'The app did not answer in time. Try again.',flags:64,allowed_mentions:{parse:[]}}});
@@ -105,12 +105,12 @@ test('the main process: messages checked (type, size, ref, rate); the PIN goes t
   const states=[];const svc=new PhoneService({core,spawn,onState:s=>states.push(s),clock:()=>now,setTimeout:t.st,clearTimeout:t.ct});svc.start('provider.json','state.json');
   assert.deepEqual(workers[0].sent[0],{op:'start',providerPath:'provider.json',statePath:'state.json'});
   const idAt=ms=>String((BigInt(ms)-1420070400000n)<<22n);const data=extra=>({id:idAt(now),type:2,applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,command:'status',...extra});
-  await svc.handle({type:'interaction',ref:'b'.repeat(24),data:data()});assert.deepEqual(workers[0].sent.at(-1),{op:'reply',ref:'b'.repeat(24),kind:'message',text:NOT_YET},'not active yet in P2');
-  for(const bad of [null,[],'x',{type:'interaction',ref:'short',data:data()},{type:'interaction',ref:'c'.repeat(24),data:[]},{type:'nope'},{type:'state',state:'made-up'},{type:'interaction',ref:'d'.repeat(24),data:{...data(),pad:'x'.repeat(9000)}}]){
+  await svc.handle({type:'interaction',ref:'b'.repeat(24),interaction:data()});assert.deepEqual(workers[0].sent.at(-1),{op:'reply',ref:'b'.repeat(24),kind:'message',text:NOT_YET},'not active yet in P2');
+  for(const bad of [null,[],'x',{type:'interaction',ref:'short',interaction:data()},{type:'interaction',ref:'c'.repeat(24),interaction:[]},{type:'nope'},{type:'state',state:'made-up'},{type:'interaction',ref:'d'.repeat(24),interaction:{...data(),pad:'x'.repeat(9000)}}]){
     const before=workers[0].sent.length;await svc.handle(bad);assert.equal(workers[0].sent.length,before,JSON.stringify(bad)?.slice(0,40));}
   await svc.handle({type:'state',state:'not-set-up',missing:['discordUserId','made-up-key'],invalid:[]});assert.deepEqual(states.at(-1).missing,['discordUserId'],'only known key names');
   core.setPin('482913');const sub={id:idAt(now),type:5,applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,customId:'pin:'+'e'.repeat(32),pin:'482913'};
-  await svc.handle({type:'interaction',ref:'f'.repeat(24),data:sub});assert.equal(sub.pin,undefined,'dropped after the core');assert.ok(!JSON.stringify([states,workers[0].sent,core.records()]).includes('482913'));
+  await svc.handle({type:'interaction',ref:'f'.repeat(24),interaction:sub});assert.equal(sub.pin,undefined,'dropped after the core');assert.ok(!JSON.stringify([states,workers[0].sent,core.records()]).includes('482913'));
   // At most 30 messages a minute.
   for(let i=0;i<70;i++)await svc.handle({type:'state',state:'ready'});assert.ok(svc.status.dropped>0);
   // Crash loop.
@@ -150,7 +150,7 @@ test('review 3: an interaction over the limit gets the busy sentence; state mess
   const svc=new PhoneService({core,spawn:()=>({postMessage:m=>sent.push(m),on(){},kill(){}}),clock:()=>now});svc.start('p','s');
   const idAt=ms=>String((BigInt(ms)-1420070400000n)<<22n|BigInt(sent.length));const data=()=>({id:idAt(now),type:2,applicationId:allow.application,serverId:allow.server,channelId:allow.channel,userId:allow.user,command:'status'});
   for(let i=0;i<100;i++)await svc.handle({type:'state',state:'ready'});
-  await svc.handle({type:'interaction',ref:'a'.repeat(24),data:data()});assert.equal(sent.at(-1).kind,'message','a command still gets through after 100 state messages');
-  for(let i=0;i<40;i++)await svc.handle({type:'interaction',ref:(i.toString(16).padStart(2,'0')).repeat(12),data:data()});
+  await svc.handle({type:'interaction',ref:'a'.repeat(24),interaction:data()});assert.equal(sent.at(-1).kind,'message','a command still gets through after 100 state messages');
+  for(let i=0;i<40;i++)await svc.handle({type:'interaction',ref:(i.toString(16).padStart(2,'0')).repeat(12),interaction:data()});
   const {SENTENCES}=require('../electron/phone-core.cjs');assert.ok(sent.some(m=>m.op==='reply'&&m.text===SENTENCES.busy),'the busy sentence, not left thinking');
 });

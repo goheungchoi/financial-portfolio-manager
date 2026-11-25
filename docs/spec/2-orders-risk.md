@@ -1628,3 +1628,26 @@ Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; a
   5 wrong entries lock every PIN command until the desktop unlocks; a right PIN resets the count; Status and Stop work
   while locked. The PIN is compared and dropped: it is in no returned object, record or error.
 - Record (`phone_commands`): the command name and the result only; never a PIN, a token, an id or anything typed.
+- Stage P3 (Status, Stop, Stop everything; `electron/phone-commands.cjs`, wired in `main.cjs` behind the Phone control
+  switch, `config.phoneControl`, off by default):
+  - The switch: the service and the phone worker run only while it is on and a provider file is remembered; it is
+    checked at start and after every settings save, and turning it off stops the worker at once. With it off nothing
+    connects to Discord and no phone command can run.
+  - Status (`statusText`): running or stopped (`autoTradingRuns`), the scope and whether the account is live or mock;
+    the account value only with "Show amounts in snapshots" on (`config.phoneAmounts`; the combined value, else
+    Korea's); the last review (`lastRun`) and the next (`nextReviewAt`, "not while stopped" when stopped); the armed
+    orders and whether they are watched (running: watched; stopped: `auto-launch.cjs watchedWords` while kept working,
+    else "not watched until you start auto trading"); orders waiting for approval (status Ready) and with a lost KIS
+    reply (Uncertain); provider waits (`providerWaitState`).
+  - Stop calls `auto-launch.cjs stop(automation)` and Stop everything `automation.stopEverything()`, the desktop
+    buttons' functions; the reply is their own sentence. As with the buttons: a Start in progress is cancelled (the
+    launch generation), auto trading and automatic sending are saved off and both engines stopped, so an order a review
+    still running decides is not admitted (`live-engine.cjs admits`), except a conditional order under the
+    keep-working-while-stopped permit (Stop) or none at all (Stop everything); orders already at KIS stay.
+  - Activity: one line per command ("Phone command · <name>": "Status sent.", the stop sentence, "Asked for the PIN.",
+    or the refusal sentence); a refusal that gets no answer at most once a minute ("Phone command refused"). No PIN,
+    token or id.
+  - Start, `link` and `nottaken` answer "not active yet" at once until P4 and P5: no PIN form, no PIN counted, nothing held.
+  - Alerts: Stop and Stop everything from the phone raise one alert each through the app's own alert path ("Auto trading stopped from the phone.", "Everything stopped from the phone."); Status and refusals raise none.
+  - Who may command is set once per worker launch (the first `keys-ok`); a later report changes nothing and is said once in Activity. The service follows the provider file: choosing or reconnecting one restarts the worker with its keys, forgetting it stops the worker.
+  - Status: each line is read on its own, so a failing getter drops that line, never the reply; the Activity title uses one of the seven command names or "unknown". The Phone control switch is left out of the start token and of the keep-alive's stamp.

@@ -37,7 +37,7 @@ class PhoneWorker{
     Object.assign(this,{readFile,readState,writeState,post,fetch:f,WS,st,ct,random,clock,G});this.refs=new Map();this.gateway=null;this.keys=null;}
   start(providerPath){this.stop(false);let text;try{text=this.readFile(providerPath);}catch{this.post({type:'state',state:'not-set-up',problems:['the provider file could not be read']});return;}
     const r=readKeys(text);if(!r.ok){this.post({type:'state',state:'not-set-up',missing:r.missing??[],invalid:r.invalid??[],...(r.problems?{problems:r.problems}:{})});return;}
-    this.keys=r.keys;const allow=r.keys.allow;
+    this.keys=r.keys;const allow=r.keys.allow;this.post({type:'state',state:'keys-ok',allow:{...allow}});
     this.gateway=new this.G({token:r.keys.token,fetch:this.fetch,WebSocket:this.WS,setTimeout:this.st,clearTimeout:this.ct,random:this.random,
       onState:st=>{this.post({type:'state',state:st.state,...(Number.isInteger(st.code)?{code:st.code}:{}),...(Number.isFinite(st.waitMs)?{waitMs:st.waitMs}:{})});if(st.state==='ready')void this.register();},
       onDispatch:(t,d)=>{if(t==='INTERACTION_CREATE')void this.interaction(d,allow);}});
@@ -64,7 +64,7 @@ class PhoneWorker{
     if(formFirst){const r=this.refs.get(ref);r.timer=this.st(()=>{if(!this.refs.has(ref)||this.refs.get(ref).answered)return;this.refs.get(ref).answered=true;
         void this.callback(ref,{type:4,data:{content:'The app did not answer in time. Try again.',flags:64,allowed_mentions:NO_MENTIONS}}).catch(e=>this.replyFailed(e)).finally(()=>this.refs.delete(ref));},MODAL_WAIT_MS);}
     else{try{await this.callback(ref,{type:5,data:{flags:64}});this.refs.get(ref).deferred=true;}catch(error){this.replyFailed(error);this.refs.delete(ref);return;}}
-    this.post({type:'interaction',ref,data});}
+    this.post({type:'interaction',ref,interaction:data});}
   // The main process's answer: the PIN form, a sentence, the Start summary with its confirm button, or nothing.
   async reply(m){const r=this.refs.get(m?.ref);if(!r||r.answered)return;r.answered=true;this.ct(r.timer);const text=typeof m.text==='string'?m.text.slice(0,TEXT_MAX):'';
     try{if(m.kind==='modal'&&!r.deferred&&/^[a-f0-9]{32}$/.test(m.nonce))await this.callback(m.ref,{type:9,data:{custom_id:'pin:'+m.nonce,title:'Enter your PIN',components:[{type:18,label:'PIN',description:'Shows on your screen as you type; it is not posted.',component:{type:4,custom_id:'pin',style:1,min_length:6,max_length:12,required:true}}]}});
