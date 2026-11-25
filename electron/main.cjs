@@ -11,7 +11,7 @@ let restartNotice=null,restartBase=null,restartNoticeDismissed=null;
 // Shorts on, stage 3: the one-time notice for a short-selling switch saved on before the paths could be sent.
 let shortsLiveNotice=null;
 // Phone control (1.6.0): the service is running only while the switch is on and a provider file is remembered.
-let phoneControl=null,phoneSync=()=>{};
+let phoneControl=null,phoneSync=()=>{},phoneAlertSeq=0;
 // A provider file chosen, reconnected or forgotten: the phone worker is restarted (or stopped) so the keys in force apply.
 const phoneRestart=()=>{try{phoneControl?.stop();}catch{}phoneControl=null;try{phoneSync();}catch{}};
 // Stage 4: at a Korean balance reading of a live account with the switch saved on and no record: recorded shown, with
@@ -95,7 +95,7 @@ let automation;let notifier;let agentBridge;let live;let remembered;let detectFl
 async function connectProviderFile(file,selectProvider=true){
   remembered.progress.providers='connecting';remembered.errors.providers=null;
   try{providerService.disconnect();const flags=await providerService.request('import',file);if(closing)return;automation.providerStatus=flags;if(flags.aiConnected&&selectProvider)automation.configure({provider:'openai'});remembered.remember('providers',file);remembered.progress.providers='connected';phoneRestart();}
-  catch{if(closing)return;providerService.disconnect();automation.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};remembered.progress.providers='error';remembered.errors.providers='Could not reopen provider JSON. Reimport it if moved, deleted or invalid.';throw new Error('PROVIDER_IMPORT_FAILED');}
+  catch{if(closing)return;providerService.disconnect();phoneRestart();automation.providerStatus={aiConnected:false,openaiConnected:false,anthropicConnected:false,dartConnected:false,pushConnected:false};remembered.progress.providers='error';remembered.errors.providers='Could not reopen provider JSON. Reimport it if moved, deleted or invalid.';throw new Error('PROVIDER_IMPORT_FAILED');}
 }
 // Official Korean market calendar from a live key (read-only, calendar worker only); refreshed every 6 hours.
 let calendarAt=0,calendarError=null;
@@ -963,7 +963,8 @@ app.whenReady().then(async () => {
     const {PhoneService}=require('./phone-service.cjs'),{PhoneCore}=require('./phone-core.cjs');
     phoneControl=new PhoneService({makeCore:allow=>new PhoneCore(store.db,{allow}),spawn:()=>require('electron').utilityProcess.fork(path.join(__dirname,'phone-worker.cjs'),[],{serviceName:'Phone control'}),
       log:(title,body)=>{try{automation.log(require('node:crypto').randomUUID(),'System',title,body);}catch{}},
-      notify:text=>{try{automation.notify?.('phone-command-'+Date.now(),text);}catch{}},
+      // The outbox ignores a repeated id: the command and a counter beside the time keep two alerts in one millisecond apart.
+      notify:(text,command)=>{try{automation.notify?.('phone-'+String(command)+'-'+Date.now()+'-'+(++phoneAlertSeq),text);}catch{}},
       executor:require('./phone-commands.cjs').createExecutor({automation,equity:()=>{try{const t=portfolioState()?.totals;return Number.isFinite(t?.equityKRW)?t.equityKRW:Number.isFinite(t?.KRW)?t.KRW:null;}catch{return null;}}})});
     phoneControl.start(providers,path.join(app.getPath('userData'),'phone-state.json'));};
   phoneSync();

@@ -27,7 +27,9 @@ class PhoneService{
   stop(){this.stopping=true;this.ct(this.restartTimer);const w=this.worker;this.worker=null;try{w?.postMessage({op:'stop'});w?.kill();}catch{}this.setStatus({state:'stopped'});}
   launch(){if(this.stopping)return;let w;try{w=this.spawn();}catch{this.restartLater();return;}this.worker=w;this.startedAt=this.clock();
     // Electron's utilityProcess child 'message' event gives the message itself (kis-service.cjs relies on the same).
-    this.keysAccepted=false;this.otherIdsSaid=false;w.on('message',m=>{if(this.worker===w)void this.handle(m);});
+    // Each launch starts with no core: a command before this launch's keys-ok is ignored, and a launch that never reports
+    // its keys accepts nothing (P3 follow-up D).
+    if(this.makeCore)this.core=null;this.keysAccepted=false;this.otherIdsSaid=false;w.on('message',m=>{if(this.worker===w)void this.handle(m);});
     w.on('exit',()=>{if(this.worker!==w)return;this.worker=null;if(this.stopping)return;if(this.clock()-this.startedAt>=STABLE_MS)this.wait=RESTART_FIRST;this.setStatus({state:'worker-restarting',waitMs:this.wait});this.restartLater();});
     w.postMessage({op:'start',providerPath:this.paths.providerPath,statePath:this.paths.statePath});}
   // A worker that keeps failing is restarted after 5 s, doubling to 5 minutes; a run of 10 minutes resets the wait.
@@ -53,13 +55,17 @@ class PhoneService{
     const name=data.type===2&&COMMAND_NAMES.includes(data.command)?data.command:data.type===3?'confirm':data.type===5?'pin':'unknown';
     const line=(title,body)=>{try{this.log(title,body);}catch{}};
     try{if(r.silent){this.send({ref,kind:'drop'});if(now-this.silentLoggedAt>=60000){this.silentLoggedAt=now;line('Phone command refused',`A command was not answered (${r.why}). Refusals like this are noted at most once a minute.`);}return;}
+      // A command not active yet says so even with no PIN set or the PIN locked (P3 follow-up D).
+      if(r.reply&&data.type===2&&this.inactive.has(name)&&(r.why==='noPin'||r.why==='locked')){this.send({ref,kind:'message',text:NOT_YET});line('Phone command · '+name,NOT_YET);return;}
       if(r.reply){this.send({ref,kind:'message',text:r.reply});line('Phone command · '+name,r.reply);return;}
       const act=r.act;this.setStatus({lastCommandAt:now});
       if(this.inactive.has(act.command)){if(act.nonce)this.core.takePending?.(act.nonce);this.send({ref,kind:'message',text:NOT_YET});line('Phone command · '+act.command,NOT_YET);return;}
       if(act.step==='ask-pin'){this.send({ref,kind:'modal',nonce:act.nonce});line('Phone command · '+act.command,'Asked for the PIN.');return;}
       if(act.step==='summary'){const s=await this.executor.summary(act);if(s?.ok&&s.held){this.core.attach(act.nonce,s.held);this.send({ref,kind:'summary',text:String(s.text??''),nonce:act.nonce});}else this.send({ref,kind:'message',text:String(s?.text??NOT_YET)});return;}
-      const text=String(await this.executor.run(act)??NOT_YET);this.send({ref,kind:'message',text});line('Phone command · '+act.command,act.command==='status'?'Status sent.':text);
-      const alert=ALERTS[act.command];if(alert)try{this.notify(alert);}catch{}}
+      // run() gives a sentence, or {text, changed}: changed only when the desktop function carried the command out.
+      const out=await this.executor.run(act);const text=String((out&&typeof out==='object'?out.text:out)??NOT_YET);this.send({ref,kind:'message',text});line('Phone command · '+act.command,act.command==='status'?'Status sent.':text);
+      // The alert only for a command that did change the app's state, never after "Not stopped: …" (P3 follow-up C).
+      const alert=ALERTS[act.command];if(alert&&out?.changed===true)try{this.notify(alert,act.command);}catch{}}
     catch{this.send({ref,kind:'message',text:'The app could not carry out this command.'});}}
 }
 module.exports={ALERTS,STATE_PER_MIN,PhoneService,MSG_MAX,MSG_PER_MIN,RESTART_FIRST,RESTART_MAX,STABLE_MS,NOT_YET};
