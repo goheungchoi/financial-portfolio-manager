@@ -290,3 +290,4 @@ tests/hourly-cache-c.test.cjs
 tests/hourly-cache-worker.test.cjs
 tests/sectors-s1.test.cjs
 tests/sectors-s2.test.cjs
+tests/sectors-s3.test.cjs

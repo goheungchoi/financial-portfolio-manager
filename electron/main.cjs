@@ -483,7 +483,9 @@ app.whenReady().then(async () => {
   research.listedEarnings=symbol=>usCalendar.next(symbol,seoulDay());
   const usEarnings=symbol=>{const listed=usCalendar.next(symbol,seoulDay());if(listed)return {nextExpected:listed.date,scheduled:true,time:listed.time,source:listed.source};const sec=research.cached(symbol,'sec-filings')?.value?.earnings??research.cached(symbol,'sec')?.value?.earnings??null;return sec?{...sec,estimated:true}:null;};
   automation.calendarSource=symbol=>({name:master.get(symbol)?.name??null,earnings:/:/.test(symbol)?usEarnings(symbol):research.cached(symbol,'dart')?.value?.earnings??null,dividends:research.cached(symbol,'dividends')?.value??null,meetings:research.cached(symbol,'meetings')?.value?.meetings??[]});
-  automation.sectorOf=symbol=>research.cached(symbol,'overview')?.value?.sectorName??null;
+  // Sectors S3: the agent's portfolioExposure, the scout's and the Exposure view read the resolver, so their sector names
+  // are the screen's (your label, the fixed table, the stored assignment, else Unclassified), never KIS's raw category.
+  automation.sectorOf=symbol=>{try{return sectorOf?.(symbol)?.sector??null;}catch{return null;}};
   // Daily history for holdings and watchlist stocks is kept warm (every six hours) for exposure, sizing, triggers and formulas.
   let warmAt=0;setInterval(()=>{if(!kisState.snapshot||Date.now()-warmAt<6*3600000)return;warmAt=Date.now();void (async()=>{const symbols=[...new Set([...kisState.snapshot.holdings.map(h=>h.symbol),...(usSnapshot?.holdings??[]).map(h=>h.symbol),...(automation.discovery?.symbols('KR')??[])])].slice(0,25);for(const symbol of symbols){try{await research.source(symbol,'daily');await research.source(symbol,'overview');if(/^\d{6}$/.test(symbol)){await research.source(symbol,'dividends');await research.source(symbol,'meetings');if(automation.providerStatus.dartConnected)await research.source(symbol,'dart');}}catch{}}})();},120000).unref();
   automation.series={closes:symbol=>research.cached(symbol,'daily')?.value?.closes??null,ensure:symbol=>research.source(symbol,'daily')};
