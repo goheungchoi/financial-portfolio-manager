@@ -1609,7 +1609,7 @@ Found in live use: every KIS request failed with EGW00123 for over an hour, unti
   refuses the second; the app tries again after the minute). When the app's data folder cannot be written, the
   minute is not shared between the KIS broker and market-calendar workers (each keeps its own).
 
-## Phone control (1.6.0; in progress)
+## Phone control (1.6.0)
 Stage P1, the command core (`electron/phone-core.cjs` `PhoneCore`, no network; artifacts/reviews/2026-11-25-phone-control):
 - Seven commands: `status`, `stop`, `stopall`, `start`, `orders`, `link` (options `order`, `number`), `nottaken`
   (option `order`). `start`, `link` and `nottaken` need the PIN.
