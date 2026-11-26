@@ -7,7 +7,7 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');require('./fixtures/order-book.cjs');
 const days=n=>Array.from({length:n},(_,i)=>new Date(Date.parse('2026-06-01T00:00:00Z')+i*86400000).toISOString().slice(0,10));
 const series=(n,f)=>days(n).map((date,i)=>({date,close:f(i),value:1e9+i}));
-const SYM='005930';
+const SYM='990001';
 const planDecision=(quantity,stopPrice)=>({action:'Buy',symbol:SYM,quantity,credit:'none',plan:{thesis:'Fixture thesis.',invalidation:'Breaks the fixture low',stopPrice,targetPrice:null,horizonDays:10,confidence:'medium'}});
 function app(){const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');
   const db=new DatabaseSync(':memory:');const paper=new PaperEngine(db,[{symbol:SYM,price:100,name:'Fixture'}],()=>[]);const events=[],alerts=[];
@@ -33,7 +33,7 @@ for(const [purpose,trailing] of [['stop_loss',false],['stop_loss',true],['take_p
     const first=w.order(purpose,2,purpose==='take_profit'?240000:200000,extra),second=w.order(purpose,1,purpose==='take_profit'?250000:210000,extra);
     assert.deepEqual([first.status,second.status],['armed','armed'],JSON.stringify([first,second]));assert.deepEqual(w.armed().map(o=>o.quantity).sort(),[1,2]);
     if(trailing)assert.ok(w.armed().every(o=>o.trail),'both trail');
-    const third=w.order(purpose,1,purpose==='take_profit'?260000:205000,extra);assert.equal(third.status,'rejected');assert.match(third.reason,/3 shares of 005930 are held, and armed .* orders already cover 3/);
+    const third=w.order(purpose,1,purpose==='take_profit'?260000:205000,extra);assert.equal(third.status,'rejected');assert.match(third.reason,/3 shares of 990001 are held, and armed .* orders already cover 3/);
     // The other purpose is counted apart: a take profit beside two stop losses, and the reverse.
     const other=w.order(purpose==='take_profit'?'stop_loss':'take_profit',3,purpose==='take_profit'?190000:260000);assert.equal(other.status,'armed');
   });
@@ -82,8 +82,8 @@ test('when a plan stop is still refused (here the holding could not be read): th
   assert.ok(!/const \w+=this\.followPlan\(watchScope/.test(src),'the plan stop\'s outcome is not read by the decision path');
   w.a.followPlan(w.scope,planDecision(1,104000),'R2',{proposalId:'P2',market:'KR',positions:{}});
   assert.equal(w.armed().length,1,'no stop for the new share');
-  const e=w.events.find(x=>x.title==='Stop-loss NOT armed from the plan');assert.ok(e,'logged');assert.match(e.body,/0 shares of 005930 are held and 1 are being bought.* The purchase goes ahead without a stop order\.$/);
-  assert.ok(w.alerts.some(x=>/has no stop order: 0 shares of 005930 are held/.test(x.message)),'the phone alert');
+  const e=w.events.find(x=>x.title==='Stop-loss NOT armed from the plan');assert.ok(e,'logged');assert.match(e.body,/0 shares of 990001 are held and 1 are being bought.* The purchase goes ahead without a stop order\.$/);
+  assert.ok(w.alerts.some(x=>/has no stop order: 0 shares of 990001 are held/.test(x.message)),'the phone alert');
   const failures=w.a.desk.planStopFailures(w.scope);assert.equal(failures.length,1,'listed for Home');
-  const next=w.a.desk.context(w.scope,w.a.config,[SYM],{});assert.match(next.conditionalOrders.planStopsNotArmed[0].fact,/^The plan stop for 005930 was not armed: 0 shares of 005930 are held/,'told to the next review');
+  const next=w.a.desk.context(w.scope,w.a.config,[SYM],{});assert.match(next.conditionalOrders.planStopsNotArmed[0].fact,/^The plan stop for 990001 was not armed: 0 shares of 990001 are held/,'told to the next review');
 });

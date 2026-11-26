@@ -7,7 +7,7 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {DatabaseSync}=require('node:sqlite');require('./fixtures/order-book.cjs');
 const days=n=>Array.from({length:n},(_,i)=>new Date(Date.parse('2026-06-01T00:00:00Z')+i*86400000).toISOString().slice(0,10));
 const series=(n,f)=>days(n).map((date,i)=>({date,close:f(i),value:1e9+i}));
-const SYM='005930';
+const SYM='990001';
 const planDecision=(quantity,stopPrice=200000)=>({action:'Buy',symbol:SYM,quantity,credit:'none',plan:{thesis:'Fixture thesis.',invalidation:'Breaks the fixture low',stopPrice,targetPrice:null,horizonDays:10,confidence:'medium'}});
 // The app with a stand-in Korean engine: its purchase records are set by the test; a fired stop's proposal is recorded.
 function app(){const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');
@@ -83,7 +83,7 @@ test('where the second purchase gets no stop of its own: its arming is refused a
     const w=app();w.a.followPlan(w.scope,planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}});w.buy('P1',2,2,'Filled');w.hold(2);w.a.syncLinkedStops();
     const {positions}=setup(w);w.a.followPlan(w.scope,planDecision(1),'R2',{proposalId:'P2',market:'KR',positions});
     assert.equal(w.stops().length,1,name);const e=w.events.find(x=>x.title==='Stop-loss NOT armed from the plan');assert.ok(e,name+': said');
-    assert.match(e.body,/^1 005930 at 200000: .+ The purchase goes ahead without a stop order\.$/,name+': with its reason');}
+    assert.match(e.body,/^1 990001 at 200000: .+ The purchase goes ahead without a stop order\.$/,name+': with its reason');}
 });
 
 test('the update: every armed stop whose purchase has ended is marked settled once, its quantity unchanged; nothing is resized',()=>{
@@ -123,7 +123,7 @@ test('review 2: settling clears a stale "cannot read its purchase" mark, so Home
 test('review 3: an open purchase\'s filled shares are not counted twice: with 6 of 10 bought, its stop and another cover at most the 6 held plus 4 to come',()=>{
   const w=app();w.a.followPlan(w.scope,planDecision(10),'R1',{proposalId:'P1',market:'KR',positions:{}});w.buy('P1',10,6,'Partially filled');w.hold(6);
   const add=(quantity,extra={})=>w.a.desk.setOrder(w.scope,{action:'add',id:'',symbol:SYM,side:'Sell',quantity,limitPrice:null,conditions:[{expr:`price("${SYM}")`,op:'<=',value:190000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'x',...extra},{config:w.a.config,universe:[SYM],positions:{[SYM]:{quantity:6}},linkFilled:l=>w.a.linkedPurchase({symbol:SYM,linkedBuy:l})?.filled??0});
-  const more=add(6);assert.equal(more.status,'rejected','the linked stop already covers the 10');assert.match(more.reason,/6 shares of 005930 are held, and armed stop_loss orders already cover 10/);
+  const more=add(6);assert.equal(more.status,'rejected','the linked stop already covers the 10');assert.match(more.reason,/6 shares of 990001 are held, and armed stop_loss orders already cover 10/);
   // Its replacement for the whole purchase still passes: 6 held and 4 still to be bought.
   const r=add(10,{replaces:w.stops()[0].id});assert.equal(r.status,'armed');assert.equal(r.quantity,10);
   // The review's own tool path passes the purchase's fills (automation.cjs deskActions).
