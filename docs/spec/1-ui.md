@@ -2034,7 +2034,6 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
   6. Card "Conditional orders" (aria-label "Conditional order settings"), hint "Stop-loss, take-profit and entry orders the AI arms with conditions. They fire only while auto trading is on and the market is open, and still pass every risk check." (:100). Row "Let the AI set conditional orders", hint "Off by default." (:101). Only when that switch is on (:102-109):
      - "Submit them automatically", hint "Otherwise each one waits for your approval." when `autoSubmit` is on, else "Needs automatic submission in Trading. Until then each one waits for approval." (:103).
      - "Let stops trail", hint when on "Stops the AI sets may follow the price up. Checked only while the app runs.", else "Off by default." (:104).
-     - "Armed at once", hint "Most orders waiting at one time." (:105).
      - "Largest order", hint "Share of account equity for one buy." (:106).
      - "Price drift allowed", hint "How far the limit may sit from the price when it fires." (:107).
      - "Longest life", hint "Orders expire after this many hours." (:108).
@@ -2056,7 +2055,7 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
     - Dialog "More" disclosure, three lines: "An unclear order blocks only its own stock and counts in full until it is resolved." / "Funding and the deposit and withdrawal checks count every open order." / "\"Orders per review\" is a separate setting, 1 unless you change it." (:48, :67).
     - Buttons "Turn on" (primary; writes `severalOpenOrders=true` to the draft and closes) and "Cancel" (:68). The change still needs "Save changes".
   - Number "Orders per review" min 1, max `Math.max(ceiling,saved)` → `ordersPerReview`. Disabled when busy, when several open orders is off, or when the ceiling is 1 or less (:70). The ceiling is `state.orderLimits.ceiling` = the smaller of the model's order ceiling and the review universe (20, or 40 for scope `both`) (electron/automation.cjs:1065, :1068; electron/ai-models.cjs:54).
-  - Conditional order controls: switches → `conditionalOrders`, `conditionalAutoSubmit`, `trailingStops`; numbers "Most armed conditional orders" 1–10 → `conditionalMaxActive`; "Largest conditional order" 1–50 step 1 "%" → `conditionalMaxOrderPct`; "Conditional order price drift" 0.1–10 step 0.1 "%" → `conditionalMaxSlippagePct`; "Conditional order lifetime" 1–336 "h" → `conditionalMaxHours` (:101-108).
+  - Conditional order controls: switches → `conditionalOrders`, `conditionalAutoSubmit`, `trailingStops`; numbers "Largest conditional order" 1–50 step 1 "%" → `conditionalMaxOrderPct`; "Conditional order price drift" 0.1–10 step 0.1 "%" → `conditionalMaxSlippagePct`; "Conditional order lifetime" 1–336 "h" → `conditionalMaxHours` (:101-108).
   - All controls except the guidelines textarea and the "Start with Windows" switch are disabled while `busy` (each row's `disabled={busy}`).
 - **Calls and channels**:
 
@@ -2567,7 +2566,6 @@ All keys below are in the automation config (`automation.config`, table `automat
 | Engine · Trading · Conditional orders | "Submit them automatically" | switch | `conditionalAutoSubmit` | `false` | boolean | automation.cjs configure:203 |
 | Engine · Trading · Conditional orders | "Keep them working while auto trading is stopped" | switch with a confirmation | not a setting: the consent row `conditional_watch` (orders while stopped, B-4) | off | on: "Keep conditional orders working on the <mock|live> account?" with "Turn on" / "Cancel"; off at once | src/KeepWorking.tsx; automation.cjs setWatchWhileStopped |
 | Engine · Trading · Conditional orders | "Let stops trail" | switch | `trailingStops` | `false` | boolean | automation.cjs configure:203 (side effects :206-209) |
-| Engine · Trading · Conditional orders | "Armed at once" | number | `conditionalMaxActive` | `5` | integer 1–10 | automation.cjs configure:203 |
 | Engine · Trading · Conditional orders | "Largest order" | number, % | `conditionalMaxOrderPct` | `10` | 1–50 | automation.cjs configure:203 |
 | Engine · Trading · Conditional orders | "Price drift allowed" | number, % | `conditionalMaxSlippagePct` | `2` | 0.1–10 | automation.cjs configure:203 |
 | Engine · Trading · Conditional orders | "Longest life" | number, h | `conditionalMaxHours` | `168` | 1–336 (finite number) | automation.cjs configure:203 |

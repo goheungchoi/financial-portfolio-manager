@@ -48,8 +48,11 @@ test('a dry run records its model\'s company; the dry-run gate still reads the m
 });
 test('pins: the start token of a fixed configuration and each client\'s request body are as before P1 (computed on 3f1a720b..f7698d1f)',async()=>{
   // config: the saved settings' hash gains phoneControl (Phone control P3, 1.6.0; '4eb88e1b40c61b4f' before); the start
-  // token leaves that switch out, so it is unchanged.
-  assert.deepEqual(PINS.startToken(ROOT),{token:'0bb210a088bf48a862bea2630c5e658c7eaae3607d8cfcac2a2d54a156cc2487',config:'51ea45c09ba018f7'});
+  // token leaves that switch out, so it is unchanged. Both change with the removal of conditionalMaxActive (the limit on
+  // armed conditional orders, removed at the user's word 2026-11-26; token '0bb210a0…', config '51ea45c09ba018f7' before):
+  // a removed setting leaves the saved settings, so a Start confirmed before an update would be refused once, and an
+  // update restarts the app, so none is pending.
+  assert.deepEqual(PINS.startToken(ROOT),{token:'965b95fb692ada9783fc353384a5b51786d528ab7e5c5a536f925685d573475b',config:'e7077d8ad6ef180c'});
   // The risk-off text ('review 2026-11-25.5') changed the instructions both bodies carry: the pins taken before it were
   // openai dfc4223814d360cb, claude 6c2985ba7acc7046; ai-models-vendor and claude-context-cache put the sentence back and
   // still compare every other byte.
@@ -67,7 +70,7 @@ test('P2: decisionMaker reads the stored setting exactly as the old comparisons 
   const fs=require('node:fs');for(const f of ['automation.cjs','auto-launch.cjs'])assert.doesNotMatch(fs.readFileSync(path.join(ROOT,'electron',f),'utf8'),/\.provider[!=]=='openai'/,f);
 });
 test('P2: the start token is unchanged after a load and a save that changes nothing; the dry-run gate keeps its own model check',()=>{
-  const pins=PINS.startToken(ROOT);assert.equal(pins.token,'0bb210a088bf48a862bea2630c5e658c7eaae3607d8cfcac2a2d54a156cc2487');
+  const pins=PINS.startToken(ROOT);assert.equal(pins.token,'965b95fb692ada9783fc353384a5b51786d528ab7e5c5a536f925685d573475b');
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');const db=new DatabaseSync(':memory:');
   const a=new Automation(db,new PaperEngine(db,[{symbol:'990010',price:100,name:'F'}],()=>[]),{request:async()=>({})},()=>{});
   a.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,shareKisWithAnthropic:true,openaiModel:'gpt-6-sol',reasoningEffort:'medium',anthropicUnlimitedCalls:true,anthropicUnlimitedBudget:true});

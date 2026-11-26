@@ -299,3 +299,5 @@ tests/phone-start.test.cjs
 tests/phone-lost-orders.test.cjs
 tests/phone-settings.test.cjs
 tests/console-outcome.test.mjs
+tests/linked-stop-settle.test.cjs
+tests/stops-several.test.cjs

@@ -29,7 +29,8 @@ const DEFAULTS={phoneControl:false,alertTrial:'off',notHeldPriceReviews:'default
 // the KRX after-hours single-price auction, which KRX ended on 2026-09-14 (fact check X1).
 // Shadow evaluation and complexity routing were removed on 2026-11-12 (step A1, artifacts/reviews/2026-11-12-engine-settings):
 // their saved values are ignored. routineModel and routineEffort stay: they are the context-compacting model.
-const LEGACY_SETTINGS=['shareKisWithAI','scoutSchedule','sessionKrxSingle','modelRouting','complexityThreshold','spotCheckPct','lunaMaxRuns','lunaMaxMinutes','shadowEvaluation','shadowPct','shadowUSDPerDay'];
+// conditionalMaxActive: the limit on armed conditional orders, removed 2026-11-26 at the user's word; a saved value is dropped.
+const LEGACY_SETTINGS=['conditionalMaxActive','shareKisWithAI','scoutSchedule','sessionKrxSingle','modelRouting','complexityThreshold','spotCheckPct','lunaMaxRuns','lunaMaxMinutes','shadowEvaluation','shadowPct','shadowUSDPerDay'];
 const LOG_LIMIT=30000;
 const heldSymbols=positions=>Object.entries(positions??{}).filter(([,p])=>p?.quantity>0).map(([symbol])=>symbol);
 // Watchlist symbols in a review's universe: the ones it could research, for its coverage count.
@@ -215,7 +216,7 @@ class Automation {
     // most the highest model ceiling, 22; the selected model's ceiling limits what is used).
     if(typeof next.severalOpenOrders!=='boolean'||!Number.isInteger(next.ordersPerReview)||next.ordersPerReview<1||next.ordersPerReview>ORDERS_PER_REVIEW_MAX)throw new Error('INVALID_SETTINGS');
     if(!Array.isArray(next.newsFeeds)||next.newsFeeds.length>10||next.newsFeeds.some(f=>!f||typeof f.url!=='string'||!/^https:\/\//.test(f.url)||f.url.length>500||typeof(f.label??'')!=='string'||String(f.label??'').length>60)||typeof next.kisNews!=='boolean'||typeof next.usTickerNews!=='boolean'||typeof next.narrativeEnabled!=='boolean'||!Number.isFinite(next.sizingRiskPct)||next.sizingRiskPct<0.1||next.sizingRiskPct>20||!Number.isFinite(next.sizingAtrMultiple)||next.sizingAtrMultiple<0.5||next.sizingAtrMultiple>5)throw new Error('INVALID_SETTINGS');
-    if(typeof next.conditionalOrders!=='boolean'||typeof next.trailingStops!=='boolean'||typeof next.conditionalAutoSubmit!=='boolean'||typeof next.creditProtectionApproved!=='boolean'||!Number.isInteger(next.conditionalMaxActive)||next.conditionalMaxActive<1||next.conditionalMaxActive>10||!Number.isFinite(next.conditionalMaxOrderPct)||next.conditionalMaxOrderPct<1||next.conditionalMaxOrderPct>50||!Number.isFinite(next.conditionalMaxSlippagePct)||next.conditionalMaxSlippagePct<.1||next.conditionalMaxSlippagePct>10||!Number.isFinite(next.conditionalMaxHours)||next.conditionalMaxHours<1||next.conditionalMaxHours>336)throw new Error('INVALID_SETTINGS');
+    if(typeof next.conditionalOrders!=='boolean'||typeof next.trailingStops!=='boolean'||typeof next.conditionalAutoSubmit!=='boolean'||typeof next.creditProtectionApproved!=='boolean'||!Number.isFinite(next.conditionalMaxOrderPct)||next.conditionalMaxOrderPct<1||next.conditionalMaxOrderPct>50||!Number.isFinite(next.conditionalMaxSlippagePct)||next.conditionalMaxSlippagePct<.1||next.conditionalMaxSlippagePct>10||!Number.isFinite(next.conditionalMaxHours)||next.conditionalMaxHours<1||next.conditionalMaxHours>336)throw new Error('INVALID_SETTINGS');
     // Trailing stops switched off (T2): armed trailing stops stay armed as fixed stops at their current level; switched
     // on again they resume from the next quotes (no catch-up of the off time). The two-check memory starts afresh.
     if(Boolean(next.trailingStops)!==Boolean(this.config.trailingStops)){this.trailMemory=new Map();this.trailSeen=new Map();
@@ -2013,7 +2014,7 @@ class Automation {
         if(args?.action!=='cancel'&&args?.side==='Buy'){const sym=String(args.symbol??'').trim().toUpperCase();const refused=this.leveragedEntryRefusal(/:/.test(sym)?this.usLive:this.live,sym,'Buy');if(refused)return {status:'rejected',reason:refused};
           // The buy-back block: a conditional buy of a stock you sold outside the app is not armed.
           // Arming is refused only on a known block; while the list cannot be known, a fire waits at propose.
-          {const engine=/:/.test(sym)?this.usLive:this.live;const b=engine?require('./buyback.cjs').check(engine,sym,/:/.test(sym)?'US':'KR'):null;if(b&&!b.unknown)return {status:'rejected',reason:require('./buyback.cjs').refusal(b)};}}if(args?.trail?.atrMultiple!=null)await this.warmSeries([String(args.symbol??'')]);const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,positions:context.positions??null,atr:sym=>this.trailAtr(sym),lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.replaced)this.logStopReplaced(scope,reviewId,reply.replaced,reply.id);if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);count(()=>use.item('conditionalOrder',reply.id,o?.conditions));const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';if(o.trail){reply.trail={level:o.trail.level,high:o.trail.high,active:o.trail.active,distance:o.trail.kind==='pct'?`${o.trail.pct}%`:o.trail.distance};if(!reply.renewed)this.log(o.id,'System',`Trailing stop armed · ${o.symbol}`,require('./trailing-stops.cjs').armedText(o));}}return reply;},
+          {const engine=/:/.test(sym)?this.usLive:this.live;const b=engine?require('./buyback.cjs').check(engine,sym,/:/.test(sym)?'US':'KR'):null;if(b&&!b.unknown)return {status:'rejected',reason:require('./buyback.cjs').refusal(b)};}}if(args?.trail?.atrMultiple!=null)await this.warmSeries([String(args.symbol??'')]);const reply=this.desk.setOrder(scope,args,{config:this.config,universe,quotes:context.quotes??[],reviewId,positions:context.positions??null,atr:sym=>this.trailAtr(sym),linkFilled:l=>this.linkedPurchase({symbol:args?.symbol,linkedBuy:l})?.filled??0,lot:args?.action!=='cancel'&&args?.credit?this.creditLot(args,{quantity:args.quantity}):null});if(reply.replaced)this.logStopReplaced(scope,reviewId,reply.replaced,reply.id);if(reply.status==='armed'){await this.warmSeries(this.desk.orders(scope).find(o=>o.id===reply.id).symbols);const o=this.desk.orders(scope).find(x=>x.id===reply.id);count(()=>use.item('conditionalOrder',reply.id,o?.conditions));const check=formula.checkConditions(o.conditions,o.combine,this.formulaData(context.quotes??[]));reply.currentValues=check.results.map(r=>({expr:r.expr,actual:r.actual,met:r.met,...(r.error?{error:r.error}:{})}));if(check.met)reply.warning='The conditions are already met; it will fire on the next check while auto trading is on and the market is open.';if(o.trail){reply.trail={level:o.trail.level,high:o.trail.high,active:o.trail.active,distance:o.trail.kind==='pct'?`${o.trail.pct}%`:o.trail.distance};if(!reply.renewed)this.log(o.id,'System',`Trailing stop armed · ${o.symbol}`,require('./trailing-stops.cjs').armedText(o));}}return reply;},
     };
   }
   // One console entry for a stop replaced in one step (step A-R): both ids and both levels. Never throws.
@@ -2091,7 +2092,9 @@ class Automation {
       // the purchase is open and closes once it ended unfilled. Shares held before the purchase are never sold by it.
       // A record that cannot be read (orders() is empty while the account identity cannot be read) is usually momentary:
       // the stop stays armed and retries; after five minutes of this it is shown on Home (review of the plan stop fixes).
-      let linkedCap=null;if(order.linkedBuy){const lp=this.linkedPurchase(order);if(!lp){const since=order.unreadableSince??Date.now();this.desk.update(order,{status:'armed',waiting:'its purchase record cannot be read',unreadableSince:since,nextCheckAt:Date.now()+30000});
+      // A settled link (its purchase ended and the stop was sized to it once) caps nothing: the stop sells up to what is
+      // sellable, as any stop (found in live use).
+      let linkedCap=null;if(order.linkedBuy&&!order.linkedBuy.settled){const lp=this.linkedPurchase(order);if(!lp){const since=order.unreadableSince??Date.now();this.desk.update(order,{status:'armed',waiting:'its purchase record cannot be read',unreadableSince:since,nextCheckAt:Date.now()+30000});
           if(Date.now()-since>300000&&!order.unreadableNoticeAt){this.desk.update({...order,unreadableSince:since},{status:'armed',waiting:'its purchase record cannot be read',unreadableSince:since,unreadableNoticeAt:Date.now(),nextCheckAt:Date.now()+30000});this.log(order.id,'System','Stop order cannot check its purchase',`${order.side} ${order.quantity} ${order.symbol} (${order.purpose}): the record of its purchase has not been readable for more than five minutes; it stays armed and keeps trying.`);try{this.notify?.('stop-unreadable-'+order.id,`The stop order for ${order.symbol} cannot read its purchase record; it stays armed and keeps trying.`);}catch{}}
           return;}
         if(order.unreadableSince){order={...order,unreadableSince:null,unreadableNoticeAt:null};this.desk.update(order,{status:'firing'});}
@@ -2277,7 +2280,7 @@ class Automation {
   closeStopsNotHeld(balance,now=Date.now(),outside=null){const at=Date.parse(balance?.timestamp??'');if(this.config.scope==='paper'||!Array.isArray(outside)||!Array.isArray(balance?.holdings)||!Number.isFinite(at))return [];
     let orders,mine;try{orders=this.desk.orders(this.watchScope());mine=this.live?.orders?.()??[];}catch{return [];}
     const OPEN=['Ready','Submitting','Uncertain','Accepted','Partially filled','Cancellation uncertain'],changed=[],plural=n=>`${n} share${n===1?'':'s'}`,num=id=>require('./order-chain.cjs').norm(id);
-    const eligible=orders.filter(o=>o.side==='Sell'&&!o.credit&&!/:/.test(o.symbol)&&!(o.linkedBuy&&!(this.linkedPurchase(o)?.filled>=1)));
+    const eligible=orders.filter(o=>o.side==='Sell'&&!o.credit&&!/:/.test(o.symbol)&&!(o.linkedBuy&&!o.linkedBuy.settled&&!(this.linkedPurchase(o)?.filled>=1)));
     const ask=(o,held,words)=>{if(o.notice?.kind==='ask'&&o.notice.held===held)return;this.desk.update(o,{notice:{kind:'ask',held,words,at:now}});this.log(o.id,'System','Conditional order · check',words);changed.push(o.id);};
     // Judged per purpose, as setOrder covers: a stop loss and a take profit on the same shares are each judged against them.
     for(const group of [...new Set(eligible.map(o=>o.symbol+'|'+o.purpose))]){const [symbol]=group.split('|');const stops=eligible.filter(o=>o.symbol+'|'+o.purpose===group),held=balance.holdings.find(h=>h.symbol===symbol)?.quantity??0,need=stops.reduce((n,o)=>n+o.quantity,0);
@@ -2313,11 +2316,28 @@ class Automation {
       if(rec?.status!=='Ready')return false;engine.annotate?.(id,{status:'Rejected',reason:code,notSentAt:Date.now()});this.syncLinkedStops();return true;}catch{return false;}}
   // Linked stops follow their purchase once it ends (P1): nothing filled, the stop is cancelled with the reason; partly
   // filled, its quantity becomes what was bought. Unlinked orders are not touched.
-  syncLinkedStops(scope=this.watchScope()){for(const o of this.desk.orders(scope)){if(!o.linkedBuy||o.side!=='Sell')continue;const p=this.linkedPurchase(o);if(!p||!p.ended)continue;
+  // The link caps a stop only until its purchase ends (found in live use: after a second purchase, every replacement of
+  // the stop was cut back to the first purchase's shares, for the life of the stop). At the end it is sized once to what
+  // was bought and the link is marked settled; a settled link caps nothing more, here or when the stop fires.
+  syncLinkedStops(scope=this.watchScope()){this.settleEndedLinksOnce(scope);for(const o of this.desk.orders(scope)){if(!o.linkedBuy||o.linkedBuy.settled||o.side!=='Sell')continue;const p=this.linkedPurchase(o);if(!p||!p.ended)continue;
       if(p.filled<1){const unsent=Number.isFinite(p.record?.notSentAt);
         this.desk.update(o,{status:'cancelled',outcome:unsent?`Not needed: the purchase was not sent (${p.reason??'refused before sending'}).`:`Not needed: the purchase did not fill (it was ${p.status}${p.reason?`: ${p.reason}`:''}).`,closedAt:Date.now(),closedBy:'app'});
-        this.log(o.id,'System','Conditional order · cancelled',`${o.side} ${o.quantity} ${o.symbol} (${o.purpose}): its purchase ${unsent?'was not sent':'did not fill'}.`);}
-      else if(p.filled<o.quantity){this.desk.update(o,{quantity:p.filled,resizedFrom:o.quantity});this.log(o.id,'System','Conditional order · resized',`${o.side} ${o.symbol} (${o.purpose}): now ${p.filled}, the shares its purchase bought.`);}}}
+        this.log(o.id,'System','Conditional order · cancelled',`${o.side} ${o.quantity} ${o.symbol} (${o.purpose}): its purchase ${unsent?'was not sent':'did not fill'}.`);continue;}
+      // Settling also ends any "cannot read its purchase" mark: the record was read (review of the linked-stop fix).
+      const settled={...o.linkedBuy,settled:true,settledAt:Date.now()},clear={unreadableSince:null,unreadableNoticeAt:null};
+      if(p.filled<o.quantity){this.desk.update(o,{quantity:p.filled,resizedFrom:o.quantity,linkedBuy:settled,...clear});this.log(o.id,'System','Conditional order · resized',`${o.side} ${o.symbol} (${o.purpose}): now ${p.filled}, the shares its purchase bought.`);}
+      else this.desk.update(o,{linkedBuy:settled,...clear});}}
+  // Once, at the first sync after the update that brought settled links: every armed stop an earlier version linked (no
+  // v:2 on its link) whose purchase has ended with shares bought is marked settled as it stands, its quantity unchanged,
+  // nothing re-armed. A link made since carries v:2 and is sized at its purchase's end as the rule says. Done only when every such
+  // purchase could be read, so a record unreadable now is never sized later by the new rule.
+  // Recorded per account scope, never while disconnected (review of the linked-stop fix: a first tick while disconnected
+  // or on another account would have marked it done without reading the real account's stops).
+  settleEndedLinksOnce(scope){if(!scope||/:disconnected$/.test(scope))return;this.linksSettledChecked??=new Set();if(this.linksSettledChecked.has(scope))return;const key='linked-stops-settled:'+scope;
+    try{this.db.exec('CREATE TABLE IF NOT EXISTS app_once(id TEXT PRIMARY KEY,at INTEGER NOT NULL)');if(this.db.prepare('SELECT 1 FROM app_once WHERE id=?').get(key)){this.linksSettledChecked.add(scope);return;}
+      let unreadable=false;for(const o of this.desk.orders(scope)){if(!o.linkedBuy||o.linkedBuy.settled||o.linkedBuy.v===2||o.side!=='Sell')continue;const p=this.linkedPurchase(o);if(!p){unreadable=true;continue;}
+        if(p.ended&&p.filled>=1)this.desk.update(o,{linkedBuy:{...o.linkedBuy,settled:true,settledAt:Date.now(),settledBy:'update'},unreadableSince:null,unreadableNoticeAt:null});}
+      if(!unreadable){this.db.prepare('INSERT OR IGNORE INTO app_once VALUES(?,?)').run(key,Date.now());this.linksSettledChecked.add(scope);}}catch{}}
   // A Buy's plan becomes a note on the symbol, and a stop-loss order when conditional orders are allowed.
   // The stop is armed when the purchase is proposed, so protection exists the moment a fill can happen, and is linked
   // to it (plan stop fixes P1-P3, artifacts/reviews/2026-11-11-agent-tools/plan-stop-fixes.md): it never sells more than

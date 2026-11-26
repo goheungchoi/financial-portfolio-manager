@@ -699,7 +699,7 @@ desk is checked locally; a conditional order that fires still goes through the n
   they started made no decision (`reopenTrigger`; `agent-desk.cjs:54-57`).
 - **Conditional orders** — arming, plan-linked stops, trailing stops, watching and firing are **Part 2 §6**. From the
   AI side: the tool exists only when the user switched `conditionalOrders` on; settings `conditionalAutoSubmit`
-  (false), `conditionalMaxActive` (5), `conditionalMaxOrderPct` (10), `conditionalMaxSlippagePct` (2),
+  (false), `conditionalMaxOrderPct` (10), `conditionalMaxSlippagePct` (2),
   `conditionalMaxHours` (168), `trailingStops` (false) (`COND_DEFAULTS`). They fire **without a model call** and only
   while auto trading is running (`conditionalMonitoringActive`, `automation.cjs:534`); the context says so in
   `agentDesk.conditionalOrders.monitoring` (`automation.cjs:589`).

@@ -65,13 +65,10 @@ test('the new order failing any of its own checks leaves the old stop armed unch
   const off=w.arm(stop(64.3,{replaces:old.id}),{config:{...CONFIG,conditionalOrders:false}});assert.equal(off.status,'rejected');assert.equal(JSON.stringify(w.row(old.id)),before,'conditional orders off');
 });
 
-test('the replaced order\'s shares and cap slot are counted free; more than held is still refused',()=>{
-  const w=world({config:{...CONFIG,conditionalMaxActive:2}});const old=w.arm(stop(58.1));w.arm(stop(80,{symbol:'NYSE:TLSP',conditions:[{expr:'price("NYSE:TLSP")',op:'<=',value:80}]}));
+test('the replaced order\'s shares are counted free; more than held is still refused (no limit on armed orders since 2026-11-26)',()=>{
+  const w=world();const old=w.arm(stop(58.1));w.arm(stop(80,{symbol:'NYSE:TLSP',conditions:[{expr:'price("NYSE:TLSP")',op:'<=',value:80}]}));
   assert.match(w.arm(stop(64.3)).reason,/already cover 1/,'without replaces: refused by the no-stacking rule, as before');
-  const r=w.arm(stop(64.3,{replaces:old.id}));assert.equal(r.status,'armed','cap full (2 of 2) and shares covered: the replaced order frees both');
-  // Cap: the replaced slot is the only one freed.
-  const v=world({config:{...CONFIG,conditionalMaxActive:2}});const a=v.arm(stop(58.1),{positions:{[SYM]:{quantity:3}}});v.arm(stop(57),{positions:{[SYM]:{quantity:3}}});v.arm(stop(80,{symbol:'NYSE:TLSP',conditions:[{expr:'price("NYSE:TLSP")',op:'<=',value:80}]}),{config:{...CONFIG,conditionalMaxActive:3}});
-  const capped=v.arm(stop(64.3,{replaces:a.id}),{positions:{[SYM]:{quantity:3}}});assert.equal(capped.status,'rejected');assert.match(capped.reason,/Up to 2 armed/);assert.equal(v.row(a.id).status,'armed');
+  const r=w.arm(stop(64.3,{replaces:old.id}));assert.equal(r.status,'armed','shares covered: the replaced order frees them');
   // Shares: two stops cover two of three shares; replacing one with two shares is fine, with three is not.
   const x=world({held:3});const s1=x.arm(stop(58.1));x.arm(stop(57));
   assert.match(x.arm(stop(64.3,{replaces:s1.id,quantity:3})).reason,/already cover 1.*would cover 4/);assert.equal(x.row(s1.id).status,'armed');
@@ -87,7 +84,7 @@ test('a replace never renews another identical order instead',()=>{
 test('a stop tied to its purchase passes the link on and still covers only what the purchase bought',()=>{
   const w=world({held:0});const link={id:'P-1',market:'US',quantity:1};const old=w.arm(stop(58.1),{link});assert.equal(old.status,'armed');
   assert.match(w.arm(stop(64.3,{replaces:old.id,quantity:2})).reason,/0 shares of NYSE:NWWR are held and 1 are being bought/);assert.equal(w.row(old.id).status,'armed');
-  const r=w.arm(stop(64.3,{replaces:old.id}));assert.equal(r.status,'armed');assert.deepEqual(w.row(r.id).linkedBuy,{id:'P-1',market:'US',quantity:1});
+  const r=w.arm(stop(64.3,{replaces:old.id}));assert.equal(r.status,'armed');assert.deepEqual(w.row(r.id).linkedBuy,{id:'P-1',market:'US',quantity:1,v:2});
   assert.equal(w.desk.context(S,CONFIG,[SYM]).conditionalOrders.armed[0].protectsPurchase,'P-1');
 });
 

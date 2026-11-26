@@ -41,14 +41,14 @@ test('notes: one per symbol, general notes, limits and expiry',()=>{
   now+=3*86400000;assert.deepEqual(desk.notes('kis:a').map(n=>n.symbol),['005930'],'the general note expired');assert.equal(desk.saveNote('kis:a',{action:'clear',symbol:'005930'}).status,'cleared');
   const ctx=new AgentDesk(new DatabaseSync(':memory:'),()=>now);ctx.saveNote('s',{action:'set',symbol:'000660',note:'n',expiresInDays:5});assert.equal(ctx.context('s',COND_DEFAULTS,['005930']).notes.length,0,'notes about symbols outside the universe are left out');
 });
-test('conditional orders need the setting, valid inputs and room; the context shows limits only when allowed',()=>{
+test('conditional orders need the setting and valid inputs (no limit on how many are armed); the context shows limits only when allowed',()=>{
   const desk=new AgentDesk(new DatabaseSync(':memory:'));const U=['005930'];const base={action:'add',id:'',symbol:'005930',side:'Sell',quantity:3,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:195000}],combine:'all',purpose:'stop_loss',expiresInHours:48,reason:'Thesis broken below 195k'};
   const off={...COND_DEFAULTS};const on={...COND_DEFAULTS,conditionalOrders:true,conditionalMaxActive:2};
   assert.match(desk.setOrder('kis:a',base,{config:off,universe:U}).reason,/turned off/);
   assert.equal(desk.setOrder('kis:a',{...base,symbol:'000660'},{config:on,universe:U}).status,'rejected');assert.equal(desk.setOrder('kis:a',{...base,quantity:0},{config:on,universe:U}).status,'rejected');
   assert.equal(desk.setOrder('kis:a',{...base,expiresInHours:500},{config:on,universe:U}).status,'rejected');assert.equal(desk.setOrder('kis:a',{...base,limitPrice:500000},{config:on,universe:U,quotes:[{symbol:'005930',price:200000}]}).status,'rejected','limit far from price');
-  const armed=desk.setOrder('kis:a',base,{config:on,universe:U});assert.equal(armed.status,'armed');assert.match(armed.note,/waits for approval/);desk.setOrder('kis:a',base,{config:on,universe:U});assert.match(desk.setOrder('kis:a',base,{config:on,universe:U}).reason,/Up to 2/);
-  assert.equal(desk.setOrder('kis:a',{action:'cancel',id:armed.id},{config:on}).status,'cancelled');assert.equal(desk.orders('kis:a').length,1);
+  const armed=desk.setOrder('kis:a',base,{config:on,universe:U});assert.equal(armed.status,'armed');assert.match(armed.note,/waits for approval/);desk.setOrder('kis:a',base,{config:on,universe:U});assert.equal(desk.setOrder('kis:a',base,{config:on,universe:U}).status,'armed','no limit on armed orders (removed 2026-11-26)');
+  assert.equal(desk.setOrder('kis:a',{action:'cancel',id:armed.id},{config:on}).status,'cancelled');assert.equal(desk.orders('kis:a').length,2);
   assert.deepEqual(desk.context('kis:a',off,U).conditionalOrders.allowed,false);assert.equal(desk.context('kis:a',on,U).conditionalOrders.maxSlippagePct,2);
 });
 test('a held position whose stop loss was rejected stays unprotected until stop losses cover its shares or the user dismisses it',()=>{
@@ -546,7 +546,7 @@ const planHarness=({held=0}={})=>{const records=new Map();const ctx={marketSessi
 const titles=events=>events.map(e=>e.title);
 test('P1: a Buy filled in full: one linked stop for the quantity bought, which fires and sells that quantity',async()=>{
   const {a,ctx,records,fire,stops,events}=planHarness();a.followPlan(a.watchScope(),planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}});
-  const [s]=stops();assert.deepEqual(s.linkedBuy,{id:'P1',market:'KR',quantity:2});assert.equal(s.quantity,2);assert.ok(titles(events).includes('Stop-loss armed from the plan'));
+  const [s]=stops();assert.deepEqual(s.linkedBuy,{id:'P1',market:'KR',quantity:2,v:2});assert.equal(s.quantity,2);assert.ok(titles(events).includes('Stop-loss armed from the plan'));
   records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:2,status:'Filled'});ctx.positions={'005930':{quantity:2}};
   await fire();assert.equal(a.calls.propose.length,1);assert.deepEqual([a.calls.propose[0].side,a.calls.propose[0].quantity],['Sell',2]);
 });
@@ -583,18 +583,27 @@ test('P2: with a stop covering the 3 held, a Buy of 2 gets its own stop for 2; a
   const e=events.find(x=>x.title==='Stop-loss NOT armed from the plan');assert.ok(e);assert.match(e.body,/3 shares of 005930 are held and 2 are being bought, and armed stop_loss orders already cover 5 \(C-[^)]+, C-[^)]+\)/);
   assert.equal(alerts.length,1);
 });
-test('P3: an arming refused (armed-order cap): NOT armed, the failure listed for Home and the next review, the phone alert sent, the Buy unaffected',()=>{
-  const {a,events,alerts}=planHarness();a.configure({conditionalMaxActive:1});const scope=a.watchScope();
-  a.desk.setOrder(scope,{action:'add',id:'',symbol:'005930',side:'Buy',quantity:1,limitPrice:null,conditions:[{expr:'price("005930")',op:'<',value:1}],combine:'all',purpose:'entry',expiresInHours:24,reason:'Other'},{config:a.config,universe:['005930']});
+test('P3: an arming refused (the holding not read at the proposal): NOT armed, the failure listed for Home and the next review, the phone alert sent, the Buy unaffected',()=>{
+  // The limit on armed orders that refused it before is gone (2026-11-26); a cover that would pass the shares held is
+  // still refused: here a stop covers the 2 held, and the proposal's holding could not be read.
+  const {a,events,alerts}=planHarness({held:2});const scope=a.watchScope();
+  const existing=a.desk.setOrder(scope,{action:'add',id:'',symbol:'005930',side:'Sell',quantity:2,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:200000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Existing'},{config:a.config,universe:['005930'],positions:{'005930':{quantity:2}}});assert.equal(existing.status,'armed');
+  {const o=a.desk.orders(scope).find(x=>x.id===existing.id);a.desk.update(o,{createdAt:o.createdAt-1000});}// armed before the purchase, not in its millisecond
   assert.doesNotThrow(()=>a.followPlan(scope,planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}}));
-  assert.ok(!titles(events).includes('Stop-loss armed from the plan'));const e=events.find(x=>x.title==='Stop-loss NOT armed from the plan');assert.match(e.body,/^2 005930 at 220000: Up to 1 armed conditional orders; cancel one first\. The purchase goes ahead without a stop order\.$/);
+  const why=`0 shares of 005930 are held and 2 are being bought, and armed stop_loss orders already cover 2 (${existing.id}); this would cover 4. Cancel one first, or send the identical order again to extend it.`;
+  assert.ok(!titles(events).includes('Stop-loss armed from the plan'));const e=events.find(x=>x.title==='Stop-loss NOT armed from the plan');assert.equal(e.body,`2 005930 at 220000: ${why} The purchase goes ahead without a stop order.`);
   const failures=a.desk.planStopFailures(scope);assert.equal(failures.length,1);assert.equal(failures[0].symbol,'005930');
-  assert.deepEqual(alerts.map(x=>x.message),['The purchase of 2 005930 has no stop order: Up to 1 armed conditional orders; cancel one first.']);
-  const ctx=a.desk.context(scope,a.config,['005930'],{});assert.equal(ctx.conditionalOrders.planStopsNotArmed[0].fact,'The plan stop for 005930 was not armed: Up to 1 armed conditional orders; cancel one first.');
+  assert.deepEqual(alerts.map(x=>x.message),[`The purchase of 2 005930 has no stop order: ${why}`]);
+  const ctx=a.desk.context(scope,a.config,['005930'],{});assert.equal(ctx.conditionalOrders.planStopsNotArmed[0].fact,`The plan stop for 005930 was not armed: ${why}`);
   assert.deepEqual(a.getState().desk.planStopFailures.map(f=>f.symbol),['005930']);
-  a.configure({conditionalMaxActive:5});a.desk.setOrder(scope,{action:'add',id:'',symbol:'005930',side:'Sell',quantity:2,limitPrice:null,conditions:[{expr:'price("005930")',op:'<=',value:200000}],combine:'all',purpose:'stop_loss',expiresInHours:24,reason:'Re-armed'},{config:a.config,universe:['005930']});
-  assert.equal(a.desk.planStopFailures(scope).length,0,'a stop loss armed afterwards clears it');
   const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'../electron/main.cjs'),'utf8');assert.match(src,/title:`No stop order for the purchase of \$\{f\.symbol\}`,detail:`\$\{f\.quantity\} \$\{f\.symbol\}: \$\{f\.reason\}`,tab:'Journal',view:'Orders and triggers'/);
+});
+test('no limit on armed orders: with 12 armed, a purchase\'s own plan stop is still armed (the user, 2026-11-26)',()=>{
+  const {a,stops}=planHarness();const scope=a.watchScope();
+  for(let i=0;i<12;i++)assert.equal(a.desk.setOrder(scope,{action:'add',id:'',symbol:'005930',side:'Buy',quantity:1,limitPrice:null,conditions:[{expr:'price("005930")',op:'<',value:1+i}],combine:'all',purpose:'entry',expiresInHours:24,reason:'Other'},{config:a.config,universe:['005930']}).status,'armed');
+  a.followPlan(scope,planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}});assert.equal(stops().filter(o=>o.purpose==='stop_loss').length,1);
+  assert.equal('maxActive' in a.desk.context(scope,a.config,['005930'],{}).conditionalOrders,false,'the review is not told a limit');
+  a.configure({conditionalMaxActive:3});assert.equal('conditionalMaxActive' in a.config,false,'a saved or sent value is dropped');
 });
 test('P3: conditional orders off: no stop, nothing logged as not armed, no alert',()=>{
   const {a,events,alerts}=planHarness();a.configure({conditionalOrders:false});a.followPlan(a.watchScope(),planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{}});
@@ -610,7 +619,7 @@ test('Restart between proposal and fill: the link is stored and the rules still 
   const {a,db,records,stops}=planHarness({held:3});a.followPlan(a.watchScope(),planDecision(2),'R1',{proposalId:'P1',market:'KR',positions:{'005930':{quantity:3}}});
   const {Automation}=require('../electron/automation.cjs');const {PaperEngine}=require('../electron/paper-engine.cjs');
   const b=new Automation(db,new PaperEngine(db,[{symbol:'005930',price:100,name:'Fixture'}],()=>[]),{request:async()=>({})},()=>{});b.live=a.live;b.configure({scope:'kis',provider:'openai',shareKisWithOpenAI:true,openaiModel:'gpt-6-sol',reasoningEffort:'low',autoSubmit:true,conditionalOrders:true,conditionalAutoSubmit:true});
-  b.series=a.series;b.marketQuotes=a.marketQuotes;assert.deepEqual(b.desk.orders(b.watchScope())[0].linkedBuy,{id:'P1',market:'KR',quantity:2});
+  b.series=a.series;b.marketQuotes=a.marketQuotes;assert.deepEqual(b.desk.orders(b.watchScope())[0].linkedBuy,{id:'P1',market:'KR',quantity:2,v:2});
   records.set('P1',{id:'P1',symbol:'005930',side:'Buy',quantity:2,filled:0,status:'Accepted'});b.configure({enabled:true});b.sessionArmed=true;b.lastDeskCheck=0;b.tick();await new Promise(r=>setTimeout(r,40));
   assert.equal(a.calls.propose.length,0,'held shares not sold after restart');void stops;
 });

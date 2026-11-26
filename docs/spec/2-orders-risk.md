@@ -1057,7 +1057,6 @@ exists at the broker until it fires. While the app is closed or auto trading is 
 |---|---|---|
 | `conditionalOrders` | off | The AI may arm them |
 | `conditionalAutoSubmit` ("Submit them automatically", `src/EngineSettings.tsx:103`) | off | A fired order is sent without asking. Off: it becomes a proposal that waits for approval — for 120 s |
-| `conditionalMaxActive` | 5 | Armed at once |
 | `conditionalMaxOrderPct` | 10 | Largest buy, % of equity |
 | `conditionalMaxSlippagePct` | 2 | Furthest the placement price may be from the quote |
 | `conditionalMaxHours` | 168 | Longest life |
@@ -1082,10 +1081,42 @@ When a review's Buy carries a plan with a stop price and conditional orders are 
 `price("SYM") <= stopPrice` for the bought quantity **when the purchase is proposed**, linked to it (`linkedBuy`). The
 plan itself is saved as a note. Rules:
 
-- it sells at most what its purchase filled; it never sells shares held before (`automation.cjs:1464-1469`);
+- while its purchase is open it sells at most what that purchase filled, never shares held before
+  (`automation.cjs:1464-1469`); once the purchase has ended it is an ordinary stop (below);
 - when the purchase ends unfilled or is refused before sending, the stop is cancelled at once ("Not needed: the
   purchase was not sent / did not fill"); partly filled, it is resized (`syncLinkedStops`, `:1603-1607`, every 5 s;
   `endUnsent`, `:1599-1600`);
+- **The link caps a stop only until its purchase ends** (found in live use: after a second purchase, every replacement
+  of the stop for the whole position was cut back to the first purchase's shares, though the tool had answered
+  "armed"). When the purchase ends with shares bought, the stop is sized once to what was bought if it asked for more,
+  and its link is marked `settled` (`syncLinkedStops`). A settled link caps nothing more: not in the sync, not at
+  firing, and a replacement of a settled stop (`replaces`) is an ordinary stop, limited only by the shares held (plus
+  the shares an open purchase is still to buy) less what other armed sell orders of the same purpose cover. A replacement of a
+  stop whose purchase is still open keeps the link and the cap: asked for more than that purchase buys (and within the
+  shares held plus being bought), it is armed for the purchase's shares and the answer says so ("Armed for N, not M:
+  it is tied to purchase …, which is still open…"). Every `set_conditional_order` answer names the `quantity` armed. A
+  settled stop is no longer shown to the review as `protectsPurchase`. Links made since carry `v: 2`; at the first
+  sync after the update, every armed stop linked by an earlier version whose purchase has ended with shares bought was
+  marked settled as it stood, its quantity unchanged (`settleEndedLinksOnce`, once per account scope, never while
+  disconnected, recorded in `app_once` when every such purchase could be read; it also clears a stale "cannot read its
+  purchase" mark, as settling at a purchase's end does).
+- a later purchase of a stock already held with a stop gets its own plan stop, linked to it, for the shares it buys, at
+  its own plan's level; the first stop is not touched, and both settle when their purchases end (the user's direction,
+  2026-11-26: "one for the first two and the other one for the last one"). Its arming is refused, and said, when the
+  holding could not be read at the proposal (until 2026-11-26 also when the armed-order limit was reached); the purchase is proposed and sent first
+  and is not held back, the refusal is logged ("Stop-loss NOT armed from the plan"), sent as a phone alert, listed on
+  Home and told to the next review (`planStopsNotArmed`).
+- **No limit on how many conditional orders are armed at once** (the user, 2026-11-26, after a purchase's own plan
+  stop was refused at the limit, found in live use). The setting `conditionalMaxActive` ("Armed at once", 1–10, default 5)
+  is gone; a saved value is dropped (`LEGACY_SETTINGS`), and the review's context no longer carries `maxActive`. Every
+  order still passes every other check.
+- **Several orders of one purpose on one stock** (stop losses, or take profits; fixed or trailing) are armed side by
+  side while together they cover no more than the shares held plus the shares an open purchase is still to buy:
+  shares it has filled are in the holding and are not counted again (the cover check
+  in `agent-desk.cjs setOrder`); the other purpose is counted apart. Each fires for its own shares. Hit at the same
+  moment under one open order at a time, the first sells and the others stay armed until its sale is done, then fire
+  for their own shares. Replacing one (`replaces`) leaves the others exactly as they were, and a replacement still
+  cannot cover shares another one covers.
 - if the stop could not be armed, the purchase still goes ahead; the failure is logged, alerted, stored in
   `plan_stop_failures` and shown to the next review for a day (`:1633-1635`; `agent-desk.cjs:172-181`).
 
@@ -1238,7 +1269,8 @@ the app: `syncConditionalPermits` (above). The conditional order an order belong
 
 1. Fresh account read through the engine's `context`. Market closed → stays armed, checked again in 5 minutes.
 2. Conditions re-checked on the fresh quotes; no longer met → stays armed.
-3. A linked stop: capped at what its purchase filled; waits while that is open.
+3. A linked stop whose purchase is still open: capped at what its purchase filled; waits while that is open. A settled
+   link caps nothing: the stop sells up to the sellable quantity, as any stop.
 4. Priced from the order book with `limitPrice` as the bound; no book for a minute → stays armed, a review is asked.
 5. Placement price more than `conditionalMaxSlippagePct` from the quote → **rejected**.
 6. A sale: nothing held → cancelled as "Not needed"; quantity capped at shares held and free.

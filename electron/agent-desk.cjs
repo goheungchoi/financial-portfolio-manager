@@ -2,7 +2,7 @@
 // Everything here is checked locally; conditional orders still go through the normal proposal and risk checks when they fire.
 const {randomUUID}=require('node:crypto');const formula=require('./formula.cjs');
 const LIMITS={triggers:5,notes:30,noteLength:500,conditionsPerItem:4,maxTriggerHours:336};
-const COND_DEFAULTS={conditionalOrders:false,conditionalAutoSubmit:false,conditionalMaxActive:5,conditionalMaxOrderPct:10,conditionalMaxSlippagePct:2,conditionalMaxHours:168,trailingStops:false};
+const COND_DEFAULTS={conditionalOrders:false,conditionalAutoSubmit:false,conditionalMaxOrderPct:10,conditionalMaxSlippagePct:2,conditionalMaxHours:168,trailingStops:false};
 const CONDITION_SCHEMA={type:'array',items:{type:'object',properties:{expr:{type:'string'},op:{type:'string',enum:['>','>=','<','<=']},value:{type:'number'}},required:['expr','op','value'],additionalProperties:false}};
 const COMPUTE_TOOL={type:'function',name:'compute',description:'Calculate your own numbers from prices and daily history with formulas, for example (price("005930")/sma("005930",20)-1)*100 or ratio_z("005930","000660",60). Up to 5 formulas per call, each named. '+formula.HELP+' Read-only.',strict:true,parameters:{type:'object',properties:{formulas:{type:'array',items:{type:'object',properties:{name:{type:'string'},expr:{type:'string'}},required:['name','expr'],additionalProperties:false}}},required:['formulas'],additionalProperties:false}};
 const TRIGGER_TOOL={type:'function',name:'set_review_trigger',description:'Ask for a review when your own conditions are met, checked by the app on every price update. Each condition is a single formula compared with a number; combine "all" needs every condition, "any" needs one. A trigger fires once and expires after expiresInHours (1–336). Up to 5 active triggers. action "remove" deletes the trigger with that id. Triggers only schedule reviews; they never trade. '+formula.NEUTRAL_HELP,strict:true,parameters:{type:'object',properties:{action:{type:'string',enum:['add','remove']},id:{type:'string'},name:{type:'string'},conditions:CONDITION_SCHEMA,combine:{type:'string',enum:['all','any']},expiresInHours:{type:'number'},reason:{type:'string'}},required:['action','id','name','conditions','combine','expiresInHours','reason'],additionalProperties:false}};
@@ -32,7 +32,7 @@ function trailView(o,config){const T=require('./trailing-stops.cjs'),t=o.trail,m
   return {distance:t.kind==='pct'?`${t.pct}%`:`${t.distance} (${t.atrMultiple} x ATR14 ${t.atr} on ${t.atrDate})`,floor:t.floor,activateAt:t.activateAt,active:t.active,high:t.high,highAt:iso(t.highAt),level:t.level,
     tracking:config?.trailingStops===true,untracked:(t.untracked??[]).map(u=>`${at(u.from)} to ${at(u.to)} ${market==='US'?'New York':'KST'}`),catchUp:t.catchUp??null,...(t.awaitingFill?{awaitingFill:true}:{}),...(t.notTrackedSince?{notTrackedSince:at(t.notTrackedSince)}:{}),...(t.highDay?{highDay:t.highDay}:{})};}
 // An armed order as a review sees it (the scout reads the same view of a holding's orders: scoutAccount).
-function armedView(o,config){return {id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString(),...(o.linkedBuy?{protectsPurchase:o.linkedBuy.id}:{}),...(o.trail?{trail:trailView(o,config)}:{}),...(o.trailNotUsed?{trailNotUsed:o.trailNotUsed}:{})};}
+function armedView(o,config){return {id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,limitPrice:o.limitPrice,purpose:o.purpose,conditions:o.conditions,combine:o.combine,expires:new Date(o.expiresAt).toISOString(),...(o.linkedBuy&&!o.linkedBuy.settled?{protectsPurchase:o.linkedBuy.id}:{}),...(o.trail?{trail:trailView(o,config)}:{}),...(o.trailNotUsed?{trailNotUsed:o.trailNotUsed}:{})};}
 class AgentDesk {
   constructor(db,clock=Date.now){this.db=db;this.clock=clock;db.exec('CREATE TABLE IF NOT EXISTS plan_stop_failures(id TEXT PRIMARY KEY,scope TEXT NOT NULL,payload TEXT NOT NULL)');db.exec('CREATE TABLE IF NOT EXISTS agent_triggers(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS agent_notes(scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,symbol));CREATE TABLE IF NOT EXISTS agent_note_history(id INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,symbol TEXT NOT NULL,payload TEXT NOT NULL,replacedAt INTEGER NOT NULL,reason TEXT NOT NULL);CREATE TABLE IF NOT EXISTS conditional_orders(id TEXT PRIMARY KEY,scope TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL)');}
   // The newest rows of the scope, armed and recently closed, at most limit (short selling B3d-2: no full scan per state).
@@ -107,7 +107,8 @@ class AgentDesk {
     const distancePct=pct!=null?pct:mult*a.value/price*100;if(!(distancePct>=TRAIL_LIMITS.distancePct[0]&&distancePct<=TRAIL_LIMITS.distancePct[1]))return {reason:`The trail distance is ${Math.round(distancePct*100)/100}% of the price; it must be 0.5% to 50%.`};
     if(activateAt!=null&&!(Number.isFinite(activateAt)&&activateAt>price&&activateAt>c[0].value))return {reason:'trail.activateAt must be above the current price and the floor, or null.'};
     return {spec:{pct,atrMultiple:mult,activateAt},floor:c[0].value,price,atr:a};}
-  setOrder(scope,args,{config,universe,quotes,reviewId,lot=null,positions=null,link=null,atr=null}={}){
+  // linkFilled(link): the shares an open linked purchase has filled so far (they are in the holding already), or 0.
+  setOrder(scope,args,{config,universe,quotes,reviewId,lot=null,positions=null,link=null,atr=null,linkFilled=null}={}){
     if(args?.action==='cancel'){const o=this.orders(scope).find(x=>x.id===args.id);if(!o)return fail('No armed order with that id.');this.write('conditional_orders',{...o,status:'cancelled',closedAt:this.clock(),closedBy:'agent'});return {status:'cancelled',id:o.id};}
     if(!config?.conditionalOrders)return fail('Conditional orders are turned off in Engine settings.');
     if(!isSymbol(args?.symbol)||universe&&!universe.includes(args.symbol))return fail('The symbol must be in the review universe.');
@@ -137,9 +138,20 @@ class AgentDesk {
       if(old.purpose!=='stop_loss'||args.purpose!=='stop_loss')return fail('replaces works only from a stop loss to a stop loss.');
       if(old.symbol!==args.symbol||old.side!==args.side)return fail(`${old.id} is a ${old.side} stop loss for ${old.symbol}; its replacement must have the same symbol and side.`);
       if(old.credit||credit)return fail('replaces is for stop losses on cash shares; a credit-lot stop is cancelled and armed separately.');
-      replaced=old;if(!link&&old.linkedBuy)link=old.linkedBuy;
+      // A stop tied to a purchase still open passes the link and its cap on. A link marked settled (its purchase ended and
+      // the stop was sized to it once) has done its work: the replacement is an ordinary stop (found in live use: every
+      // replacement after a second purchase was cut back to the first purchase's shares).
+      replaced=old;if(!link&&old.linkedBuy&&!old.linkedBuy.settled)link=old.linkedBuy;
     }
-    const buying=Math.max(0,Number(link?.quantity)||0);
+    // The purchase's whole quantity (the stop's cap) and the shares it is still buying: shares it has filled are in the
+    // holding, so the cover check counts only the rest (review of the linked-stop fix: a partly filled purchase was
+    // counted twice, so with several stops of one purpose more could be covered than held).
+    const linkTotal=Math.max(0,Number(link?.quantity)||0);let filledSoFar=0;if(link&&typeof linkFilled==='function'){try{filledSoFar=Math.max(0,Number(linkFilled(link))||0);}catch{filledSoFar=0;}}
+    const buying=Math.max(0,linkTotal-filledSoFar);
+    // A stop tied to an open purchase covers at most the shares that purchase buys: armed for that many, and the answer
+    // says so, so the tool never says "armed" for a quantity the app will cut later.
+    // Applied after the cover check below, so a request beyond the shares held plus being bought is refused as before.
+    let capNote=null;const capTo=link&&args.side==='Sell'&&!credit&&linkTotal>0&&args.quantity>linkTotal?linkTotal:null;
     if(args.side==='Sell'&&!credit&&positions&&typeof positions==='object'){
       const held=Math.max(0,Number(positions[args.symbol]?.quantity)||0),purpose=args.purpose??null,combine=args.combine==='any'?'any':'all';
       const same=this.orders(scope).filter(o=>o.symbol===args.symbol&&o.side==='Sell'&&!o.credit&&(o.purpose??null)===purpose&&o.id!==replaced?.id),covered=same.reduce((n,o)=>n+o.quantity,0);
@@ -152,25 +164,28 @@ class AgentDesk {
         const trailTwin=o=>Boolean(trail&&o.trail&&o.trail.floor===trail.floor&&eq(o.trail.pct,trail.spec.pct)&&eq(o.trail.atrMultiple,trail.spec.atrMultiple)&&eq(o.trail.activateAt,trail.spec.activateAt)&&key(o.conditions.map(c=>({...c,value:trail.floor})))===want);
         const twin=replaced?null:same.find(o=>o.quantity===args.quantity&&(o.limitPrice??null)===(args.limitPrice??null)&&(o.combine??'all')===combine&&(trail?trailTwin(o):!o.trail&&key(o.conditions)===want));
         if(twin){const now=this.clock(),renewed=this.write('conditional_orders',{...twin,expiresAt:Math.max(twin.expiresAt,now+hours*3600000),reason:cut(args.reason,300)||twin.reason,reviewId:reviewId??twin.reviewId??null,renewedAt:now,renewals:(twin.renewals??0)+1});
-          return {status:'armed',id:renewed.id,renewed:true,expiresAt:new Date(renewed.expiresAt).toISOString(),note:'An identical armed order existed; its expiry was extended. Nothing new was armed.'};}
+          return {status:'armed',id:renewed.id,quantity:renewed.quantity,renewed:true,expiresAt:new Date(renewed.expiresAt).toISOString(),note:'An identical armed order existed; its expiry was extended. Nothing new was armed.'};}
         return fail(`${held} shares of ${args.symbol} are held${buying?` and ${buying} are being bought`:''}, and armed ${purpose??'sell'} orders already cover ${covered} (${same.map(o=>o.id).join(', ')||'none'}); this would cover ${covered+args.quantity}. Cancel one first, or send the identical order again to extend it.`);
       }
     }
-    if(this.orders(scope).filter(o=>o.id!==replaced?.id).length>=config.conditionalMaxActive)return fail(`Up to ${config.conditionalMaxActive} armed conditional orders; cancel one first.`);
-    const now=this.clock();const o={id:'C-'+randomUUID().slice(0,6),scope,status:'armed',symbol:args.symbol,side:args.side,quantity:args.quantity,limitPrice:args.limitPrice,conditions:parsed.conditions.map(({ast,...c})=>c),symbols:parsed.symbols,combine:args.combine==='any'?'any':'all',purpose:args.purpose,reason:cut(args.reason,300),createdAt:now,expiresAt:now+hours*3600000,priceAtCreation:quote?.price??null,reviewId:reviewId??null,...(link?{linkedBuy:{id:String(link.id),market:link.market??null,quantity:buying}}:{}),...(credit?{credit:{kind:credit.kind,loanDate:credit.loanDate,source:credit.source,account:lot.account??null}}:{}),...(replaced?{replaces:replaced.id}:{})};
+    if(capTo!=null){capNote=`Armed for ${capTo}, not ${args.quantity}: it is tied to purchase ${link.id}, which is still open, and covers at most the ${capTo} shares it buys. Arm another stop for other shares.`;args={...args,quantity:capTo};}
+    // No limit on how many orders are armed at once (the user, 2026-11-26: "Can we just remove this limit?", after a
+    // purchase's own plan stop was refused at the limit, found in live use). Each order still passes every check above.
+    const now=this.clock();const o={id:'C-'+randomUUID().slice(0,6),scope,status:'armed',symbol:args.symbol,side:args.side,quantity:args.quantity,limitPrice:args.limitPrice,conditions:parsed.conditions.map(({ast,...c})=>c),symbols:parsed.symbols,combine:args.combine==='any'?'any':'all',purpose:args.purpose,reason:cut(args.reason,300),createdAt:now,expiresAt:now+hours*3600000,priceAtCreation:quote?.price??null,reviewId:reviewId??null,...(link?{linkedBuy:{id:String(link.id),market:link.market??null,quantity:linkTotal,v:2}}:{}),...(credit?{credit:{kind:credit.kind,loanDate:credit.loanDate,source:credit.source,account:lot.account??null}}:{}),...(replaced?{replaces:replaced.id}:{})};
     // A trailing stop (T2): the trail starts at the price. Replacing a trailing stop with the same kind, distance and
     // activateAt carries its high: the level is the highest of the new floor, the carried high's level and the old level.
     if(trail){const T=require('./trailing-stops.cjs'),market=T.marketOf(args.symbol),prev=replaced?.trail;const carry=Boolean(prev?.active&&eq(prev.pct,trail.spec.pct)&&eq(prev.atrMultiple,trail.spec.atrMultiple)&&eq(prev.activateAt,trail.spec.activateAt));
       let t=T.create(trail.spec,{floor:trail.floor,price:trail.price,atr:trail.atr?.value??null,atrDate:trail.atr?.date??null,now,market,awaitingFill:Boolean(link)});
       if(carry){const high=Math.max(prev.high,t.high??0);t={...t,active:true,high,highAt:high===prev.high?prev.highAt:now,untracked:prev.untracked??[],startedFrom:'carried'};t.level=Math.max(trail.floor,T.rawLevel(t,high,market)??-Infinity,prev.level??-Infinity);}
       o.trail=t;o.conditions[0]={...o.conditions[0],value:t.level};}
-    const note=config.conditionalAutoSubmit&&config.autoSubmit?'It will be submitted automatically when the conditions are met and every check passes.':'When the conditions are met it becomes a proposal that waits for approval.';
-    if(!replaced){this.write('conditional_orders',o);return {status:'armed',id:o.id,expiresAt:new Date(o.expiresAt).toISOString(),note};}
+    // The answer names the quantity armed (found in live use), and says why when it is not the one asked for.
+    const note=(capNote?capNote+' ':'')+(config.conditionalAutoSubmit&&config.autoSubmit?'It will be submitted automatically when the conditions are met and every check passes.':'When the conditions are met it becomes a proposal that waits for approval.');
+    if(!replaced){this.write('conditional_orders',o);return {status:'armed',id:o.id,quantity:o.quantity,expiresAt:new Date(o.expiresAt).toISOString(),note};}
     // One transaction (a savepoint, so it also nests inside a caller's transaction): both rows change, or neither.
     this.db.exec('SAVEPOINT replace_stop');
     try{this.write('conditional_orders',o);this.write('conditional_orders',{...replaced,status:'cancelled',closedAt:now,closedBy:'agent',outcome:`Replaced by ${o.id}`,replacedBy:o.id});this.db.exec('RELEASE replace_stop');}
     catch{try{this.db.exec('ROLLBACK TO replace_stop');this.db.exec('RELEASE replace_stop');}catch{}return fail(`The replacement could not be saved; ${replaced.id} stays armed unchanged.`);}
-    return {status:'armed',id:o.id,replaced:replaced.id,expiresAt:new Date(o.expiresAt).toISOString(),note:`${note} ${replaced.id} was cancelled in the same step.`};
+    return {status:'armed',id:o.id,quantity:o.quantity,replaced:replaced.id,expiresAt:new Date(o.expiresAt).toISOString(),note:`${note} ${replaced.id} was cancelled in the same step.`};
   }
   update(order,patch){return this.write('conditional_orders',{...order,...patch});}
   // A plan stop armed fixed because its trail could not be checked then (trailWanted, found in live use): at the
@@ -229,7 +244,7 @@ class AgentDesk {
   context(scope,config,symbols,positions={},heldStops=[]){
     const unprotected=this.unprotected(scope,positions);const notes=this.notes(scope);const relevant=notes.filter(n=>!n.symbol||symbols.includes(n.symbol)).slice(0,15).map(n=>({symbol:n.symbol||null,note:n.note,updated:new Date(n.updatedAt).toISOString()}));
     return {notes:relevant,triggers:this.triggers(scope).map(t=>({id:t.id,name:t.name,conditions:t.conditions,combine:t.combine,expires:new Date(t.expiresAt).toISOString()})),
-      conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxActive:config.conditionalMaxActive,maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours,...(trailingAllowed(config)?{trailing:{allowed:true}}:{})}:{}),
+      conditionalOrders:{allowed:Boolean(config.conditionalOrders),...(config.conditionalOrders?{autoSubmit:Boolean(config.conditionalAutoSubmit&&config.autoSubmit),maxOrderPctOfEquity:config.conditionalMaxOrderPct,maxSlippagePct:config.conditionalMaxSlippagePct,maxHours:config.conditionalMaxHours,...(trailingAllowed(config)?{trailing:{allowed:true}}:{})}:{}),
         armed:this.orders(scope).map(o=>armedView(o,config)),
         ...((f=>f.length?{planStopsNotArmed:f.map(x=>({symbol:x.symbol,quantity:x.quantity,reason:x.reason,at:new Date(x.at).toISOString(),fact:`The plan stop for ${x.symbol} was not armed: ${x.reason}`}))}:{})(this.planStopFailures(scope))),
         recent:this.recentOrders(scope,5).map(o=>({id:o.id,symbol:o.symbol,side:o.side,quantity:o.quantity,purpose:o.purpose,status:o.status,outcome:o.outcome??null,at:new Date(o.closedAt??o.createdAt).toISOString()})),

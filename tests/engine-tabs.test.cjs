@@ -24,7 +24,7 @@ const CONTROLS=[
   ['Trading',"'U.S. · After-market'",'sessionUsAfter'],['Trading','Largest extended-session order','extendedMaxOrderPct'],
   ['Trading','Loss-limit response','lossAction'],['Trading','Automatic orders per day','maxAutoOrdersPerDay'],['Trading','Stop after consecutive failed reviews','maxConsecutiveFailures'],
   ['Trading','Follow the best price','orderTracking'],['Trading','Let the AI set conditional orders','conditionalOrders'],
-  ['Trading','Submit conditional orders automatically','conditionalAutoSubmit'],['Trading','Most armed conditional orders','conditionalMaxActive'],
+  ['Trading','Submit conditional orders automatically','conditionalAutoSubmit'],
   ['Trading','Largest conditional order','conditionalMaxOrderPct'],['Trading','Conditional order price drift','conditionalMaxSlippagePct'],['Trading','Conditional order lifetime','conditionalMaxHours'],
   ['Agents','Trading model','setModel'],['Agents','Reasoning effort','reasoningEffort'],['Agents','Post-trade reflection','reflectionEnabled'],
 
