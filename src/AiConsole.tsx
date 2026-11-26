@@ -1,6 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {useDraftState,takeDraft} from './useDraftState';
 import {AccountScope,accountName,type AccountTag,type HistoryScope} from './AccountScope';
+import {standaloneOutcome} from './console-outcome.mjs';
 export type Interaction={id:string;runId:string;timestamp:string;kind:string;title:string;body:string;account?:string;accountLabel?:string};
 const clock=(value:string)=>new Date(value).toLocaleTimeString('en-GB',{timeZone:'Asia/Seoul'});
 const day=(value:string)=>new Date(value).toLocaleDateString('en-CA',{timeZone:'Asia/Seoul'});
@@ -19,8 +20,10 @@ function summarize(id:string,events:Interaction[]):Run{
   // A standalone notice (deposit detected, order status not confirmed, emergency mode, guardrail) is one logged entry
   // with no AI exchange: it is complete as soon as it is logged.
   const notice=!dry&&!events.some(e=>['Program','Agent','Context'].includes(e.kind)||e.title==='Review completed'||e.title==='Replay finished');
-  const outcome=failed?'Failed':planned?'Plan':dry?'Dry run':notice?'Notice':value?.withheld?'Buy withheld':value?.action??(events.some(e=>/reflection/i.test(e.title))?'Reflection':done?'Completed':'In progress');
-  return {id,events,started:first.timestamp,trigger:events.find(e=>e.kind==='Program')?.title??first.title,outcome,tone:failed?'failed':planned?'scout':dry||notice?'done':value?.action?.toLowerCase()??(done?'done':'running'),model:model?model.body.split(' ')[0]:null,tokens:usage&&usage.inputTokens!=null?`${(usage.inputTokens+(usage.outputTokens??0)).toLocaleString()} tokens`:null,symbol:value?.symbol??''};
+  // A run the app logs as one finished line (sectors assigned, the keep-alive, a skipped scout run): never "In progress".
+  const standalone=standaloneOutcome(events);
+  const outcome=failed?'Failed':planned?'Plan':dry?'Dry run':standalone??(notice?'Notice':value?.withheld?'Buy withheld':value?.action??(events.some(e=>/reflection/i.test(e.title))?'Reflection':done?'Completed':'In progress'));
+  return {id,events,started:first.timestamp,trigger:events.find(e=>e.kind==='Program')?.title??first.title,outcome,tone:failed?'failed':planned?'scout':dry||notice||standalone?'done':value?.action?.toLowerCase()??(done?'done':'running'),model:model?model.body.split(' ')[0]:null,tokens:usage&&usage.inputTokens!=null?`${(usage.inputTokens+(usage.outputTokens??0)).toLocaleString()} tokens`:null,symbol:value?.symbol??''};
 }
 // A short, readable preview of the context object the AI received.
 function ContextCard({event}:{event:Interaction}){

@@ -1584,6 +1584,8 @@ One component serves both tabs. The U.S. tab passes `market="US"`; everything be
 | any event title matches /fail\|error/i | "Failed" | `failed` |
 | an event titled "Scout plan" | "Plan" | `scout` |
 | an event titled "Dry run · inputs checked" or "Dry-run review · nothing applied" | "Dry run" | `done` |
+| every event a one-line Program entry the app logs as finished (`src/console-outcome.mjs`): "Sectors assigned", "Kept the saved instructions for the next review" | "Completed" | `done` |
+| every event a one-line skipped or dropped Program entry ("Scout run skipped · …", "Scout run dropped · …", "Scout retry dropped · …", "Market narrative skipped · …") | "Skipped" | `done` |
 | not a dry run and no event of kind Program/Agent/Context and no "Review completed"/"Replay finished" | "Notice" | `done` |
 | the Decision body has `withheld` | "Buy withheld" | the action in lower case |
 | the Decision body has an `action` | that action (Buy, Sell, Hold, …) | the action in lower case |
